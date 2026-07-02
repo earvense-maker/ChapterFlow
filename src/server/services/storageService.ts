@@ -1,0 +1,185 @@
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
+import { PROJECTS_DIR } from '../config.js';
+import {
+  ensureDir,
+  readJsonFile,
+  readTextFile,
+  safeWriteFile,
+  safeWriteJson,
+} from '../utils/safeWrite.js';
+import type {
+  Character,
+  EpisodeRecord,
+  GenerationRecord,
+  Memory,
+  PresetsFile,
+  Project,
+  ProjectState,
+} from '../types/index.js';
+
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+function assertSafePathSegment(value: string, label: string): void {
+  if (!SAFE_PATH_SEGMENT.test(value)) {
+    throw new Error(`Invalid ${label}: ${value}`);
+  }
+}
+
+export function projectDir(projectId: string): string {
+  assertSafePathSegment(projectId, 'projectId');
+  return path.join(PROJECTS_DIR, projectId);
+}
+
+export function projectJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'project.json');
+}
+
+export function stateJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'state.json');
+}
+
+export function presetsJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'presets.json');
+}
+
+export function charactersJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'characters.json');
+}
+
+export function memoriesJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'memories.json');
+}
+
+export function worldMdPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'world.md');
+}
+
+export function episodesDir(projectId: string): string {
+  return path.join(projectDir(projectId), 'episodes');
+}
+
+export function episodeJsonPath(projectId: string, episodeId: string): string {
+  assertSafePathSegment(episodeId, 'episodeId');
+  return path.join(episodesDir(projectId), `${episodeId}.json`);
+}
+
+export function episodeMdPath(projectId: string, episodeId: string): string {
+  assertSafePathSegment(episodeId, 'episodeId');
+  return path.join(episodesDir(projectId), `${episodeId}.md`);
+}
+
+export function generationsDir(projectId: string): string {
+  return path.join(projectDir(projectId), 'generations');
+}
+
+export function generationLogPath(projectId: string): string {
+  return path.join(generationsDir(projectId), 'generation-log.jsonl');
+}
+
+export async function createProjectDir(projectId: string): Promise<void> {
+  await ensureDir(projectDir(projectId));
+  await ensureDir(episodesDir(projectId));
+  await ensureDir(generationsDir(projectId));
+}
+
+export async function listProjectIds(): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(PROJECTS_DIR, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+export async function readProject(projectId: string): Promise<Project | null> {
+  return readJsonFile<Project>(projectJsonPath(projectId));
+}
+
+export async function writeProject(project: Project): Promise<void> {
+  await safeWriteJson(projectJsonPath(project.projectId), project);
+}
+
+export async function readState(projectId: string): Promise<ProjectState | null> {
+  return readJsonFile<ProjectState>(stateJsonPath(projectId));
+}
+
+export async function writeState(projectId: string, state: ProjectState): Promise<void> {
+  await safeWriteJson(stateJsonPath(projectId), state);
+}
+
+export async function readPresets(projectId: string): Promise<PresetsFile | null> {
+  return readJsonFile<PresetsFile>(presetsJsonPath(projectId));
+}
+
+export async function writePresets(projectId: string, presets: PresetsFile): Promise<void> {
+  await safeWriteJson(presetsJsonPath(projectId), presets);
+}
+
+export async function readCharacters(projectId: string): Promise<Character[]> {
+  const data = await readJsonFile<Character[]>(charactersJsonPath(projectId));
+  return data ?? [];
+}
+
+export async function writeCharacters(projectId: string, characters: Character[]): Promise<void> {
+  await safeWriteJson(charactersJsonPath(projectId), characters);
+}
+
+export async function readMemories(projectId: string): Promise<Memory[]> {
+  const data = await readJsonFile<Memory[]>(memoriesJsonPath(projectId));
+  return data ?? [];
+}
+
+export async function writeMemories(projectId: string, memories: Memory[]): Promise<void> {
+  await safeWriteJson(memoriesJsonPath(projectId), memories);
+}
+
+export async function readWorld(projectId: string): Promise<string> {
+  const text = await readTextFile(worldMdPath(projectId));
+  return text ?? '';
+}
+
+export async function writeWorld(projectId: string, text: string): Promise<void> {
+  await safeWriteFile(worldMdPath(projectId), text);
+}
+
+export async function readEpisodeRecord(projectId: string, episodeId: string): Promise<EpisodeRecord | null> {
+  return readJsonFile<EpisodeRecord>(episodeJsonPath(projectId, episodeId));
+}
+
+export async function writeEpisodeRecord(projectId: string, episode: EpisodeRecord): Promise<void> {
+  await safeWriteJson(episodeJsonPath(projectId, episode.episodeId), episode);
+}
+
+export async function readEpisodeText(projectId: string, episodeId: string): Promise<string> {
+  const text = await readTextFile(episodeMdPath(projectId, episodeId));
+  return text ?? '';
+}
+
+export async function writeEpisodeText(projectId: string, episodeId: string, text: string): Promise<void> {
+  await safeWriteFile(episodeMdPath(projectId, episodeId), text);
+}
+
+export async function appendGenerationLog(projectId: string, record: GenerationRecord): Promise<void> {
+  const logPath = generationLogPath(projectId);
+  await ensureDir(generationsDir(projectId));
+  const line = JSON.stringify(record) + '\n';
+  await fs.appendFile(logPath, line, 'utf-8');
+}
+
+export async function projectExists(projectId: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(projectDir(projectId));
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteProjectDir(projectId: string): Promise<void> {
+  await fs.rm(projectDir(projectId), { recursive: true, force: true });
+}
+
+export { readTextFile };

@@ -1,0 +1,270 @@
+{
+  "version": 1,
+  "categories": {
+    "genre": {
+      "label": "ジャンル",
+      "items": {
+        "modern-drama": {
+          "id": "modern-drama",
+          "label": "現代ドラマ",
+          "text": "現代日本を舞台にした人間ドラマ。日常の小さな摩擦や感情の機微を丁寧に描く。"
+        },
+        "modern-fantasy": {
+          "id": "modern-fantasy",
+          "label": "現代ファンタジー",
+          "text": "現代世界に幻想的な要素が溶け込んだ世界。非日常が日常のすき間に潜む雰囲気。"
+        },
+        "isekai-fantasy": {
+          "id": "isekai-fantasy",
+          "label": "異世界ファンタジー",
+          "text": "異世界を舞台にした冒険譚。未知の土地の法則や人々の営みを探索する。"
+        },
+        "school": {
+          "id": "school",
+          "label": "学園もの",
+          "text": "学校を舞台にした青春譚。部活、教室、帰り道などの場所で人間関係が動く。"
+        },
+        "mystery": {
+          "id": "mystery",
+          "label": "ミステリ風",
+          "text": "謎や真相追究が軸の物語。情報の断片が徐々に繋がっていく緊張感。"
+        },
+        "daily": {
+          "id": "daily",
+          "label": "日常",
+          "text": "特別な事件は起きなくても、日常の積み重ねが物語となる。"
+        },
+        "romance": {
+          "id": "romance",
+          "label": "恋愛",
+          "text": "二人の関係性の変化を中心に据えた物語。"
+        },
+        "adventure": {
+          "id": "adventure",
+          "label": "冒険",
+          "text": "旅や探索、課題への挑戦を中心に据えた物語。"
+        }
+      }
+    },
+    "style": {
+      "label": "文体",
+      "items": {
+        "neat": {
+          "id": "neat",
+          "label": "端正",
+          "text": "文法を整え、無駄を削いだ整った文章。"
+        },
+        "afterglow": {
+          "id": "afterglow",
+          "label": "余韻重視",
+          "text": "場面の余韻や空気感を重視し、読後に印象を残す文体。"
+        },
+        "natural-dialogue": {
+          "id": "natural-dialogue",
+          "label": "会話自然",
+          "text": "自然な会話の流れを重視し、話者の個性を出す文体。"
+        },
+        "descriptive": {
+          "id": "descriptive",
+          "label": "地の文多め",
+          "text": "情景や心情の描写を豊かに入れる文体。"
+        },
+        "light": {
+          "id": "light",
+          "label": "軽妙",
+          "text": "軽やかで読みやすいテンポの文体。"
+        },
+        "quiet": {
+          "id": "quiet",
+          "label": "静か",
+          "text": "静謐で控えめな文体。感情を直接言わずに伝える。"
+        },
+        "tense": {
+          "id": "tense",
+          "label": "緊張感あり",
+          "text": "場面の緊張や不安を研ぎ澄ませた文体。"
+        }
+      }
+    },
+    "pov": {
+      "label": "視点スタイル",
+      "items": {
+        "first-person": {
+          "id": "first-person",
+          "label": "一人称",
+          "text": "主人公の一人称視点で物語を綴る。"
+        },
+        "third-person-fixed": {
+          "id": "third-person-fixed",
+          "label": "三人称固定",
+          "text": "三人称で一人の人物に視点を固定する。"
+        },
+        "third-person-close": {
+          "id": "third-person-close",
+          "label": "三人称寄り添い",
+          "text": "三人称でありながら、特定人物の内面に寄り添う視点。"
+        },
+        "per-scene": {
+          "id": "per-scene",
+          "label": "視点キャラを場面ごとに指定",
+          "text": "場面ごとに最も近い人物の視点で描く。"
+        }
+      }
+    },
+    "distance": {
+      "label": "語りの距離感",
+      "items": {
+        "close": {
+          "id": "close",
+          "label": "主人公の内面に近い",
+          "text": "思考や感覚に近づいて描写する。"
+        },
+        "slightly-objective": {
+          "id": "slightly-objective",
+          "label": "少し客観的",
+          "text": "内面にも触れつつ、少し引いた位置から描写する。"
+        },
+        "emotional": {
+          "id": "emotional",
+          "label": "情緒を強めに拾う",
+          "text": "感情の揺れや雰囲気を強調して描写する。"
+        },
+        "factual": {
+          "id": "factual",
+          "label": "事実を淡々と追う",
+          "text": "感情よりも事実と行動を中心に描写する。"
+        }
+      }
+    },
+    "pacing": {
+      "label": "展開テンポ",
+      "items": {
+        "slow": {
+          "id": "slow",
+          "label": "ゆっくり",
+          "text": "時間をかけて場面や心情を丁寧に描く。"
+        },
+        "standard": {
+          "id": "standard",
+          "label": "標準",
+          "text": "バランスの取れたテンポで進める。"
+        },
+        "fast": {
+          "id": "fast",
+          "label": "早め",
+          "text": "場面を切り替えながら比較的早く進める。"
+        },
+        "dialogue-driven": {
+          "id": "dialogue-driven",
+          "label": "会話で少しずつ進める",
+          "text": "会話の積み重ねで状況を動かす。"
+        },
+        "action-driven": {
+          "id": "action-driven",
+          "label": "事件や行動で進める",
+          "text": "出来事や行動の変化を中心に進める。"
+        }
+      }
+    },
+    "density": {
+      "label": "描写密度",
+      "items": {
+        "dialogue-rich": {
+          "id": "dialogue-rich",
+          "label": "会話中心",
+          "text": "会話を中心に、言葉の間で状況を示す。"
+        },
+        "scene-descriptive": {
+          "id": "scene-descriptive",
+          "label": "情景描写多め",
+          "text": "場所や空気、光や音などの情景描写を増やす。"
+        },
+        "emotion-descriptive": {
+          "id": "emotion-descriptive",
+          "label": "心情描写多め",
+          "text": "人物の内面や感情の動きを丁寧に描く。"
+        },
+        "action-descriptive": {
+          "id": "action-descriptive",
+          "label": "行動描写多め",
+          "text": "動作や行動を具体的に追う。"
+        },
+        "balanced": {
+          "id": "balanced",
+          "label": "バランス型",
+          "text": "会話、描写、心情、行動をバランスよく配置する。"
+        }
+      }
+    },
+    "conversation": {
+      "label": "会話量",
+      "items": {
+        "more": {
+          "id": "more",
+          "label": "会話多め",
+          "text": "場面に会話を多く含める。"
+        },
+        "standard": {
+          "id": "standard",
+          "label": "標準",
+          "text": "会話と地の文のバランスを取る。"
+        },
+        "less": {
+          "id": "less",
+          "label": "会話少なめ",
+          "text": "会話を控えめにし、描写や叙述を増やす。"
+        }
+      }
+    },
+    "relationshipPacing": {
+      "label": "関係性の進展速度",
+      "items": {
+        "slow-burn": {
+          "id": "slow-burn",
+          "label": "ゆっくり",
+          "text": "関係性の変化を長いスパンで描く。"
+        },
+        "standard": {
+          "id": "standard",
+          "label": "標準",
+          "text": "自然なタイミングで進展させる。"
+        },
+        "gradual": {
+          "id": "gradual",
+          "label": "少しずつ",
+          "text": "小さな変化を積み重ねて進展させる。"
+        }
+      }
+    },
+    "constraint": {
+      "label": "禁止事項",
+      "items": {
+        "no-rush": {
+          "id": "no-rush",
+          "label": "急な関係進展を避ける",
+          "text": "ユーザーの希望なしに関係を急進展させない。"
+        },
+        "keep-speech": {
+          "id": "keep-speech",
+          "label": "キャラの口調を崩さない",
+          "text": "設定された口調や話し方を保つ。"
+        },
+        "no-over-explain": {
+          "id": "no-over-explain",
+          "label": "過度な説明を避ける",
+          "text": "読者に知らせすぎる説明や解説を避ける。"
+        },
+        "no-new-major-setting": {
+          "id": "no-new-major-setting",
+          "label": "勝手に重大設定を増やさない",
+          "text": "既存設定と整合しない大きな設定を勝手に追加しない。"
+        },
+        "no-rush-ending": {
+          "id": "no-rush-ending",
+          "label": "ユーザー指定の結末へ急がない",
+          "text": "指定された方向へ無理やり急がない。"
+        }
+      }
+    }
+  }
+}
