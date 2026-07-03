@@ -1,15 +1,18 @@
 import type {
   Character,
+  ContextCompressionResult,
   CreateMemoryBody,
   CreateProjectBody,
   GenerateRequestBody,
   GenerationRecord,
   Memory,
+  ModelProviderInfo,
   PresetsFile,
   Project,
   ProjectState,
   ProjectSummary,
   ReaderState,
+  SceneNavigationDirection,
   SystemPromptPreview,
   UpdateProjectBody,
 } from '@shared/types';
@@ -23,7 +26,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed: ${res.status}`);
+    throw new Error(formatApiError(body, res.status));
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -48,6 +51,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ presets, customSystemPrompt }),
     }),
+  saveCredential: (provider: string, apiKey: string) =>
+    request<{ ok: true }>('/models/credentials', {
+      method: 'POST',
+      body: JSON.stringify({ provider, apiKey }),
+    }),
+  getModelProviders: () => request<ModelProviderInfo[]>('/models/providers'),
 
   getCharacters: (id: string) => request<Character[]>(`/projects/${id}/characters`),
   updateCharacters: (id: string, characters: Character[]) =>
@@ -75,6 +84,13 @@ export const api = {
     request<GenerationRecord>(`/projects/${id}/reject`, { method: 'POST', body: JSON.stringify({ generationId }) }),
   revertGeneration: (id: string) =>
     request<GenerationRecord>(`/projects/${id}/revert`, { method: 'POST' }),
+  navigateScene: (id: string, direction: SceneNavigationDirection) =>
+    request<ReaderState>(`/projects/${id}/navigate-scene`, {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    }),
+  compressContext: (id: string) =>
+    request<ContextCompressionResult>(`/projects/${id}/context/compress`, { method: 'POST' }),
   generationMarkdownUrl: (id: string, generationId: string, download = true) =>
     `${API_BASE}/projects/${id}/generations/${generationId}/markdown${download ? '?download=1' : ''}`,
 
@@ -120,8 +136,8 @@ async function requestGenerationStream(
         if (payload.record) finalRecord = payload.record;
       }
       if (event === 'error') {
-        const payload = JSON.parse(data) as { error?: string };
-        throw new Error(payload.error || '生成に失敗しました');
+        const payload = JSON.parse(data) as { error?: string; code?: string; retryable?: boolean };
+        throw new Error(formatApiError(payload, 503));
       }
     });
   }
@@ -138,14 +154,21 @@ async function requestGenerationStream(
         if (payload.record) finalRecord = payload.record;
       }
       if (event === 'error') {
-        const payload = JSON.parse(data) as { error?: string };
-        throw new Error(payload.error || '生成に失敗しました');
+        const payload = JSON.parse(data) as { error?: string; code?: string; retryable?: boolean };
+        throw new Error(formatApiError(payload, 503));
       }
     });
   }
 
   if (!finalRecord) throw new Error('生成結果を確定できませんでした');
   return finalRecord;
+}
+
+function formatApiError(body: { error?: string; code?: string; retryable?: boolean }, status: number): string {
+  const parts = [body.error || `Request failed: ${status}`];
+  if (body.code) parts.push(`コード: ${body.code}`);
+  if (body.retryable) parts.push('少し待って再試行できます。');
+  return parts.join('\n');
 }
 
 function drainStreamEvents(

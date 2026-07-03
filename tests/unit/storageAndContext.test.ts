@@ -70,6 +70,56 @@ describe('getRecentContext', () => {
     await storage.deleteProjectDir(projectId);
   });
 
+  it('does not include accepted scenes after the current scene', async () => {
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Episode 1',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId: 'scene-one',
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: 'gen-one',
+          draftGenerationIds: [],
+        },
+        {
+          sceneId: 'scene-two',
+          episodeId,
+          order: 2,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: 'gen-two',
+          draftGenerationIds: [],
+        },
+        {
+          sceneId: 'scene-three',
+          episodeId,
+          order: 3,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: 'gen-three',
+          draftGenerationIds: [],
+        },
+      ],
+    };
+
+    await storage.writeEpisodeRecord(projectId, episode);
+    await storage.appendGenerationLog(projectId, generation('gen-one', 'scene-one', 'SCENE_ONE'));
+    await storage.appendGenerationLog(projectId, generation('gen-two', 'scene-two', 'SCENE_TWO'));
+    await storage.appendGenerationLog(projectId, generation('gen-three', 'scene-three', 'SCENE_THREE_FUTURE'));
+
+    const context = await getRecentContext(projectId, episodeId, 'scene-two', { maxChars: 200 });
+
+    expect(context).toContain('SCENE_ONE');
+    expect(context).toContain('SCENE_TWO');
+    expect(context).not.toContain('SCENE_THREE_FUTURE');
+  });
+
   it('keeps the latest accepted scene when context is truncated', async () => {
     const episode: EpisodeRecord = {
       episodeId,

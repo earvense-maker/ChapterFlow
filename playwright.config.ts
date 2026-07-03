@@ -8,7 +8,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://localhost:5174',
     trace: 'on-first-retry',
   },
   projects: [
@@ -18,8 +18,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
-    reuseExistingServer: !process.env.CI,
+    command: 'set YUMEWEAVING_SKIP_OPEN=1&& set YUMEWEAVING_DATA_DIR=.tmp/e2e-data&& set PORT=3002&& set VITE_DEV_PORT=5174&& npm run dev',
+    url: 'http://localhost:5174',
+    reuseExistingServer: false,
   },
 });

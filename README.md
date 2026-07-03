@@ -5,7 +5,7 @@
 ## 必要環境
 
 - Node.js 20+
-- OpenAI APIキー または Gemini APIキー（生成を利用する場合）
+- Gemini / DeepSeek / OpenAI のAPIキー（生成を利用する場合）
 
 ## セットアップ
 
@@ -19,7 +19,9 @@ npm install
 npm run dev
 ```
 
-ブラウザで http://localhost:5173 を開く。
+http://localhost:5173 をChrome/Edgeの独立したアプリ風ウィンドウで開きます。
+
+通常のブラウザで確認したい場合は、手動で http://localhost:5173 を開いてください。
 
 ## ビルド
 
@@ -36,7 +38,7 @@ npm run test:e2e
 
 ## 設定
 
-初回起動後、作品設定画面または `data/config/credentials.json` にOpenAI/Gemini APIキーを保存してください。APIキーは作品データとは別に管理されます。
+初回起動後、作品設定画面または `data/config/credentials.json` にGemini / DeepSeek / OpenAI のAPIキーを保存してください。APIキーは作品データとは別に管理されます。
 
 ## データ保存場所
 

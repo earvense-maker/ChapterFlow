@@ -9,3 +9,4 @@ data/projects
 coverage
 playwright-report
 test-results
+.tmp

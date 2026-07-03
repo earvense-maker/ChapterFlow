@@ -1,25 +1,17 @@
 import { Router } from 'express';
 import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
 import { GeminiAdapter } from '../adapters/geminiAdapter.js';
+import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
 import * as credentialService from '../services/credentialService.js';
+import { listModelProviders } from '../services/modelInfoService.js';
 import type { ModelConfig } from '../types/index.js';
 
 const router = Router();
 
-const adapters = [new OpenAIAdapter(), new GeminiAdapter()];
-
-const DEFAULT_MODELS: Record<string, string> = {
-  openai: 'gpt-4o-mini',
-  gemini: 'gemini-1.5-flash',
-};
+const adapters = [new OpenAIAdapter(), new GeminiAdapter(), new DeepSeekAdapter()];
 
 router.get('/models/providers', (_req, res) => {
-  res.json(
-    adapters.map((a) => ({
-      name: a.providerName,
-      defaultModel: DEFAULT_MODELS[a.providerName] || '',
-    }))
-  );
+  res.json(listModelProviders());
 });
 
 router.post('/models/validate', async (req, res, next) => {

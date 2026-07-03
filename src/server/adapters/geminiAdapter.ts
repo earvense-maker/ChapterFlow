@@ -12,8 +12,8 @@ import { readServerSentEvents } from '../utils/sse.js';
 
 const PROVIDER_NAME = 'gemini';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const DEFAULT_MODEL = 'gemini-1.5-flash';
-const MAX_OUTPUT_TOKENS = 8192;
+const DEFAULT_MODEL = 'gemini-3.5-flash';
+const MAX_OUTPUT_TOKENS = 65_536;
 
 export class GeminiAdapter implements ModelAdapter {
   readonly providerName = PROVIDER_NAME;
@@ -125,10 +125,12 @@ export class GeminiAdapter implements ModelAdapter {
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
+        const message = body.error?.message || `Gemini API error: ${res.status}`;
         return {
           text: '',
           finishReason: 'error',
           errorCode: mapHttpStatus(res.status, body),
+          errorMessage: message,
           retryable: res.status >= 500 || res.status === 429,
         };
       }

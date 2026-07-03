@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import type { Character, PresetsFile, Project } from '@shared/types';
+import type { Character, ModelProviderInfo, PresetsFile, Project } from '@shared/types';
 
 interface Props {
   projectId: string;
@@ -29,7 +29,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   const [streamingEnabled, setStreamingEnabled] = useState(false);
   const [modelName, setModelName] = useState('');
   const [provider, setProvider] = useState('');
-  const [providers, setProviders] = useState<{ name: string; defaultModel: string }[]>([]);
+  const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
   const [apiKey, setApiKey] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [generatedSystemPrompt, setGeneratedSystemPrompt] = useState('');
@@ -57,10 +57,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       setModelName(projectData.activeModelName);
       setProvider(projectData.activeModelProvider);
 
-      const providerList = (await fetch('/api/models/providers').then((r) => r.json())) as {
-        name: string;
-        defaultModel: string;
-      }[];
+      const providerList = await api.getModelProviders();
       setProviders(providerList);
 
       const promptPreview = await api.previewSystemPrompt(
@@ -115,7 +112,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
         outputLength,
         streamingEnabled,
         activeModelProvider: provider,
-        activeModelName: modelName.trim() || providers.find((p) => p.name === provider)?.defaultModel || 'gpt-4o-mini',
+        activeModelName: modelName.trim() || providers.find((p) => p.name === provider)?.defaultModel || 'gemini-3.5-flash',
       });
       setPresets(savedPresets);
       setProject(updatedProject);
@@ -138,7 +135,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
         outputLength,
         streamingEnabled,
         activeModelProvider: provider,
-        activeModelName: modelName.trim() || providers.find((p) => p.name === provider)?.defaultModel || 'gpt-4o-mini',
+        activeModelName: modelName.trim() || providers.find((p) => p.name === provider)?.defaultModel || 'gemini-3.5-flash',
       });
       setProject(updatedProject);
       setModelName(updatedProject.activeModelName);
@@ -308,7 +305,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
           >
             {providers.map((p) => (
               <option key={p.name} value={p.name}>
-                {p.name}
+                {p.label}
               </option>
             ))}
           </select>
@@ -319,7 +316,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
             type="text"
             value={modelName}
             onChange={(e) => setModelName(e.target.value)}
-            placeholder={provider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini'}
+            placeholder={currentProvider(providers, provider)?.defaultModel ?? 'gemini-3.5-flash'}
           />
         </label>
         <button className="primary" onClick={handleSaveBasic} disabled={loading}>
@@ -436,15 +433,13 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       <section className="settings-section">
         <h2>APIキー</h2>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          {provider === 'gemini'
-            ? 'Gemini APIキーを入力してください。作品データとは別に保存されます。'
-            : 'OpenAI APIキーを入力してください。作品データとは別に保存されます。'}
+          {currentProvider(providers, provider)?.apiKeyHelp ?? 'APIキーを保存します。作品データとは別に保存されます。'}
         </p>
         <input
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder={provider === 'gemini' ? 'AIzaSy...' : 'sk-...'}
+          placeholder={currentProvider(providers, provider)?.apiKeyPlaceholder ?? 'sk-...'}
         />
         <button className="primary" onClick={handleSaveApiKey} disabled={loading}>
           APIキーを保存
@@ -467,4 +462,11 @@ function presetKey(categoryKey: string): keyof PresetsFile {
     constraint: 'constraintPreset',
   };
   return map[categoryKey] ?? (categoryKey as keyof PresetsFile);
+}
+
+function currentProvider(
+  providers: ModelProviderInfo[],
+  provider: string
+): ModelProviderInfo | undefined {
+  return providers.find((entry) => entry.name === provider);
 }

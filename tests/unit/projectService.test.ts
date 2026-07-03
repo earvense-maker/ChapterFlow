@@ -24,7 +24,7 @@ describe('project settings validation', () => {
     ).rejects.toThrow(projectService.ProjectValidationError);
 
     const stored = await projectService.getProject(project.projectId);
-    expect(stored?.activeModelProvider).toBe('openai');
+    expect(stored?.activeModelProvider).toBe('gemini');
   });
 
   it('rejects output lengths outside the supported range', async () => {
@@ -49,5 +49,54 @@ describe('project settings validation', () => {
     expect(updated.activeModelName).toBe('gemini-1.5-flash');
     expect(updated.outputLength).toBe(2500);
     expect(updated.streamingEnabled).toBe(true);
+  });
+
+  it('accepts DeepSeek as a supported provider', async () => {
+    const project = await createTrackedProject();
+
+    const updated = await projectService.updateProject(project.projectId, {
+      activeModelProvider: 'deepseek',
+      activeModelName: ' deepseek-v4-flash ',
+    });
+
+    expect(updated.activeModelProvider).toBe('deepseek');
+    expect(updated.activeModelName).toBe('deepseek-v4-flash');
+  });
+
+  it('creates a project with initial detailed settings', async () => {
+    const project = await projectService.createProject({
+      title: 'Detailed Start',
+      outputLength: 4500.4,
+      streamingEnabled: true,
+      activeModelProvider: 'gemini',
+      activeModelName: ' gemini-1.5-flash ',
+      activePresetIds: { genre: 'romance' },
+      worldText: '静かな管理都市',
+      characters: [
+        {
+          characterId: 'char-test',
+          name: 'レン',
+          role: 'protagonist',
+          description: '都市監査員',
+        },
+      ],
+      customSystemPrompt: '本文だけを書く',
+    });
+    createdProjectIds.push(project.projectId);
+
+    const [worldText, characters, presets] = await Promise.all([
+      storage.readWorld(project.projectId),
+      storage.readCharacters(project.projectId),
+      storage.readPresets(project.projectId),
+    ]);
+
+    expect(project.outputLength).toBe(4500);
+    expect(project.streamingEnabled).toBe(true);
+    expect(project.activeModelProvider).toBe('gemini');
+    expect(project.activeModelName).toBe('gemini-1.5-flash');
+    expect(project.activePresetIds.genre).toBe('romance');
+    expect(worldText).toBe('静かな管理都市');
+    expect(characters).toHaveLength(1);
+    expect(presets?.customSystemPrompt).toBe('本文だけを書く');
   });
 });

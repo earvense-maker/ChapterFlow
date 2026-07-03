@@ -16,11 +16,15 @@ export async function getRecentContext(
   const episode = await storage.readEpisodeRecord(projectId, currentEpisodeId);
   if (!episode) return '';
 
+  const currentIndex = episode.scenes.findIndex((scene) => scene.sceneId === currentSceneId);
+  if (currentIndex < 0) return '';
+
+  const contextScenes = episode.scenes.slice(0, currentIndex + 1);
   const acceptedTexts: string[] = [];
   let chars = 0;
 
-  // 同じエピソード内の場面を後ろから見て、直近の採用済み本文を集める
-  for (const scene of [...episode.scenes].reverse()) {
+  // NOTE: When the reader is moved to an earlier scene, later scenes must not leak into the prompt.
+  for (const scene of [...contextScenes].reverse()) {
     if (!scene.acceptedGenerationId) continue;
     const generation = await findGeneration(projectId, scene.acceptedGenerationId);
     if (!generation) continue;
@@ -34,6 +38,10 @@ export async function getRecentContext(
   const joined = acceptedTexts.join('\n\n');
   if (joined.length <= maxChars) return joined;
   return joined.slice(-maxChars);
+}
+
+export async function getContextSummary(projectId: ProjectId): Promise<string> {
+  return storage.readContextSummary(projectId);
 }
 
 async function findGeneration(

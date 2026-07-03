@@ -4,9 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:client": "vite --open",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
+    "dev:client": "vite",
     "dev:server": "tsx watch src/server/index.ts",
+    "open:app": "node open-app-window.js http://localhost:5173",
+    "open:app:prod": "node open-app-window.js http://localhost:3001",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/index.js",
     "test": "vitest run",

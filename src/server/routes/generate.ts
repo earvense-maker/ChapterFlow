@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import * as generationService from '../services/generationService.js';
-import type { GenerateRequestBody } from '../types/index.js';
+import type { GenerateRequestBody, SceneNavigationDirection } from '../types/index.js';
 
 const router = Router();
 
@@ -14,6 +14,12 @@ router.post('/projects/:id/generate', async (req, res, next) => {
     res.json(record);
   } catch (err) {
     if (err instanceof generationService.GenerateError) {
+      console.warn('Generation failed', {
+        projectId: req.params.id,
+        code: err.code,
+        retryable: err.retryable,
+        message: err.message,
+      });
       return res.status(503).json({
         error: err.message,
         code: err.code,
@@ -63,6 +69,12 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
   } catch (err) {
     if (abortController.signal.aborted) return;
     if (err instanceof generationService.GenerateError) {
+      console.warn('Streaming generation failed', {
+        projectId: req.params.id,
+        code: err.code,
+        retryable: err.retryable,
+        message: err.message,
+      });
       send('error', {
         error: err.message,
         code: err.code,
@@ -149,6 +161,35 @@ router.post('/projects/:id/revert', async (req, res, next) => {
     if (!record) return res.status(404).json({ error: 'No previous generation found' });
     res.json(record);
   } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/projects/:id/navigate-scene', async (req, res, next) => {
+  try {
+    const { direction } = req.body as { direction?: SceneNavigationDirection };
+    if (direction !== 'previous' && direction !== 'next') {
+      return res.status(400).json({ error: 'direction must be previous or next' });
+    }
+    const state = await generationService.navigateScene(req.params.id, direction);
+    res.json(state);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/projects/:id/context/compress', async (req, res, next) => {
+  try {
+    const result = await generationService.compressProjectContext(req.params.id);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof generationService.GenerateError) {
+      return res.status(503).json({
+        error: err.message,
+        code: err.code,
+        retryable: err.retryable,
+      });
+    }
     next(err);
   }
 });

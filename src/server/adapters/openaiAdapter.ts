@@ -14,8 +14,25 @@ const PROVIDER_NAME = 'openai';
 const API_BASE = 'https://api.openai.com/v1';
 const MAX_COMPLETION_TOKENS = 16_384;
 
+interface OpenAIAdapterOptions {
+  providerName?: string;
+  apiBase?: string;
+  maxCompletionTokens?: number;
+  includeStreamOptions?: boolean;
+}
+
 export class OpenAIAdapter implements ModelAdapter {
-  readonly providerName = PROVIDER_NAME;
+  readonly providerName: string;
+  private readonly apiBase: string;
+  private readonly maxCompletionTokens: number;
+  private readonly includeStreamOptions: boolean;
+
+  constructor(options: OpenAIAdapterOptions = {}) {
+    this.providerName = options.providerName ?? PROVIDER_NAME;
+    this.apiBase = options.apiBase ?? API_BASE;
+    this.maxCompletionTokens = options.maxCompletionTokens ?? MAX_COMPLETION_TOKENS;
+    this.includeStreamOptions = options.includeStreamOptions ?? true;
+  }
 
   async *generateTextStream(request: AdapterGenerateRequest): AsyncGenerator<AdapterGenerateStreamEvent> {
     const apiKey = await this.loadApiKey();
@@ -32,7 +49,7 @@ export class OpenAIAdapter implements ModelAdapter {
     request.abortSignal?.addEventListener('abort', handleAbort, { once: true });
 
     try {
-      const res = await fetch(`${API_BASE}/chat/completions`, {
+      const res = await fetch(`${this.apiBase}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -45,9 +62,9 @@ export class OpenAIAdapter implements ModelAdapter {
             { role: 'user', content: request.userPrompt },
           ],
           temperature: request.temperature,
-          max_tokens: estimateMaxOutputTokens(request.outputLength, MAX_COMPLETION_TOKENS),
+          max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
           stream: true,
-          stream_options: { include_usage: true },
+          ...(this.includeStreamOptions ? { stream_options: { include_usage: true } } : {}),
         }),
         signal: controller.signal,
       });
@@ -116,7 +133,7 @@ export class OpenAIAdapter implements ModelAdapter {
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
 
     try {
-      const res = await fetch(`${API_BASE}/chat/completions`, {
+      const res = await fetch(`${this.apiBase}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -129,7 +146,7 @@ export class OpenAIAdapter implements ModelAdapter {
             { role: 'user', content: request.userPrompt },
           ],
           temperature: request.temperature,
-          max_tokens: estimateMaxOutputTokens(request.outputLength, MAX_COMPLETION_TOKENS),
+          max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
         }),
         signal: controller.signal,
       });
@@ -143,6 +160,7 @@ export class OpenAIAdapter implements ModelAdapter {
           text: '',
           finishReason: 'error',
           errorCode: mapHttpStatus(res.status, body),
+          errorMessage: message,
           retryable: res.status >= 500 || res.status === 429,
         };
       }
@@ -200,7 +218,7 @@ export class OpenAIAdapter implements ModelAdapter {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/models`, {
+      const res = await fetch(`${this.apiBase}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` },
       });
       if (!res.ok) {
@@ -223,7 +241,7 @@ export class OpenAIAdapter implements ModelAdapter {
 
   private async loadApiKey(): Promise<string | undefined> {
     const { getCredential } = await import('../services/credentialService.js');
-    return getCredential(PROVIDER_NAME);
+    return getCredential(this.providerName);
   }
 }
 

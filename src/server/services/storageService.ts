@@ -55,6 +55,10 @@ export function worldMdPath(projectId: string): string {
   return path.join(projectDir(projectId), 'world.md');
 }
 
+export function contextSummaryMdPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'context-summary.md');
+}
+
 export function episodesDir(projectId: string): string {
   return path.join(projectDir(projectId), 'episodes');
 }
@@ -148,6 +152,15 @@ export async function readWorld(projectId: string): Promise<string> {
 
 export async function writeWorld(projectId: string, text: string): Promise<void> {
   await safeWriteFile(worldMdPath(projectId), text);
+}
+
+export async function readContextSummary(projectId: string): Promise<string> {
+  const text = await readTextFile(contextSummaryMdPath(projectId));
+  return text ?? '';
+}
+
+export async function writeContextSummary(projectId: string, text: string): Promise<void> {
+  await safeWriteFile(contextSummaryMdPath(projectId), text);
 }
 
 export async function readEpisodeRecord(projectId: string, episodeId: string): Promise<EpisodeRecord | null> {

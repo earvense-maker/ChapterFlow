@@ -146,6 +146,14 @@ export interface ModelConfig {
   defaultTemperature: number;
 }
 
+export interface ModelProviderInfo {
+  name: string;
+  label: string;
+  defaultModel: string;
+  apiKeyPlaceholder: string;
+  apiKeyHelp: string;
+}
+
 export interface AdapterGenerateRequest {
   systemInstructions: string;
   userPrompt: string;
@@ -167,6 +175,7 @@ export interface AdapterGenerateResult {
     totalTokens: number;
   };
   errorCode?: string;
+  errorMessage?: string;
   retryable: boolean;
 }
 
@@ -213,8 +222,15 @@ export interface GenerateRequestBody {
 
 export interface CreateProjectBody {
   title?: string;
+  outputLength?: number;
+  streamingEnabled?: boolean;
+  activeModelProvider?: string;
+  activeModelName?: string;
   activePresetIds?: Partial<ActivePresets>;
   duplicateFrom?: ProjectId;
+  worldText?: string;
+  characters?: Character[];
+  customSystemPrompt?: string;
 }
 
 export interface UpdateProjectBody {
@@ -241,4 +257,38 @@ export interface ReaderState {
   currentScene: SceneRecord | null;
   currentGeneration: GenerationRecord | null;
   memories: Memory[];
+  navigation: ReaderNavigationState;
+  contextUsage: ContextUsageEstimate | null;
+  contextSummaryExcerpt: string;
+}
+
+export interface ReaderNavigationState {
+  currentSceneOrder: number | null;
+  totalScenes: number;
+  hasPreviousScene: boolean;
+  hasNextScene: boolean;
+}
+
+export interface ContextUsageEstimate {
+  contextWindowTokens: number;
+  inputTokenLimit?: number;
+  outputTokenLimit?: number;
+  tokenLimitSource: TokenLimitSource;
+  estimatedPromptTokens: number;
+  promptTokenSource: TokenCountSource;
+  estimatedMaxOutputTokens: number;
+  estimatedAvailableTokens: number;
+  usageRatio: number;
+  summaryChars: number;
+  recentContextChars: number;
+}
+
+export type TokenLimitSource = 'provider' | 'catalog' | 'inferred';
+export type TokenCountSource = 'provider' | 'estimated';
+
+export type SceneNavigationDirection = 'previous' | 'next';
+
+export interface ContextCompressionResult {
+  summary: string;
+  contextUsage: ContextUsageEstimate | null;
 }

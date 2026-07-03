@@ -1,6 +1,10 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
+import {
+  defaultModelForProvider,
+  isSupportedProvider,
+} from './modelInfoService.js';
 import type {
   ActivePresets,
   Character,
@@ -13,12 +17,11 @@ import type {
 } from '../types/index.js';
 
 const DEFAULT_OUTPUT_LENGTH = 3000;
-const DEFAULT_MODEL_PROVIDER = 'openai';
-const DEFAULT_MODEL_NAME = 'gpt-4o-mini';
+const DEFAULT_MODEL_PROVIDER = 'gemini';
+const DEFAULT_MODEL_NAME = defaultModelForProvider(DEFAULT_MODEL_PROVIDER);
 const DEFAULT_STREAMING_ENABLED = false;
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
-const SUPPORTED_MODEL_PROVIDERS = new Set(['openai', 'gemini']);
 
 const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
   genre: 'modern-drama',
@@ -35,17 +38,35 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
 
   let activePresetIds = { ...DEFAULT_ACTIVE_PRESETS };
   let title = body.title?.trim() || '無題の作品';
+  let sourceProject: Project | null = null;
+  let sourcePresets: PresetsFile | null = null;
+  let sourceCharacters: Character[] = [];
+  let sourceWorld = '';
 
   if (body.duplicateFrom) {
-    const source = await storage.readProject(body.duplicateFrom);
-    if (source) {
-      activePresetIds = { ...source.activePresetIds, ...(body.activePresetIds ?? {}) };
-      title = body.title?.trim() || `${source.title} のコピー`;
-      await copySettings(body.duplicateFrom, projectId);
+    sourceProject = await storage.readProject(body.duplicateFrom);
+    if (sourceProject) {
+      sourcePresets = await storage.readPresets(body.duplicateFrom);
+      sourceCharacters = await storage.readCharacters(body.duplicateFrom);
+      sourceWorld = await storage.readWorld(body.duplicateFrom);
+      activePresetIds = { ...sourceProject.activePresetIds, ...(body.activePresetIds ?? {}) };
+      title = body.title?.trim() || `${sourceProject.title} のコピー`;
     }
   } else if (body.activePresetIds) {
     activePresetIds = { ...DEFAULT_ACTIVE_PRESETS, ...body.activePresetIds };
   }
+
+  const provider =
+    body.activeModelProvider ?? sourceProject?.activeModelProvider ?? DEFAULT_MODEL_PROVIDER;
+  const modelName =
+    body.activeModelName ?? sourceProject?.activeModelName ?? defaultModelForProvider(provider);
+  const normalizedSettings = validateProjectUpdates({
+    outputLength: body.outputLength ?? sourceProject?.outputLength ?? DEFAULT_OUTPUT_LENGTH,
+    streamingEnabled:
+      body.streamingEnabled ?? sourceProject?.streamingEnabled ?? DEFAULT_STREAMING_ENABLED,
+    activeModelProvider: provider,
+    activeModelName: modelName,
+  });
 
   const now = nowIso();
   const project: Project = {
@@ -54,10 +75,10 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     title,
     createdAt: now,
     updatedAt: now,
-    activeModelProvider: DEFAULT_MODEL_PROVIDER,
-    activeModelName: DEFAULT_MODEL_NAME,
-    outputLength: DEFAULT_OUTPUT_LENGTH,
-    streamingEnabled: DEFAULT_STREAMING_ENABLED,
+    activeModelProvider: normalizedSettings.activeModelProvider ?? DEFAULT_MODEL_PROVIDER,
+    activeModelName: normalizedSettings.activeModelName ?? DEFAULT_MODEL_NAME,
+    outputLength: normalizedSettings.outputLength ?? DEFAULT_OUTPUT_LENGTH,
+    streamingEnabled: normalizedSettings.streamingEnabled ?? DEFAULT_STREAMING_ENABLED,
     activePresetIds,
   };
 
@@ -75,6 +96,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   };
 
   const presets: PresetsFile = {
+    ...(sourcePresets ?? {}),
     genrePreset: activePresetIds.genre,
     stylePreset: activePresetIds.style,
     povPreset: activePresetIds.pov,
@@ -84,16 +106,18 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     relationshipPacingPreset: activePresetIds.relationshipPacing,
     distancePreset: activePresetIds.distance,
     constraintPreset: activePresetIds.constraint,
-    userCustomPromptParts: [],
-    customSystemPrompt: '',
+    userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
+    customSystemPrompt: body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
   };
+  const characters = body.characters ?? sourceCharacters;
+  const worldText = body.worldText ?? sourceWorld;
 
   await storage.writeProject(project);
   await storage.writeState(projectId, state);
   await storage.writePresets(projectId, presets);
-  await storage.writeCharacters(projectId, []);
+  await storage.writeCharacters(projectId, characters);
   await storage.writeMemories(projectId, []);
-  await storage.writeWorld(projectId, '');
+  await storage.writeWorld(projectId, worldText);
 
   return project;
 }
@@ -174,7 +198,7 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
   if ('activeModelProvider' in updates && updates.activeModelProvider !== undefined) {
     if (
       typeof updates.activeModelProvider !== 'string' ||
-      !SUPPORTED_MODEL_PROVIDERS.has(updates.activeModelProvider)
+      !isSupportedProvider(updates.activeModelProvider)
     ) {
       throw new ProjectValidationError('activeModelProvider is not supported');
     }

@@ -3,12 +3,21 @@ import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
 import { buildPrompt } from '../prompts/promptBuilder.js';
-import { buildEpisodeMarkdown } from '../prompts/contextAssembler.js';
+import {
+  buildEpisodeMarkdown,
+  getContextSummary,
+  getRecentContext,
+} from '../prompts/contextAssembler.js';
 import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
 import { GeminiAdapter } from '../adapters/geminiAdapter.js';
+import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
 import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
+import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
+import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
+  ContextCompressionResult,
+  ContextUsageEstimate,
   Character,
   EpisodeRecord,
   FinishReason,
@@ -16,16 +25,22 @@ import type {
   Memory,
   Project,
   ProjectState,
+  ReaderNavigationState,
+  ReaderState,
+  SceneNavigationDirection,
   SceneRecord,
 } from '../types/index.js';
 
 const TEMPERATURE_DEFAULT = 0.7;
 const TEMPERATURE_VARIATE = 0.85;
+const TEMPERATURE_SUMMARY = 0.25;
 const TIMEOUT_MS = 120_000;
+const SUMMARY_CHUNK_CHARS = 20_000;
 
 const adapterMap = {
   openai: new OpenAIAdapter(),
   gemini: new GeminiAdapter(),
+  deepseek: new DeepSeekAdapter(),
 };
 
 export interface GenerateOptions {
@@ -81,7 +96,7 @@ export async function generateScene(
 
   if (result.finishReason === 'error' || result.finishReason === 'timeout') {
     throw new GenerateError(
-      mapErrorMessage(result.errorCode),
+      mapErrorMessage(result.errorCode, result.errorMessage),
       result.errorCode || 'generation_failed',
       result.retryable
     );
@@ -195,7 +210,7 @@ export async function generateSceneStream(
     }
   } catch (err) {
     if (err instanceof ModelAdapterError) {
-      throw new GenerateError(mapErrorMessage(err.code), err.code, err.retryable);
+      throw new GenerateError(mapErrorMessage(err.code, err.message), err.code, err.retryable);
     }
     throw err;
   }
@@ -254,7 +269,7 @@ async function generateWithAdapter(
     return await adapter.generateText(request);
   } catch (err) {
     if (err instanceof ModelAdapterError) {
-      throw new GenerateError(mapErrorMessage(err.code), err.code, err.retryable);
+      throw new GenerateError(mapErrorMessage(err.code, err.message), err.code, err.retryable);
     }
     throw err;
   }
@@ -457,6 +472,97 @@ export async function revertToPrevious(projectId: string): Promise<GenerationRec
   return previous;
 }
 
+export async function navigateScene(
+  projectId: string,
+  direction: SceneNavigationDirection
+): Promise<ReaderState> {
+  const state = await storage.readState(projectId);
+  if (!state?.currentEpisodeId || !state.currentSceneId) {
+    return getReaderState(projectId);
+  }
+
+  const episode = await storage.readEpisodeRecord(projectId, state.currentEpisodeId);
+  if (!episode) return getReaderState(projectId);
+
+  const currentIndex = episode.scenes.findIndex((scene) => scene.sceneId === state.currentSceneId);
+  if (currentIndex < 0) return getReaderState(projectId);
+
+  const nextIndex = direction === 'previous' ? currentIndex - 1 : currentIndex + 1;
+  const targetScene = episode.scenes[nextIndex];
+  if (!targetScene) return getReaderState(projectId);
+
+  const selectedDraftGenerationId =
+    targetScene.draftGenerationIds.at(-1) ?? targetScene.acceptedGenerationId ?? null;
+
+  await storage.writeState(projectId, {
+    ...state,
+    currentSceneId: targetScene.sceneId,
+    selectedDraftGenerationId,
+    lastOpenedAt: nowIso(),
+  });
+
+  return getReaderState(projectId);
+}
+
+export async function compressProjectContext(projectId: string): Promise<ContextCompressionResult> {
+  await reloadCredentials();
+
+  const project = await storage.readProject(projectId);
+  const state = await storage.readState(projectId);
+  if (!project || !state) throw new Error(`Project not found: ${projectId}`);
+  if (!state.currentEpisodeId) {
+    throw new GenerateError('圧縮できる採用済み本文がまだありません。', 'no_context_to_compress', false);
+  }
+
+  const adapter = adapterMap[project.activeModelProvider as keyof typeof adapterMap];
+  if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
+
+  const episode = await storage.readEpisodeRecord(projectId, state.currentEpisodeId);
+  if (!episode) {
+    throw new GenerateError('圧縮できる採用済み本文がまだありません。', 'no_context_to_compress', false);
+  }
+
+  const acceptedText = await buildEpisodeMarkdown(projectId, episode);
+  if (!acceptedText.trim()) {
+    throw new GenerateError('圧縮できる採用済み本文がまだありません。', 'no_context_to_compress', false);
+  }
+
+  let summary = await storage.readContextSummary(projectId);
+  const chunks = splitTextIntoChunks(acceptedText, SUMMARY_CHUNK_CHARS);
+
+  for (const [index, chunk] of chunks.entries()) {
+    const result = await generateWithAdapter(adapter, {
+      systemInstructions: [
+        'あなたは連載小説アプリの文脈圧縮係です。',
+        '本文の雰囲気を壊さず、次回生成に必要な事実だけを簡潔に整理してください。',
+        '小説本文を書かず、設定・人物・関係性・未解決の伏線・直近状況を箇条書き中心でまとめてください。',
+      ].join('\n'),
+      userPrompt: [
+        `【既存の要約】\n${summary.trim() || 'なし'}`,
+        `【追加で圧縮する本文 ${index + 1}/${chunks.length}】\n${chunk}`,
+        '【出力】\n既存の要約と追加本文を統合した、次回生成用の要約だけを出力してください。',
+      ].join('\n\n---\n\n'),
+      outputLength: 1800,
+      temperature: TEMPERATURE_SUMMARY,
+      timeoutMs: TIMEOUT_MS,
+      modelName: project.activeModelName,
+    });
+
+    if (result.finishReason === 'error' || result.finishReason === 'timeout') {
+      throw new GenerateError(
+        mapErrorMessage(result.errorCode, result.errorMessage),
+        result.errorCode || 'context_compression_failed',
+        result.retryable
+      );
+    }
+    summary = result.text.trim();
+  }
+
+  await storage.writeContextSummary(projectId, summary);
+  const contextUsage = await buildReaderContextUsage(project, state, '');
+  return { summary, contextUsage };
+}
+
 export async function findGeneration(
   projectId: string,
   generationId: string
@@ -512,34 +618,48 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-function mapErrorMessage(code?: string): string {
+function mapErrorMessage(code?: string, detail?: string): string {
+  let base: string;
   switch (code) {
     case 'api_key_missing':
-      return 'APIキーが設定されていません。設定画面からAPIキーを入力してください。';
+      base = 'APIキーが設定されていません。設定画面からAPIキーを入力してください。';
+      break;
     case 'invalid_api_key':
-      return 'APIキーが無効です。設定を確認してください。';
+      base = 'APIキーが無効です。設定を確認してください。';
+      break;
     case 'rate_limit':
-      return 'リクエスト制限に達しました。しばらくしてから再試行してください。';
+      base = 'リクエスト制限に達しました。しばらくしてから再試行してください。';
+      break;
     case 'timeout':
-      return '生成がタイムアウトしました。再試行してください。';
+      base = '生成がタイムアウトしました。出力文量を下げるか、再試行してください。';
+      break;
+    case 'aborted':
+      base = '生成が中断されました。';
+      break;
     case 'network_error':
-      return 'モデルサービスに接続できませんでした。ネットワーク設定を確認して再試行してください。';
+      base = 'モデルサービスに接続できませんでした。ネットワーク設定を確認して再試行してください。';
+      break;
     case 'server_error':
     case 'service_unavailable':
-      return 'モデルサービスで一時的な問題が発生しました。再試行してください。';
+      base = 'モデルサービスで一時的な問題が発生しました。再試行してください。';
+      break;
     default:
-      return '生成に失敗しました。再試行してください。';
+      base = '生成に失敗しました。設定画面のプロバイダー、モデル名、APIキーを確認してください。';
   }
+
+  const safeDetail = sanitizeErrorDetail(detail);
+  if (!safeDetail || safeDetail === base) return base;
+  return `${base}\n詳細: ${safeDetail}`;
 }
 
-export async function getReaderState(projectId: string): Promise<{
-  project: Project;
-  state: ProjectState;
-  currentEpisode: EpisodeRecord | null;
-  currentScene: SceneRecord | null;
-  currentGeneration: GenerationRecord | null;
-  memories: Memory[];
-}> {
+function sanitizeErrorDetail(detail?: string): string {
+  if (!detail) return '';
+  const collapsed = detail.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  return collapsed.length > 500 ? `${collapsed.slice(0, 500)}...` : collapsed;
+}
+
+export async function getReaderState(projectId: string): Promise<ReaderState> {
   const project = await storage.readProject(projectId);
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
@@ -563,5 +683,96 @@ export async function getReaderState(projectId: string): Promise<{
     currentGeneration = await findGeneration(projectId, currentScene.acceptedGenerationId);
   }
 
-  return { project, state, currentEpisode, currentScene, currentGeneration, memories };
+  const navigation = buildNavigationState(currentEpisode, currentScene);
+  const contextUsage = await buildReaderContextUsage(project, state, '');
+  const contextSummary = await storage.readContextSummary(projectId);
+
+  return {
+    project,
+    state,
+    currentEpisode,
+    currentScene,
+    currentGeneration,
+    memories,
+    navigation,
+    contextUsage,
+    contextSummaryExcerpt: contextSummary.slice(0, 240),
+  };
+}
+
+function buildNavigationState(
+  episode: EpisodeRecord | null,
+  currentScene: SceneRecord | null
+): ReaderNavigationState {
+  if (!episode || !currentScene) {
+    return {
+      currentSceneOrder: null,
+      totalScenes: episode?.scenes.length ?? 0,
+      hasPreviousScene: false,
+      hasNextScene: false,
+    };
+  }
+
+  const index = episode.scenes.findIndex((scene) => scene.sceneId === currentScene.sceneId);
+  return {
+    currentSceneOrder: index >= 0 ? index + 1 : null,
+    totalScenes: episode.scenes.length,
+    hasPreviousScene: index > 0,
+    hasNextScene: index >= 0 && index < episode.scenes.length - 1,
+  };
+}
+
+async function buildReaderContextUsage(
+  project: Project,
+  state: ProjectState,
+  wish: string
+): Promise<ContextUsageEstimate | null> {
+  const [memories, characters, worldText, presets, summaryText, recentContextText] =
+    await Promise.all([
+      storage.readMemories(project.projectId),
+      storage.readCharacters(project.projectId),
+      storage.readWorld(project.projectId),
+      storage.readPresets(project.projectId),
+      getContextSummary(project.projectId),
+      getRecentContext(project.projectId, state.currentEpisodeId, state.currentSceneId),
+    ]);
+
+  const { systemInstructions, userPrompt } = await buildPrompt({
+    project,
+    state,
+    wish,
+    memories: memories.filter((m) => m.status === 'active'),
+    characters,
+    worldText,
+    customSystemPrompt: presets?.customSystemPrompt,
+  });
+  const [modelLimits, promptTokenCount] = await Promise.all([
+    resolveModelTokenLimits(project.activeModelProvider, project.activeModelName),
+    countPromptTokens(
+      project.activeModelProvider,
+      project.activeModelName,
+      systemInstructions,
+      userPrompt
+    ),
+  ]);
+
+  return estimateContextUsage({
+    provider: project.activeModelProvider,
+    modelName: project.activeModelName,
+    systemInstructions,
+    userPrompt,
+    outputLength: project.outputLength,
+    summaryText,
+    recentContextText,
+    modelLimits,
+    promptTokenCount,
+  });
+}
+
+function splitTextIntoChunks(text: string, maxChars: number): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += maxChars) {
+    chunks.push(text.slice(i, i + maxChars));
+  }
+  return chunks;
 }
