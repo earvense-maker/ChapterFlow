@@ -39,6 +39,24 @@ describe('storage paths', () => {
   it('rejects path traversal in project and episode ids', () => {
     expect(() => storage.projectDir('../escape')).toThrow(/Invalid projectId/);
     expect(() => storage.episodeJsonPath(projectId, '../episode')).toThrow(/Invalid episodeId/);
+    expect(() => storage.generationMdPath(projectId, '../generation')).toThrow(/Invalid generationId/);
+  });
+});
+
+describe('generation markdown storage', () => {
+  beforeEach(async () => {
+    await storage.deleteProjectDir(projectId);
+    await storage.createProjectDir(projectId);
+  });
+
+  afterEach(async () => {
+    await storage.deleteProjectDir(projectId);
+  });
+
+  it('writes and reads draft markdown files', async () => {
+    await storage.writeGenerationMarkdown(projectId, 'gen-md-test', '本文です');
+
+    await expect(storage.readGenerationMarkdown(projectId, 'gen-md-test')).resolves.toBe('本文です');
   });
 });
 

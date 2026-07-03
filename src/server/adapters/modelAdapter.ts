@@ -1,6 +1,7 @@
 import type {
   AdapterGenerateRequest,
   AdapterGenerateResult,
+  AdapterGenerateStreamEvent,
   ConnectionStatus,
   ModelConfig,
 } from '../types/index.js';
@@ -8,6 +9,7 @@ import type {
 export interface ModelAdapter {
   readonly providerName: string;
   generateText(request: AdapterGenerateRequest): Promise<AdapterGenerateResult>;
+  generateTextStream?(request: AdapterGenerateRequest): AsyncGenerator<AdapterGenerateStreamEvent>;
   validateConnection(config: ModelConfig): Promise<ConnectionStatus>;
 }
 

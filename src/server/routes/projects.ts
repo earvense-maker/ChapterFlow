@@ -39,6 +39,9 @@ router.put('/:id', async (req, res, next) => {
     const project = await projectService.updateProject(req.params.id, updates);
     res.json(project);
   } catch (err) {
+    if (err instanceof projectService.ProjectValidationError) {
+      return res.status(400).json({ error: err.message });
+    }
     next(err);
   }
 });

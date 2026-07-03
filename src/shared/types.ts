@@ -28,6 +28,7 @@ export interface Project {
   activeModelProvider: string;
   activeModelName: string;
   outputLength: number;
+  streamingEnabled: boolean;
   activePresetIds: ActivePresets;
 }
 
@@ -74,6 +75,14 @@ export interface Memory {
   sourceSceneId: SceneId | null;
   status: MemoryStatus;
   source: MemorySource;
+}
+
+export interface CreateMemoryBody {
+  type: MemoryType;
+  content: string;
+  importance?: MemoryImportance;
+  relatedCharacters?: CharacterId[];
+  relatedEpisodes?: EpisodeId[];
 }
 
 export interface Episode {
@@ -125,6 +134,7 @@ export interface GenerationRecord {
   status: GenerationStatus;
   createdAt: string;
   parentGenerationId: GenerationId | null;
+  outputFilePath?: string;
 }
 
 export interface ModelConfig {
@@ -143,6 +153,7 @@ export interface AdapterGenerateRequest {
   temperature: number;
   timeoutMs: number;
   modelName: string;
+  abortSignal?: AbortSignal;
 }
 
 export type FinishReason = 'stop' | 'length' | 'timeout' | 'error' | 'content_filter';
@@ -176,6 +187,14 @@ export interface PresetsFile {
   distancePreset?: string;
   constraintPreset?: string;
   userCustomPromptParts: string[];
+  customSystemPrompt?: string;
+}
+
+export interface SystemPromptPreview {
+  systemPrompt: string;
+  generatedSystemPrompt: string;
+  customSystemPrompt: string;
+  isCustomized: boolean;
 }
 
 export interface ProjectSummary {
@@ -191,6 +210,29 @@ export interface GenerateRequestBody {
   wish: string;
   mode: 'continue' | 'regenerate' | 'variate';
 }
+
+export interface CreateProjectBody {
+  title?: string;
+  activePresetIds?: Partial<ActivePresets>;
+  duplicateFrom?: ProjectId;
+}
+
+export interface UpdateProjectBody {
+  title?: string;
+  outputLength?: number;
+  streamingEnabled?: boolean;
+  activeModelProvider?: string;
+  activeModelName?: string;
+  activePresetIds?: Partial<ActivePresets>;
+}
+
+export type AdapterGenerateStreamEvent =
+  | { type: 'chunk'; text: string }
+  | {
+      type: 'done';
+      finishReason: FinishReason;
+      rawUsage?: AdapterGenerateResult['rawUsage'];
+    };
 
 export interface ReaderState {
   project: Project;

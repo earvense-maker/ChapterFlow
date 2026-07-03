@@ -5,11 +5,13 @@ import * as projectService from './projectService.js';
 import { buildPrompt } from '../prompts/promptBuilder.js';
 import { buildEpisodeMarkdown } from '../prompts/contextAssembler.js';
 import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
-import { ModelAdapterError } from '../adapters/modelAdapter.js';
+import { GeminiAdapter } from '../adapters/geminiAdapter.js';
+import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import type {
   Character,
   EpisodeRecord,
+  FinishReason,
   GenerationRecord,
   Memory,
   Project,
@@ -23,11 +25,16 @@ const TIMEOUT_MS = 120_000;
 
 const adapterMap = {
   openai: new OpenAIAdapter(),
+  gemini: new GeminiAdapter(),
 };
 
 export interface GenerateOptions {
   wish: string;
   mode: 'continue' | 'regenerate' | 'variate';
+}
+
+export interface GenerateStreamOptions extends GenerateOptions {
+  abortSignal?: AbortSignal;
 }
 
 export async function generateScene(
@@ -46,6 +53,7 @@ export async function generateScene(
   const memories = (await storage.readMemories(projectId)).filter((m) => m.status === 'active');
   const characters = await storage.readCharacters(projectId);
   const worldText = await storage.readWorld(projectId);
+  const presets = await storage.readPresets(projectId);
 
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
@@ -57,6 +65,7 @@ export async function generateScene(
     memories,
     characters,
     worldText,
+    customSystemPrompt: presets?.customSystemPrompt,
   });
 
   const temperature = options.mode === 'variate' ? TEMPERATURE_VARIATE : TEMPERATURE_DEFAULT;
@@ -79,6 +88,7 @@ export async function generateScene(
   }
 
   const generationId = generateTimestampId('gen');
+  const outputFilePath = storage.generationMdPath(projectId, generationId);
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -98,8 +108,10 @@ export async function generateScene(
     status: 'draft',
     createdAt: nowIso(),
     parentGenerationId: state.selectedDraftGenerationId,
+    outputFilePath,
   };
 
+  await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
   await storage.appendGenerationLog(projectId, record);
 
   await persistTargetScene(projectId, target, generationId);
@@ -118,9 +130,125 @@ export async function generateScene(
   return record;
 }
 
+export async function generateSceneStream(
+  projectId: string,
+  options: GenerateStreamOptions,
+  onChunk: (chunk: string) => void
+): Promise<GenerationRecord> {
+  await reloadCredentials();
+  throwIfAborted(options.abortSignal);
+
+  const project = await storage.readProject(projectId);
+  const state = await storage.readState(projectId);
+  if (!project || !state) throw new Error(`Project not found: ${projectId}`);
+  throwIfAborted(options.abortSignal);
+
+  const adapter = adapterMap[project.activeModelProvider as keyof typeof adapterMap];
+  if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
+
+  if (!adapter.generateTextStream) {
+    const record = await generateScene(projectId, options);
+    throwIfAborted(options.abortSignal);
+    onChunk(record.responseText);
+    return record;
+  }
+
+  const memories = (await storage.readMemories(projectId)).filter((m) => m.status === 'active');
+  const characters = await storage.readCharacters(projectId);
+  const worldText = await storage.readWorld(projectId);
+  const presets = await storage.readPresets(projectId);
+
+  const target = await prepareTargetScene(projectId, state, options.mode);
+  const { episodeId, sceneId } = target;
+
+  const { systemInstructions, userPrompt } = await buildPrompt({
+    project,
+    state,
+    wish: options.wish,
+    memories,
+    characters,
+    worldText,
+    customSystemPrompt: presets?.customSystemPrompt,
+  });
+
+  const temperature = options.mode === 'variate' ? TEMPERATURE_VARIATE : TEMPERATURE_DEFAULT;
+  const textParts: string[] = [];
+  let finishReason: FinishReason = 'stop';
+
+  try {
+    for await (const event of adapter.generateTextStream({
+      systemInstructions,
+      userPrompt,
+      outputLength: project.outputLength,
+      temperature,
+      timeoutMs: TIMEOUT_MS,
+      modelName: project.activeModelName,
+      abortSignal: options.abortSignal,
+    })) {
+      throwIfAborted(options.abortSignal);
+      if (event.type === 'chunk') {
+        textParts.push(event.text);
+        onChunk(event.text);
+      } else {
+        finishReason = event.finishReason;
+      }
+    }
+  } catch (err) {
+    if (err instanceof ModelAdapterError) {
+      throw new GenerateError(mapErrorMessage(err.code), err.code, err.retryable);
+    }
+    throw err;
+  }
+
+  if (finishReason === 'error' || finishReason === 'timeout') {
+    throw new GenerateError(mapErrorMessage(finishReason), finishReason, true);
+  }
+  throwIfAborted(options.abortSignal);
+
+  const generationId = generateTimestampId('gen');
+  const outputFilePath = storage.generationMdPath(projectId, generationId);
+  const record: GenerationRecord = {
+    generationId,
+    sceneId,
+    episodeId,
+    request: {
+      wish: options.wish,
+      outputLength: project.outputLength,
+      previousContextText: userPrompt,
+    },
+    responseText: textParts.join('').trim(),
+    usedPresets: project.activePresetIds,
+    usedModel: {
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+    },
+    referencedMemoryIds: memories.filter((m) => m.importance === 'high').map((m) => m.memoryId),
+    status: 'draft',
+    createdAt: nowIso(),
+    parentGenerationId: state.selectedDraftGenerationId,
+    outputFilePath,
+  };
+
+  await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
+  await storage.appendGenerationLog(projectId, record);
+  await persistTargetScene(projectId, target, generationId);
+
+  await storage.writeState(projectId, {
+    ...state,
+    currentEpisodeId: episodeId,
+    currentSceneId: sceneId,
+    selectedDraftGenerationId: generationId,
+    lastOpenedAt: nowIso(),
+  });
+
+  await projectService.updateProject(projectId, { updatedAt: nowIso() });
+
+  return record;
+}
+
 async function generateWithAdapter(
-  adapter: OpenAIAdapter,
-  request: Parameters<OpenAIAdapter['generateText']>[0]
+  adapter: ModelAdapter,
+  request: Parameters<ModelAdapter['generateText']>[0]
 ) {
   try {
     return await adapter.generateText(request);
@@ -348,6 +476,20 @@ export async function findGeneration(
   return null;
 }
 
+export async function getGenerationMarkdown(
+  projectId: string,
+  generationId: string
+): Promise<{ filename: string; text: string } | null> {
+  const generation = await findGeneration(projectId, generationId);
+  if (!generation) return null;
+
+  const storedText = await storage.readGenerationMarkdown(projectId, generationId);
+  return {
+    filename: `${generationId}.md`,
+    text: storedText || generation.responseText,
+  };
+}
+
 async function updateEpisodeMarkdown(projectId: string, episode: EpisodeRecord): Promise<void> {
   const text = await buildEpisodeMarkdown(projectId, episode);
   await storage.writeEpisodeText(projectId, episode.episodeId, text);
@@ -361,6 +503,12 @@ export class GenerateError extends Error {
   ) {
     super(message);
     this.name = 'GenerateError';
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new GenerateError('生成が中断されました。', 'aborted', false);
   }
 }
 

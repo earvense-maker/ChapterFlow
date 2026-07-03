@@ -15,6 +15,10 @@ import type {
 const DEFAULT_OUTPUT_LENGTH = 3000;
 const DEFAULT_MODEL_PROVIDER = 'openai';
 const DEFAULT_MODEL_NAME = 'gpt-4o-mini';
+const DEFAULT_STREAMING_ENABLED = false;
+const MIN_OUTPUT_LENGTH = 500;
+const MAX_OUTPUT_LENGTH = 10000;
+const SUPPORTED_MODEL_PROVIDERS = new Set(['openai', 'gemini']);
 
 const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
   genre: 'modern-drama',
@@ -22,6 +26,7 @@ const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
   pov: 'third-person-close',
   pacing: 'standard',
   density: 'balanced',
+  relationshipPacing: 'standard',
 };
 
 export async function createProject(body: CreateProjectBody): Promise<Project> {
@@ -52,6 +57,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     activeModelProvider: DEFAULT_MODEL_PROVIDER,
     activeModelName: DEFAULT_MODEL_NAME,
     outputLength: DEFAULT_OUTPUT_LENGTH,
+    streamingEnabled: DEFAULT_STREAMING_ENABLED,
     activePresetIds,
   };
 
@@ -79,6 +85,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     distancePreset: activePresetIds.distance,
     constraintPreset: activePresetIds.constraint,
     userCustomPromptParts: [],
+    customSystemPrompt: '',
   };
 
   await storage.writeProject(project);
@@ -117,7 +124,8 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
   const project = await storage.readProject(projectId);
   if (!project) throw new Error(`Project not found: ${projectId}`);
 
-  const { activePresetIds, ...rest } = updates;
+  const normalizedUpdates = validateProjectUpdates(updates);
+  const { activePresetIds, ...rest } = normalizedUpdates;
 
   const updated: Project = {
     ...project,
@@ -131,6 +139,71 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
 
   await storage.writeProject(updated);
   return updated;
+}
+
+export class ProjectValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProjectValidationError';
+  }
+}
+
+function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput {
+  const normalized: ProjectUpdateInput = { ...updates };
+
+  if ('outputLength' in updates && updates.outputLength !== undefined) {
+    if (
+      typeof updates.outputLength !== 'number' ||
+      !Number.isFinite(updates.outputLength) ||
+      updates.outputLength < MIN_OUTPUT_LENGTH ||
+      updates.outputLength > MAX_OUTPUT_LENGTH
+    ) {
+      throw new ProjectValidationError(
+        `outputLength must be a finite number between ${MIN_OUTPUT_LENGTH} and ${MAX_OUTPUT_LENGTH}`
+      );
+    }
+    normalized.outputLength = Math.round(updates.outputLength);
+  }
+
+  if ('streamingEnabled' in updates && updates.streamingEnabled !== undefined) {
+    if (typeof updates.streamingEnabled !== 'boolean') {
+      throw new ProjectValidationError('streamingEnabled must be a boolean');
+    }
+  }
+
+  if ('activeModelProvider' in updates && updates.activeModelProvider !== undefined) {
+    if (
+      typeof updates.activeModelProvider !== 'string' ||
+      !SUPPORTED_MODEL_PROVIDERS.has(updates.activeModelProvider)
+    ) {
+      throw new ProjectValidationError('activeModelProvider is not supported');
+    }
+  }
+
+  if ('activeModelName' in updates && updates.activeModelName !== undefined) {
+    if (typeof updates.activeModelName !== 'string' || !updates.activeModelName.trim()) {
+      throw new ProjectValidationError('activeModelName must be a non-empty string');
+    }
+    normalized.activeModelName = updates.activeModelName.trim();
+  }
+
+  if ('activePresetIds' in updates && updates.activePresetIds !== undefined) {
+    if (
+      typeof updates.activePresetIds !== 'object' ||
+      updates.activePresetIds === null ||
+      Array.isArray(updates.activePresetIds)
+    ) {
+      throw new ProjectValidationError('activePresetIds must be an object');
+    }
+
+    for (const [key, value] of Object.entries(updates.activePresetIds)) {
+      if (value !== undefined && typeof value !== 'string') {
+        throw new ProjectValidationError(`activePresetIds.${key} must be a string`);
+      }
+    }
+  }
+
+  return normalized;
 }
 
 export async function deleteProject(projectId: string): Promise<void> {

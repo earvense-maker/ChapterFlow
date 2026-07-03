@@ -47,7 +47,21 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     try {
       setLoading(true);
       setError(null);
-      const record = await api.generate(projectId, { wish, mode });
+      const shouldStream = project?.streamingEnabled ?? false;
+      setGenerationId(null);
+      setStatus(null);
+
+      const record = shouldStream
+        ? await api.generateStream(projectId, { wish, mode }, (() => {
+            let streamedText = '';
+            setText('');
+            return (chunk: string) => {
+              streamedText += chunk;
+              setText(streamedText);
+            };
+          })())
+        : await api.generate(projectId, { wish, mode });
+
       setText(record.responseText);
       setGenerationId(record.generationId);
       setStatus(record.status);
@@ -167,7 +181,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
           {hasText && (
             <>
               <button onClick={() => handleGenerate('regenerate')} disabled={loading}>
-                やり直す
+                書き直す
               </button>
               <button onClick={() => handleGenerate('variate')} disabled={loading}>
                 少し変える
@@ -175,6 +189,15 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
               <button onClick={handleRevert} disabled={loading}>
                 前の案に戻す
               </button>
+              {generationId && (
+                <a
+                  className="button-link"
+                  href={api.generationMarkdownUrl(projectId, generationId)}
+                  download
+                >
+                  MDを保存
+                </a>
+              )}
               {isDraft && (
                 <>
                   <button className="primary" onClick={handleAccept} disabled={loading}>
@@ -190,6 +213,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
         </div>
 
         <div className="status-bar">
+          {loading && (project?.streamingEnabled ?? false) && 'ストリーミング生成中です'}
           {status === 'draft' && 'この案は下書きです'}
           {status === 'accepted' && 'この場面は採用済みです'}
         </div>

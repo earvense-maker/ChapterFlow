@@ -26,8 +26,16 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   const [worldText, setWorldText] = useState('');
   const [characters, setCharacters] = useState<Character[]>([]);
   const [outputLength, setOutputLength] = useState(3000);
+  const [streamingEnabled, setStreamingEnabled] = useState(false);
+  const [modelName, setModelName] = useState('');
+  const [provider, setProvider] = useState('');
+  const [providers, setProviders] = useState<{ name: string; defaultModel: string }[]>([]);
   const [apiKey, setApiKey] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [generatedSystemPrompt, setGeneratedSystemPrompt] = useState('');
+  const [isSystemPromptCustomized, setIsSystemPromptCustomized] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -45,6 +53,24 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       setWorldText(worldData.text);
       setCharacters(charsData);
       setOutputLength(projectData.outputLength);
+      setStreamingEnabled(projectData.streamingEnabled ?? false);
+      setModelName(projectData.activeModelName);
+      setProvider(projectData.activeModelProvider);
+
+      const providerList = (await fetch('/api/models/providers').then((r) => r.json())) as {
+        name: string;
+        defaultModel: string;
+      }[];
+      setProviders(providerList);
+
+      const promptPreview = await api.previewSystemPrompt(
+        projectId,
+        presetsData,
+        presetsData.customSystemPrompt
+      );
+      setSystemPrompt(promptPreview.systemPrompt);
+      setGeneratedSystemPrompt(promptPreview.generatedSystemPrompt);
+      setIsSystemPromptCustomized(promptPreview.isCustomized);
 
       const presetMeta = await api.getPresets();
       setCategories((presetMeta as { categories: Record<string, PresetCategory> }).categories);
@@ -57,18 +83,102 @@ export default function SettingPanel({ projectId, onBack }: Props) {
     load();
   }, [projectId]);
 
+  useEffect(() => {
+    if (!project || isSystemPromptCustomized) return;
+
+    let cancelled = false;
+    setPreviewLoading(true);
+    api.previewSystemPrompt(projectId, presets, null)
+      .then((preview) => {
+        if (cancelled) return;
+        setGeneratedSystemPrompt(preview.generatedSystemPrompt);
+        setSystemPrompt(preview.generatedSystemPrompt);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'プロンプトの更新に失敗しました');
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, project, presets, isSystemPromptCustomized]);
+
   async function handleSavePresets() {
     try {
       setLoading(true);
       setError(null);
-      await api.updateProjectPresets(projectId, presets);
-      await api.updateProject(projectId, { outputLength });
+      const savedPresets = await api.updateProjectPresets(projectId, systemPromptPresetPatch());
+      const updatedProject = await api.updateProject(projectId, {
+        outputLength,
+        streamingEnabled,
+        activeModelProvider: provider,
+        activeModelName: modelName.trim() || providers.find((p) => p.name === provider)?.defaultModel || 'gpt-4o-mini',
+      });
+      setPresets(savedPresets);
+      setProject(updatedProject);
+      setModelName(updatedProject.activeModelName);
+      setProvider(updatedProject.activeModelProvider);
       setMessage('設定を保存しました');
       setTimeout(() => setMessage(null), 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存に失敗しました');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSaveBasic() {
+    try {
+      setLoading(true);
+      setError(null);
+      const updatedProject = await api.updateProject(projectId, {
+        outputLength,
+        streamingEnabled,
+        activeModelProvider: provider,
+        activeModelName: modelName.trim() || providers.find((p) => p.name === provider)?.defaultModel || 'gpt-4o-mini',
+      });
+      setProject(updatedProject);
+      setModelName(updatedProject.activeModelName);
+      setProvider(updatedProject.activeModelProvider);
+      setMessage('基本設定を保存しました');
+      setTimeout(() => setMessage(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSaveSystemPrompt() {
+    try {
+      setLoading(true);
+      setError(null);
+      const savedPresets = await api.updateProjectPresets(projectId, systemPromptPresetPatch());
+      setPresets(savedPresets);
+      setMessage('システムプロンプトを保存しました');
+      setTimeout(() => setMessage(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleResetSystemPrompt() {
+    try {
+      setPreviewLoading(true);
+      setError(null);
+      const preview = await api.previewSystemPrompt(projectId, presets, null);
+      setGeneratedSystemPrompt(preview.generatedSystemPrompt);
+      setSystemPrompt(preview.generatedSystemPrompt);
+      setIsSystemPromptCustomized(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'プロンプトの更新に失敗しました');
+    } finally {
+      setPreviewLoading(false);
     }
   }
 
@@ -107,7 +217,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       const res = await fetch('/api/models/credentials', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'openai', apiKey }),
+        body: JSON.stringify({ provider, apiKey }),
       });
       if (!res.ok) throw new Error('APIキーの保存に失敗しました');
       setMessage('APIキーを保存しました');
@@ -140,6 +250,18 @@ export default function SettingPanel({ projectId, onBack }: Props) {
     setCharacters((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function handleSystemPromptChange(value: string) {
+    setSystemPrompt(value);
+    setIsSystemPromptCustomized(value.trim() !== generatedSystemPrompt.trim());
+  }
+
+  function systemPromptPresetPatch(): Partial<PresetsFile> {
+    return {
+      ...presets,
+      customSystemPrompt: isSystemPromptCustomized ? systemPrompt : '',
+    };
+  }
+
   if (!categories || !project) return <div className="loading">読み込み中…</div>;
 
   return (
@@ -155,7 +277,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       <section className="settings-section">
         <h2>基本設定</h2>
         <label>
-          出力文量（目安文字数）
+          出力文量（大まかな目安文字数）
           <input
             type="number"
             value={outputLength}
@@ -165,6 +287,44 @@ export default function SettingPanel({ projectId, onBack }: Props) {
             step={500}
           />
         </label>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={streamingEnabled}
+            onChange={(e) => setStreamingEnabled(e.target.checked)}
+          />
+          <span>ストリーミング生成を使う</span>
+        </label>
+        <label>
+          プロバイダー
+          <select
+            value={provider}
+            onChange={(e) => {
+              const next = e.target.value;
+              setProvider(next);
+              const defaultModel = providers.find((p) => p.name === next)?.defaultModel;
+              if (defaultModel) setModelName(defaultModel);
+            }}
+          >
+            {providers.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          モデル名
+          <input
+            type="text"
+            value={modelName}
+            onChange={(e) => setModelName(e.target.value)}
+            placeholder={provider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini'}
+          />
+        </label>
+        <button className="primary" onClick={handleSaveBasic} disabled={loading}>
+          基本設定を保存
+        </button>
       </section>
 
       <section className="settings-section">
@@ -194,7 +354,31 @@ export default function SettingPanel({ projectId, onBack }: Props) {
           </fieldset>
         ))}
         <button className="primary" onClick={handleSavePresets} disabled={loading}>
-          基本設定を保存
+          プリセットを保存
+        </button>
+      </section>
+
+      <section className="settings-section">
+        <h2>システムプロンプト</h2>
+        <div className="prompt-toolbar">
+          <span className="prompt-status">
+            {previewLoading
+              ? '更新中…'
+              : isSystemPromptCustomized
+                ? '手入力を使用中'
+                : 'プリセットから生成'}
+          </span>
+          <button onClick={handleResetSystemPrompt} disabled={loading || previewLoading}>
+            現在のプリセットから再生成
+          </button>
+        </div>
+        <textarea
+          className="system-prompt-editor"
+          value={systemPrompt}
+          onChange={(e) => handleSystemPromptChange(e.target.value)}
+        />
+        <button className="primary" onClick={handleSaveSystemPrompt} disabled={loading}>
+          システムプロンプトを保存
         </button>
       </section>
 
@@ -252,13 +436,15 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       <section className="settings-section">
         <h2>APIキー</h2>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          OpenAI APIキーを入力してください。作品データとは別に保存されます。
+          {provider === 'gemini'
+            ? 'Gemini APIキーを入力してください。作品データとは別に保存されます。'
+            : 'OpenAI APIキーを入力してください。作品データとは別に保存されます。'}
         </p>
         <input
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder="sk-..."
+          placeholder={provider === 'gemini' ? 'AIzaSy...' : 'sk-...'}
         />
         <button className="primary" onClick={handleSaveApiKey} disabled={loading}>
           APIキーを保存

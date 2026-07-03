@@ -11,6 +11,16 @@ type PresetCategory = {
   items: Record<string, { id: string; label: string; text: string }>;
 };
 
+const defaultPresetSelection: Record<string, string> = {
+  genre: 'modern-drama',
+  style: 'natural-dialogue',
+  pov: 'third-person-close',
+  pacing: 'standard',
+  density: 'balanced',
+  conversation: 'standard',
+  relationshipPacing: 'standard',
+};
+
 export default function ProjectForm({ onCreated, onCancel }: Props) {
   const [title, setTitle] = useState('');
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
@@ -24,8 +34,8 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
       setCategories(typed.categories);
       const defaults: Record<string, string> = {};
       for (const [key, cat] of Object.entries(typed.categories)) {
-        const firstId = Object.keys(cat.items)[0];
-        if (firstId) defaults[key] = firstId;
+        const defaultId = defaultPresetSelection[key];
+        if (defaultId && cat.items[defaultId]) defaults[key] = defaultId;
       }
       setSelection(defaults);
     });

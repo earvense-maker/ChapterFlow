@@ -1,17 +1,23 @@
 import { Router } from 'express';
 import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
+import { GeminiAdapter } from '../adapters/geminiAdapter.js';
 import * as credentialService from '../services/credentialService.js';
 import type { ModelConfig } from '../types/index.js';
 
 const router = Router();
 
-const adapters = [new OpenAIAdapter()];
+const adapters = [new OpenAIAdapter(), new GeminiAdapter()];
+
+const DEFAULT_MODELS: Record<string, string> = {
+  openai: 'gpt-4o-mini',
+  gemini: 'gemini-1.5-flash',
+};
 
 router.get('/models/providers', (_req, res) => {
   res.json(
     adapters.map((a) => ({
       name: a.providerName,
-      defaultModel: a.providerName === 'openai' ? 'gpt-4o-mini' : '',
+      defaultModel: DEFAULT_MODELS[a.providerName] || '',
     }))
   );
 });

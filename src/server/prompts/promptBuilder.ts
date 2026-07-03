@@ -1,7 +1,6 @@
-import { baseInstruction } from './baseInstruction.js';
-import { renderPresets } from './presetParts.js';
 import { getRecentContext } from './contextAssembler.js';
-import * as storage from '../services/storageService.js';
+import { resolveSystemPrompt } from './systemPrompt.js';
+import { getApproximateOutputRange } from '../utils/outputLength.js';
 import type {
   Character,
   Memory,
@@ -16,22 +15,23 @@ export interface BuildPromptInput {
   memories: Memory[];
   characters: Character[];
   worldText: string;
+  customSystemPrompt?: string | null;
 }
 
 export async function buildPrompt(input: BuildPromptInput): Promise<{
   systemInstructions: string;
   userPrompt: string;
 }> {
-  const { project, state, wish, memories, characters, worldText } = input;
+  const { project, state, wish, memories, characters, worldText, customSystemPrompt } = input;
 
-  const systemInstructions = baseInstruction();
+  const { systemPrompt: systemInstructions } = await resolveSystemPrompt(
+    project.activePresetIds,
+    customSystemPrompt
+  );
 
   const parts: string[] = [];
 
-  // 2. プリセット
-  parts.push(await renderPresets(project.activePresetIds));
-
-  // 3. 作品設定
+  // 作品設定
   const settingParts: string[] = [];
   if (worldText.trim()) {
     settingParts.push(`【世界設定】\n${worldText.trim()}`);
@@ -44,13 +44,13 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     parts.push(`【作品設定】\n${settingParts.join('\n\n')}`);
   }
 
-  // 4-6. 記憶（重要度 high のみ）
+  // 記憶（重要度 high のみ）
   const highMemories = memories.filter((m) => m.status === 'active' && m.importance === 'high');
   if (highMemories.length > 0) {
     parts.push(renderMemories(highMemories));
   }
 
-  // 7. 直前の文脈
+  // 直前の文脈
   const recentContext = await getRecentContext(
     project.projectId,
     state.currentEpisodeId,
@@ -62,10 +62,10 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     );
   }
 
-  // 8. 今回の希望
+  // 今回の希望
   parts.push(`【今回の希望】\n${wish.trim() || '特に指定しない。今の雰囲気のまま続きを。'}`);
 
-  // 9. 出力条件
+  // 出力条件
   parts.push(renderOutputConditions(project, wish));
 
   const userPrompt = parts.filter(Boolean).join('\n\n---\n\n');
@@ -121,14 +121,17 @@ function renderMemories(memories: Memory[]): string {
 }
 
 function renderOutputConditions(project: Project, wish: string): string {
+  const outputRange = getApproximateOutputRange(project.outputLength);
   const presetText = Object.entries(project.activePresetIds)
     .filter(([, v]) => v)
     .map(([k, v]) => `${k}: ${v}`)
     .join(', ');
 
   return `【出力条件】
-- 出力は日本語の小説本文のみ。
-- 目安文字数: ${project.outputLength}字。
+- 出力は日本語の小説本文のみ。Markdownファイルに保存される本文として書く。
+- 目安文字数: 約${outputRange.target}字（${outputRange.lower}〜${outputRange.upper}字程度）。
+- 指定字数ぴったりで急に止めず、文または段落の切りがよいところで自然に終えること。
+- 上限に届きそうな場合は、途中で切るより少し短くても自然な区切りを優先すること。
 - 選択された設定: ${presetText || '指定なし'}
 - 今回の希望: ${wish.trim() || '特に指定しない'}
 - プロンプトや設定の説明は含めないこと。

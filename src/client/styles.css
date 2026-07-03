@@ -38,7 +38,33 @@ button {
   transition: background 0.15s;
 }
 
+button,
+.button-link {
+  min-height: 2.4rem;
+}
+
+a.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
 button:hover {
+  background: var(--surface-hover);
+}
+
+a.button-link:hover {
   background: var(--surface-hover);
 }
 
@@ -68,6 +94,8 @@ button:disabled {
 }
 
 input[type="text"],
+input[type="password"],
+input[type="number"],
 textarea,
 select {
   width: 100%;
@@ -399,6 +427,41 @@ legend {
   font-family: var(--font-body);
   font-weight: normal;
   margin: 0 0 0.75rem;
+}
+
+.settings-section label {
+  display: block;
+  margin: 0 0 0.75rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+}
+
+.prompt-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.prompt-status {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.system-prompt-editor {
+  min-height: 320px;
+  font-family: var(--font-ui);
+  line-height: 1.55;
 }
 
 .character-form {

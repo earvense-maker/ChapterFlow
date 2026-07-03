@@ -10,11 +10,12 @@ import { ModelAdapter, ModelAdapterError } from './modelAdapter.js';
 import { estimateMaxOutputTokens } from '../utils/outputLength.js';
 import { readServerSentEvents } from '../utils/sse.js';
 
-const PROVIDER_NAME = 'openai';
-const API_BASE = 'https://api.openai.com/v1';
-const MAX_COMPLETION_TOKENS = 16_384;
+const PROVIDER_NAME = 'gemini';
+const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const DEFAULT_MODEL = 'gemini-1.5-flash';
+const MAX_OUTPUT_TOKENS = 8192;
 
-export class OpenAIAdapter implements ModelAdapter {
+export class GeminiAdapter implements ModelAdapter {
   readonly providerName = PROVIDER_NAME;
 
   async *generateTextStream(request: AdapterGenerateRequest): AsyncGenerator<AdapterGenerateStreamEvent> {
@@ -32,30 +33,21 @@ export class OpenAIAdapter implements ModelAdapter {
     request.abortSignal?.addEventListener('abort', handleAbort, { once: true });
 
     try {
-      const res = await fetch(`${API_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: request.modelName,
-          messages: [
-            { role: 'system', content: request.systemInstructions },
-            { role: 'user', content: request.userPrompt },
-          ],
-          temperature: request.temperature,
-          max_tokens: estimateMaxOutputTokens(request.outputLength, MAX_COMPLETION_TOKENS),
-          stream: true,
-          stream_options: { include_usage: true },
-        }),
-        signal: controller.signal,
-      });
+      const modelName = normalizeModelName(request.modelName || DEFAULT_MODEL);
+      const res = await fetch(
+        `${API_BASE}/models/${modelName}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildRequestBody(request)),
+          signal: controller.signal,
+        }
+      );
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new ModelAdapterError(
-          body.error?.message || `OpenAI API error: ${res.status}`,
+          body.error?.message || `Gemini API error: ${res.status}`,
           mapHttpStatus(res.status, body),
           res.status >= 500 || res.status === 429
         );
@@ -65,18 +57,20 @@ export class OpenAIAdapter implements ModelAdapter {
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
 
       for await (const eventData of readServerSentEvents(res.body)) {
-        if (eventData === '[DONE]') break;
+        const data = JSON.parse(eventData) as GeminiGenerateContentResponse;
+        const candidate = data.candidates?.[0];
+        const text =
+          candidate?.content?.parts
+            ?.map((part) => part.text)
+            .join('') || '';
 
-        const data = JSON.parse(eventData) as OpenAIStreamChunk;
-        const choice = data.choices?.[0];
-        const text = choice?.delta?.content;
         if (text) yield { type: 'chunk', text };
-        if (choice?.finish_reason) finishReason = mapFinishReason(choice.finish_reason);
-        if (data.usage) {
+        if (candidate?.finishReason) finishReason = mapFinishReason(candidate.finishReason);
+        if (data.usageMetadata) {
           rawUsage = {
-            promptTokens: data.usage.prompt_tokens,
-            completionTokens: data.usage.completion_tokens,
-            totalTokens: data.usage.total_tokens,
+            promptTokens: data.usageMetadata.promptTokenCount ?? 0,
+            completionTokens: data.usageMetadata.candidatesTokenCount ?? 0,
+            totalTokens: data.usageMetadata.totalTokenCount ?? 0,
           };
         }
       }
@@ -116,29 +110,21 @@ export class OpenAIAdapter implements ModelAdapter {
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
 
     try {
-      const res = await fetch(`${API_BASE}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: request.modelName,
-          messages: [
-            { role: 'system', content: request.systemInstructions },
-            { role: 'user', content: request.userPrompt },
-          ],
-          temperature: request.temperature,
-          max_tokens: estimateMaxOutputTokens(request.outputLength, MAX_COMPLETION_TOKENS),
-        }),
-        signal: controller.signal,
-      });
+      const modelName = normalizeModelName(request.modelName || DEFAULT_MODEL);
+      const res = await fetch(
+        `${API_BASE}/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildRequestBody(request)),
+          signal: controller.signal,
+        }
+      );
 
       clearTimeout(timeout);
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        const message = body.error?.message || `OpenAI API error: ${res.status}`;
         return {
           text: '',
           finishReason: 'error',
@@ -147,30 +133,23 @@ export class OpenAIAdapter implements ModelAdapter {
         };
       }
 
-      const data = (await res.json()) as {
-        choices: Array<{
-          message?: { content?: string };
-          finish_reason?: string;
-        }>;
-        usage?: {
-          prompt_tokens: number;
-          completion_tokens: number;
-          total_tokens: number;
-        };
-      };
-
-      const choice = data.choices?.[0];
-      const text = choice?.message?.content?.trim() || '';
-      const finishReason = mapFinishReason(choice?.finish_reason);
+      const data = (await res.json()) as GeminiGenerateContentResponse;
+      const candidate = data.candidates?.[0];
+      const text =
+        candidate?.content?.parts
+          ?.map((part) => part.text)
+          .join('')
+          .trim() || '';
+      const finishReason = mapFinishReason(candidate?.finishReason);
 
       return {
         text,
         finishReason,
-        rawUsage: data.usage
+        rawUsage: data.usageMetadata
           ? {
-              promptTokens: data.usage.prompt_tokens,
-              completionTokens: data.usage.completion_tokens,
-              totalTokens: data.usage.total_tokens,
+              promptTokens: data.usageMetadata.promptTokenCount ?? 0,
+              completionTokens: data.usageMetadata.candidatesTokenCount ?? 0,
+              totalTokens: data.usageMetadata.totalTokenCount ?? 0,
             }
           : undefined,
         retryable: finishReason === 'error',
@@ -200,9 +179,7 @@ export class OpenAIAdapter implements ModelAdapter {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      });
+      const res = await fetch(`${API_BASE}/models?key=${encodeURIComponent(apiKey)}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         return {
@@ -227,32 +204,72 @@ export class OpenAIAdapter implements ModelAdapter {
   }
 }
 
-interface OpenAIStreamChunk {
-  choices?: Array<{
-    delta?: {
-      content?: string;
+function buildRequestBody(request: AdapterGenerateRequest): unknown {
+  const body: {
+    contents: Array<{ role: 'user'; parts: Array<{ text: string }> }>;
+    systemInstruction?: { parts: Array<{ text: string }> };
+    generationConfig: {
+      temperature: number;
+      maxOutputTokens: number;
     };
-    finish_reason?: string;
-  }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  } | null;
+  } = {
+    contents: [{ role: 'user', parts: [{ text: request.userPrompt }] }],
+    generationConfig: {
+      temperature: request.temperature,
+      maxOutputTokens: estimateMaxOutputTokens(request.outputLength, MAX_OUTPUT_TOKENS),
+    },
+  };
+
+  if (request.systemInstructions.trim()) {
+    body.systemInstruction = { parts: [{ text: request.systemInstructions }] };
+  }
+
+  return body;
 }
 
-function mapHttpStatus(status: number, body: { error?: { code?: string } }): string {
-  if (status === 401) return 'invalid_api_key';
+function normalizeModelName(modelName: string): string {
+  return modelName.replace(/^models\//, '');
+}
+
+interface GeminiGenerateContentResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{ text?: string }>;
+    };
+    finishReason?: string;
+  }>;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
+}
+
+function mapHttpStatus(
+  status: number,
+  body: { error?: { code?: number; status?: string; message?: string } }
+): string {
+  const statusCode = body.error?.code ?? status;
+  const reason = body.error?.status;
+
+  if (status === 401 || status === 403) return 'invalid_api_key';
   if (status === 429) return 'rate_limit';
   if (status === 500) return 'server_error';
   if (status === 503) return 'service_unavailable';
-  return body.error?.code || 'api_error';
+  if (reason === 'UNAUTHENTICATED' || reason === 'PERMISSION_DENIED') return 'invalid_api_key';
+  if (reason === 'RESOURCE_EXHAUSTED') return 'rate_limit';
+  if (statusCode === 401 || statusCode === 403) return 'invalid_api_key';
+  if (statusCode === 429) return 'rate_limit';
+  return body.error?.message?.toLowerCase().includes('api key')
+    ? 'invalid_api_key'
+    : 'api_error';
 }
 
 function mapFinishReason(reason?: string): FinishReason {
   if (!reason) return 'stop';
-  if (reason === 'stop') return 'stop';
-  if (reason === 'length') return 'length';
-  if (reason === 'content_filter') return 'content_filter';
+  const r = reason.toUpperCase();
+  if (r === 'STOP') return 'stop';
+  if (r === 'MAX_TOKENS') return 'length';
+  if (r === 'SAFETY' || r === 'RECITATION') return 'content_filter';
   return 'error';
 }

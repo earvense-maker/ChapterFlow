@@ -24,6 +24,65 @@ router.post('/projects/:id/generate', async (req, res, next) => {
   }
 });
 
+router.post('/projects/:id/generate-stream', async (req, res) => {
+  const body = req.body as GenerateRequestBody;
+  const abortController = new AbortController();
+  let completed = false;
+
+  const handleClientClose = () => {
+    if (!completed) abortController.abort();
+  };
+  req.on('aborted', handleClientClose);
+  res.on('close', handleClientClose);
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+  res.flushHeaders?.();
+
+  const send = (event: string, data: unknown) => {
+    if (res.writableEnded || res.destroyed) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const record = await generationService.generateSceneStream(
+      req.params.id,
+      {
+        wish: body.wish || '',
+        mode: body.mode || 'continue',
+        abortSignal: abortController.signal,
+      },
+      (text) => send('chunk', { text })
+    );
+
+    send('done', { record });
+  } catch (err) {
+    if (abortController.signal.aborted) return;
+    if (err instanceof generationService.GenerateError) {
+      send('error', {
+        error: err.message,
+        code: err.code,
+        retryable: err.retryable,
+      });
+    } else {
+      send('error', {
+        error: err instanceof Error ? err.message : '生成に失敗しました',
+        code: 'generation_failed',
+        retryable: false,
+      });
+    }
+  } finally {
+    completed = true;
+    req.off('aborted', handleClientClose);
+    res.off('close', handleClientClose);
+    if (!res.writableEnded && !res.destroyed) res.end();
+  }
+});
+
 router.post('/projects/:id/regenerate', async (req, res, next) => {
   try {
     const body = req.body as { wish?: string };
@@ -98,6 +157,24 @@ router.get('/projects/:id/reader-state', async (req, res, next) => {
   try {
     const state = await generationService.getReaderState(req.params.id);
     res.json(state);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/projects/:id/generations/:generationId/markdown', async (req, res, next) => {
+  try {
+    const markdown = await generationService.getGenerationMarkdown(
+      req.params.id,
+      req.params.generationId
+    );
+    if (!markdown) return res.status(404).json({ error: 'Generation markdown not found' });
+
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    if (req.query.download === '1') {
+      res.setHeader('Content-Disposition', `attachment; filename="${markdown.filename}"`);
+    }
+    res.send(markdown.text);
   } catch (err) {
     next(err);
   }

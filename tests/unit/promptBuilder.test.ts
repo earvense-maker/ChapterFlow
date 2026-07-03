@@ -12,6 +12,7 @@ function makeProject(): Project {
     activeModelProvider: 'openai',
     activeModelName: 'gpt-4o-mini',
     outputLength: 3000,
+    streamingEnabled: false,
     activePresetIds: {
       genre: 'modern-drama',
       style: 'quiet',
@@ -45,7 +46,23 @@ describe('buildPrompt', () => {
       worldText: '',
     });
     expect(systemInstructions).toContain('ユーザー専用の連載小説');
+    expect(systemInstructions).toContain('テキストファイルに保存される小説本文そのもの');
     expect(systemInstructions).toContain('本文のみを出力');
+    expect(systemInstructions).toContain('【選択された設定】');
+    expect(systemInstructions).toContain('静謐で控えめな文体');
+  });
+
+  it('uses a saved custom system prompt when provided', async () => {
+    const { systemInstructions } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: 'もっと不穏に',
+      memories: [],
+      characters: [],
+      worldText: '',
+      customSystemPrompt: 'カスタムのシステム指示',
+    });
+    expect(systemInstructions).toBe('カスタムのシステム指示');
   });
 
   it('includes wish and output conditions', async () => {
@@ -58,7 +75,8 @@ describe('buildPrompt', () => {
       worldText: '',
     });
     expect(userPrompt).toContain('もっと不穏に');
-    expect(userPrompt).toContain('目安文字数: 3000字');
+    expect(userPrompt).toContain('目安文字数: 約3000字（2600〜3400字程度）');
+    expect(userPrompt).toContain('切りがよいところで自然に終える');
   });
 
   it('includes high importance memories only', async () => {

@@ -77,6 +77,11 @@ export function generationLogPath(projectId: string): string {
   return path.join(generationsDir(projectId), 'generation-log.jsonl');
 }
 
+export function generationMdPath(projectId: string, generationId: string): string {
+  assertSafePathSegment(generationId, 'generationId');
+  return path.join(generationsDir(projectId), `${generationId}.md`);
+}
+
 export async function createProjectDir(projectId: string): Promise<void> {
   await ensureDir(projectDir(projectId));
   await ensureDir(episodesDir(projectId));
@@ -167,6 +172,20 @@ export async function appendGenerationLog(projectId: string, record: GenerationR
   await ensureDir(generationsDir(projectId));
   const line = JSON.stringify(record) + '\n';
   await fs.appendFile(logPath, line, 'utf-8');
+}
+
+export async function readGenerationMarkdown(projectId: string, generationId: string): Promise<string> {
+  const text = await readTextFile(generationMdPath(projectId, generationId));
+  return text ?? '';
+}
+
+export async function writeGenerationMarkdown(
+  projectId: string,
+  generationId: string,
+  text: string
+): Promise<void> {
+  await ensureDir(generationsDir(projectId));
+  await safeWriteFile(generationMdPath(projectId, generationId), text);
 }
 
 export async function projectExists(projectId: string): Promise<boolean> {

@@ -5,7 +5,7 @@
 ## 必要環境
 
 - Node.js 20+
-- OpenAI APIキー（生成を利用する場合）
+- OpenAI APIキー または Gemini APIキー（生成を利用する場合）
 
 ## セットアップ
 
@@ -36,7 +36,7 @@ npm run test:e2e
 
 ## 設定
 
-初回起動後、作品設定画面または `data/config/credentials.json` にOpenAI APIキーを保存してください。APIキーは作品データとは別に管理されます。
+初回起動後、作品設定画面または `data/config/credentials.json` にOpenAI/Gemini APIキーを保存してください。APIキーは作品データとは別に管理されます。
 
 ## データ保存場所
 
