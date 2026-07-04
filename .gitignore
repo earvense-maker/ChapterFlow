@@ -2,6 +2,7 @@ node_modules
 dist
 data/config
 data/projects
+data/setup-sessions
 .env
 .env.local
 *.log

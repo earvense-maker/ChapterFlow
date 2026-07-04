@@ -10,11 +10,36 @@ import stateRouter from './routes/state.js';
 import generateRouter from './routes/generate.js';
 import memoriesRouter from './routes/memories.js';
 import modelsRouter from './routes/models.js';
+import setupSessionsRouter from './routes/setupSessions.js';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT ?? 3001);
+const HOST = process.env.YUMEWEAVING_HOST || '127.0.0.1';
+const DEV_CLIENT_PORT = process.env.VITE_DEV_PORT || 5173;
+const configuredCorsOrigins = process.env.YUMEWEAVING_ALLOWED_ORIGINS
+  ?.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedCorsOrigins = new Set(
+  configuredCorsOrigins ?? [
+    `http://localhost:${DEV_CLIENT_PORT}`,
+    `http://127.0.0.1:${DEV_CLIENT_PORT}`,
+    `http://localhost:${PORT}`,
+    `http://127.0.0.1:${PORT}`,
+  ]
+);
 
-app.use(cors());
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedCorsOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+  })
+);
 app.use(express.json({ limit: '10mb' }));
 
 app.use('/api/projects', projectsRouter);
@@ -23,6 +48,7 @@ app.use('/api', stateRouter);
 app.use('/api', generateRouter);
 app.use('/api', memoriesRouter);
 app.use('/api', modelsRouter);
+app.use('/api', setupSessionsRouter);
 
 // 本番ビルド時はdist/clientを静的配信
 const staticClientDir = path.resolve(PROJECT_ROOT, 'dist', 'client');
@@ -41,8 +67,8 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 async function main() {
   await ensureDir(DATA_DIR);
-  app.listen(PORT, () => {
-    console.log(`Yumeweaving server listening on http://localhost:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`Yumeweaving server listening on http://${HOST}:${PORT}`);
   });
 }
 

@@ -13,7 +13,17 @@ import type {
   ProjectSummary,
   ReaderState,
   SceneNavigationDirection,
+  CreateSetupSessionBody,
+  SendSetupMessageBody,
+  SetupCommitResponse,
+  SetupDraftResponse,
+  SetupMessageResponse,
+  SetupPreviewResponse,
+  SetupSession,
+  SetupSessionResponse,
+  SetupSessionSummary,
   SystemPromptPreview,
+  UpdateSetupDraftBody,
   UpdateProjectBody,
 } from '@shared/types';
 
@@ -41,6 +51,32 @@ export const api = {
   duplicateProject: (id: string, title?: string) =>
     request<Project>(`/projects/${id}/duplicate`, { method: 'POST', body: JSON.stringify({ title }) }),
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+
+  createSetupSession: (body: CreateSetupSessionBody) =>
+    request<SetupSessionResponse>('/setup-sessions', { method: 'POST', body: JSON.stringify(body) }),
+  listSetupSessions: () => request<SetupSessionSummary[]>('/setup-sessions'),
+  getSetupSession: (id: string) => request<SetupSession>(`/setup-sessions/${id}`),
+  sendSetupMessage: (id: string, body: SendSetupMessageBody) =>
+    request<SetupMessageResponse>(`/setup-sessions/${id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateSetupDraft: (id: string, body: UpdateSetupDraftBody) =>
+    request<SetupDraftResponse>(`/setup-sessions/${id}/draft`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  addSetupLock: (id: string, body: { path: string; reason?: 'user_locked' | 'manual_edit' }) =>
+    request<SetupSession>(`/setup-sessions/${id}/locks`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  removeSetupLock: (id: string, lockId: string) =>
+    request<SetupSession>(`/setup-sessions/${id}/locks/${lockId}`, { method: 'DELETE' }),
+  previewSetup: (id: string) =>
+    request<SetupPreviewResponse>(`/setup-sessions/${id}/preview`, { method: 'POST' }),
+  commitSetup: (id: string) =>
+    request<SetupCommitResponse>(`/setup-sessions/${id}/commit`, { method: 'POST' }),
 
   getPresets: () => request<unknown>('/presets'),
   getProjectPresets: (id: string) => request<PresetsFile>(`/projects/${id}/presets`),
@@ -91,6 +127,8 @@ export const api = {
     }),
   compressContext: (id: string) =>
     request<ContextCompressionResult>(`/projects/${id}/context/compress`, { method: 'POST' }),
+  refreshStoryState: (id: string) =>
+    request<ReaderState>(`/projects/${id}/story-state/refresh`, { method: 'POST' }),
   generationMarkdownUrl: (id: string, generationId: string, download = true) =>
     `${API_BASE}/projects/${id}/generations/${generationId}/markdown${download ? '?download=1' : ''}`,
 

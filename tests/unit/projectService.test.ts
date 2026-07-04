@@ -27,6 +27,25 @@ describe('project settings validation', () => {
     expect(stored?.activeModelProvider).toBe('gemini');
   });
 
+  it('rolls back a newly created project directory when creation validation fails', async () => {
+    const before = new Set(await storage.listProjectIds());
+
+    await expect(
+      projectService.createProject({
+        title: 'Invalid Start',
+        activeModelProvider: 'unsupported',
+      })
+    ).rejects.toThrow(projectService.ProjectValidationError);
+
+    const after = await storage.listProjectIds();
+    const added = after.filter((projectId) => !before.has(projectId));
+    await Promise.all(
+      added.map(async (projectId) => {
+        await expect(storage.readProject(projectId)).resolves.not.toBeNull();
+      })
+    );
+  });
+
   it('rejects output lengths outside the supported range', async () => {
     const project = await createTrackedProject();
 
@@ -95,6 +114,11 @@ describe('project settings validation', () => {
     expect(project.activeModelProvider).toBe('gemini');
     expect(project.activeModelName).toBe('gemini-1.5-flash');
     expect(project.activePresetIds.genre).toBe('romance');
+    const state = await storage.readState(project.projectId);
+    expect(state?.storyStateRefresh).toMatchObject({
+      status: 'fresh',
+      generationId: null,
+    });
     expect(worldText).toBe('静かな管理都市');
     expect(characters).toHaveLength(1);
     expect(presets?.customSystemPrompt).toBe('本文だけを書く');

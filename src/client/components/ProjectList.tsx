@@ -5,9 +5,10 @@ import type { ProjectSummary } from '@shared/types';
 interface Props {
   onOpen: (projectId: string) => void;
   onNew: () => void;
+  onSetupNew: () => void;
 }
 
-export default function ProjectList({ onOpen, onNew }: Props) {
+export default function ProjectList({ onOpen, onNew, onSetupNew }: Props) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +55,10 @@ export default function ProjectList({ onOpen, onNew }: Props) {
     <div className="project-list">
       <header className="project-list-header">
         <h1>Yumeweaving</h1>
-        <button className="primary" onClick={onNew}>新規作品</button>
+        <div className="project-list-actions">
+          <button onClick={onSetupNew}>相談して作る</button>
+          <button className="primary" onClick={onNew}>新規作品</button>
+        </div>
       </header>
 
       {error && <div className="error-toast">{error}</div>}
@@ -64,7 +68,10 @@ export default function ProjectList({ onOpen, onNew }: Props) {
       ) : projects.length === 0 ? (
         <div className="empty">
           <p>作品がありません。新規作品から始めてください。</p>
-          <button className="primary" onClick={onNew}>新規作品を作る</button>
+          <div className="project-list-actions center">
+            <button onClick={onSetupNew}>相談して作る</button>
+            <button className="primary" onClick={onNew}>新規作品を作る</button>
+          </div>
         </div>
       ) : (
         <ul className="project-cards">

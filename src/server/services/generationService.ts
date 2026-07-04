@@ -13,6 +13,7 @@ import { GeminiAdapter } from '../adapters/geminiAdapter.js';
 import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
 import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
+import { updateStoryStateFromAcceptedScene } from './storyStateService.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
@@ -29,12 +30,14 @@ import type {
   ReaderState,
   SceneNavigationDirection,
   SceneRecord,
+  StoryStateRefreshStatus,
 } from '../types/index.js';
 
 const TEMPERATURE_DEFAULT = 0.7;
 const TEMPERATURE_VARIATE = 0.85;
 const TEMPERATURE_SUMMARY = 0.25;
 const TIMEOUT_MS = 120_000;
+const STORY_STATE_TIMEOUT_MS = 30_000;
 const SUMMARY_CHUNK_CHARS = 20_000;
 
 const adapterMap = {
@@ -42,6 +45,8 @@ const adapterMap = {
   gemini: new GeminiAdapter(),
   deepseek: new DeepSeekAdapter(),
 };
+
+const projectWriteMutexes = new Map<string, Promise<void>>();
 
 export interface GenerateOptions {
   wish: string;
@@ -53,6 +58,13 @@ export interface GenerateStreamOptions extends GenerateOptions {
 }
 
 export async function generateScene(
+  projectId: string,
+  options: GenerateOptions
+): Promise<GenerationRecord> {
+  return withProjectWriteLock(projectId, () => generateSceneUnlocked(projectId, options));
+}
+
+async function generateSceneUnlocked(
   projectId: string,
   options: GenerateOptions
 ): Promise<GenerationRecord> {
@@ -104,6 +116,8 @@ export async function generateScene(
 
   const generationId = generateTimestampId('gen');
   const outputFilePath = storage.generationMdPath(projectId, generationId);
+  const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
+  await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -111,7 +125,9 @@ export async function generateScene(
     request: {
       wish: options.wish,
       outputLength: project.outputLength,
-      previousContextText: userPrompt,
+      previousContextText: 'Prompt saved separately. See previousContextFilePath.',
+      previousContextFilePath,
+      previousContextChars: userPrompt.length,
     },
     responseText: result.text,
     usedPresets: project.activePresetIds,
@@ -150,6 +166,16 @@ export async function generateSceneStream(
   options: GenerateStreamOptions,
   onChunk: (chunk: string) => void
 ): Promise<GenerationRecord> {
+  return withProjectWriteLock(projectId, () =>
+    generateSceneStreamUnlocked(projectId, options, onChunk)
+  );
+}
+
+async function generateSceneStreamUnlocked(
+  projectId: string,
+  options: GenerateStreamOptions,
+  onChunk: (chunk: string) => void
+): Promise<GenerationRecord> {
   await reloadCredentials();
   throwIfAborted(options.abortSignal);
 
@@ -162,7 +188,7 @@ export async function generateSceneStream(
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
   if (!adapter.generateTextStream) {
-    const record = await generateScene(projectId, options);
+    const record = await generateSceneUnlocked(projectId, options);
     throwIfAborted(options.abortSignal);
     onChunk(record.responseText);
     return record;
@@ -222,6 +248,8 @@ export async function generateSceneStream(
 
   const generationId = generateTimestampId('gen');
   const outputFilePath = storage.generationMdPath(projectId, generationId);
+  const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
+  await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -229,7 +257,9 @@ export async function generateSceneStream(
     request: {
       wish: options.wish,
       outputLength: project.outputLength,
-      previousContextText: userPrompt,
+      previousContextText: 'Prompt saved separately. See previousContextFilePath.',
+      previousContextFilePath,
+      previousContextChars: userPrompt.length,
     },
     responseText: textParts.join('').trim(),
     usedPresets: project.activePresetIds,
@@ -359,6 +389,13 @@ async function persistTargetScene(
 }
 
 export async function acceptGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
+  return withProjectWriteLock(projectId, () => acceptGenerationUnlocked(projectId, generationId));
+}
+
+async function acceptGenerationUnlocked(
+  projectId: string,
+  generationId?: string
+): Promise<GenerationRecord> {
   const state = await storage.readState(projectId);
   if (!state) throw new Error(`State not found: ${projectId}`);
 
@@ -371,7 +408,7 @@ export async function acceptGeneration(projectId: string, generationId?: string)
   if (generation.status === 'accepted') return generation;
 
   generation.status = 'accepted';
-  await storage.appendGenerationLog(projectId, generation);
+  await storage.appendGenerationStatusLog(projectId, generation.generationId, generation.status);
 
   const episode = await storage.readEpisodeRecord(projectId, generation.episodeId);
   if (!episode) throw new Error(`Episode not found: ${generation.episodeId}`);
@@ -387,7 +424,7 @@ export async function acceptGeneration(projectId: string, generationId?: string)
     const draft = await findGeneration(projectId, draftId);
     if (draft && draft.status === 'draft') {
       draft.status = 'superseded';
-      await storage.appendGenerationLog(projectId, draft);
+      await storage.appendGenerationStatusLog(projectId, draft.generationId, draft.status);
     }
   }
   await storage.writeEpisodeRecord(projectId, episode);
@@ -395,16 +432,135 @@ export async function acceptGeneration(projectId: string, generationId?: string)
   // Markdown更新
   await updateEpisodeMarkdown(projectId, episode);
 
+  const storyStateRefresh = buildStoryStateRefreshStatus('pending', generation.generationId);
   await storage.writeState(projectId, {
     ...state,
     lastAcceptedGenerationId: generation.generationId,
     selectedDraftGenerationId: generation.generationId,
+    storyStateRefresh,
+  });
+
+  void refreshStoryStateAfterAcceptance(projectId, generation).catch((err) => {
+    console.warn('Story state refresh failed', {
+      projectId,
+      generationId: generation.generationId,
+      error: err instanceof Error ? err.message : String(err),
+    });
   });
 
   return generation;
 }
 
+async function refreshStoryStateAfterAcceptance(
+  projectId: string,
+  generation: GenerationRecord
+): Promise<void> {
+  const status = await refreshStoryStateForGeneration(projectId, generation, {
+    lockRefreshStatusWrites: true,
+  });
+  if (status.status === 'stale') {
+    console.warn('Story state refresh produced no update', {
+      projectId,
+      generationId: generation.generationId,
+      error: status.errorMessage,
+    });
+  }
+}
+
+export async function refreshStoryState(projectId: string): Promise<ReaderState> {
+  return withProjectWriteLock(projectId, () => refreshStoryStateUnlocked(projectId));
+}
+
+async function refreshStoryStateUnlocked(projectId: string): Promise<ReaderState> {
+  const state = await storage.readState(projectId);
+  if (!state) throw new Error(`State not found: ${projectId}`);
+
+  const generationId = state.lastAcceptedGenerationId ?? state.selectedDraftGenerationId;
+  if (!generationId) {
+    throw new GenerateError(
+      '再抽出できる採用済み本文がまだありません。',
+      'no_accepted_generation',
+      false
+    );
+  }
+
+  const generation = await findGeneration(projectId, generationId);
+  if (!generation || generation.status !== 'accepted') {
+    throw new GenerateError(
+      '再抽出できる採用済み本文が見つかりません。',
+      'accepted_generation_not_found',
+      false
+    );
+  }
+
+  await writeStoryStateRefreshUnlocked(projectId, buildStoryStateRefreshStatus('pending', generation.generationId));
+  await refreshStoryStateForGeneration(projectId, generation);
+  return getReaderState(projectId);
+}
+
+async function refreshStoryStateForGeneration(
+  projectId: string,
+  generation: GenerationRecord,
+  options: { lockRefreshStatusWrites?: boolean } = {}
+): Promise<StoryStateRefreshStatus> {
+  const writeRefreshStatus = options.lockRefreshStatusWrites
+    ? writeStoryStateRefresh
+    : writeStoryStateRefreshUnlocked;
+
+  try {
+    await reloadCredentials();
+
+    const project = await storage.readProject(projectId);
+    if (!project) throw new Error(`Project not found: ${projectId}`);
+
+    const adapter = adapterMap[project.activeModelProvider as keyof typeof adapterMap];
+    if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
+
+    const [characters, worldText] = await Promise.all([
+      storage.readCharacters(projectId),
+      storage.readWorld(projectId),
+    ]);
+
+    const updated = await updateStoryStateFromAcceptedScene({
+      project,
+      adapter,
+      generation,
+      characters,
+      worldText,
+      timeoutMs: STORY_STATE_TIMEOUT_MS,
+    });
+
+    if (!updated) {
+      return writeRefreshStatus(
+        projectId,
+        buildStoryStateRefreshStatus(
+          'stale',
+          generation.generationId,
+          '物語の状態を更新できませんでした。設定を確認して再抽出してください。'
+        )
+      );
+    }
+
+    return writeRefreshStatus(
+      projectId,
+      buildStoryStateRefreshStatus('fresh', generation.generationId)
+    );
+  } catch (err) {
+    return writeRefreshStatus(
+      projectId,
+      buildStoryStateRefreshStatus('stale', generation.generationId, storyStateErrorMessage(err))
+    );
+  }
+}
+
 export async function rejectGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
+  return withProjectWriteLock(projectId, () => rejectGenerationUnlocked(projectId, generationId));
+}
+
+async function rejectGenerationUnlocked(
+  projectId: string,
+  generationId?: string
+): Promise<GenerationRecord> {
   const state = await storage.readState(projectId);
   if (!state) throw new Error(`State not found: ${projectId}`);
 
@@ -415,7 +571,7 @@ export async function rejectGeneration(projectId: string, generationId?: string)
   if (!generation) throw new Error(`Generation not found: ${targetId}`);
 
   generation.status = 'rejected';
-  await storage.appendGenerationLog(projectId, generation);
+  await storage.appendGenerationStatusLog(projectId, generation.generationId, generation.status);
 
   if (state.selectedDraftGenerationId === generation.generationId) {
     const episode = await storage.readEpisodeRecord(projectId, generation.episodeId);
@@ -438,6 +594,10 @@ export async function rejectGeneration(projectId: string, generationId?: string)
 }
 
 export async function revertToPrevious(projectId: string): Promise<GenerationRecord | null> {
+  return withProjectWriteLock(projectId, () => revertToPreviousUnlocked(projectId));
+}
+
+async function revertToPreviousUnlocked(projectId: string): Promise<GenerationRecord | null> {
   const state = await storage.readState(projectId);
   if (!state) throw new Error(`State not found: ${projectId}`);
 
@@ -476,6 +636,13 @@ export async function navigateScene(
   projectId: string,
   direction: SceneNavigationDirection
 ): Promise<ReaderState> {
+  return withProjectWriteLock(projectId, () => navigateSceneUnlocked(projectId, direction));
+}
+
+async function navigateSceneUnlocked(
+  projectId: string,
+  direction: SceneNavigationDirection
+): Promise<ReaderState> {
   const state = await storage.readState(projectId);
   if (!state?.currentEpisodeId || !state.currentSceneId) {
     return getReaderState(projectId);
@@ -505,6 +672,10 @@ export async function navigateScene(
 }
 
 export async function compressProjectContext(projectId: string): Promise<ContextCompressionResult> {
+  return withProjectWriteLock(projectId, () => compressProjectContextUnlocked(projectId));
+}
+
+async function compressProjectContextUnlocked(projectId: string): Promise<ContextCompressionResult> {
   await reloadCredentials();
 
   const project = await storage.readProject(projectId);
@@ -567,19 +738,7 @@ export async function findGeneration(
   projectId: string,
   generationId: string
 ): Promise<GenerationRecord | null> {
-  const text = await storage.readTextFile(storage.generationLogPath(projectId));
-  if (!text) return null;
-
-  const lines = text.trim().split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const record = JSON.parse(lines[i]) as GenerationRecord;
-      if (record.generationId === generationId) return record;
-    } catch {
-      // 破損行は無視
-    }
-  }
-  return null;
+  return storage.findGenerationRecord(projectId, generationId);
 }
 
 export async function getGenerationMarkdown(
@@ -698,6 +857,71 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
     contextUsage,
     contextSummaryExcerpt: contextSummary.slice(0, 240),
   };
+}
+
+async function writeStoryStateRefresh(
+  projectId: string,
+  storyStateRefresh: StoryStateRefreshStatus
+): Promise<StoryStateRefreshStatus> {
+  return withProjectWriteLock(projectId, () =>
+    writeStoryStateRefreshUnlocked(projectId, storyStateRefresh)
+  );
+}
+
+async function writeStoryStateRefreshUnlocked(
+  projectId: string,
+  storyStateRefresh: StoryStateRefreshStatus
+): Promise<StoryStateRefreshStatus> {
+  const state = await storage.readState(projectId);
+  if (!state) throw new Error(`State not found: ${projectId}`);
+  await storage.writeState(projectId, {
+    ...state,
+    storyStateRefresh,
+  });
+  return storyStateRefresh;
+}
+
+function buildStoryStateRefreshStatus(
+  status: StoryStateRefreshStatus['status'],
+  generationId: string | null,
+  errorMessage?: string
+): StoryStateRefreshStatus {
+  return {
+    status,
+    generationId,
+    updatedAt: nowIso(),
+    ...(errorMessage ? { errorMessage } : {}),
+  };
+}
+
+function storyStateErrorMessage(err: unknown): string {
+  if (err instanceof ModelAdapterError) return mapErrorMessage(err.code, err.message);
+  if (err instanceof GenerateError) return err.message;
+  if (err instanceof Error) return sanitizeErrorDetail(err.message) || '物語の状態更新に失敗しました。';
+  return '物語の状態更新に失敗しました。';
+}
+
+async function withProjectWriteLock<T>(
+  projectId: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const previous = projectWriteMutexes.get(projectId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const next = previous.catch(() => undefined).then(() => current);
+  projectWriteMutexes.set(projectId, next);
+
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (projectWriteMutexes.get(projectId) === next) {
+      projectWriteMutexes.delete(projectId);
+    }
+  }
 }
 
 function buildNavigationState(

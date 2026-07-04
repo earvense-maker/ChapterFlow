@@ -40,6 +40,7 @@ describe('storage paths', () => {
     expect(() => storage.projectDir('../escape')).toThrow(/Invalid projectId/);
     expect(() => storage.episodeJsonPath(projectId, '../episode')).toThrow(/Invalid episodeId/);
     expect(() => storage.generationMdPath(projectId, '../generation')).toThrow(/Invalid generationId/);
+    expect(() => storage.setupSessionJsonPath('../setup')).toThrow(/Invalid sessionId/);
   });
 });
 
@@ -57,6 +58,39 @@ describe('generation markdown storage', () => {
     await storage.writeGenerationMarkdown(projectId, 'gen-md-test', '本文です');
 
     await expect(storage.readGenerationMarkdown(projectId, 'gen-md-test')).resolves.toBe('本文です');
+  });
+
+  it('writes and reads generation prompt snapshots separately from the log', async () => {
+    await storage.writeGenerationPromptSnapshot(projectId, 'gen-prompt-test', 'PROMPT_TEXT');
+
+    await expect(storage.readGenerationPromptSnapshot(projectId, 'gen-prompt-test')).resolves.toBe(
+      'PROMPT_TEXT'
+    );
+    expect(storage.generationPromptPath(projectId, 'gen-prompt-test')).toContain(
+      'gen-prompt-test.prompt.txt'
+    );
+  });
+
+  it('reconstructs generation records from compact status log entries', async () => {
+    await storage.appendGenerationLog(projectId, generation('gen-status-test', 'scene-status', '本文'));
+    await storage.appendGenerationStatusLog(projectId, 'gen-status-test', 'accepted');
+
+    await expect(storage.findGenerationRecord(projectId, 'gen-status-test')).resolves.toMatchObject({
+      generationId: 'gen-status-test',
+      responseText: '本文',
+      status: 'accepted',
+    });
+  });
+
+  it('uses the newest compact status when a generation has multiple status entries', async () => {
+    await storage.appendGenerationLog(projectId, generation('gen-status-multi', 'scene-status', '本文'));
+    await storage.appendGenerationStatusLog(projectId, 'gen-status-multi', 'accepted');
+    await storage.appendGenerationStatusLog(projectId, 'gen-status-multi', 'rejected');
+
+    await expect(storage.findGenerationRecord(projectId, 'gen-status-multi')).resolves.toMatchObject({
+      generationId: 'gen-status-multi',
+      status: 'rejected',
+    });
   });
 });
 

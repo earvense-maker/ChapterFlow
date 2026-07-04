@@ -194,6 +194,22 @@ router.post('/projects/:id/context/compress', async (req, res, next) => {
   }
 });
 
+router.post('/projects/:id/story-state/refresh', async (req, res, next) => {
+  try {
+    const state = await generationService.refreshStoryState(req.params.id);
+    res.json(state);
+  } catch (err) {
+    if (err instanceof generationService.GenerateError) {
+      return res.status(503).json({
+        error: err.message,
+        code: err.code,
+        retryable: err.retryable,
+      });
+    }
+    next(err);
+  }
+});
+
 router.get('/projects/:id/reader-state', async (req, res, next) => {
   try {
     const state = await generationService.getReaderState(req.params.id);

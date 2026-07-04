@@ -1,11 +1,26 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { buildPrompt } from '../../src/server/prompts/promptBuilder';
-import type { Project, ProjectState, Memory, Character } from '../../src/server/types/index';
+import * as storage from '../../src/server/services/storageService';
+import type {
+  Character,
+  EpisodeRecord,
+  GenerationRecord,
+  Memory,
+  Project,
+  ProjectState,
+  StoryState,
+} from '../../src/server/types/index';
 
-function makeProject(): Project {
+const promptStateProjectId = 'proj-prompt-state-test';
+
+afterEach(async () => {
+  await storage.deleteProjectDir(promptStateProjectId);
+});
+
+function makeProject(projectId = 'proj-test'): Project {
   return {
     schemaVersion: 1,
-    projectId: 'proj-test',
+    projectId,
     title: 'Test Project',
     createdAt: '2026-07-02T00:00:00Z',
     updatedAt: '2026-07-02T00:00:00Z',
@@ -141,5 +156,155 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('現代日本の地方都市');
     expect(userPrompt).toContain('太郎');
     expect(userPrompt).toContain('主人公');
+  });
+
+  it('orders structured state before important past, summaries, recent text, wish, and output rules', async () => {
+    const project = makeProject(promptStateProjectId);
+    const episodeId = 'ep-prompt';
+    const sceneId = 'scene-prompt';
+    const generationId = 'gen-prompt';
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: ['A is waiting at the station.'],
+      characterStates: [
+        {
+          characterId: 'char-a',
+          name: 'A',
+          currentState: 'A knows the letter exists.',
+          knowledge: ['B has not read the letter yet.'],
+          relationships: ['A and B are still cautious.'],
+          updatedAt: '2026-07-02T00:00:00Z',
+        },
+      ],
+      importantEvents: [
+        {
+          eventId: 'evt-letter',
+          sceneId,
+          summary: 'A hid the letter in the old locker.',
+          characters: ['A'],
+          visibility: 'Only A knows.',
+          importance: 'high',
+          status: 'active',
+          updatedAt: '2026-07-02T00:00:00Z',
+        },
+      ],
+      openThreads: [
+        {
+          threadId: 'thread-letter',
+          summary: 'The letter has not been opened.',
+          relatedCharacters: ['A', 'B'],
+          importance: 'high',
+          status: 'active',
+          updatedAt: '2026-07-02T00:00:00Z',
+        },
+      ],
+      updatedAt: '2026-07-02T00:00:00Z',
+    };
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Episode',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: generationId,
+          draftGenerationIds: [],
+        },
+      ],
+    };
+    const generation: GenerationRecord = {
+      generationId,
+      sceneId,
+      episodeId,
+      request: {
+        wish: '',
+        outputLength: 3000,
+        previousContextText: '',
+      },
+      responseText: 'RECENT_ACCEPTED_TEXT',
+      usedPresets: project.activePresetIds,
+      usedModel: {
+        provider: 'openai',
+        modelName: 'gpt-4o-mini',
+      },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-02T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const state: ProjectState = {
+      ...makeState(),
+      currentEpisodeId: episodeId,
+      currentSceneId: sceneId,
+    };
+    const memories: Memory[] = [
+      {
+        memoryId: 'mem-fact',
+        type: 'storyFact',
+        content: 'Manual high-priority fact.',
+        importance: 'high',
+        relatedCharacters: [],
+        relatedEpisodes: [],
+        createdAt: '',
+        updatedAt: '',
+        sourceSceneId: null,
+        status: 'active',
+        source: 'manual',
+      },
+      {
+        memoryId: 'mem-preference',
+        type: 'preference',
+        content: 'Prefer quiet tension.',
+        importance: 'high',
+        relatedCharacters: [],
+        relatedEpisodes: [],
+        createdAt: '',
+        updatedAt: '',
+        sourceSceneId: null,
+        status: 'active',
+        source: 'manual',
+      },
+    ];
+
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+    await storage.writeContextSummary(promptStateProjectId, 'LONG_TERM_SUMMARY');
+    await storage.writeEpisodeRecord(promptStateProjectId, episode);
+    await storage.appendGenerationLog(promptStateProjectId, generation);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state,
+      wish: 'Continue from here.',
+      memories,
+      characters: [],
+      worldText: 'WORLD_RULES',
+    });
+
+    const order = [
+      '【作品設定】',
+      '【現在状態スナップショット】',
+      '【重要な過去イベント】',
+      '【好み・NG】',
+      '【これまでの要約】',
+      '【これまでの作品本文（直近）】',
+      '【今回の希望】',
+      '【出力条件】',
+    ].map((marker) => userPrompt.indexOf(marker));
+
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(userPrompt).toContain('A hid the letter in the old locker.');
+    expect(userPrompt).toContain('Manual high-priority fact.');
+    expect(userPrompt).toContain('Prefer quiet tension.');
+    expect(userPrompt).toContain('RECENT_ACCEPTED_TEXT');
+    expect(userPrompt).toContain('現在状態スナップショットと重要な過去イベントに反する展開を書かないこと');
   });
 });

@@ -159,10 +159,10 @@ export async function countPromptTokens(
     }
 
     const res = await fetch(
-      `${GEMINI_API_BASE}/models/${normalizedModel}:countTokens?key=${encodeURIComponent(apiKey)}`,
+      `${GEMINI_API_BASE}/models/${normalizedModel}:countTokens`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: geminiHeaders(apiKey),
         body: JSON.stringify(body),
       }
     );
@@ -187,9 +187,9 @@ async function fetchGeminiModelLimits(modelName: string): Promise<ModelTokenLimi
   if (cached && cached.expiresAt > Date.now()) return cached.limits;
 
   try {
-    const res = await fetch(
-      `${GEMINI_API_BASE}/models/${normalizedModel}?key=${encodeURIComponent(apiKey)}`
-    );
+    const res = await fetch(`${GEMINI_API_BASE}/models/${normalizedModel}`, {
+      headers: geminiHeaders(apiKey),
+    });
     if (!res.ok) return null;
 
     const data = (await res.json()) as {
@@ -270,6 +270,13 @@ function inferModelTokenLimits(provider: string, modelName: string): ModelTokenL
 
 function normalizeGeminiModelName(modelName: string): string {
   return modelName.trim().replace(/^models\//, '');
+}
+
+function geminiHeaders(apiKey: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': apiKey,
+  };
 }
 
 function normalizeCatalogModelName(modelName: string): string {

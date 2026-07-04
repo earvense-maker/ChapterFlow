@@ -7,6 +7,7 @@ import type {
   ReaderNavigationState,
   ReaderState,
   SceneNavigationDirection,
+  StoryStateRefreshStatus,
 } from '@shared/types';
 
 interface Props {
@@ -29,6 +30,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
   });
   const [contextUsage, setContextUsage] = useState<ContextUsageEstimate | null>(null);
   const [contextSummaryExcerpt, setContextSummaryExcerpt] = useState('');
+  const [storyStateRefresh, setStoryStateRefresh] = useState<StoryStateRefreshStatus | null>(null);
   const [wish, setWish] = useState('');
   const [rewriteWish, setRewriteWish] = useState('');
   const [showRewriteForm, setShowRewriteForm] = useState(false);
@@ -38,6 +40,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
   const [fontSize, setFontSize] = useState(18);
   const inputRef = useRef<HTMLInputElement>(null);
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
+  const storyStatePollInFlightRef = useRef(false);
 
   async function load() {
     try {
@@ -63,11 +66,24 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     setNavigation(state.navigation);
     setContextUsage(state.contextUsage);
     setContextSummaryExcerpt(state.contextSummaryExcerpt);
+    setStoryStateRefresh(state.state.storyStateRefresh ?? null);
   }
 
   useEffect(() => {
     load();
   }, [projectId]);
+
+  useEffect(() => {
+    if (storyStateRefresh?.status !== 'pending') return;
+    const timer = window.setInterval(() => {
+      if (storyStatePollInFlightRef.current) return;
+      storyStatePollInFlightRef.current = true;
+      void load().finally(() => {
+        storyStatePollInFlightRef.current = false;
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [projectId, storyStateRefresh?.status]);
 
   async function handleGenerate(
     mode: 'continue' | 'regenerate' | 'variate',
@@ -192,6 +208,26 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     }
   }
 
+  async function handleRefreshStoryState() {
+    try {
+      setLoading(true);
+      setError(null);
+      setNotice(null);
+      const state = await api.refreshStoryState(projectId);
+      applyReaderState(state);
+      const nextStatus = state.state.storyStateRefresh?.status;
+      setNotice(
+        nextStatus === 'fresh'
+          ? '物語の状態を再抽出しました'
+          : '物語の状態を再抽出できませんでした'
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '物語の状態再抽出に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function adjustFontSize(delta: number) {
     const next = Math.max(12, Math.min(32, fontSize + delta));
     setFontSize(next);
@@ -204,6 +240,8 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
 
   const isDraft = status === 'draft';
   const hasText = text.length > 0;
+  const storyStateIsStale = storyStateRefresh?.status === 'stale';
+  const storyStateIsPending = storyStateRefresh?.status === 'pending';
   const scenePosition =
     navigation.currentSceneOrder && navigation.totalScenes > 0
       ? `${navigation.currentSceneOrder} / ${navigation.totalScenes}`
@@ -238,6 +276,26 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
       <main className="reader-body">
         {error && <div className="error-toast">{error}</div>}
         {notice && <div className="status-toast">{notice}</div>}
+        {(storyStateIsStale || storyStateIsPending) && (
+          <div className={`story-state-alert ${storyStateIsStale ? 'stale' : 'pending'}`}>
+            <div>
+              <strong>
+                {storyStateIsPending ? '物語の状態を更新中です' : '物語の状態を更新できませんでした'}
+              </strong>
+              <p>
+                {storyStateIsPending
+                  ? '採用済み本文から、次回生成で使う人物状態や伏線を整理しています。'
+                  : storyStateRefresh?.errorMessage ||
+                    '採用済み本文から物語の状態を再抽出してください。'}
+              </p>
+            </div>
+            {storyStateIsStale && (
+              <button type="button" onClick={handleRefreshStoryState} disabled={loading}>
+                再抽出
+              </button>
+            )}
+          </div>
+        )}
         {hasText ? (
           <article className="reader-text" style={{ fontSize: `${fontSize}px` }}>
             {text}

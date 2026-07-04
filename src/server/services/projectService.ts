@@ -5,6 +5,7 @@ import {
   defaultModelForProvider,
   isSupportedProvider,
 } from './modelInfoService.js';
+import { createEmptyStoryState } from './storyStateService.js';
 import type {
   ActivePresets,
   Character,
@@ -34,6 +35,7 @@ const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
 
 export async function createProject(body: CreateProjectBody): Promise<Project> {
   const projectId = generateTimestampId('proj');
+  try {
   await storage.createProjectDir(projectId);
 
   let activePresetIds = { ...DEFAULT_ACTIVE_PRESETS };
@@ -42,6 +44,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   let sourcePresets: PresetsFile | null = null;
   let sourceCharacters: Character[] = [];
   let sourceWorld = '';
+  let sourceStoryState = createEmptyStoryState();
 
   if (body.duplicateFrom) {
     sourceProject = await storage.readProject(body.duplicateFrom);
@@ -49,6 +52,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
       sourcePresets = await storage.readPresets(body.duplicateFrom);
       sourceCharacters = await storage.readCharacters(body.duplicateFrom);
       sourceWorld = await storage.readWorld(body.duplicateFrom);
+      sourceStoryState = (await storage.readStoryState(body.duplicateFrom)) ?? sourceStoryState;
       activePresetIds = { ...sourceProject.activePresetIds, ...(body.activePresetIds ?? {}) };
       title = body.title?.trim() || `${sourceProject.title} のコピー`;
     }
@@ -89,6 +93,11 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     selectedDraftGenerationId: null,
     lastAcceptedGenerationId: null,
     pendingMemoryCandidateIds: [],
+    storyStateRefresh: {
+      status: 'fresh',
+      generationId: null,
+      updatedAt: now,
+    },
     uiState: {
       readingPosition: 0,
       fontSize: 18,
@@ -118,8 +127,13 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   await storage.writeCharacters(projectId, characters);
   await storage.writeMemories(projectId, []);
   await storage.writeWorld(projectId, worldText);
+  await storage.writeStoryState(projectId, { ...sourceStoryState, updatedAt: now });
 
   return project;
+  } catch (err) {
+    await storage.deleteProjectDir(projectId).catch(() => undefined);
+    throw err;
+  }
 }
 
 async function copySettings(sourceId: string, destId: string): Promise<void> {
@@ -134,6 +148,9 @@ async function copySettings(sourceId: string, destId: string): Promise<void> {
 
   const world = await storage.readWorld(sourceId);
   await storage.writeWorld(destId, world);
+
+  const storyState = await storage.readStoryState(sourceId);
+  if (storyState) await storage.writeStoryState(destId, storyState);
 }
 
 export async function getProject(projectId: string): Promise<Project | null> {

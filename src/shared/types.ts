@@ -39,10 +39,18 @@ export interface ProjectState {
   selectedDraftGenerationId: GenerationId | null;
   lastAcceptedGenerationId: GenerationId | null;
   pendingMemoryCandidateIds: MemoryId[];
+  storyStateRefresh?: StoryStateRefreshStatus;
   uiState: {
     readingPosition: number;
     fontSize: number;
   };
+}
+
+export interface StoryStateRefreshStatus {
+  status: 'fresh' | 'pending' | 'stale';
+  generationId: GenerationId | null;
+  updatedAt: string;
+  errorMessage?: string;
 }
 
 export type CharacterRole = 'protagonist' | 'deuteragonist' | 'supporting' | 'other';
@@ -62,6 +70,7 @@ export type MemoryType = 'storyFact' | 'preference' | 'negative';
 export type MemoryImportance = 'high' | 'medium' | 'low';
 export type MemoryStatus = 'active' | 'archived' | 'rejected';
 export type MemorySource = 'manual' | 'generatedCandidate' | 'textSelection';
+export type StoryItemStatus = 'active' | 'resolved' | 'archived';
 
 export interface Memory {
   memoryId: MemoryId;
@@ -75,6 +84,240 @@ export interface Memory {
   sourceSceneId: SceneId | null;
   status: MemoryStatus;
   source: MemorySource;
+}
+
+export interface StoryCharacterState {
+  characterId: CharacterId | null;
+  name: string;
+  currentState: string;
+  knowledge: string[];
+  relationships: string[];
+  updatedAt: string;
+}
+
+export interface StoryEventRecord {
+  eventId: string;
+  sceneId: SceneId | null;
+  summary: string;
+  characters: string[];
+  visibility: string;
+  importance: MemoryImportance;
+  status: StoryItemStatus;
+  updatedAt: string;
+}
+
+export interface StoryThreadRecord {
+  threadId: string;
+  summary: string;
+  relatedCharacters: string[];
+  importance: MemoryImportance;
+  status: StoryItemStatus;
+  updatedAt: string;
+}
+
+export interface StoryState {
+  schemaVersion: 1;
+  currentSituation: string[];
+  characterStates: StoryCharacterState[];
+  importantEvents: StoryEventRecord[];
+  openThreads: StoryThreadRecord[];
+  updatedAt: string;
+}
+
+export type SetupSessionId = string;
+export type SetupSessionStatus = 'active' | 'committed' | 'abandoned';
+export type SetupMessageRole = 'user' | 'assistant';
+export type SetupDraftItemStatus = 'active' | 'archived';
+export type SetupDraftItemSource = 'user' | 'llm' | 'manual';
+
+export interface SetupModelSelection {
+  provider: string;
+  modelName: string;
+}
+
+export interface SetupProjectSettings {
+  title?: string;
+  outputLength: number;
+  streamingEnabled: boolean;
+  activePresetIds: Partial<ActivePresets>;
+}
+
+export interface SetupMessage {
+  messageId: string;
+  role: SetupMessageRole;
+  content: string;
+  createdAt: string;
+}
+
+export interface SetupDraftTextItem {
+  id: string;
+  text: string;
+  source: SetupDraftItemSource;
+  status: SetupDraftItemStatus;
+  locked?: boolean;
+  reason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SetupDraftCandidate {
+  id: string;
+  title: string;
+  summary: string;
+  source: SetupDraftItemSource;
+  status: SetupDraftItemStatus;
+  locked?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SetupDraftUndecided {
+  id: string;
+  text: string;
+  reason?: string;
+  source: SetupDraftItemSource;
+  status: SetupDraftItemStatus;
+  locked?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SetupDraftCharacter {
+  id: string;
+  role: CharacterRole;
+  name: string;
+  label: string;
+  description: string;
+  speechStyle?: string;
+  relationshipNotes?: string;
+  lockedFields?: string[];
+  source: SetupDraftItemSource;
+  status: SetupDraftItemStatus;
+  locked?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SetupDraft {
+  coreConcept: string;
+  confirmed: SetupDraftTextItem[];
+  candidates: SetupDraftCandidate[];
+  undecided: SetupDraftUndecided[];
+  characters: SetupDraftCharacter[];
+  relationshipSeeds: string[];
+  world: string[];
+  tone: string[];
+  ng: string[];
+  openingSeeds: string[];
+}
+
+export interface SetupLock {
+  lockId: string;
+  path: string;
+  reason: 'user_locked' | 'manual_edit';
+  createdAt: string;
+}
+
+export interface SetupSessionError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  createdAt: string;
+}
+
+export interface SetupSession {
+  schemaVersion: 1;
+  sessionId: SetupSessionId;
+  projectId: ProjectId | null;
+  committedProjectId?: ProjectId;
+  status: SetupSessionStatus;
+  revision: number;
+  model: SetupModelSelection;
+  projectSettings: SetupProjectSettings;
+  messages: SetupMessage[];
+  draft: SetupDraft;
+  locks: SetupLock[];
+  lastError: SetupSessionError | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SetupSessionSummary {
+  sessionId: SetupSessionId;
+  status: SetupSessionStatus;
+  revision: number;
+  updatedAt: string;
+  createdAt: string;
+  messageCount: number;
+  draftExcerpt: string;
+  committedProjectId?: ProjectId;
+}
+
+export interface SetupSuggestedAction {
+  label: string;
+  message: string;
+}
+
+export interface SetupDraftPatch {
+  coreConcept?: string;
+  confirmedAdd?: Array<Partial<SetupDraftTextItem> & { text?: string }>;
+  candidatesAdd?: Array<Partial<SetupDraftCandidate> & { title?: string; summary?: string }>;
+  undecidedAdd?: Array<Partial<SetupDraftUndecided> & { text?: string; reason?: string }>;
+  charactersAdd?: Array<Partial<SetupDraftCharacter>>;
+  charactersUpdate?: Array<Partial<SetupDraftCharacter> & { id: string }>;
+  relationshipSeedsAdd?: string[];
+  worldAdd?: string[];
+  toneAdd?: string[];
+  ngAdd?: string[];
+  openingSeedsAdd?: string[];
+  archiveIds?: string[];
+}
+
+export interface CreateSetupSessionBody {
+  initialMessage?: string;
+  projectSettings?: Partial<SetupProjectSettings>;
+  model?: Partial<SetupModelSelection>;
+}
+
+export interface SendSetupMessageBody {
+  message: string;
+  revision: number;
+}
+
+export interface UpdateSetupDraftBody {
+  draft: SetupDraft;
+  revision: number;
+  manualEditPaths?: string[];
+}
+
+export interface SetupSessionResponse {
+  sessionId: SetupSessionId;
+  session: SetupSession;
+  assistantMessage?: SetupMessage;
+  suggestedActions: SetupSuggestedAction[];
+}
+
+export interface SetupMessageResponse {
+  session: SetupSession;
+  assistantMessage?: SetupMessage;
+  draft: SetupDraft;
+  suggestedActions: SetupSuggestedAction[];
+  revision: number;
+}
+
+export interface SetupDraftResponse {
+  session: SetupSession;
+  draft: SetupDraft;
+  revision: number;
+}
+
+export interface SetupPreviewResponse {
+  previewText: string;
+}
+
+export interface SetupCommitResponse {
+  projectId: ProjectId;
+  session: SetupSession;
 }
 
 export interface CreateMemoryBody {
@@ -114,6 +357,8 @@ export interface GenerationRequest {
   wish: string;
   outputLength: number;
   previousContextText: string;
+  previousContextFilePath?: string;
+  previousContextChars?: number;
   situationMemo?: string;
 }
 

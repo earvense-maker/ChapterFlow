@@ -35,10 +35,10 @@ export class GeminiAdapter implements ModelAdapter {
     try {
       const modelName = normalizeModelName(request.modelName || DEFAULT_MODEL);
       const res = await fetch(
-        `${API_BASE}/models/${modelName}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`,
+        `${API_BASE}/models/${modelName}:streamGenerateContent?alt=sse`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: geminiHeaders(apiKey),
           body: JSON.stringify(buildRequestBody(request)),
           signal: controller.signal,
         }
@@ -112,10 +112,10 @@ export class GeminiAdapter implements ModelAdapter {
     try {
       const modelName = normalizeModelName(request.modelName || DEFAULT_MODEL);
       const res = await fetch(
-        `${API_BASE}/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        `${API_BASE}/models/${modelName}:generateContent`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: geminiHeaders(apiKey),
           body: JSON.stringify(buildRequestBody(request)),
           signal: controller.signal,
         }
@@ -181,7 +181,9 @@ export class GeminiAdapter implements ModelAdapter {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/models?key=${encodeURIComponent(apiKey)}`);
+      const res = await fetch(`${API_BASE}/models`, {
+        headers: geminiHeaders(apiKey),
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         return {
@@ -231,6 +233,13 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
 
 function normalizeModelName(modelName: string): string {
   return modelName.replace(/^models\//, '');
+}
+
+function geminiHeaders(apiKey: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-goog-api-key': apiKey,
+  };
 }
 
 interface GeminiGenerateContentResponse {

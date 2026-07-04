@@ -4,8 +4,9 @@ import ProjectForm from './components/ProjectForm';
 import Reader from './components/Reader';
 import MemoryEditor from './components/MemoryEditor';
 import SettingPanel from './components/SettingPanel';
+import SetupWorkspace from './components/SetupWorkspace';
 
-type View = 'list' | 'new' | 'read' | 'settings' | 'memories';
+type View = 'list' | 'new' | 'setup' | 'read' | 'settings' | 'memories';
 
 export default function App() {
   const [view, setView] = useState<View>('list');
@@ -28,8 +29,15 @@ export default function App() {
 
   return (
     <div className="app">
-      {view === 'list' && <ProjectList onOpen={handleOpenProject} onNew={() => setView('new')} />}
+      {view === 'list' && (
+        <ProjectList
+          onOpen={handleOpenProject}
+          onNew={() => setView('new')}
+          onSetupNew={() => setView('setup')}
+        />
+      )}
       {view === 'new' && <ProjectForm onCreated={handleCreateProject} onCancel={handleBackToList} />}
+      {view === 'setup' && <SetupWorkspace onCreated={handleCreateProject} onCancel={handleBackToList} />}
       {view === 'read' && activeProjectId && (
         <Reader
           projectId={activeProjectId}

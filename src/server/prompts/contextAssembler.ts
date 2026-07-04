@@ -1,7 +1,8 @@
 import * as storage from '../services/storageService.js';
-import type { EpisodeRecord, GenerationRecord, ProjectId, SceneId } from '../types/index.js';
+import { readStoryState } from '../services/storyStateService.js';
+import type { EpisodeRecord, GenerationRecord, ProjectId, SceneId, StoryState } from '../types/index.js';
 
-const DEFAULT_MAX_CHARS = 4000;
+const DEFAULT_MAX_CHARS = 12000;
 
 export async function getRecentContext(
   projectId: ProjectId,
@@ -44,24 +45,15 @@ export async function getContextSummary(projectId: ProjectId): Promise<string> {
   return storage.readContextSummary(projectId);
 }
 
+export async function getStoryState(projectId: ProjectId): Promise<StoryState> {
+  return readStoryState(projectId);
+}
+
 async function findGeneration(
   projectId: ProjectId,
   generationId: string
 ): Promise<GenerationRecord | null> {
-  // NOTE: generation-log.jsonlから生成履歴を検索する
-  const text = await storage.readTextFile(storage.generationLogPath(projectId));
-  if (!text) return null;
-
-  const lines = text.trim().split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const record = JSON.parse(lines[i]) as GenerationRecord;
-      if (record.generationId === generationId) return record;
-    } catch {
-      // 破損行は無視
-    }
-  }
-  return null;
+  return storage.findGenerationRecord(projectId, generationId);
 }
 
 export async function getAcceptedEpisodeText(projectId: ProjectId, episodeId: string): Promise<string> {
