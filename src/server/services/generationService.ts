@@ -3,6 +3,7 @@ import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
 import { buildPrompt } from '../prompts/promptBuilder.js';
+import * as expressionService from './expressionService.js';
 import {
   buildEpisodeMarkdown,
   getContextSummary,
@@ -17,6 +18,8 @@ import { updateStoryStateFromAcceptedScene } from './storyStateService.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
+  AdapterGenerateResult,
+  AdapterGenerateStreamEvent,
   ContextCompressionResult,
   ContextUsageEstimate,
   Character,
@@ -85,6 +88,8 @@ async function generateSceneUnlocked(
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
 
+  const bannedExpressions = await expressionService.resolveBannedExpressions(projectId);
+
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,
     state,
@@ -93,6 +98,7 @@ async function generateSceneUnlocked(
     characters,
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
+    bannedExpressions,
   });
 
   const temperature = options.mode === 'variate' ? TEMPERATURE_VARIATE : TEMPERATURE_DEFAULT;
@@ -104,6 +110,8 @@ async function generateSceneUnlocked(
     temperature,
     timeoutMs: TIMEOUT_MS,
     modelName: project.activeModelName,
+    frequencyPenalty: project.samplingConfig?.frequencyPenalty,
+    presencePenalty: project.samplingConfig?.presencePenalty,
   });
 
   if (result.finishReason === 'error' || result.finishReason === 'timeout') {
@@ -140,6 +148,7 @@ async function generateSceneUnlocked(
     createdAt: nowIso(),
     parentGenerationId: state.selectedDraftGenerationId,
     outputFilePath,
+    bannedExpressions,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -202,6 +211,8 @@ async function generateSceneStreamUnlocked(
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
 
+  const bannedExpressions = await expressionService.resolveBannedExpressions(projectId);
+
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,
     state,
@@ -210,6 +221,7 @@ async function generateSceneStreamUnlocked(
     characters,
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
+    bannedExpressions,
   });
 
   const temperature = options.mode === 'variate' ? TEMPERATURE_VARIATE : TEMPERATURE_DEFAULT;
@@ -217,7 +229,7 @@ async function generateSceneStreamUnlocked(
   let finishReason: FinishReason = 'stop';
 
   try {
-    for await (const event of adapter.generateTextStream({
+    for await (const event of generateTextStreamWithPenaltyRetry(adapter, {
       systemInstructions,
       userPrompt,
       outputLength: project.outputLength,
@@ -225,6 +237,8 @@ async function generateSceneStreamUnlocked(
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
       abortSignal: options.abortSignal,
+      frequencyPenalty: project.samplingConfig?.frequencyPenalty,
+      presencePenalty: project.samplingConfig?.presencePenalty,
     })) {
       throwIfAborted(options.abortSignal);
       if (event.type === 'chunk') {
@@ -272,6 +286,7 @@ async function generateSceneStreamUnlocked(
     createdAt: nowIso(),
     parentGenerationId: state.selectedDraftGenerationId,
     outputFilePath,
+    bannedExpressions,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -296,13 +311,128 @@ async function generateWithAdapter(
   request: Parameters<ModelAdapter['generateText']>[0]
 ) {
   try {
-    return await adapter.generateText(request);
+    const result = await adapter.generateText(request);
+    if (shouldRetryWithoutPenalty(result, request)) {
+      console.warn('Retrying generation without penalties after invalid argument error', {
+        provider: adapter.providerName,
+        code: result.errorCode,
+        message: result.errorMessage,
+      });
+      try {
+        return await adapter.generateText({
+          ...request,
+          frequencyPenalty: undefined,
+          presencePenalty: undefined,
+        });
+      } catch (retryErr) {
+        if (retryErr instanceof ModelAdapterError) {
+          throw new GenerateError(
+            mapErrorMessage(retryErr.code, retryErr.message),
+            retryErr.code,
+            retryErr.retryable
+          );
+        }
+        throw retryErr;
+      }
+    }
+    return result;
   } catch (err) {
+    if (
+      err instanceof ModelAdapterError &&
+      isPenaltyUnsupportedError(err) &&
+      hasPenalty(request)
+    ) {
+      console.warn('Retrying generation without penalties after invalid argument error', {
+        provider: adapter.providerName,
+        code: err.code,
+        message: err.message,
+      });
+      try {
+        return await adapter.generateText({
+          ...request,
+          frequencyPenalty: undefined,
+          presencePenalty: undefined,
+        });
+      } catch (retryErr) {
+        if (retryErr instanceof ModelAdapterError) {
+          throw new GenerateError(
+            mapErrorMessage(retryErr.code, retryErr.message),
+            retryErr.code,
+            retryErr.retryable
+          );
+        }
+        throw retryErr;
+      }
+    }
     if (err instanceof ModelAdapterError) {
       throw new GenerateError(mapErrorMessage(err.code, err.message), err.code, err.retryable);
     }
     throw err;
   }
+}
+
+async function* generateTextStreamWithPenaltyRetry(
+  adapter: ModelAdapter,
+  request: Parameters<NonNullable<ModelAdapter['generateTextStream']>>[0]
+): AsyncGenerator<AdapterGenerateStreamEvent> {
+  let yielded = false;
+  try {
+    for await (const event of adapter.generateTextStream!(request)) {
+      yielded = true;
+      yield event;
+    }
+  } catch (err) {
+    if (
+      !yielded &&
+      err instanceof ModelAdapterError &&
+      isPenaltyUnsupportedError(err) &&
+      hasPenalty(request)
+    ) {
+      console.warn('Retrying streaming generation without penalties after invalid argument error', {
+        provider: adapter.providerName,
+        code: err.code,
+        message: err.message,
+      });
+      for await (const event of adapter.generateTextStream!({
+        ...request,
+        frequencyPenalty: undefined,
+        presencePenalty: undefined,
+      })) {
+        yield event;
+      }
+      return;
+    }
+    throw err;
+  }
+}
+
+function hasPenalty(
+  request: Parameters<ModelAdapter['generateText']>[0]
+): boolean {
+  return Boolean(request.frequencyPenalty || request.presencePenalty);
+}
+
+function isPenaltyUnsupportedError(err: ModelAdapterError): boolean {
+  return isPenaltyUnsupportedSignal(err.code, err.message);
+}
+
+function shouldRetryWithoutPenalty(
+  result: AdapterGenerateResult,
+  request: Parameters<ModelAdapter['generateText']>[0]
+): boolean {
+  return (
+    result.finishReason === 'error' &&
+    hasPenalty(request) &&
+    isPenaltyUnsupportedSignal(result.errorCode, result.errorMessage)
+  );
+}
+
+function isPenaltyUnsupportedSignal(code?: string, message?: string): boolean {
+  // NOTE: 非ストリーミング adapters はHTTP 400を例外ではなく結果として返すため、
+  // code/message のどちらにプロバイダ固有情報が載っても拾えるようにしている。
+  const text = `${code ?? ''} ${message ?? ''}`;
+  if (/INVALID_ARGUMENT|invalid_request|unsupported_?param/i.test(text)) return true;
+  return code === 'api_error' && /\b400\b|bad request/i.test(message ?? '');
 }
 
 type TargetScene =
@@ -961,6 +1091,8 @@ async function buildReaderContextUsage(
       getRecentContext(project.projectId, state.currentEpisodeId, state.currentSceneId),
     ]);
 
+  const bannedExpressions = await expressionService.resolveBannedExpressions(project.projectId);
+
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,
     state,
@@ -969,6 +1101,7 @@ async function buildReaderContextUsage(
     characters,
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
+    bannedExpressions,
   });
   const [modelLimits, promptTokenCount] = await Promise.all([
     resolveModelTokenLimits(project.activeModelProvider, project.activeModelName),

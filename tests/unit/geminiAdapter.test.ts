@@ -46,6 +46,59 @@ describe('GeminiAdapter', () => {
     });
   });
 
+  it('includes frequencyPenalty and presencePenalty in generationConfig when set', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: '本文' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({
+      ...baseRequest,
+      frequencyPenalty: 0.5,
+      presencePenalty: 0.3,
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.generationConfig.frequencyPenalty).toBe(0.5);
+    expect(body.generationConfig.presencePenalty).toBe(0.3);
+  });
+
+  it('does not include penalty fields when they are 0 or undefined', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: '本文' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({ ...baseRequest, frequencyPenalty: 0 });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.generationConfig).not.toHaveProperty('frequencyPenalty');
+    expect(body.generationConfig).not.toHaveProperty('presencePenalty');
+  });
+
+  it('maps Gemini 400 invalid argument responses to invalid_request_error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Bad request' },
+        }),
+        {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new GeminiAdapter().generateText(baseRequest);
+    expect(result.finishReason).toBe('error');
+    expect(result.errorCode).toBe('invalid_request_error');
+  });
+
   it('validates connections with the API key header instead of a URL query', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ models: [] }));
     vi.stubGlobal('fetch', fetchMock);

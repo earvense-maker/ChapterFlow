@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import type { Character, ModelProviderInfo, PresetsFile, Project } from '@shared/types';
+import type {
+  Character,
+  ModelProviderInfo,
+  NgExpression,
+  NgExpressionSource,
+  PresetsFile,
+  Project,
+} from '@shared/types';
 
 interface Props {
   projectId: string;
@@ -34,6 +41,10 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   const [systemPrompt, setSystemPrompt] = useState('');
   const [generatedSystemPrompt, setGeneratedSystemPrompt] = useState('');
   const [isSystemPromptCustomized, setIsSystemPromptCustomized] = useState(false);
+  const [frequencyPenalty, setFrequencyPenalty] = useState(0);
+  const [presencePenalty, setPresencePenalty] = useState(0);
+  const [ngExpressions, setNgExpressions] = useState<NgExpression[]>([]);
+  const [newNgText, setNewNgText] = useState('');
   const [loading, setLoading] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,11 +53,12 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   async function load() {
     try {
       setError(null);
-      const [projectData, presetsData, worldData, charsData] = await Promise.all([
+      const [projectData, presetsData, worldData, charsData, expressionsData] = await Promise.all([
         api.getProject(projectId),
         api.getProjectPresets(projectId),
         api.getWorld(projectId),
         api.getCharacters(projectId),
+        api.getExpressions(projectId),
       ]);
       setProject(projectData);
       setPresets(presetsData);
@@ -56,6 +68,9 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       setStreamingEnabled(projectData.streamingEnabled ?? false);
       setModelName(projectData.activeModelName);
       setProvider(projectData.activeModelProvider);
+      setFrequencyPenalty(projectData.samplingConfig?.frequencyPenalty ?? 0);
+      setPresencePenalty(projectData.samplingConfig?.presencePenalty ?? 0);
+      setNgExpressions(expressionsData.ngExpressions);
 
       const providerList = await api.getModelProviders();
       setProviders(providerList);
@@ -141,6 +156,25 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       setModelName(updatedProject.activeModelName);
       setProvider(updatedProject.activeModelProvider);
       setMessage('基本設定を保存しました');
+      setTimeout(() => setMessage(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSaveSamplingConfig() {
+    try {
+      setLoading(true);
+      setError(null);
+      const updatedProject = await api.updateProject(projectId, {
+        samplingConfig: buildSamplingConfig(),
+      });
+      setProject(updatedProject);
+      setFrequencyPenalty(updatedProject.samplingConfig?.frequencyPenalty ?? 0);
+      setPresencePenalty(updatedProject.samplingConfig?.presencePenalty ?? 0);
+      setMessage('反復抑制設定を保存しました');
       setTimeout(() => setMessage(null), 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -250,6 +284,45 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   function handleSystemPromptChange(value: string) {
     setSystemPrompt(value);
     setIsSystemPromptCustomized(value.trim() !== generatedSystemPrompt.trim());
+  }
+
+  function buildSamplingConfig() {
+    return { frequencyPenalty, presencePenalty };
+  }
+
+  async function handleAddNgExpression(source: NgExpressionSource = 'manual') {
+    const text = newNgText.trim();
+    if (!text) return;
+    try {
+      setLoading(true);
+      setError(null);
+      await api.createExpression(projectId, { text, source });
+      const expressionsData = await api.getExpressions(projectId);
+      setNgExpressions(expressionsData.ngExpressions);
+      setNewNgText('');
+      setMessage('NG表現を登録しました');
+      setTimeout(() => setMessage(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登録に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleArchiveNgExpression(expressionId: string) {
+    try {
+      setLoading(true);
+      setError(null);
+      await api.archiveExpression(projectId, expressionId);
+      const expressionsData = await api.getExpressions(projectId);
+      setNgExpressions(expressionsData.ngExpressions);
+      setMessage('NG表現を削除しました');
+      setTimeout(() => setMessage(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '削除に失敗しました');
+    } finally {
+      setLoading(false);
+    }
   }
 
   function systemPromptPresetPatch(): Partial<PresetsFile> {
@@ -444,6 +517,78 @@ export default function SettingPanel({ projectId, onBack }: Props) {
         <button className="primary" onClick={handleSaveApiKey} disabled={loading}>
           APIキーを保存
         </button>
+      </section>
+
+      <section className="settings-section">
+        <h2>表現の反復抑制</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+          値を上げると同じ語の反復が減ります。上げすぎると文が不自然になります。目安 0.2〜0.5
+        </p>
+        <label>
+          Frequency penalty（同じ語の繰り返し抑制）
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={frequencyPenalty}
+            onChange={(e) => setFrequencyPenalty(Number(e.target.value))}
+          />
+          <span>{frequencyPenalty.toFixed(2)}</span>
+        </label>
+        <label>
+          Presence penalty（既出語の再出現抑制）
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={presencePenalty}
+            onChange={(e) => setPresencePenalty(Number(e.target.value))}
+          />
+          <span>{presencePenalty.toFixed(2)}</span>
+        </label>
+        <button className="primary" onClick={handleSaveSamplingConfig} disabled={loading}>
+          反復抑制設定を保存
+        </button>
+      </section>
+
+      <section className="settings-section">
+        <h2>NG表現</h2>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+          生成時に避けさせたい言い回しを登録します（1〜30字）。
+        </p>
+        <div className="ng-expression-form">
+          <input
+            type="text"
+            value={newNgText}
+            onChange={(e) => setNewNgText(e.target.value)}
+            placeholder="例：息を呑んだ"
+            maxLength={30}
+            disabled={loading}
+          />
+          <button onClick={() => handleAddNgExpression('manual')} disabled={loading || !newNgText.trim()}>
+            追加
+          </button>
+        </div>
+        {ngExpressions.length >= 45 && (
+          <p style={{ color: 'var(--danger)', fontSize: '0.85rem' }}>
+            NG表現が上限（50件）に近づいています。
+          </p>
+        )}
+        <ul className="ng-expression-list">
+          {ngExpressions.map((e) => (
+            <li key={e.id} className="ng-expression-item">
+              <span>「{e.text}」</span>
+              <button className="danger" onClick={() => handleArchiveNgExpression(e.id)} disabled={loading}>
+                削除
+              </button>
+            </li>
+          ))}
+        </ul>
+        {ngExpressions.length === 0 && (
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>登録されたNG表現はありません。</p>
+        )}
       </section>
     </div>
   );

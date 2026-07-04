@@ -17,13 +17,14 @@ export interface BuildPromptInput {
   characters: Character[];
   worldText: string;
   customSystemPrompt?: string | null;
+  bannedExpressions?: string[];
 }
 
 export async function buildPrompt(input: BuildPromptInput): Promise<{
   systemInstructions: string;
   userPrompt: string;
 }> {
-  const { project, state, wish, memories, characters, worldText, customSystemPrompt } = input;
+  const { project, state, wish, memories, characters, worldText, customSystemPrompt, bannedExpressions } = input;
 
   const { systemPrompt: systemInstructions } = await resolveSystemPrompt(
     project.activePresetIds,
@@ -89,6 +90,11 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
 
   // 出力条件
   parts.push(renderOutputConditions(project, wish));
+
+  const bannedSection = renderBannedExpressions(bannedExpressions);
+  if (bannedSection) {
+    parts.push(bannedSection);
+  }
 
   const userPrompt = parts.filter(Boolean).join('\n\n---\n\n');
 
@@ -199,6 +205,17 @@ function renderPreferenceNotes(memories: Memory[]): string {
   }
   if (parts.length === 0) return '';
   return `【好み・NG】\n${parts.join('\n\n')}`;
+}
+
+function renderBannedExpressions(expressions: string[] | undefined): string {
+  const items = expressions?.filter((text) => text.trim().length > 0) ?? [];
+  if (items.length === 0) return '';
+
+  const lines = items.map((text) => `- 「${text.trim()}」`).join('\n');
+  return `【表現上の注意】
+以下の言い回しは直近の本文に頻出しているか、読者が避けたい表現である。
+今回の本文では使わないこと。同じ意味は別の言い方で書くこと。
+${lines}`;
 }
 
 function renderOutputConditions(project: Project, wish: string): string {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import type {
   ContextUsageEstimate,
+  FrequencyReportItem,
   GenerationRecord,
   Project,
   ReaderNavigationState,
@@ -38,8 +39,15 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(18);
+  const [showExpressionReport, setShowExpressionReport] = useState(false);
+  const [expressionReport, setExpressionReport] = useState<FrequencyReportItem[]>([]);
+  const [expressionReportLoading, setExpressionReportLoading] = useState(false);
+  const [expressionReportError, setExpressionReportError] = useState<string | null>(null);
+  const [selectedText, setSelectedText] = useState('');
+  const [selectionButtonPosition, setSelectionButtonPosition] = useState<{ top: number; left: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
+  const textRef = useRef<HTMLDivElement>(null);
   const storyStatePollInFlightRef = useRef(false);
 
   async function load() {
@@ -238,6 +246,91 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     }
   }
 
+  async function handleToggleExpressionReport() {
+    const next = !showExpressionReport;
+    setShowExpressionReport(next);
+    if (next) {
+      await loadExpressionReport();
+    }
+  }
+
+  async function loadExpressionReport() {
+    try {
+      setExpressionReportLoading(true);
+      setExpressionReportError(null);
+      const report = await api.getExpressionReport(projectId);
+      setExpressionReport(report.phrases);
+    } catch (err) {
+      setExpressionReportError(err instanceof Error ? err.message : 'レポートの取得に失敗しました');
+    } finally {
+      setExpressionReportLoading(false);
+    }
+  }
+
+  async function handleRegisterReportPhrase(text: string) {
+    try {
+      setLoading(true);
+      setError(null);
+      await api.createExpression(projectId, { text, source: 'report' });
+      setNotice(`「${text}」をNG表現に登録しました`);
+      setTimeout(() => setNotice(null), 2000);
+      await loadExpressionReport();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登録に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleTextSelected() {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      setSelectionButtonPosition(null);
+      return;
+    }
+    const text = selection.toString().trim();
+    if (text.length < 1 || text.length > 30) {
+      setSelectionButtonPosition(null);
+      return;
+    }
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    setSelectedText(text);
+    setSelectionButtonPosition({
+      top: rect.bottom + 4,
+      left: rect.left,
+    });
+  }
+
+  async function handleRegisterSelectedExpression() {
+    if (!selectedText) return;
+    try {
+      setLoading(true);
+      setError(null);
+      await api.createExpression(projectId, { text: selectedText, source: 'selection' });
+      setNotice(`「${selectedText}」をNG表現に登録しました`);
+      setTimeout(() => setNotice(null), 2000);
+      setSelectionButtonPosition(null);
+      setSelectedText('');
+      window.getSelection()?.removeAllRanges();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登録に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    function handleSelectionChange() {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) {
+        setSelectionButtonPosition(null);
+        setSelectedText('');
+      }
+    }
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+  }, []);
+
   const isDraft = status === 'draft';
   const hasText = text.length > 0;
   const storyStateIsStale = storyStateRefresh?.status === 'stale';
@@ -268,6 +361,9 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
           </button>
           <button onClick={() => adjustFontSize(-1)} title="文字を小さく">A-</button>
           <button onClick={() => adjustFontSize(1)} title="文字を大きく">A+</button>
+          <button onClick={handleToggleExpressionReport}>
+            {showExpressionReport ? 'レポートを閉じる' : '表現レポート'}
+          </button>
           <button onClick={onOpenMemories}>記憶</button>
           <button onClick={onOpenSettings}>設定</button>
         </div>
@@ -296,8 +392,61 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
             )}
           </div>
         )}
+
+        {showExpressionReport && (
+          <div className="expression-report-panel">
+            <div className="expression-report-header">
+              <h3>頻出表現レポート</h3>
+              <button onClick={() => setShowExpressionReport(false)}>閉じる</button>
+            </div>
+            {expressionReportLoading && <p>読み込み中…</p>}
+            {expressionReportError && <p className="error-toast">{expressionReportError}</p>}
+            {!expressionReportLoading && expressionReport.length === 0 && (
+              <p style={{ color: 'var(--text-muted)' }}>頻出表現は見つかりませんでした。</p>
+            )}
+            <ul className="expression-report-list">
+              {expressionReport.map((item) => (
+                <li key={item.text} className="expression-report-item">
+                  <span className="expression-report-text">「{item.text}」</span>
+                  <span className="expression-report-count">{item.count}回</span>
+                  {item.isNg ? (
+                    <span className="expression-report-badge">登録済み</span>
+                  ) : (
+                    <button
+                      onClick={() => handleRegisterReportPhrase(item.text)}
+                      disabled={loading}
+                    >
+                      NGに登録
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {selectionButtonPosition && (
+          <button
+            className="ng-expression-float-button"
+            style={{
+              position: 'fixed',
+              top: selectionButtonPosition.top,
+              left: selectionButtonPosition.left,
+            }}
+            onClick={handleRegisterSelectedExpression}
+            disabled={loading}
+          >
+            この表現をNGに登録
+          </button>
+        )}
+
         {hasText ? (
-          <article className="reader-text" style={{ fontSize: `${fontSize}px` }}>
+          <article
+            ref={textRef}
+            className="reader-text"
+            style={{ fontSize: `${fontSize}px` }}
+            onMouseUp={handleTextSelected}
+          >
             {text}
           </article>
         ) : (

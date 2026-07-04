@@ -158,6 +158,37 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('主人公');
   });
 
+  it('adds banned expressions section after output conditions', async () => {
+    const { userPrompt } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: '',
+      bannedExpressions: ['息を呑んだ', '胸の奥が'],
+    });
+    const outputIndex = userPrompt.indexOf('【出力条件】');
+    const bannedIndex = userPrompt.indexOf('【表現上の注意】');
+    expect(bannedIndex).toBeGreaterThan(outputIndex);
+    expect(userPrompt).toContain('息を呑んだ');
+    expect(userPrompt).toContain('胸の奥が');
+    expect(userPrompt).toContain('「息を呑んだ」');
+  });
+
+  it('omits banned expressions section when list is empty', async () => {
+    const { userPrompt } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: '',
+      bannedExpressions: [],
+    });
+    expect(userPrompt).not.toContain('【表現上の注意】');
+  });
+
   it('orders structured state before important past, summaries, recent text, wish, and output rules', async () => {
     const project = makeProject(promptStateProjectId);
     const episodeId = 'ep-prompt';

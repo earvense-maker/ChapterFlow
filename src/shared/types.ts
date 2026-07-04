@@ -19,6 +19,11 @@ export interface ActivePresets {
   constraint?: string;
 }
 
+export interface SamplingConfig {
+  frequencyPenalty: number;
+  presencePenalty: number;
+}
+
 export interface Project {
   schemaVersion: number;
   projectId: ProjectId;
@@ -30,6 +35,7 @@ export interface Project {
   outputLength: number;
   streamingEnabled: boolean;
   activePresetIds: ActivePresets;
+  samplingConfig?: SamplingConfig;
 }
 
 export interface ProjectState {
@@ -84,6 +90,40 @@ export interface Memory {
   sourceSceneId: SceneId | null;
   status: MemoryStatus;
   source: MemorySource;
+}
+
+export type NgExpressionSource = 'manual' | 'report' | 'selection';
+export type NgExpressionStatus = 'active' | 'archived';
+
+export interface NgExpression {
+  id: string;
+  text: string;
+  source: NgExpressionSource;
+  status: NgExpressionStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExpressionsFile {
+  schemaVersion: 1;
+  ngExpressions: NgExpression[];
+}
+
+export interface NgExpressionsResponse {
+  ngExpressions: NgExpression[];
+}
+
+export interface FrequencyReportItem {
+  text: string;
+  count: number;
+  score: number;
+  isNg: boolean;
+}
+
+export interface FrequencyReport {
+  generatedAt: string;
+  analyzedChars: number;
+  phrases: FrequencyReportItem[];
 }
 
 export interface StoryCharacterState {
@@ -380,6 +420,7 @@ export interface GenerationRecord {
   createdAt: string;
   parentGenerationId: GenerationId | null;
   outputFilePath?: string;
+  bannedExpressions?: string[];
 }
 
 export interface ModelConfig {
@@ -407,6 +448,8 @@ export interface AdapterGenerateRequest {
   timeoutMs: number;
   modelName: string;
   abortSignal?: AbortSignal;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
 }
 
 export type FinishReason = 'stop' | 'length' | 'timeout' | 'error' | 'content_filter';
@@ -472,6 +515,7 @@ export interface CreateProjectBody {
   activeModelProvider?: string;
   activeModelName?: string;
   activePresetIds?: Partial<ActivePresets>;
+  samplingConfig?: Partial<SamplingConfig>;
   duplicateFrom?: ProjectId;
   worldText?: string;
   characters?: Character[];
@@ -485,6 +529,7 @@ export interface UpdateProjectBody {
   activeModelProvider?: string;
   activeModelName?: string;
   activePresetIds?: Partial<ActivePresets>;
+  samplingConfig?: Partial<SamplingConfig>;
 }
 
 export type AdapterGenerateStreamEvent =

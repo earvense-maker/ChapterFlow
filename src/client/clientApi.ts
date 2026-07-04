@@ -3,10 +3,14 @@ import type {
   ContextCompressionResult,
   CreateMemoryBody,
   CreateProjectBody,
+  FrequencyReport,
   GenerateRequestBody,
   GenerationRecord,
   Memory,
   ModelProviderInfo,
+  NgExpression,
+  NgExpressionSource,
+  NgExpressionsResponse,
   PresetsFile,
   Project,
   ProjectState,
@@ -109,6 +113,13 @@ export const api = {
     request<Memory>(`/projects/${id}/memories/${memoryId}`, { method: 'PUT', body: JSON.stringify(memory) }),
   deleteMemory: (id: string, memoryId: string) =>
     request<void>(`/projects/${id}/memories/${memoryId}`, { method: 'DELETE' }),
+
+  getExpressions: (id: string) => request<NgExpressionsResponse>(`/projects/${id}/expressions`),
+  createExpression: (id: string, body: { text: string; source?: NgExpressionSource }) =>
+    request<NgExpression>(`/projects/${id}/expressions`, { method: 'POST', body: JSON.stringify(body) }),
+  archiveExpression: (id: string, expressionId: string) =>
+    request<{ ok: true }>(`/projects/${id}/expressions/${expressionId}`, { method: 'DELETE' }),
+  getExpressionReport: (id: string) => request<FrequencyReport>(`/projects/${id}/expressions/report`),
 
   generate: (id: string, body: { wish: string; mode: 'continue' | 'regenerate' | 'variate' }) =>
     request<GenerationRecord>(`/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),

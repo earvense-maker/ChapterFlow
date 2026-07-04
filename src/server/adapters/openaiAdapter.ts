@@ -65,6 +65,12 @@ export class OpenAIAdapter implements ModelAdapter {
           max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
           stream: true,
           ...(this.includeStreamOptions ? { stream_options: { include_usage: true } } : {}),
+          ...(request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
+            ? { frequency_penalty: request.frequencyPenalty }
+            : {}),
+          ...(request.presencePenalty !== undefined && request.presencePenalty !== 0
+            ? { presence_penalty: request.presencePenalty }
+            : {}),
         }),
         signal: controller.signal,
       });
@@ -147,6 +153,12 @@ export class OpenAIAdapter implements ModelAdapter {
           ],
           temperature: request.temperature,
           max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
+          ...(request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
+            ? { frequency_penalty: request.frequencyPenalty }
+            : {}),
+          ...(request.presencePenalty !== undefined && request.presencePenalty !== 0
+            ? { presence_penalty: request.presencePenalty }
+            : {}),
         }),
         signal: controller.signal,
       });
@@ -261,6 +273,7 @@ interface OpenAIStreamChunk {
 
 function mapHttpStatus(status: number, body: { error?: { code?: string } }): string {
   if (status === 401) return 'invalid_api_key';
+  if (status === 400) return body.error?.code || 'invalid_request_error';
   if (status === 429) return 'rate_limit';
   if (status === 500) return 'server_error';
   if (status === 503) return 'service_unavailable';

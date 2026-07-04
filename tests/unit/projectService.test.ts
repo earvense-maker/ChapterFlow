@@ -70,6 +70,54 @@ describe('project settings validation', () => {
     expect(updated.streamingEnabled).toBe(true);
   });
 
+  it('normalizes samplingConfig penalties to 0..1', async () => {
+    const project = await createTrackedProject();
+
+    const updated = await projectService.updateProject(project.projectId, {
+      samplingConfig: { frequencyPenalty: -0.5, presencePenalty: 1.5 },
+    });
+
+    expect(updated.samplingConfig).toEqual({ frequencyPenalty: 0, presencePenalty: 1 });
+  });
+
+  it('preserves an existing samplingConfig field when partially updating the other', async () => {
+    const project = await createTrackedProject();
+
+    await projectService.updateProject(project.projectId, {
+      samplingConfig: { frequencyPenalty: 0.6, presencePenalty: 0.2 },
+    });
+    const updated = await projectService.updateProject(project.projectId, {
+      samplingConfig: { presencePenalty: 0.4 },
+    });
+
+    expect(updated.samplingConfig).toEqual({ frequencyPenalty: 0.6, presencePenalty: 0.4 });
+  });
+
+  it('copies samplingConfig when duplicating a project', async () => {
+    const source = await createTrackedProject();
+    await projectService.updateProject(source.projectId, {
+      samplingConfig: { frequencyPenalty: 0.3, presencePenalty: 0.5 },
+    });
+
+    const duplicate = await projectService.createProject({
+      duplicateFrom: source.projectId,
+      title: 'Copied Settings',
+    });
+    createdProjectIds.push(duplicate.projectId);
+
+    expect(duplicate.samplingConfig).toEqual({ frequencyPenalty: 0.3, presencePenalty: 0.5 });
+  });
+
+  it('rejects invalid samplingConfig values', async () => {
+    const project = await createTrackedProject();
+
+    await expect(
+      projectService.updateProject(project.projectId, {
+        samplingConfig: { frequencyPenalty: NaN },
+      })
+    ).rejects.toThrow(projectService.ProjectValidationError);
+  });
+
   it('accepts DeepSeek as a supported provider', async () => {
     const project = await createTrackedProject();
 

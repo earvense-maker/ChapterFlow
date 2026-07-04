@@ -14,6 +14,7 @@ import type {
   Project,
   ProjectState,
   ProjectSummary,
+  SamplingConfig,
   UpdateProjectBody,
 } from '../types/index.js';
 
@@ -70,6 +71,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
       body.streamingEnabled ?? sourceProject?.streamingEnabled ?? DEFAULT_STREAMING_ENABLED,
     activeModelProvider: provider,
     activeModelName: modelName,
+    samplingConfig: body.samplingConfig ?? sourceProject?.samplingConfig,
   });
 
   const now = nowIso();
@@ -84,6 +86,14 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     outputLength: normalizedSettings.outputLength ?? DEFAULT_OUTPUT_LENGTH,
     streamingEnabled: normalizedSettings.streamingEnabled ?? DEFAULT_STREAMING_ENABLED,
     activePresetIds,
+    ...(normalizedSettings.samplingConfig
+      ? {
+          samplingConfig: {
+            frequencyPenalty: normalizedSettings.samplingConfig.frequencyPenalty ?? 0,
+            presencePenalty: normalizedSettings.samplingConfig.presencePenalty ?? 0,
+          },
+        }
+      : {}),
   };
 
   const state: ProjectState = {
@@ -157,8 +167,9 @@ export async function getProject(projectId: string): Promise<Project | null> {
   return storage.readProject(projectId);
 }
 
-type ProjectUpdateInput = Omit<Partial<Project>, 'activePresetIds'> & {
+type ProjectUpdateInput = Omit<Partial<Project>, 'activePresetIds' | 'samplingConfig'> & {
   activePresetIds?: UpdateProjectBody['activePresetIds'];
+  samplingConfig?: Partial<SamplingConfig>;
 };
 
 export async function updateProject(projectId: string, updates: ProjectUpdateInput): Promise<Project> {
@@ -166,7 +177,7 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
   if (!project) throw new Error(`Project not found: ${projectId}`);
 
   const normalizedUpdates = validateProjectUpdates(updates);
-  const { activePresetIds, ...rest } = normalizedUpdates;
+  const { activePresetIds, samplingConfig, ...rest } = normalizedUpdates;
 
   const updated: Project = {
     ...project,
@@ -174,6 +185,14 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
     activePresetIds: activePresetIds
       ? { ...project.activePresetIds, ...activePresetIds }
       : project.activePresetIds,
+    samplingConfig: samplingConfig
+      ? {
+          frequencyPenalty:
+            samplingConfig.frequencyPenalty ?? project.samplingConfig?.frequencyPenalty ?? 0,
+          presencePenalty:
+            samplingConfig.presencePenalty ?? project.samplingConfig?.presencePenalty ?? 0,
+        }
+      : project.samplingConfig,
     projectId,
     updatedAt: nowIso(),
   };
@@ -244,7 +263,33 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
     }
   }
 
+  if ('samplingConfig' in updates && updates.samplingConfig !== undefined) {
+    if (typeof updates.samplingConfig !== 'object' || updates.samplingConfig === null) {
+      throw new ProjectValidationError('samplingConfig must be an object');
+    }
+    normalized.samplingConfig = {
+      frequencyPenalty: normalizePenalty(
+        updates.samplingConfig.frequencyPenalty,
+        'frequencyPenalty'
+      ),
+      presencePenalty: normalizePenalty(
+        updates.samplingConfig.presencePenalty,
+        'presencePenalty'
+      ),
+    };
+  }
+
   return normalized;
+}
+
+function normalizePenalty(value: unknown, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new ProjectValidationError(`${name} must be a finite number`);
+  }
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
 }
 
 export async function deleteProject(projectId: string): Promise<void> {

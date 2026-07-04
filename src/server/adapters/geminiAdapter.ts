@@ -215,6 +215,8 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     generationConfig: {
       temperature: number;
       maxOutputTokens: number;
+      frequencyPenalty?: number;
+      presencePenalty?: number;
     };
   } = {
     contents: [{ role: 'user', parts: [{ text: request.userPrompt }] }],
@@ -226,6 +228,13 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
 
   if (request.systemInstructions.trim()) {
     body.systemInstruction = { parts: [{ text: request.systemInstructions }] };
+  }
+
+  if (request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0) {
+    body.generationConfig.frequencyPenalty = request.frequencyPenalty;
+  }
+  if (request.presencePenalty !== undefined && request.presencePenalty !== 0) {
+    body.generationConfig.presencePenalty = request.presencePenalty;
   }
 
   return body;
@@ -268,6 +277,9 @@ function mapHttpStatus(
   if (status === 500) return 'server_error';
   if (status === 503) return 'service_unavailable';
   if (reason === 'UNAUTHENTICATED' || reason === 'PERMISSION_DENIED') return 'invalid_api_key';
+  if (reason === 'INVALID_ARGUMENT' || status === 400 || statusCode === 400) {
+    return 'invalid_request_error';
+  }
   if (reason === 'RESOURCE_EXHAUSTED') return 'rate_limit';
   if (statusCode === 401 || statusCode === 403) return 'invalid_api_key';
   if (statusCode === 429) return 'rate_limit';

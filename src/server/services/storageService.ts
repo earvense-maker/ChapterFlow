@@ -11,6 +11,7 @@ import {
 import type {
   Character,
   EpisodeRecord,
+  ExpressionsFile,
   GenerationRecord,
   GenerationStatus,
   Memory,
@@ -69,6 +70,10 @@ export function contextSummaryMdPath(projectId: string): string {
 
 export function storyStateJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'story-state.json');
+}
+
+export function expressionsJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'expressions.json');
 }
 
 export function episodesDir(projectId: string): string {
@@ -201,6 +206,15 @@ export async function writeStoryState(projectId: string, storyState: StoryState)
   await safeWriteJson(storyStateJsonPath(projectId), storyState);
 }
 
+export async function readExpressions(projectId: string): Promise<ExpressionsFile> {
+  const data = await readJsonFile<ExpressionsFile>(expressionsJsonPath(projectId));
+  return data ?? { schemaVersion: 1, ngExpressions: [] };
+}
+
+export async function writeExpressions(projectId: string, file: ExpressionsFile): Promise<void> {
+  await safeWriteJson(expressionsJsonPath(projectId), file);
+}
+
 export async function readWorld(projectId: string): Promise<string> {
   const text = await readTextFile(worldMdPath(projectId));
   return text ?? '';
@@ -221,6 +235,20 @@ export async function writeContextSummary(projectId: string, text: string): Prom
 
 export async function readEpisodeRecord(projectId: string, episodeId: string): Promise<EpisodeRecord | null> {
   return readJsonFile<EpisodeRecord>(episodeJsonPath(projectId, episodeId));
+}
+
+export async function listEpisodeIds(projectId: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(episodesDir(projectId), { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => entry.name.slice(0, -'.json'.length))
+      .filter((episodeId) => SAFE_PATH_SEGMENT.test(episodeId));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return [];
+    throw err;
+  }
 }
 
 export async function writeEpisodeRecord(projectId: string, episode: EpisodeRecord): Promise<void> {
