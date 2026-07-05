@@ -847,6 +847,239 @@ legend {
   padding: 1.5rem;
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0 0 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  padding: 0.5rem 1rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 0.95rem;
+}
+
+.settings-tab:hover {
+  color: var(--text);
+}
+
+.settings-tab.active {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+  position: relative;
+  top: 1px;
+}
+
+.summary-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  margin-bottom: 1rem;
+}
+
+.summary-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.6rem;
+}
+
+.summary-card-header h2 {
+  font-size: 1rem;
+  font-family: var(--font-body);
+  font-weight: normal;
+  margin: 0;
+}
+
+.summary-card-badges {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.summary-card-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.summary-excerpt {
+  color: var(--text);
+  white-space: pre-wrap;
+  margin: 0 0 0.35rem;
+  line-height: 1.6;
+}
+
+.summary-empty {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.summary-prewrap {
+  white-space: pre-wrap;
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0.35rem 0 0;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.75rem;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.summary-prewrap-inline {
+  white-space: pre-wrap;
+}
+
+.summary-details {
+  margin-top: 0.5rem;
+}
+
+.summary-details summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.summary-link-button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.25rem 0;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
+.summary-link-button:hover {
+  color: var(--text);
+}
+
+.settings-badge {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border: 1px solid transparent;
+}
+
+.settings-badge.preset {
+  background: rgba(107, 142, 159, 0.15);
+  border-color: rgba(107, 142, 159, 0.4);
+  color: var(--text);
+}
+
+.settings-badge.custom {
+  background: rgba(180, 130, 200, 0.18);
+  border-color: rgba(180, 130, 200, 0.5);
+  color: #6a4383;
+}
+
+.settings-badge.warn {
+  background: rgba(220, 170, 70, 0.2);
+  border-color: rgba(220, 170, 70, 0.5);
+  color: #7a5410;
+}
+
+.settings-meta {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.style-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 0.5rem;
+}
+
+.style-tag {
+  background: rgba(107, 142, 159, 0.12);
+  border: 1px solid rgba(107, 142, 159, 0.3);
+  border-radius: 999px;
+  padding: 0.15rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.character-summary-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.character-summary-item {
+  padding: 0.6rem 0.75rem;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.character-summary-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.4rem;
+}
+
+.character-role-badge {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+}
+
+.character-summary-fields {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.character-summary-fields > div {
+  display: grid;
+  grid-template-columns: 4rem 1fr;
+  gap: 0.5rem;
+}
+
+.character-summary-fields dt {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding-top: 0.05rem;
+}
+
+.character-summary-fields dd {
+  margin: 0;
+}
+
+.summary-field-missing {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
 .settings-section {
   margin-bottom: 1.5rem;
 }
