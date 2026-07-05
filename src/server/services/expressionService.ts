@@ -16,22 +16,14 @@ import type {
   NgExpressionSource,
 } from '../types/index.js';
 
+// NOTE: プロンプトに送る「回避してほしい表現」の件数上限。ユーザー登録が
+// 12 件を超えている場合は、新しい順に上位 12 件だけ送る（プロンプト肥大化を防ぐ）。
 export const BAN_LIMIT_TOTAL = 12;
-const AUTO_BAN_LIMIT = 8;
 const MAX_NG_EXPRESSIONS = 50;
 const MIN_NG_TEXT_LENGTH = 1;
 const MAX_NG_TEXT_LENGTH = 30;
 
 export { FrequencyReport, FrequencyReportItem };
-
-export interface ResolveBannedExpressionsOptions {
-  /**
-   * false の場合、頻出表現による自動候補を計算せず、
-   * ユーザー登録のNG表現のみを返す。
-   * トークン見積りなど、軽量な結果が欲しい場面で使う。
-   */
-  includeAuto?: boolean;
-}
 
 export class ExpressionValidationError extends Error {
   constructor(message: string) {
@@ -122,42 +114,17 @@ export async function buildFrequencyReport(projectId: string): Promise<Frequency
   };
 }
 
-export async function resolveBannedExpressions(
-  projectId: string,
-  options: ResolveBannedExpressionsOptions = {}
-): Promise<string[]> {
-  const includeAuto = options.includeAuto ?? true;
+// NOTE: 以前は頻出フレーズを自動で回避リストに入れていたが、固有名詞や
+// 一般的な言い回しまで誤って回避対象になる副作用があったため撤去。
+// 現在はユーザーが明示的に登録した NG 表現のみをプロンプトに送る。
+// 頻出表現の一覧は buildFrequencyReport で提供し、採用するかはユーザー判断に委ねる。
+export async function resolveBannedExpressions(projectId: string): Promise<string[]> {
   const ngExpressions = await getExpressions(projectId);
 
-  const manualExpressions = ngExpressions
+  return ngExpressions
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .map((e) => normalizeNgText(e.text))
     .slice(0, BAN_LIMIT_TOTAL);
-
-  if (!includeAuto) return manualExpressions;
-
-  const autoSlots = Math.min(AUTO_BAN_LIMIT, BAN_LIMIT_TOTAL - manualExpressions.length);
-  if (autoSlots <= 0) return manualExpressions;
-
-  const [text, characters] = await Promise.all([
-    buildAnalysisText(projectId),
-    storage.readCharacters(projectId),
-  ]);
-
-  const { items: phrases } = buildReportItems(text, characters, ngExpressions);
-  const manualSet = new Set(manualExpressions);
-  const characterNames = characters.map((c) => c.name).filter(Boolean);
-  const autoExpressions: string[] = [];
-
-  for (const phrase of phrases) {
-    if (autoExpressions.length >= autoSlots) break;
-    const normalized = normalizeNgText(phrase.text);
-    if (manualSet.has(normalized)) continue;
-    if (containsCharacterName(phrase.text, characterNames)) continue;
-    autoExpressions.push(phrase.text);
-  }
-
-  return [...manualExpressions, ...autoExpressions];
 }
 
 async function buildAnalysisText(projectId: string): Promise<string> {

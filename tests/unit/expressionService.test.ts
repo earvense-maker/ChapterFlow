@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as expressionService from '../../src/server/services/expressionService';
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
-import type { Character, EpisodeRecord, GenerationRecord } from '../../src/server/types/index';
+import type { EpisodeRecord, GenerationRecord } from '../../src/server/types/index';
 
 const createdProjectIds: string[] = [];
 
@@ -16,11 +16,6 @@ afterEach(async () => {
   await Promise.all(createdProjectIds.map((id) => storage.deleteProjectDir(id)));
   createdProjectIds.length = 0;
 });
-
-async function writeCharacter(projectId: string, name: string): Promise<void> {
-  const characters: Character[] = [{ characterId: `char-${name}`, name, role: 'supporting', description: '' }];
-  await storage.writeCharacters(projectId, characters);
-}
 
 async function writeAcceptedText(projectId: string, text: string): Promise<void> {
   const episodeId = 'ep-1';
@@ -130,48 +125,35 @@ describe('expressionService NG expressions', () => {
 });
 
 describe('expressionService banned expression resolution', () => {
-  it('prefers user NG expressions and fills remaining slots with auto candidates', async () => {
+  it('returns only user-registered NG expressions (no automatic frequent-phrase injection)', async () => {
     const projectId = await createTrackedProject();
-    const text = '繰り返しフレーズ。'.repeat(5);
+    // 頻出フレーズが本文にあっても、自動では回避リストに乗らない
+    const text = '繰り返しフレーズ。'.repeat(10);
     await writeAcceptedText(projectId, text);
     await expressionService.createExpression(projectId, { text: 'ユーザーNG1' });
     await expressionService.createExpression(projectId, { text: 'ユーザーNG2' });
 
     const banned = await expressionService.resolveBannedExpressions(projectId);
-    expect(banned).toContain('ユーザーNG1');
-    expect(banned).toContain('ユーザーNG2');
-    expect(banned.length).toBeLessThanOrEqual(expressionService.BAN_LIMIT_TOTAL);
-    // 自動候補が先頭に入らない
-    expect(banned[0]).toMatch(/^ユーザーNG/);
+    expect(banned).toEqual(expect.arrayContaining(['ユーザーNG1', 'ユーザーNG2']));
+    expect(banned).toHaveLength(2);
+    expect(banned.some((b) => b.includes('繰り返しフレーズ'))).toBe(false);
   });
 
-  it('caps total banned expressions at 12', async () => {
+  it('returns empty when no NG expression is registered, even with frequent phrases in the text', async () => {
     const projectId = await createTrackedProject();
-    const parts: string[] = [];
-    for (let i = 0; i < 20; i++) {
-      parts.push(`自動候補${i}。`.repeat(3));
+    const text = '重複表現。'.repeat(10);
+    await writeAcceptedText(projectId, text);
+    const banned = await expressionService.resolveBannedExpressions(projectId);
+    expect(banned).toEqual([]);
+  });
+
+  it('caps user-registered banned expressions at the per-prompt limit', async () => {
+    const projectId = await createTrackedProject();
+    for (let i = 0; i < expressionService.BAN_LIMIT_TOTAL + 3; i++) {
+      await expressionService.createExpression(projectId, { text: `ユーザーNG${i}` });
     }
-    await writeAcceptedText(projectId, parts.join(''));
     const banned = await expressionService.resolveBannedExpressions(projectId);
-    expect(banned.length).toBeLessThanOrEqual(expressionService.BAN_LIMIT_TOTAL);
-  });
-
-  it('excludes auto candidates that contain character names', async () => {
-    const projectId = await createTrackedProject();
-    await writeCharacter(projectId, '太郎');
-    const text = '太郎が笑った。太郎が笑った。太郎が笑った。';
-    await writeAcceptedText(projectId, text);
-    const banned = await expressionService.resolveBannedExpressions(projectId);
-    expect(banned.some((b) => b.includes('太郎'))).toBe(false);
-  });
-
-  it('does not suppress auto candidates with single-character names', async () => {
-    const projectId = await createTrackedProject();
-    await writeCharacter(projectId, 'A');
-    const text = 'A面の描写が多い。A面の描写が多い。A面の描写が多い。';
-    await writeAcceptedText(projectId, text);
-    const banned = await expressionService.resolveBannedExpressions(projectId);
-    expect(banned.some((b) => b.includes('A面の描写'))).toBe(true);
+    expect(banned.length).toBe(expressionService.BAN_LIMIT_TOTAL);
   });
 
   it('marks registered expressions in frequency report', async () => {
