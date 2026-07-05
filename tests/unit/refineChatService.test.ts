@@ -172,6 +172,16 @@ describe('refineChatService sendRefineMessage', () => {
     );
     expect(stalePatch?.status).toBe('stale');
   });
+
+  it('rejects overly long messages before calling the model', async () => {
+    const projectId = await createTrackedProject();
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText');
+
+    await expect(
+      refineChatService.sendRefineMessage(projectId, 'あ'.repeat(4001))
+    ).rejects.toMatchObject({ code: 'message_too_long', status: 400 });
+    expect(generateSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('refineChatService applyRefinePatch', () => {

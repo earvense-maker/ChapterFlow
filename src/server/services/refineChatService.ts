@@ -26,6 +26,7 @@ const TEMPERATURE = 0.55;
 const TIMEOUT_MS = 90_000;
 const MAX_HISTORY = 24;
 const MAX_PATCHES_PER_TURN = 6;
+const MAX_USER_MESSAGE_CHARS = 4000;
 const CHARACTER_ROLES: readonly CharacterRole[] = [
   'protagonist',
   'deuteragonist',
@@ -97,6 +98,14 @@ export async function sendRefineMessage(
   const trimmed = userMessage.trim();
   if (!trimmed) {
     throw new RefineChatError('メッセージが空です。', 'empty_message', false, 400);
+  }
+  if (trimmed.length > MAX_USER_MESSAGE_CHARS) {
+    throw new RefineChatError(
+      `メッセージは ${MAX_USER_MESSAGE_CHARS} 文字以内で入力してください。`,
+      'message_too_long',
+      false,
+      400
+    );
   }
   return withSessionLock(projectId, () => sendRefineMessageUnlocked(projectId, trimmed));
 }

@@ -106,15 +106,16 @@ export default function TechSettingsTab({
   }
 
   async function handleSaveApiKey() {
+    const trimmedApiKey = apiKey.trim();
+    if (!trimmedApiKey) {
+      onError('APIキーを入力してください');
+      return;
+    }
+
     try {
       setLoading(true);
       onError(null);
-      const res = await fetch('/api/models/credentials', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, apiKey }),
-      });
-      if (!res.ok) throw new Error('APIキーの保存に失敗しました');
+      await api.saveCredential(provider, trimmedApiKey);
       onFlashMessage('APIキーを保存しました');
       setApiKey('');
     } catch (err) {

@@ -53,7 +53,7 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
 
   async function handleSend() {
     const content = input.trim();
-    if (!content || sending) return;
+    if (!content || sending || busyPatchId) return;
     try {
       setSending(true);
       setError(null);
@@ -67,6 +67,15 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
     }
   }
 
+  async function reloadSessionQuietly() {
+    try {
+      const s = await api.getRefineSession(projectId);
+      setSession(s);
+    } catch {
+      // NOTE: 元の操作エラーを UI に残すため、同期失敗はここでは握りつぶす。
+    }
+  }
+
   async function handleApply(patchId: string) {
     try {
       setBusyPatchId(patchId);
@@ -76,6 +85,7 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
       onSettingsChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'パッチ反映に失敗しました');
+      await reloadSessionQuietly();
     } finally {
       setBusyPatchId(null);
     }
@@ -89,12 +99,14 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
       setSession(result.session);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'パッチ却下に失敗しました');
+      await reloadSessionQuietly();
     } finally {
       setBusyPatchId(null);
     }
   }
 
   async function handleReset() {
+    if (busyPatchId) return;
     if (!window.confirm('相談の履歴をリセットしますか？（適用済みの変更はそのまま残ります）'))
       return;
     try {
@@ -120,6 +132,8 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
 
   if (loading) return <div className="loading">相談セッションを読み込んでいます…</div>;
 
+  const patchActionDisabled = sending || busyPatchId !== null;
+
   return (
     <section className="summary-card refine-chat-card">
       <header className="summary-card-header">
@@ -128,7 +142,10 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
           <span className="settings-meta">
             世界設定・人物設定について対話で修正できます
           </span>
-          <button onClick={handleReset} disabled={sending || !session?.messages.length}>
+          <button
+            onClick={handleReset}
+            disabled={sending || busyPatchId !== null || !session?.messages.length}
+          >
             履歴をリセット
           </button>
         </div>
@@ -152,6 +169,7 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
                 patch={patch}
                 characters={characters}
                 busy={busyPatchId === patch.patchId}
+                disabled={patchActionDisabled}
                 onApply={() => handleApply(patch.patchId)}
                 onReject={() => handleReject(patch.patchId)}
               />
@@ -172,7 +190,7 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
           onChange={(e) => setInput(e.target.value)}
           placeholder="世界設定や人物設定について、変えたい点や足したい点を書いてください"
           rows={3}
-          disabled={sending}
+          disabled={sending || busyPatchId !== null}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
@@ -183,7 +201,7 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
         <button
           type="submit"
           className="primary"
-          disabled={sending || !input.trim()}
+          disabled={sending || busyPatchId !== null || !input.trim()}
         >
           {sending ? '送信中…' : '送る'}
         </button>
@@ -208,12 +226,14 @@ function PatchCard({
   patch,
   characters,
   busy,
+  disabled,
   onApply,
   onReject,
 }: {
   patch: RefinePatch;
   characters: Character[];
   busy: boolean;
+  disabled: boolean;
   onApply: () => void;
   onReject: () => void;
 }) {
@@ -238,10 +258,10 @@ function PatchCard({
       )}
       {isActionable && (
         <div className="refine-patch-actions">
-          <button onClick={onReject} disabled={busy}>
+          <button onClick={onReject} disabled={disabled}>
             却下
           </button>
-          <button className="primary" onClick={onApply} disabled={busy}>
+          <button className="primary" onClick={onApply} disabled={disabled}>
             {busy ? '反映中…' : '反映する'}
           </button>
         </div>

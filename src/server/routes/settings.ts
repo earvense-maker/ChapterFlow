@@ -3,8 +3,9 @@ import { promises as fs } from 'node:fs';
 import { PRESETS_PATH } from '../config.js';
 import * as storage from '../services/storageService.js';
 import * as projectService from '../services/projectService.js';
+import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
-import type { ActivePresets, Character, PresetsFile } from '../types/index.js';
+import type { ActivePresets, Character, CharacterRole, PresetsFile } from '../types/index.js';
 
 const router = Router();
 
@@ -30,16 +31,20 @@ router.get('/projects/:id/presets', async (req, res, next) => {
 router.put('/projects/:id/presets', async (req, res, next) => {
   try {
     const body = req.body as Partial<PresetsFile>;
-    const presets = await storage.readPresets(req.params.id);
-    if (!presets) return res.status(404).json({ error: 'Presets not found' });
+    const nextPresets = await withProjectWriteLock(req.params.id, async () => {
+      const presets = await storage.readPresets(req.params.id);
+      if (!presets) return null;
 
-    const next: PresetsFile = { ...presets, ...body };
-    await storage.writePresets(req.params.id, next);
+      const nextFile: PresetsFile = { ...presets, ...body };
+      await storage.writePresets(req.params.id, nextFile);
 
-    const activePresetIds = activePresetsFromPresetFile(next);
-    await projectService.updateProject(req.params.id, { activePresetIds });
+      const activePresetIds = activePresetsFromPresetFile(nextFile);
+      await projectService.updateProject(req.params.id, { activePresetIds });
+      return nextFile;
+    });
 
-    res.json(next);
+    if (!nextPresets) return res.status(404).json({ error: 'Presets not found' });
+    res.json(nextPresets);
   } catch (err) {
     next(err);
   }
@@ -81,8 +86,14 @@ router.get('/projects/:id/characters', async (req, res, next) => {
 
 router.put('/projects/:id/characters', async (req, res, next) => {
   try {
-    const characters = req.body as Character[];
-    await storage.writeCharacters(req.params.id, characters);
+    const characters = req.body;
+    if (!Array.isArray(characters) || !characters.every(isCharacterInput)) {
+      return res.status(400).json({ error: 'Invalid characters payload' });
+    }
+
+    await withProjectWriteLock(req.params.id, () =>
+      storage.writeCharacters(req.params.id, characters)
+    );
     res.json(characters);
   } catch (err) {
     next(err);
@@ -100,9 +111,14 @@ router.get('/projects/:id/world', async (req, res, next) => {
 
 router.put('/projects/:id/world', async (req, res, next) => {
   try {
-    const { text } = req.body as { text: string };
-    await storage.writeWorld(req.params.id, text ?? '');
-    res.json({ text: text ?? '' });
+    const body = req.body as { text?: unknown };
+    if (typeof body.text !== 'string') {
+      return res.status(400).json({ error: 'Invalid world payload' });
+    }
+
+    const text = body.text;
+    await withProjectWriteLock(req.params.id, () => storage.writeWorld(req.params.id, text));
+    res.json({ text });
   } catch (err) {
     next(err);
   }
@@ -124,4 +140,34 @@ function activePresetsFromPresetFile(presets: Partial<PresetsFile>): Partial<Act
   if (presets.distancePreset !== undefined) activePresets.distance = presets.distancePreset;
   if (presets.constraintPreset !== undefined) activePresets.constraint = presets.constraintPreset;
   return activePresets;
+}
+
+const characterRoles = new Set<CharacterRole>([
+  'protagonist',
+  'deuteragonist',
+  'supporting',
+  'other',
+]);
+
+function isCharacterInput(value: unknown): value is Character {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.characterId === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.role === 'string' &&
+    characterRoles.has(value.role as CharacterRole) &&
+    optionalString(value.speechStyle) &&
+    optionalString(value.relationshipNotes) &&
+    optionalString(value.secrets) &&
+    optionalString(value.currentState)
+  );
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
