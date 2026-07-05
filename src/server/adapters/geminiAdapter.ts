@@ -233,6 +233,7 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
       frequencyPenalty?: number;
       presencePenalty?: number;
       thinkingConfig?: { thinkingBudget: number; includeThoughts?: boolean };
+      responseMimeType?: string;
     };
   } = {
     contents: [{ role: 'user', parts: [{ text: request.userPrompt }] }],
@@ -247,6 +248,12 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
       thinkingConfig: { thinkingBudget: -1, includeThoughts: false },
     },
   };
+
+  // NOTE: 構造化 JSON 出力（Structured Output）。scan / chat のように JSON を
+  // 期待する呼び出しでは前置き文やコードフェンスの混入を防げる。
+  if (request.responseMimeType) {
+    body.generationConfig.responseMimeType = request.responseMimeType;
+  }
 
   if (request.systemInstructions.trim()) {
     body.systemInstruction = { parts: [{ text: request.systemInstructions }] };

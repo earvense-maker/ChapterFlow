@@ -102,6 +102,8 @@ export async function scanProjectSettings(
       temperature: TEMPERATURE,
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
+      // NOTE: Structured JSON output を有効化。前置き文や思考モードでの空応答を減らす。
+      responseMimeType: 'application/json',
     });
   } catch (err) {
     if (err instanceof ModelAdapterError) {
@@ -132,11 +134,22 @@ export async function scanProjectSettings(
     ? truncate(parsed.coreConcept, CORE_CONCEPT_MAX_CHARS)
     : '';
 
-  // NOTE: JSON パース失敗時も「空応答扱い」で保存する。ユーザーには
-  // lastError で「読み取れませんでした」を伝え、再実行を促す。
   const lastError = parsed
     ? null
-    : 'AI の応答を解釈できませんでした。もう一度お試しください。';
+    : buildParseFailureMessage(adapterResult.text, adapterResult.debugInfo, adapterResult.finishReason);
+
+  // NOTE: パース失敗はサーバー側にも残しておくと後で追跡しやすい。
+  // 応答テキストは長くなり得るので 400 字に切って出す。
+  if (!parsed) {
+    console.warn('Refine scan JSON parse failed', {
+      projectId,
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+      finishReason: adapterResult.finishReason,
+      debugInfo: adapterResult.debugInfo,
+      textPreview: (adapterResult.text ?? '').slice(0, 400),
+    });
+  }
 
   const result: RefineScanResult = {
     schemaVersion: 1,
@@ -291,23 +304,71 @@ function parseScanResult(text: string): ParsedScan | null {
   return { coreConcept, findings };
 }
 
-// NOTE: setupSessionService.parseJsonObject と同じロジック。setup 側は非公開
-// なので複製している。将来共通ユーティリティに寄せてもよい。
+// NOTE: 頑健化した JSON パーサ。responseMimeType='application/json' を指定
+// してもモデルが flag を無視して前置き文を混ぜてくることがあるため、複数の
+// 戦略を順に試す。
+// 1. そのまま JSON.parse
+// 2. コードフェンス ```json ... ``` を抽出して parse
+// 3. 最初の '{' から最後の '}' を切り出して parse
 function parseJsonObject(text: string): Record<string, unknown> | null {
   const trimmed = text.trim();
-  const withoutFence = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-  const start = withoutFence.indexOf('{');
-  const end = withoutFence.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try {
-    const parsed = JSON.parse(withoutFence.slice(start, end + 1));
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
+  if (!trimmed) return null;
+
+  const tryParse = (candidate: string): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(candidate);
+      return isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // 戦略 1: そのまま（responseMimeType=json が効いていればこれで通る）
+  const direct = tryParse(trimmed);
+  if (direct) return direct;
+
+  // 戦略 2: コードブロックを抽出
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    const inner = tryParse(fenceMatch[1].trim());
+    if (inner) return inner;
   }
+
+  // 戦略 3: {...} を切り出す（前置き/後置きの説明文を無視）
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    const sliced = tryParse(trimmed.slice(start, end + 1));
+    if (sliced) return sliced;
+  }
+
+  return null;
+}
+
+function buildParseFailureMessage(
+  rawText: string,
+  debugInfo: string | undefined,
+  finishReason: string
+): string {
+  const trimmed = (rawText ?? '').trim();
+  if (!trimmed) {
+    // NOTE: Gemini 2.5 系で thinking モードが maxOutputTokens を使い切ると
+    // 起きる事故が最も多い。ユーザーに具体的な誘導を出す。
+    const parts = ['AI が空の応答を返しました。'];
+    if (finishReason === 'length') {
+      parts.push('思考モードで出力枠を使い切った可能性があります。技術設定タブから出力字数を大きくするか、DeepSeek に切り替えると安定します。');
+    } else if (finishReason === 'content_filter') {
+      parts.push('安全フィルタでブロックされた可能性があります。DeepSeek への切り替えを試してください。');
+    } else {
+      parts.push('もう一度お試しください。繰り返し空になる場合は技術設定タブで別のモデルに切り替えてください。');
+    }
+    if (debugInfo) parts.push(`診断: ${debugInfo}`);
+    return parts.join('\n');
+  }
+  return [
+    'AI の応答を JSON として解釈できませんでした。もう一度お試しください。',
+    `応答の一部: ${truncate(trimmed, 200)}`,
+  ].join('\n');
 }
 
 function normalizeFindings(raw: unknown[], characters: Character[]): RefineFinding[] {

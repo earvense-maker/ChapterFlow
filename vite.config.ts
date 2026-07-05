@@ -3,7 +3,11 @@ import react from '@vitejs/plugin-react';
 import path from 'node:path';
 
 const devPort = Number(process.env.VITE_DEV_PORT ?? 5173);
-const apiPort = Number(process.env.PORT ?? 3001);
+// NOTE: 以前は process.env.PORT を参照していたが、Vite を起動する側（preview
+// harness など）が PORT を Vite 自身のポートとして設定するケースがあり、
+// その場合 proxy target が Vite 自身に向いてループ 500 になっていた。専用の
+// YUMEWEAVING_API_PORT に切り替えて衝突を回避する。
+const apiPort = Number(process.env.YUMEWEAVING_API_PORT ?? 3001);
 
 export default defineConfig({
   plugins: [react()],

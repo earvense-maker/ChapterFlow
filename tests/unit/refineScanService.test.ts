@@ -95,10 +95,58 @@ describe('refineScanService', () => {
     expect(result.findings).toEqual([]);
     expect(result.coreConcept).toBe('');
     expect(result.lastError).toContain('解釈できません');
+    // NOTE: 診断に応答の一部を載せる
+    expect(result.lastError).toContain('JSONを返し忘れ');
 
     const cached = await refineScanService.readCachedRefineScan(projectId);
     expect(cached).not.toBeNull();
     expect(cached!.lastError).toContain('解釈できません');
+  });
+
+  it('surfaces empty response with a targeted hint', async () => {
+    const projectId = await createTrackedProject();
+    mockAdapterGenerateText({ text: '', finishReason: 'stop' });
+    const result = await refineScanService.scanProjectSettings(projectId);
+    expect(result.lastError).toContain('空の応答');
+  });
+
+  it('accepts raw JSON without a code fence', async () => {
+    const projectId = await createTrackedProject();
+    mockAdapterGenerateText({
+      text: JSON.stringify({
+        coreConcept: 'テスト作品',
+        findings: [],
+      }),
+      finishReason: 'stop',
+    });
+    const result = await refineScanService.scanProjectSettings(projectId);
+    expect(result.lastError).toBeNull();
+    expect(result.coreConcept).toBe('テスト作品');
+  });
+
+  it('extracts JSON when the response has preamble text before a code fence', async () => {
+    const projectId = await createTrackedProject();
+    mockAdapterGenerateText({
+      text:
+        '以下が結果です:\n\n```json\n' +
+        JSON.stringify({ coreConcept: '骨のある物語', findings: [] }) +
+        '\n```\n\n以上です。',
+      finishReason: 'stop',
+    });
+    const result = await refineScanService.scanProjectSettings(projectId);
+    expect(result.lastError).toBeNull();
+    expect(result.coreConcept).toBe('骨のある物語');
+  });
+
+  it('passes responseMimeType=application/json to the adapter', async () => {
+    const projectId = await createTrackedProject();
+    const spy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{"coreConcept":"","findings":[]}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+    await refineScanService.scanProjectSettings(projectId);
+    expect(spy.mock.calls[0][0].responseMimeType).toBe('application/json');
   });
 
   it('rewrites unknown character ids into "other" targets', async () => {

@@ -453,6 +453,12 @@ export interface AdapterGenerateRequest {
   abortSignal?: AbortSignal;
   frequencyPenalty?: number;
   presencePenalty?: number;
+  // NOTE: 'application/json' を指定するとプロバイダー側で構造化 JSON 出力を
+  // 有効化する（Gemini: responseMimeType、OpenAI/DeepSeek: response_format）。
+  // これで前置き文やコードフェンスが混ざる事故を減らせる。JSON.parse で直接
+  // 読める応答になる想定だが、モデルが flag を無視することもあるため
+  // 呼び出し側は fenced fallback パーサも用意しておく。
+  responseMimeType?: 'application/json';
 }
 
 export type FinishReason = 'stop' | 'length' | 'timeout' | 'error' | 'content_filter';

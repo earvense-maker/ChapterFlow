@@ -182,6 +182,9 @@ async function sendRefineMessageUnlocked(
       temperature: TEMPERATURE,
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
+      // NOTE: 応答は JSON 前提。Structured Output で前置き文混入や思考モードでの
+      // 空応答を減らす。
+      responseMimeType: 'application/json',
     });
   } catch (err) {
     const errorSession = await writeSessionError(workingSession, err);
@@ -227,13 +230,30 @@ async function sendRefineMessageUnlocked(
     }
   }
 
+  if (!parsed) {
+    console.warn('Refine chat JSON parse failed', {
+      projectId,
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+      finishReason: adapterResult.finishReason,
+      debugInfo: adapterResult.debugInfo,
+      textPreview: (adapterResult.text ?? '').slice(0, 400),
+    });
+  }
+
   const nextSession: RefineSession = {
     ...workingSession,
     messages: truncateHistory([...workingSession.messages, assistantMsg]),
     patches: [...workingSession.patches, ...newPatches],
     revision: workingSession.revision + 1,
     updatedAt: nowIso(),
-    lastError: parsed ? null : 'AI 応答の JSON を解釈できませんでした。',
+    lastError: parsed
+      ? null
+      : buildChatParseFailureMessage(
+          adapterResult.text,
+          adapterResult.debugInfo,
+          adapterResult.finishReason
+        ),
   };
   await storage.writeRefineSession(projectId, nextSession);
 
@@ -599,21 +619,38 @@ function parseChatResult(text: string): ParsedChat | null {
   return { visibleReply, patches };
 }
 
+// NOTE: refineScanService と同じ多段フォールバック。responseMimeType=json を
+// 指定しても、モデルによっては前置き文やコードフェンスを付けてくる。
 function parseJsonObject(text: string): Record<string, unknown> | null {
   const trimmed = text.trim();
-  const withoutFence = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-  const start = withoutFence.indexOf('{');
-  const end = withoutFence.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try {
-    const parsed = JSON.parse(withoutFence.slice(start, end + 1));
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
+  if (!trimmed) return null;
+
+  const tryParse = (candidate: string): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(candidate);
+      return isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const direct = tryParse(trimmed);
+  if (direct) return direct;
+
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    const inner = tryParse(fenceMatch[1].trim());
+    if (inner) return inner;
   }
+
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    const sliced = tryParse(trimmed.slice(start, end + 1));
+    if (sliced) return sliced;
+  }
+
+  return null;
 }
 
 function normalizePatch(
@@ -733,6 +770,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function truncate(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   return value.slice(0, maxChars - 1) + '…';
+}
+
+function buildChatParseFailureMessage(
+  rawText: string,
+  debugInfo: string | undefined,
+  finishReason: string
+): string {
+  const trimmed = (rawText ?? '').trim();
+  if (!trimmed) {
+    const parts = ['AI が空の応答を返しました。'];
+    if (finishReason === 'length') {
+      parts.push('思考モードで出力枠を使い切った可能性があります。技術設定タブで出力字数を大きくするか、DeepSeek に切り替えると安定します。');
+    } else if (finishReason === 'content_filter') {
+      parts.push('安全フィルタでブロックされた可能性があります。DeepSeek への切り替えを試してください。');
+    } else {
+      parts.push('もう一度お試しください。');
+    }
+    if (debugInfo) parts.push(`診断: ${debugInfo}`);
+    return parts.join('\n');
+  }
+  return [
+    'AI 応答を JSON として解釈できませんでした。',
+    `応答の一部: ${truncate(trimmed, 200)}`,
+  ].join('\n');
 }
 
 // ---------- ロック ----------

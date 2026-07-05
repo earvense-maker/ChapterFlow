@@ -1109,6 +1109,9 @@ legend {
   color: #7a2f2f;
   font-size: 0.85rem;
   margin: 0.5rem 0;
+  /* NOTE: lastError には診断情報や応答の一部が改行込みで載るので改行を残す。 */
+  white-space: pre-wrap;
+  line-height: 1.55;
 }
 
 .refine-findings-list {

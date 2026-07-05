@@ -97,7 +97,11 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
         // NOTE: 前回の scan 結果があれば表示。無ければ null のまま。
         // 起動時に scan は自動実行しない（トークン消費を明示ボタンに限定）。
         const cachedScan = await api.getRefineScan(projectId).catch(() => null);
-        if (!cancelled && cachedScan) setRefineScan(cachedScan);
+        if (!cancelled && cachedScan) {
+          setRefineScan(cachedScan);
+          // NOTE: キャッシュ済み結果に lastError が入っていれば、それも UI に見せる。
+          if (cachedScan.lastError) setScanError(cachedScan.lastError);
+        }
       } catch (err) {
         if (!cancelled) onError(err instanceof Error ? err.message : '読み込みに失敗しました');
       }

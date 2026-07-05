@@ -71,6 +71,11 @@ export class OpenAIAdapter implements ModelAdapter {
           ...(request.presencePenalty !== undefined && request.presencePenalty !== 0
             ? { presence_penalty: request.presencePenalty }
             : {}),
+          // NOTE: 構造化 JSON 出力。OpenAI/DeepSeek は response_format で
+          // JSON モードを指定できる。scan/chat が使う。
+          ...(request.responseMimeType === 'application/json'
+            ? { response_format: { type: 'json_object' } }
+            : {}),
         }),
         signal: controller.signal,
       });
@@ -158,6 +163,11 @@ export class OpenAIAdapter implements ModelAdapter {
             : {}),
           ...(request.presencePenalty !== undefined && request.presencePenalty !== 0
             ? { presence_penalty: request.presencePenalty }
+            : {}),
+          // NOTE: 構造化 JSON 出力。OpenAI/DeepSeek は response_format で
+          // JSON モードを指定できる。scan/chat が使う。
+          ...(request.responseMimeType === 'application/json'
+            ? { response_format: { type: 'json_object' } }
             : {}),
         }),
         signal: controller.signal,

@@ -144,7 +144,60 @@ describe('refineChatService sendRefineMessage', () => {
 
     const result = await refineChatService.sendRefineMessage(projectId, '相談');
     expect(result.newPatches).toEqual([]);
-    expect(result.session.lastError).toContain('JSON を解釈できません');
+    expect(result.session.lastError).toContain('解釈できません');
+  });
+
+  it('surfaces an empty-response failure with a targeted hint', async () => {
+    const projectId = await createTrackedProject();
+    mockAssistantResponse(null, '');
+
+    const result = await refineChatService.sendRefineMessage(projectId, 'テスト');
+    expect(result.newPatches).toEqual([]);
+    expect(result.session.lastError).toContain('空の応答');
+  });
+
+  it('accepts a raw JSON response without a code fence', async () => {
+    const projectId = await createTrackedProject();
+    const character: Character = {
+      characterId: 'char-a',
+      name: 'A',
+      role: 'protagonist',
+      description: 'x',
+    };
+    await storage.writeCharacters(projectId, [character]);
+
+    // NOTE: Structured Output が効いた想定でフェンス無しの純 JSON を返す。
+    mockAssistantResponse(
+      null,
+      JSON.stringify({
+        visibleReply: '更新します。',
+        patches: [
+          {
+            summary: '更新',
+            operations: [
+              { kind: 'character-update', characterId: 'char-a', fields: { description: 'y' } },
+            ],
+          },
+        ],
+      })
+    );
+
+    const result = await refineChatService.sendRefineMessage(projectId, 'x');
+    expect(result.newPatches).toHaveLength(1);
+    expect(result.session.lastError).toBeNull();
+  });
+
+  it('passes responseMimeType=application/json to the adapter', async () => {
+    const projectId = await createTrackedProject();
+    const spy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{"visibleReply":"ok","patches":[]}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    await refineChatService.sendRefineMessage(projectId, '雑談');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0].responseMimeType).toBe('application/json');
   });
 
   it('marks previous pending patches as stale on the next turn', async () => {
