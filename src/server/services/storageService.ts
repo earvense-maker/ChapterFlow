@@ -19,6 +19,7 @@ import type {
   Project,
   ProjectState,
   RefineScanResult,
+  RefineSession,
   SetupSession,
   StoryState,
 } from '../types/index.js';
@@ -79,6 +80,10 @@ export function expressionsJsonPath(projectId: string): string {
 
 export function refineScanJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'refineScan.json');
+}
+
+export function refineSessionJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'refineSession.json');
 }
 
 export function episodesDir(projectId: string): string {
@@ -229,6 +234,21 @@ export async function writeRefineScan(
   scan: RefineScanResult
 ): Promise<void> {
   await safeWriteJson(refineScanJsonPath(projectId), scan);
+}
+
+export async function readRefineSession(projectId: string): Promise<RefineSession | null> {
+  return readJsonFile<RefineSession>(refineSessionJsonPath(projectId));
+}
+
+export async function writeRefineSession(
+  projectId: string,
+  session: RefineSession
+): Promise<void> {
+  await safeWriteJson(refineSessionJsonPath(projectId), session);
+}
+
+export async function deleteRefineSession(projectId: string): Promise<void> {
+  await fs.rm(refineSessionJsonPath(projectId), { force: true });
 }
 
 export async function readWorld(projectId: string): Promise<string> {

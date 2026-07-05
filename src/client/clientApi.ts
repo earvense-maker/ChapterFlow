@@ -16,7 +16,10 @@ import type {
   ProjectState,
   ProjectSummary,
   ReaderState,
+  RefineApplyResponse,
+  RefineChatResponse,
   RefineScanResult,
+  RefineSession,
   SceneNavigationDirection,
   CreateSetupSessionBody,
   SendSetupMessageBody,
@@ -127,6 +130,23 @@ export const api = {
     request<RefineScanResult | null>(`/projects/${id}/refine/scan`),
   scanRefine: (id: string) =>
     request<RefineScanResult>(`/projects/${id}/refine/scan`, { method: 'POST' }),
+
+  getRefineSession: (id: string) => request<RefineSession>(`/projects/${id}/refine/session`),
+  resetRefineSession: (id: string) =>
+    request<RefineSession>(`/projects/${id}/refine/session`, { method: 'DELETE' }),
+  sendRefineMessage: (id: string, content: string) =>
+    request<RefineChatResponse>(`/projects/${id}/refine/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    }),
+  applyRefinePatch: (id: string, patchId: string) =>
+    request<RefineApplyResponse>(`/projects/${id}/refine/patches/${patchId}/apply`, {
+      method: 'POST',
+    }),
+  rejectRefinePatch: (id: string, patchId: string) =>
+    request<RefineApplyResponse>(`/projects/${id}/refine/patches/${patchId}/reject`, {
+      method: 'POST',
+    }),
 
   generate: (id: string, body: { wish: string; mode: 'continue' | 'regenerate' | 'variate' }) =>
     request<GenerationRecord>(`/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),

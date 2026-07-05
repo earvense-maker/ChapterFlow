@@ -625,3 +625,88 @@ export interface RefineScanResult {
   // NOTE: パース失敗や部分成功時のユーザー向けメッセージ。null なら正常。
   lastError: string | null;
 }
+
+// NOTE: Phase 3 の作品設定チャット。setup と違い「既存の world / characters
+// への差分パッチ」を扱う。system prompt はチャット対象に含めない（サイレント
+// デタッチ回避のため、明示的にインライン編集で書く方針）。
+export type RefineMessageRole = 'user' | 'assistant' | 'system';
+
+export interface RefineMessage {
+  messageId: string;
+  role: RefineMessageRole;
+  content: string;
+  createdAt: string;
+  // NOTE: assistant メッセージがパッチを提案した場合、この配列にパッチ ID を
+  // 記録。UI 側で対応するパッチカードを描画する。
+  patchIds?: string[];
+}
+
+// NOTE: world.md への「アンカー置換」オペレーション。anchor は world 本文中に
+// ちょうど 1 回だけ現れる文字列でなければならない（apply 時に検証）。0 回や
+// 複数回マッチした場合はエラーで返し、モデルの全文書き換えを許容しない。
+export interface WorldReplaceOp {
+  anchor: string;
+  replacement: string;
+}
+
+// NOTE: world 全文の書き換えは危険なので、原則アンカー置換のみサポート。
+// 例外として「まだ world が空」なケースだけ append 用に prepend として使う。
+export interface WorldAppendOp {
+  text: string;
+}
+
+export interface CharacterFieldPatch {
+  name?: string;
+  role?: CharacterRole;
+  description?: string;
+  speechStyle?: string;
+  relationshipNotes?: string;
+  secrets?: string;
+  currentState?: string;
+}
+
+export type RefinePatchOperation =
+  | { kind: 'world-replace'; op: WorldReplaceOp }
+  | { kind: 'world-append'; op: WorldAppendOp }
+  | { kind: 'character-update'; characterId: CharacterId; fields: CharacterFieldPatch }
+  | { kind: 'character-add'; character: Character }
+  | { kind: 'character-remove'; characterId: CharacterId };
+
+export type RefinePatchStatus = 'pending' | 'applied' | 'rejected' | 'stale';
+
+export interface RefinePatch {
+  patchId: string;
+  createdAt: string;
+  // NOTE: どの assistant メッセージから生まれたかを追跡（UI で結び付け表示）。
+  sourceMessageId: string;
+  summary: string;
+  operations: RefinePatchOperation[];
+  status: RefinePatchStatus;
+  // NOTE: apply 失敗時の理由（アンカー未一致など）。ユーザーに表示する。
+  applyError?: string;
+  appliedAt?: string;
+}
+
+export interface RefineSession {
+  schemaVersion: 1;
+  sessionId: string;
+  projectId: ProjectId;
+  usedModel: { provider: string; modelName: string };
+  messages: RefineMessage[];
+  patches: RefinePatch[];
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  lastError: string | null;
+}
+
+export interface RefineChatResponse {
+  session: RefineSession;
+  assistantMessage: RefineMessage;
+  newPatches: RefinePatch[];
+}
+
+export interface RefineApplyResponse {
+  session: RefineSession;
+  patch: RefinePatch;
+}

@@ -1208,6 +1208,184 @@ legend {
   line-height: 1.5;
 }
 
+.refine-chat-card {
+  border-color: rgba(107, 142, 159, 0.35);
+}
+
+.refine-chat-messages {
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 0.35rem 0.15rem;
+  margin: 0.35rem 0 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.refine-chat-bubble {
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+}
+
+.refine-chat-bubble.role-user {
+  background: rgba(107, 142, 159, 0.1);
+  border-color: rgba(107, 142, 159, 0.3);
+  margin-left: 1.5rem;
+}
+
+.refine-chat-bubble.role-assistant {
+  margin-right: 1.5rem;
+}
+
+.refine-chat-role {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+}
+
+.refine-chat-content {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.refine-patch-card {
+  margin: 0.35rem 1.5rem 0.35rem 0;
+  padding: 0.55rem 0.7rem;
+  background: rgba(180, 130, 200, 0.06);
+  border: 1px solid rgba(180, 130, 200, 0.4);
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+}
+
+.refine-patch-card.status-applied {
+  background: rgba(90, 170, 120, 0.08);
+  border-color: rgba(90, 170, 120, 0.4);
+}
+
+.refine-patch-card.status-rejected,
+.refine-patch-card.status-stale {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.refine-patch-header {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.refine-patch-status {
+  font-size: 0.72rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  background: rgba(180, 130, 200, 0.2);
+  border: 1px solid rgba(180, 130, 200, 0.5);
+  color: #6a4383;
+}
+
+.refine-patch-status.status-applied {
+  background: rgba(90, 170, 120, 0.22);
+  border-color: rgba(90, 170, 120, 0.55);
+  color: #2f6a44;
+}
+
+.refine-patch-status.status-rejected,
+.refine-patch-status.status-stale {
+  background: rgba(120, 120, 120, 0.15);
+  border-color: rgba(120, 120, 120, 0.4);
+  color: var(--text-muted);
+}
+
+.refine-patch-summary {
+  font-weight: 500;
+}
+
+.refine-patch-ops {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.refine-patch-diff {
+  padding: 0.35rem 0.5rem;
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.refine-patch-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+}
+
+.refine-patch-old {
+  color: #7a2f2f;
+  white-space: pre-wrap;
+  font-family: var(--font-ui);
+}
+
+.refine-patch-new {
+  color: #2f6a44;
+  white-space: pre-wrap;
+  font-family: var(--font-ui);
+}
+
+.refine-patch-field {
+  margin-top: 0.25rem;
+}
+
+.refine-patch-field-key {
+  display: inline-block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  margin-bottom: 0.15rem;
+}
+
+.refine-patch-error {
+  color: #7a2f2f;
+  font-size: 0.8rem;
+  margin-top: 0.35rem;
+}
+
+.refine-patch-actions {
+  margin-top: 0.4rem;
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.refine-chat-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  margin-top: 0.5rem;
+}
+
+.refine-chat-input textarea {
+  flex: 1;
+  resize: vertical;
+}
+
+.refine-chat-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0.2rem 0 0;
+}
+
 .settings-section {
   margin-bottom: 1.5rem;
 }

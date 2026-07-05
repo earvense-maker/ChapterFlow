@@ -1121,7 +1121,10 @@ function storyStateErrorMessage(err: unknown): string {
   return '物語の状態更新に失敗しました。';
 }
 
-async function withProjectWriteLock<T>(
+// NOTE: 他サービス（refineChatService の apply 等）も同じロックを使いたいので
+// export。ロック粒度は「プロジェクトごとの書き込み排他」で、生成と設定編集が
+// 同時に走らないことを保証する。
+export async function withProjectWriteLock<T>(
   projectId: string,
   task: () => Promise<T>
 ): Promise<T> {

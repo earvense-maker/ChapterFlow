@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import RefineChatPanel from './RefineChatPanel';
 import type {
   Character,
   PresetsFile,
@@ -108,6 +109,23 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // NOTE: パッチ反映後に world / characters を再取得して UI を最新化。
+  // 編集中の draft は上書きしないよう、編集モード時は skip する。
+  async function refreshWorldAndCharacters() {
+    try {
+      const [worldData, charsData] = await Promise.all([
+        api.getWorld(projectId),
+        api.getCharacters(projectId),
+      ]);
+      setWorldText(worldData.text);
+      if (!worldEditing) setWorldDraft(worldData.text);
+      setCharacters(charsData);
+      if (!charactersEditing) setCharactersDraft(charsData);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '再読み込みに失敗しました');
+    }
+  }
 
   async function handleSaveWorld() {
     try {
@@ -571,6 +589,13 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
           </>
         )}
       </section>
+
+      {/* AI と相談して編集 (Phase 3) */}
+      <RefineChatPanel
+        projectId={projectId}
+        characters={characters}
+        onSettingsChanged={refreshWorldAndCharacters}
+      />
     </div>
   );
 }
