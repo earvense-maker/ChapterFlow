@@ -8,9 +8,13 @@ export async function getRecentContext(
   projectId: ProjectId,
   currentEpisodeId: string | null,
   currentSceneId: SceneId | null,
-  options: { maxChars?: number } = {}
+  options: { maxChars?: number; includeCurrentScene?: boolean } = {}
 ): Promise<string> {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+  // NOTE: variate / regenerate モードでは現在シーンの採用済み本文を除外する。
+  // 含めたままだと AI が「その先」を書いてしまい、現在シーンの別案ではなく
+  // 次のシーンの内容がドラフトとして保存されてしまうため。
+  const includeCurrentScene = options.includeCurrentScene ?? true;
 
   if (!currentEpisodeId || !currentSceneId) return '';
 
@@ -20,7 +24,8 @@ export async function getRecentContext(
   const currentIndex = episode.scenes.findIndex((scene) => scene.sceneId === currentSceneId);
   if (currentIndex < 0) return '';
 
-  const contextScenes = episode.scenes.slice(0, currentIndex + 1);
+  const upperExclusive = includeCurrentScene ? currentIndex + 1 : currentIndex;
+  const contextScenes = episode.scenes.slice(0, upperExclusive);
   const acceptedTexts: string[] = [];
   let chars = 0;
 
@@ -39,6 +44,27 @@ export async function getRecentContext(
   const joined = acceptedTexts.join('\n\n');
   if (joined.length <= maxChars) return joined;
   return joined.slice(-maxChars);
+}
+
+// NOTE: variate / regenerate モード向け。現在シーンの「書き直し対象本文」を返す。
+// 採用済み本文があればそれを、なければ選択中のドラフトを、それも無ければ空文字。
+export async function getCurrentSceneReferenceText(
+  projectId: ProjectId,
+  currentEpisodeId: string | null,
+  currentSceneId: SceneId | null,
+  selectedDraftGenerationId: string | null
+): Promise<string> {
+  if (!currentEpisodeId || !currentSceneId) return '';
+  const episode = await storage.readEpisodeRecord(projectId, currentEpisodeId);
+  if (!episode) return '';
+  const scene = episode.scenes.find((s) => s.sceneId === currentSceneId);
+  if (!scene) return '';
+
+  const targetGenId = scene.acceptedGenerationId ?? selectedDraftGenerationId;
+  if (!targetGenId) return '';
+
+  const generation = await findGeneration(projectId, targetGenId);
+  return generation?.responseText ?? '';
 }
 
 export async function getContextSummary(projectId: ProjectId): Promise<string> {

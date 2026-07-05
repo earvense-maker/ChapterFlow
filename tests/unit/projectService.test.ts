@@ -77,7 +77,11 @@ describe('project settings validation', () => {
       samplingConfig: { frequencyPenalty: -0.5, presencePenalty: 1.5 },
     });
 
-    expect(updated.samplingConfig).toEqual({ frequencyPenalty: 0, presencePenalty: 1 });
+    expect(updated.samplingConfig).toEqual({
+      frequencyPenalty: 0,
+      presencePenalty: 1,
+      temperature: 0.7,
+    });
   });
 
   it('preserves an existing samplingConfig field when partially updating the other', async () => {
@@ -90,7 +94,11 @@ describe('project settings validation', () => {
       samplingConfig: { presencePenalty: 0.4 },
     });
 
-    expect(updated.samplingConfig).toEqual({ frequencyPenalty: 0.6, presencePenalty: 0.4 });
+    expect(updated.samplingConfig).toEqual({
+      frequencyPenalty: 0.6,
+      presencePenalty: 0.4,
+      temperature: 0.7,
+    });
   });
 
   it('copies samplingConfig when duplicating a project', async () => {
@@ -105,7 +113,11 @@ describe('project settings validation', () => {
     });
     createdProjectIds.push(duplicate.projectId);
 
-    expect(duplicate.samplingConfig).toEqual({ frequencyPenalty: 0.3, presencePenalty: 0.5 });
+    expect(duplicate.samplingConfig).toEqual({
+      frequencyPenalty: 0.3,
+      presencePenalty: 0.5,
+      temperature: 0.7,
+    });
   });
 
   it('rejects invalid samplingConfig values', async () => {

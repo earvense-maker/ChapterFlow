@@ -22,6 +22,9 @@ export interface ActivePresets {
 export interface SamplingConfig {
   frequencyPenalty: number;
   presencePenalty: number;
+  // NOTE: 未指定なら生成サービス側の TEMPERATURE_DEFAULT (0.7) を使う。variate モードは
+  // ここで指定した値に +0.15 を上乗せ（上限 1.5）する。
+  temperature?: number;
 }
 
 export interface Project {
@@ -465,6 +468,10 @@ export interface AdapterGenerateResult {
   errorCode?: string;
   errorMessage?: string;
   retryable: boolean;
+  // NOTE: 空応答時の切り分け用に、adapter 側で拾えた診断情報（候補数・パート種別・
+  // blockReason・safetyRatings 要約など）を短い文字列で残す。ユーザーには
+  // エラー詳細としてそのまま見せる。
+  debugInfo?: string;
 }
 
 export interface ConnectionStatus {
@@ -538,6 +545,7 @@ export type AdapterGenerateStreamEvent =
       type: 'done';
       finishReason: FinishReason;
       rawUsage?: AdapterGenerateResult['rawUsage'];
+      debugInfo?: string;
     };
 
 export interface ReaderState {

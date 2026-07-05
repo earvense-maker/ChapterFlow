@@ -55,16 +55,19 @@ export class GeminiAdapter implements ModelAdapter {
 
       let finishReason: FinishReason = 'stop';
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
+      let anyChunkYielded = false;
+      let lastData: GeminiGenerateContentResponse | null = null;
 
       for await (const eventData of readServerSentEvents(res.body)) {
         const data = JSON.parse(eventData) as GeminiGenerateContentResponse;
+        lastData = data;
         const candidate = data.candidates?.[0];
-        const text =
-          candidate?.content?.parts
-            ?.map((part) => part.text)
-            .join('') || '';
+        const text = extractVisibleText(candidate?.content?.parts);
 
-        if (text) yield { type: 'chunk', text };
+        if (text) {
+          anyChunkYielded = true;
+          yield { type: 'chunk', text };
+        }
         if (candidate?.finishReason) finishReason = mapFinishReason(candidate.finishReason);
         if (data.usageMetadata) {
           rawUsage = {
@@ -75,7 +78,10 @@ export class GeminiAdapter implements ModelAdapter {
         }
       }
 
-      yield { type: 'done', finishReason, rawUsage };
+      const debugInfo = anyChunkYielded
+        ? undefined
+        : buildEmptyResponseDebugInfo(lastData, finishReason);
+      yield { type: 'done', finishReason, rawUsage, debugInfo };
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         if (request.abortSignal?.aborted) {
@@ -137,12 +143,9 @@ export class GeminiAdapter implements ModelAdapter {
 
       const data = (await res.json()) as GeminiGenerateContentResponse;
       const candidate = data.candidates?.[0];
-      const text =
-        candidate?.content?.parts
-          ?.map((part) => part.text)
-          .join('')
-          .trim() || '';
+      const text = extractVisibleText(candidate?.content?.parts).trim();
       const finishReason = mapFinishReason(candidate?.finishReason);
+      const debugInfo = text ? undefined : buildEmptyResponseDebugInfo(data, finishReason);
 
       return {
         text,
@@ -155,6 +158,7 @@ export class GeminiAdapter implements ModelAdapter {
             }
           : undefined,
         retryable: finishReason === 'error',
+        debugInfo,
       };
     } catch (err) {
       clearTimeout(timeout);
@@ -208,21 +212,39 @@ export class GeminiAdapter implements ModelAdapter {
   }
 }
 
+// NOTE: 創作用途のため全カテゴリで安全フィルタをオフにする。ブロック時は Gemini が
+// 本文を空にして finishReason=SAFETY を返すため、通常の生成が沈黙で失敗する事故を防ぐ。
+const CREATIVE_SAFETY_SETTINGS: Array<{ category: string; threshold: 'BLOCK_NONE' }> = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
+];
+
 function buildRequestBody(request: AdapterGenerateRequest): unknown {
   const body: {
     contents: Array<{ role: 'user'; parts: Array<{ text: string }> }>;
     systemInstruction?: { parts: Array<{ text: string }> };
+    safetySettings: typeof CREATIVE_SAFETY_SETTINGS;
     generationConfig: {
       temperature: number;
       maxOutputTokens: number;
       frequencyPenalty?: number;
       presencePenalty?: number;
+      thinkingConfig?: { thinkingBudget: number; includeThoughts?: boolean };
     };
   } = {
     contents: [{ role: 'user', parts: [{ text: request.userPrompt }] }],
+    safetySettings: CREATIVE_SAFETY_SETTINGS,
     generationConfig: {
       temperature: request.temperature,
       maxOutputTokens: estimateMaxOutputTokens(request.outputLength, MAX_OUTPUT_TOKENS),
+      // NOTE: 創作の質を上げるため thinking は有効 (thinkingBudget=-1: dynamic)。
+      // ただし includeThoughts=false で応答に思考パートは含めない。
+      // Gemini が thinking で maxOutputTokens を使い切って本文0で stop する事故を
+      // 減らすため、maxOutputTokens 側を outputLength ベースで大きく確保している。
+      thinkingConfig: { thinkingBudget: -1, includeThoughts: false },
     },
   };
 
@@ -251,18 +273,101 @@ function geminiHeaders(apiKey: string): Record<string, string> {
   };
 }
 
+interface GeminiPart {
+  text?: string;
+  thought?: boolean;
+  functionCall?: unknown;
+  inlineData?: unknown;
+}
+
+interface GeminiCandidate {
+  content?: { parts?: GeminiPart[] };
+  finishReason?: string;
+  safetyRatings?: Array<{ category?: string; probability?: string; blocked?: boolean }>;
+}
+
 interface GeminiGenerateContentResponse {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{ text?: string }>;
-    };
-    finishReason?: string;
-  }>;
+  candidates?: GeminiCandidate[];
+  promptFeedback?: {
+    blockReason?: string;
+    safetyRatings?: Array<{ category?: string; probability?: string; blocked?: boolean }>;
+  };
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
     totalTokenCount?: number;
+    thoughtsTokenCount?: number;
   };
+}
+
+function extractVisibleText(parts: GeminiPart[] | undefined): string {
+  if (!parts) return '';
+  // NOTE: includeThoughts=false のはずだが、モデルによっては thought:true の
+  // パートが混ざる。可視本文は thought でないパートのみに絞る。
+  return parts
+    .filter((part) => part.thought !== true)
+    .map((part) => part.text ?? '')
+    .join('');
+}
+
+function summarizePartTypes(parts: GeminiPart[] | undefined): string {
+  if (!parts || parts.length === 0) return 'none';
+  const counts: Record<string, number> = {};
+  for (const part of parts) {
+    const kind = part.thought
+      ? 'thought'
+      : typeof part.text === 'string'
+      ? 'text'
+      : part.functionCall
+      ? 'functionCall'
+      : part.inlineData
+      ? 'inlineData'
+      : 'unknown';
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(',');
+}
+
+function summarizeSafetyRatings(
+  ratings?: Array<{ category?: string; probability?: string; blocked?: boolean }>
+): string {
+  if (!ratings || ratings.length === 0) return '';
+  const flagged = ratings.filter(
+    (r) => r.blocked || (r.probability && !/^NEGLIGIBLE|LOW$/i.test(r.probability))
+  );
+  if (flagged.length === 0) return '';
+  return flagged
+    .map((r) => `${(r.category ?? '?').replace(/^HARM_CATEGORY_/, '')}=${r.probability ?? '?'}${r.blocked ? '(blocked)' : ''}`)
+    .join(',');
+}
+
+function buildEmptyResponseDebugInfo(
+  data: GeminiGenerateContentResponse | null,
+  finishReason: FinishReason
+): string {
+  const candidateCount = data?.candidates?.length ?? 0;
+  const candidate = data?.candidates?.[0];
+  const bits: string[] = [
+    `finishReason=${finishReason}`,
+    `candidates=${candidateCount}`,
+    `parts=${summarizePartTypes(candidate?.content?.parts)}`,
+  ];
+  if (data?.promptFeedback?.blockReason) {
+    bits.push(`promptBlockReason=${data.promptFeedback.blockReason}`);
+  }
+  const promptSafety = summarizeSafetyRatings(data?.promptFeedback?.safetyRatings);
+  if (promptSafety) bits.push(`promptSafety=${promptSafety}`);
+  const candSafety = summarizeSafetyRatings(candidate?.safetyRatings);
+  if (candSafety) bits.push(`candidateSafety=${candSafety}`);
+  if (data?.usageMetadata) {
+    const u = data.usageMetadata;
+    bits.push(
+      `usage=prompt:${u.promptTokenCount ?? 0}/completion:${u.candidatesTokenCount ?? 0}/thoughts:${u.thoughtsTokenCount ?? 0}/total:${u.totalTokenCount ?? 0}`
+    );
+  }
+  return bits.join(' ');
 }
 
 function mapHttpStatus(
@@ -293,6 +398,19 @@ function mapFinishReason(reason?: string): FinishReason {
   const r = reason.toUpperCase();
   if (r === 'STOP') return 'stop';
   if (r === 'MAX_TOKENS') return 'length';
-  if (r === 'SAFETY' || r === 'RECITATION') return 'content_filter';
+  // NOTE: Gemini の「解除できない固定安全フィルタ」に当たる finishReason は
+  // SAFETY / RECITATION 以外にも PROHIBITED_CONTENT / BLOCKLIST / SPII /
+  // IMAGE_SAFETY があり、いずれも再試行しても同じ結果になる。error 扱いだと
+  // 再試行ボタンが出て混乱するので、まとめて content_filter に寄せる。
+  if (
+    r === 'SAFETY' ||
+    r === 'RECITATION' ||
+    r === 'PROHIBITED_CONTENT' ||
+    r === 'BLOCKLIST' ||
+    r === 'SPII' ||
+    r === 'IMAGE_SAFETY'
+  ) {
+    return 'content_filter';
+  }
   return 'error';
 }

@@ -729,7 +729,7 @@ function normalizeProvider(value: string | undefined): string {
 }
 
 function normalizeOutputLength(value: number | undefined): number {
-  if (!Number.isFinite(value)) return 3000;
+  if (!Number.isFinite(value)) return 6000;
   return Math.max(500, Math.min(10000, Math.round(value as number)));
 }
 

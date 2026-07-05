@@ -1,6 +1,6 @@
 const MIN_TOLERANCE = 100;
 const MAX_TOLERANCE = 500;
-const DEFAULT_OUTPUT_LENGTH = 3000;
+const DEFAULT_OUTPUT_LENGTH = 6000;
 
 export interface ApproximateOutputRange {
   target: number;
@@ -25,9 +25,12 @@ export function getApproximateOutputRange(outputLength: number): ApproximateOutp
 }
 
 export function estimateMaxOutputTokens(outputLength: number, maxTokens: number): number {
+  // NOTE: 日本語は1文字≒1.5〜2.5トークン、加えて Gemini 2.5系 は thinking で
+  // 出力枠を消費するため、指定字数×3 + 2048 の余裕を持たせないと本文が途中
+  // どころか完全空応答（finishReason=MAX_TOKENS）で返ることがある。
   const { upper } = getApproximateOutputRange(outputLength);
-  const estimated = Math.ceil(upper * 1.25) + 512;
-  return Math.min(maxTokens, Math.max(1024, estimated));
+  const estimated = Math.ceil(upper * 3) + 2048;
+  return Math.min(maxTokens, Math.max(4096, estimated));
 }
 
 function normalizeOutputLength(outputLength: number): number {

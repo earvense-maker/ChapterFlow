@@ -714,6 +714,53 @@ legend {
   color: var(--text-muted);
 }
 
+.draft-badge-bar {
+  max-width: var(--max-width);
+  margin: 0 auto 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+
+.draft-status-badge {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.draft-status-badge.accepted {
+  background: rgba(90, 170, 120, 0.22);
+  color: #2f6a44;
+  border: 1px solid rgba(90, 170, 120, 0.55);
+}
+
+.draft-status-badge.draft {
+  background: rgba(220, 170, 70, 0.22);
+  color: #7a5410;
+  border: 1px solid rgba(220, 170, 70, 0.55);
+}
+
+.draft-status-badge.other {
+  background: rgba(180, 180, 180, 0.22);
+  color: var(--text-muted);
+  border: 1px solid rgba(180, 180, 180, 0.5);
+}
+
+.draft-count-badge {
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(107, 142, 159, 0.15);
+  border: 1px solid rgba(107, 142, 159, 0.35);
+  color: var(--text);
+}
+
+.draft-hint {
+  color: var(--text-muted);
+}
+
 .status-toast {
   background: rgba(107, 142, 159, 0.18);
   border: 1px solid rgba(107, 142, 159, 0.45);

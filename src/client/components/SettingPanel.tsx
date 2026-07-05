@@ -32,7 +32,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   const [presets, setPresets] = useState<Partial<PresetsFile>>({});
   const [worldText, setWorldText] = useState('');
   const [characters, setCharacters] = useState<Character[]>([]);
-  const [outputLength, setOutputLength] = useState(3000);
+  const [outputLength, setOutputLength] = useState(6000);
   const [streamingEnabled, setStreamingEnabled] = useState(false);
   const [modelName, setModelName] = useState('');
   const [provider, setProvider] = useState('');
@@ -41,8 +41,9 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   const [systemPrompt, setSystemPrompt] = useState('');
   const [generatedSystemPrompt, setGeneratedSystemPrompt] = useState('');
   const [isSystemPromptCustomized, setIsSystemPromptCustomized] = useState(false);
-  const [frequencyPenalty, setFrequencyPenalty] = useState(0);
+  const [frequencyPenalty, setFrequencyPenalty] = useState(0.1);
   const [presencePenalty, setPresencePenalty] = useState(0);
+  const [temperature, setTemperature] = useState(0.7);
   const [ngExpressions, setNgExpressions] = useState<NgExpression[]>([]);
   const [newNgText, setNewNgText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -68,8 +69,9 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       setStreamingEnabled(projectData.streamingEnabled ?? false);
       setModelName(projectData.activeModelName);
       setProvider(projectData.activeModelProvider);
-      setFrequencyPenalty(projectData.samplingConfig?.frequencyPenalty ?? 0);
+      setFrequencyPenalty(projectData.samplingConfig?.frequencyPenalty ?? 0.1);
       setPresencePenalty(projectData.samplingConfig?.presencePenalty ?? 0);
+      setTemperature(projectData.samplingConfig?.temperature ?? 0.7);
       setNgExpressions(expressionsData.ngExpressions);
 
       const providerList = await api.getModelProviders();
@@ -172,9 +174,10 @@ export default function SettingPanel({ projectId, onBack }: Props) {
         samplingConfig: buildSamplingConfig(),
       });
       setProject(updatedProject);
-      setFrequencyPenalty(updatedProject.samplingConfig?.frequencyPenalty ?? 0);
+      setFrequencyPenalty(updatedProject.samplingConfig?.frequencyPenalty ?? 0.1);
       setPresencePenalty(updatedProject.samplingConfig?.presencePenalty ?? 0);
-      setMessage('反復抑制設定を保存しました');
+      setTemperature(updatedProject.samplingConfig?.temperature ?? 0.7);
+      setMessage('サンプリング設定を保存しました');
       setTimeout(() => setMessage(null), 2000);
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -287,7 +290,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
   }
 
   function buildSamplingConfig() {
-    return { frequencyPenalty, presencePenalty };
+    return { frequencyPenalty, presencePenalty, temperature };
   }
 
   async function handleAddNgExpression(source: NgExpressionSource = 'manual') {
@@ -520,9 +523,25 @@ export default function SettingPanel({ projectId, onBack }: Props) {
       </section>
 
       <section className="settings-section">
-        <h2>表現の反復抑制</h2>
+        <h2>サンプリング</h2>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          値を上げると同じ語の反復が減ります。上げすぎると文が不自然になります。目安 0.2〜0.5
+          Temperature を上げると発想が広がり、下げると堅実になります。
+          目安: 堅く 0.5 / 標準 0.7 / 冒険 1.0〜1.2。
+        </p>
+        <label>
+          Temperature（発想の広がり）
+          <input
+            type="range"
+            min={0}
+            max={1.3}
+            step={0.05}
+            value={temperature}
+            onChange={(e) => setTemperature(Number(e.target.value))}
+          />
+          <span>{temperature.toFixed(2)}</span>
+        </label>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '1rem' }}>
+          Penalty は語彙の反復を抑えます。上げすぎると文が不自然に。目安 0.1〜0.5。
         </p>
         <label>
           Frequency penalty（同じ語の繰り返し抑制）
@@ -549,7 +568,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
           <span>{presencePenalty.toFixed(2)}</span>
         </label>
         <button className="primary" onClick={handleSaveSamplingConfig} disabled={loading}>
-          反復抑制設定を保存
+          サンプリング設定を保存
         </button>
       </section>
 

@@ -44,6 +44,9 @@ const PROVIDERS: ModelProviderInfo[] = [
   },
 ];
 
+// NOTE: DeepSeek は公式に一覧APIを持たないため、値はドキュメント記載の実測に寄せる。
+// V4 系（flash/pro）は 2026 時点で 1M context / 384k output の公称値をそのまま採用。
+// V3 系（chat）と R1 (reasoner) はドキュメント記載の上限（chat: 128k/8k、R1: 128k/32k）。
 const CATALOG_LIMITS: Record<string, Record<string, Omit<ModelTokenLimits, 'source'>>> = {
   deepseek: {
     'deepseek-v4-flash': {
@@ -57,14 +60,14 @@ const CATALOG_LIMITS: Record<string, Record<string, Omit<ModelTokenLimits, 'sour
       outputTokenLimit: 384_000,
     },
     'deepseek-chat': {
-      contextWindowTokens: 1_000_000,
-      inputTokenLimit: 1_000_000,
-      outputTokenLimit: 384_000,
+      contextWindowTokens: 128_000,
+      inputTokenLimit: 128_000,
+      outputTokenLimit: 8_192,
     },
     'deepseek-reasoner': {
-      contextWindowTokens: 1_000_000,
-      inputTokenLimit: 1_000_000,
-      outputTokenLimit: 384_000,
+      contextWindowTokens: 128_000,
+      inputTokenLimit: 128_000,
+      outputTokenLimit: 32_768,
     },
   },
   openai: {

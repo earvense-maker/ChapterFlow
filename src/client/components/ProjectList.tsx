@@ -18,15 +18,30 @@ export default function ProjectList({ onOpen, onNew, onSetupNew }: Props) {
   }, []);
 
   async function load() {
+    // NOTE: 開発モードで tsx watch や Vite プロキシが再起動直後に 500 を返す瞬間があり、
+    // 一度だけ短い遅延を挟んで再取得することで、初回起動時のフラッシュを防ぐ。
     try {
       setLoading(true);
       setError(null);
-      const data = await api.listProjects();
+      const data = await fetchProjectsWithRetry();
       setProjects(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : '読み込みに失敗しました');
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchProjectsWithRetry() {
+    try {
+      return await api.listProjects();
+    } catch (firstErr) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      try {
+        return await api.listProjects();
+      } catch {
+        throw firstErr;
+      }
     }
   }
 
@@ -51,6 +66,23 @@ export default function ProjectList({ onOpen, onNew, onSetupNew }: Props) {
     }
   }
 
+  async function handleShutdown() {
+    if (!window.confirm('Yumeweaving を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
+    try {
+      await api.shutdown();
+    } catch {
+      // サーバー側は即座に応答して自プロセスを落とすため、ネットワーク断で
+      // request が例外になっても正常系。無視してウィンドウを閉じる。
+    }
+    // NOTE: --app モードで開いたウィンドウは window.close() で閉じる。
+    // 通常タブ (script で開いていない) では閉じないブラウザもあるので、
+    // 閉じられなかった場合の表示だけ残す。
+    setTimeout(() => {
+      window.close();
+      setError('サーバーを停止しました。このウィンドウを閉じてください。');
+    }, 300);
+  }
+
   return (
     <div className="project-list">
       <header className="project-list-header">
@@ -58,6 +90,9 @@ export default function ProjectList({ onOpen, onNew, onSetupNew }: Props) {
         <div className="project-list-actions">
           <button onClick={onSetupNew}>相談して作る</button>
           <button className="primary" onClick={onNew}>新規作品</button>
+          <button className="danger" onClick={handleShutdown} title="サーバーとターミナルも終了">
+            終了
+          </button>
         </div>
       </header>
 

@@ -37,8 +37,23 @@ import type {
 } from '../types/index.js';
 
 const TEMPERATURE_DEFAULT = 0.7;
-const TEMPERATURE_VARIATE = 0.85;
+const TEMPERATURE_VARIATE_DELTA = 0.15;
+const TEMPERATURE_MAX = 1.3;
 const TEMPERATURE_SUMMARY = 0.25;
+
+// NOTE: 設定画面の temperature スライダは 0〜1.3 で保存される。variate モード
+// (「少し変える」) では +0.15 を上乗せする (上限 1.3)。summary は独立に固定。
+function resolveTemperature(
+  configured: number | undefined,
+  mode: GenerateOptions['mode']
+): number {
+  const base =
+    typeof configured === 'number' && Number.isFinite(configured)
+      ? Math.min(Math.max(configured, 0), TEMPERATURE_MAX)
+      : TEMPERATURE_DEFAULT;
+  if (mode === 'variate') return Math.min(base + TEMPERATURE_VARIATE_DELTA, TEMPERATURE_MAX);
+  return base;
+}
 const TIMEOUT_MS = 120_000;
 const STORY_STATE_TIMEOUT_MS = 30_000;
 const SUMMARY_CHUNK_CHARS = 20_000;
@@ -99,9 +114,10 @@ async function generateSceneUnlocked(
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
     bannedExpressions,
+    mode: options.mode,
   });
 
-  const temperature = options.mode === 'variate' ? TEMPERATURE_VARIATE : TEMPERATURE_DEFAULT;
+  const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
 
   const result = await generateWithAdapter(adapter, {
     systemInstructions,
@@ -119,6 +135,32 @@ async function generateSceneUnlocked(
       mapErrorMessage(result.errorCode, result.errorMessage),
       result.errorCode || 'generation_failed',
       result.retryable
+    );
+  }
+  if (result.finishReason === 'content_filter') {
+    throw new GenerateError(
+      mapErrorMessage('content_filter'),
+      'content_filter',
+      false
+    );
+  }
+  if (!result.text.trim()) {
+    console.warn('Empty generation response', {
+      projectId,
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+      finishReason: result.finishReason,
+      rawUsage: result.rawUsage,
+      debugInfo: result.debugInfo,
+    });
+    const classification = classifyEmptyResponse(result.debugInfo);
+    throw new GenerateError(
+      mapErrorMessage(
+        classification.code,
+        result.debugInfo || `finishReason=${result.finishReason}`
+      ),
+      classification.code,
+      classification.retryable
     );
   }
 
@@ -222,11 +264,14 @@ async function generateSceneStreamUnlocked(
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
     bannedExpressions,
+    mode: options.mode,
   });
 
-  const temperature = options.mode === 'variate' ? TEMPERATURE_VARIATE : TEMPERATURE_DEFAULT;
+  const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
   const textParts: string[] = [];
   let finishReason: FinishReason = 'stop';
+  let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
+  let debugInfo: string | undefined;
 
   try {
     for await (const event of generateTextStreamWithPenaltyRetry(adapter, {
@@ -246,6 +291,8 @@ async function generateSceneStreamUnlocked(
         onChunk(event.text);
       } else {
         finishReason = event.finishReason;
+        rawUsage = event.rawUsage;
+        debugInfo = event.debugInfo;
       }
     }
   } catch (err) {
@@ -257,6 +304,29 @@ async function generateSceneStreamUnlocked(
 
   if (finishReason === 'error' || finishReason === 'timeout') {
     throw new GenerateError(mapErrorMessage(finishReason), finishReason, true);
+  }
+  if (finishReason === 'content_filter') {
+    throw new GenerateError(mapErrorMessage('content_filter'), 'content_filter', false);
+  }
+  const streamedText = textParts.join('').trim();
+  if (!streamedText) {
+    console.warn('Empty streaming generation response', {
+      projectId,
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+      finishReason,
+      rawUsage,
+      debugInfo,
+    });
+    const classification = classifyEmptyResponse(debugInfo);
+    throw new GenerateError(
+      mapErrorMessage(
+        classification.code,
+        debugInfo || `finishReason=${finishReason}`
+      ),
+      classification.code,
+      classification.retryable
+    );
   }
   throwIfAborted(options.abortSignal);
 
@@ -275,7 +345,7 @@ async function generateSceneStreamUnlocked(
       previousContextFilePath,
       previousContextChars: userPrompt.length,
     },
-    responseText: textParts.join('').trim(),
+    responseText: streamedText,
     usedPresets: project.activePresetIds,
     usedModel: {
       provider: project.activeModelProvider,
@@ -907,6 +977,17 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
+// NOTE: adapter が空応答時に埋める debugInfo からセーフティ由来かを判定する。
+// promptFeedback.blockReason（PROHIBITED_CONTENT / SAFETY 等）や、非NEGLIGIBLE/LOW の
+// candidateSafety が入っていれば「解除できない安全フィルタ」と見なして DeepSeek 誘導
+// メッセージに振り分ける。safety_blocked は retryable=false（再試行しても同じ結果）。
+function classifyEmptyResponse(debugInfo?: string): { code: string; retryable: boolean } {
+  if (debugInfo && /promptBlockReason=|candidateSafety=/.test(debugInfo)) {
+    return { code: 'safety_blocked', retryable: false };
+  }
+  return { code: 'empty_response', retryable: true };
+}
+
 function mapErrorMessage(code?: string, detail?: string): string {
   let base: string;
   switch (code) {
@@ -931,6 +1012,15 @@ function mapErrorMessage(code?: string, detail?: string): string {
     case 'server_error':
     case 'service_unavailable':
       base = 'モデルサービスで一時的な問題が発生しました。再試行してください。';
+      break;
+    case 'content_filter':
+    case 'safety_blocked':
+      base =
+        'AIの安全フィルタでブロックされ、本文が生成されませんでした。Geminiは解除できない固定フィルタ（PROHIBITED_CONTENT等）を持つため、創作用途では設定画面からDeepSeekへの切り替えをおすすめします。';
+      break;
+    case 'empty_response':
+      base =
+        'モデルからの本文が空でした。出力上限（maxOutputTokens）が不足しているか、モデル名が誤っている可能性があります。';
       break;
     default:
       base = '生成に失敗しました。設定画面のプロバイダー、モデル名、APIキーを確認してください。';

@@ -55,6 +55,7 @@ export const api = {
   duplicateProject: (id: string, title?: string) =>
     request<Project>(`/projects/${id}/duplicate`, { method: 'POST', body: JSON.stringify({ title }) }),
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
+  shutdown: () => request<{ ok: boolean }>('/shutdown', { method: 'POST' }),
 
   createSetupSession: (body: CreateSetupSessionBody) =>
     request<SetupSessionResponse>('/setup-sessions', { method: 'POST', body: JSON.stringify(body) }),

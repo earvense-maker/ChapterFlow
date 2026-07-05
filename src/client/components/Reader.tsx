@@ -8,6 +8,7 @@ import type {
   ReaderNavigationState,
   ReaderState,
   SceneNavigationDirection,
+  SceneRecord,
   StoryStateRefreshStatus,
 } from '@shared/types';
 
@@ -29,6 +30,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     hasPreviousScene: false,
     hasNextScene: false,
   });
+  const [currentScene, setCurrentScene] = useState<SceneRecord | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsageEstimate | null>(null);
   const [contextSummaryExcerpt, setContextSummaryExcerpt] = useState('');
   const [storyStateRefresh, setStoryStateRefresh] = useState<StoryStateRefreshStatus | null>(null);
@@ -71,6 +73,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
       setGenerationId(null);
       setStatus(null);
     }
+    setCurrentScene(state.currentScene);
     setNavigation(state.navigation);
     setContextUsage(state.contextUsage);
     setContextSummaryExcerpt(state.contextSummaryExcerpt);
@@ -340,6 +343,36 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
       ? `${navigation.currentSceneOrder} / ${navigation.totalScenes}`
       : '';
 
+  // NOTE: この場面の候補（draftGenerationIds）内で、いま画面に出ている案が何番目か、
+  // どれが採用済みかを一目で見せる。採用と選択が同じなら「採用済み」バッジ、
+  // 別なら「下書き（案 N/M）」＋「採用: 案 K」のヒントを出す。
+  const draftIds = currentScene?.draftGenerationIds ?? [];
+  const totalDrafts = draftIds.length;
+  const currentDraftIndex = generationId ? draftIds.indexOf(generationId) : -1;
+  const currentDraftLabel = currentDraftIndex >= 0 ? currentDraftIndex + 1 : null;
+  const acceptedDraftIndex = currentScene?.acceptedGenerationId
+    ? draftIds.indexOf(currentScene.acceptedGenerationId)
+    : -1;
+  const acceptedDraftLabel = acceptedDraftIndex >= 0 ? acceptedDraftIndex + 1 : null;
+  const isCurrentAccepted = Boolean(
+    currentScene?.acceptedGenerationId &&
+      generationId &&
+      currentScene.acceptedGenerationId === generationId
+  );
+
+  async function handleShutdown() {
+    if (!window.confirm('Yumeweaving を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
+    try {
+      await api.shutdown();
+    } catch {
+      // サーバーは即座に応答して自プロセスを落とすため、ネットワーク断で例外になっても正常系。
+    }
+    setTimeout(() => {
+      window.close();
+      setNotice('サーバーを停止しました。このウィンドウを閉じてください。');
+    }, 300);
+  }
+
   return (
     <div className="reader">
       <header className="reader-header">
@@ -366,6 +399,9 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
           </button>
           <button onClick={onOpenMemories}>記憶</button>
           <button onClick={onOpenSettings}>設定</button>
+          <button className="danger" onClick={handleShutdown} title="サーバーとターミナルも終了">
+            終了
+          </button>
         </div>
       </header>
 
@@ -438,6 +474,35 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
           >
             この表現をNGに登録
           </button>
+        )}
+
+        {hasText && (
+          <div className="draft-badge-bar">
+            <span
+              className={`draft-status-badge ${isCurrentAccepted ? 'accepted' : isDraft ? 'draft' : 'other'}`}
+            >
+              {isCurrentAccepted
+                ? '採用済み'
+                : isDraft
+                ? '下書き'
+                : status === 'rejected'
+                ? '破棄済み'
+                : status === 'superseded'
+                ? '差替え済み'
+                : ''}
+            </span>
+            {currentDraftLabel && totalDrafts > 0 && (
+              <span className="draft-count-badge">
+                案 {currentDraftLabel} / {totalDrafts}
+              </span>
+            )}
+            {!isCurrentAccepted && acceptedDraftLabel && (
+              <span className="draft-hint">この場面の採用は 案 {acceptedDraftLabel}</span>
+            )}
+            {!isCurrentAccepted && !acceptedDraftLabel && totalDrafts > 1 && (
+              <span className="draft-hint">この場面はまだ未採用</span>
+            )}
+          </div>
         )}
 
         {hasText ? (
@@ -573,8 +638,11 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
 
         <div className="status-bar">
           {loading && (project?.streamingEnabled ?? false) && 'ストリーミング生成中です'}
-          {status === 'draft' && 'この案は下書きです'}
-          {status === 'accepted' && 'この場面は採用済みです'}
+          {!loading && isCurrentAccepted && '「この案を採用」で確定済みの場面'}
+          {!loading && !isCurrentAccepted && status === 'draft' &&
+            (acceptedDraftLabel
+              ? `別の案（案 ${acceptedDraftLabel}）が採用済み。この下書きを採用すると差替わります。`
+              : 'まだ採用されていない下書き。「この案を採用」で確定できます。')}
         </div>
       </footer>
     </div>

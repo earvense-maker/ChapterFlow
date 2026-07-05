@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
+    "dev": "concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
     "dev:client": "vite",
     "dev:server": "tsx watch src/server/index.ts",
     "open:app": "node open-app-window.js http://localhost:5173",

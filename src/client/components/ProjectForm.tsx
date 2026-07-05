@@ -33,7 +33,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
   const [title, setTitle] = useState('');
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
   const [selection, setSelection] = useState<Record<string, string>>({});
-  const [outputLength, setOutputLength] = useState(3000);
+  const [outputLength, setOutputLength] = useState(6000);
   const [streamingEnabled, setStreamingEnabled] = useState(false);
   const [provider, setProvider] = useState('gemini');
   const [modelName, setModelName] = useState('gemini-3.5-flash');

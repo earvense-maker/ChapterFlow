@@ -18,7 +18,10 @@ import type {
   UpdateProjectBody,
 } from '../types/index.js';
 
-const DEFAULT_OUTPUT_LENGTH = 3000;
+const DEFAULT_OUTPUT_LENGTH = 6000;
+const DEFAULT_FREQUENCY_PENALTY = 0.1;
+const DEFAULT_PRESENCE_PENALTY = 0;
+const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_MODEL_PROVIDER = 'gemini';
 const DEFAULT_MODEL_NAME = defaultModelForProvider(DEFAULT_MODEL_PROVIDER);
 const DEFAULT_STREAMING_ENABLED = false;
@@ -86,14 +89,13 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     outputLength: normalizedSettings.outputLength ?? DEFAULT_OUTPUT_LENGTH,
     streamingEnabled: normalizedSettings.streamingEnabled ?? DEFAULT_STREAMING_ENABLED,
     activePresetIds,
-    ...(normalizedSettings.samplingConfig
-      ? {
-          samplingConfig: {
-            frequencyPenalty: normalizedSettings.samplingConfig.frequencyPenalty ?? 0,
-            presencePenalty: normalizedSettings.samplingConfig.presencePenalty ?? 0,
-          },
-        }
-      : {}),
+    samplingConfig: {
+      frequencyPenalty:
+        normalizedSettings.samplingConfig?.frequencyPenalty ?? DEFAULT_FREQUENCY_PENALTY,
+      presencePenalty:
+        normalizedSettings.samplingConfig?.presencePenalty ?? DEFAULT_PRESENCE_PENALTY,
+      temperature: normalizedSettings.samplingConfig?.temperature ?? DEFAULT_TEMPERATURE,
+    },
   };
 
   const state: ProjectState = {
@@ -191,6 +193,13 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
             samplingConfig.frequencyPenalty ?? project.samplingConfig?.frequencyPenalty ?? 0,
           presencePenalty:
             samplingConfig.presencePenalty ?? project.samplingConfig?.presencePenalty ?? 0,
+          ...(samplingConfig.temperature !== undefined ||
+          project.samplingConfig?.temperature !== undefined
+            ? {
+                temperature:
+                  samplingConfig.temperature ?? project.samplingConfig?.temperature,
+              }
+            : {}),
         }
       : project.samplingConfig,
     projectId,
@@ -276,6 +285,7 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
         updates.samplingConfig.presencePenalty,
         'presencePenalty'
       ),
+      temperature: normalizeTemperature(updates.samplingConfig.temperature),
     };
   }
 
@@ -289,6 +299,18 @@ function normalizePenalty(value: unknown, name: string): number | undefined {
   }
   if (value < 0) return 0;
   if (value > 1) return 1;
+  return value;
+}
+
+// NOTE: DeepSeek / OpenAI は 2.0 まで、Gemini は 1.0 まで受けるが、実用上 1.3 を
+// 超えると日本語が崩れやすいので 0〜1.3 に丸める。
+function normalizeTemperature(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new ProjectValidationError('temperature must be a finite number');
+  }
+  if (value < 0) return 0;
+  if (value > 1.3) return 1.3;
   return value;
 }
 
