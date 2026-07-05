@@ -1,0 +1,394 @@
+import { generateTimestampId } from '../utils/id.js';
+import { nowIso } from '../utils/date.js';
+import * as storage from './storageService.js';
+import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
+import { GeminiAdapter } from '../adapters/geminiAdapter.js';
+import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
+import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
+import { reloadCredentials } from './credentialService.js';
+import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import type {
+  Character,
+  Project,
+  RefineFinding,
+  RefineFindingKind,
+  RefineFindingTarget,
+  RefineScanResult,
+  StoryState,
+} from '../types/index.js';
+
+const OUTPUT_LENGTH = 2200;
+const TEMPERATURE = 0.35;
+const TIMEOUT_MS = 90_000;
+const MAX_FINDINGS = 8;
+const CORE_CONCEPT_MAX_CHARS = 240;
+const MESSAGE_MAX_CHARS = 220;
+const DETAIL_MAX_CHARS = 320;
+const SUGGESTED_FIX_MAX_CHARS = 320;
+
+const KIND_SET = new Set<RefineFindingKind>(['contradiction', 'undefined', 'suggestion']);
+
+const adapterMap: Record<string, ModelAdapter> = {
+  openai: new OpenAIAdapter(),
+  gemini: new GeminiAdapter(),
+  deepseek: new DeepSeekAdapter(),
+};
+
+export class RefineScanError extends Error {
+  code: string;
+  retryable: boolean;
+  status: number;
+
+  constructor(message: string, code: string, retryable: boolean, status = 500) {
+    super(message);
+    this.name = 'RefineScanError';
+    this.code = code;
+    this.retryable = retryable;
+    this.status = status;
+  }
+}
+
+export async function readCachedRefineScan(
+  projectId: string
+): Promise<RefineScanResult | null> {
+  return storage.readRefineScan(projectId);
+}
+
+export async function scanProjectSettings(
+  projectId: string
+): Promise<RefineScanResult> {
+  await reloadCredentials();
+
+  const [project, world, characters, storyState, presets] = await Promise.all([
+    storage.readProject(projectId),
+    storage.readWorld(projectId),
+    storage.readCharacters(projectId),
+    storage.readStoryState(projectId),
+    storage.readPresets(projectId),
+  ]);
+  if (!project) {
+    throw new RefineScanError('作品が見つかりません。', 'project_not_found', false, 404);
+  }
+
+  const adapter = adapterMap[project.activeModelProvider];
+  if (!adapter) {
+    throw new RefineScanError(
+      `対応していないプロバイダーです: ${project.activeModelProvider}`,
+      'unsupported_provider',
+      false,
+      400
+    );
+  }
+
+  const systemPromptResolution = await resolveSystemPrompt(
+    project.activePresetIds,
+    presets?.customSystemPrompt ?? null
+  );
+
+  const { systemInstructions, userPrompt } = buildScanPrompt({
+    project,
+    world,
+    characters,
+    storyState,
+    systemPrompt: systemPromptResolution.systemPrompt,
+  });
+
+  let adapterResult;
+  try {
+    adapterResult = await adapter.generateText({
+      systemInstructions,
+      userPrompt,
+      outputLength: OUTPUT_LENGTH,
+      temperature: TEMPERATURE,
+      timeoutMs: TIMEOUT_MS,
+      modelName: project.activeModelName,
+    });
+  } catch (err) {
+    if (err instanceof ModelAdapterError) {
+      throw new RefineScanError(
+        `モデル呼び出しに失敗しました: ${err.message}`,
+        err.code,
+        err.retryable,
+        503
+      );
+    }
+    throw err;
+  }
+
+  if (adapterResult.finishReason === 'error' || adapterResult.finishReason === 'timeout') {
+    throw new RefineScanError(
+      adapterResult.errorMessage || 'モデルからの応答が得られませんでした。',
+      adapterResult.errorCode || 'model_error',
+      adapterResult.retryable,
+      503
+    );
+  }
+
+  const parsed = parseScanResult(adapterResult.text);
+  const findings = parsed
+    ? normalizeFindings(parsed.findings, characters)
+    : [];
+  const coreConcept = parsed?.coreConcept
+    ? truncate(parsed.coreConcept, CORE_CONCEPT_MAX_CHARS)
+    : '';
+
+  // NOTE: JSON パース失敗時も「空応答扱い」で保存する。ユーザーには
+  // lastError で「読み取れませんでした」を伝え、再実行を促す。
+  const lastError = parsed
+    ? null
+    : 'AI の応答を解釈できませんでした。もう一度お試しください。';
+
+  const result: RefineScanResult = {
+    schemaVersion: 1,
+    generatedAt: nowIso(),
+    usedModel: {
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+    },
+    coreConcept,
+    findings,
+    lastError,
+  };
+
+  await storage.writeRefineScan(projectId, result);
+  return result;
+}
+
+interface BuildScanPromptInput {
+  project: Project;
+  world: string;
+  characters: Character[];
+  storyState: StoryState | null;
+  systemPrompt: string;
+}
+
+function buildScanPrompt(input: BuildScanPromptInput): {
+  systemInstructions: string;
+  userPrompt: string;
+} {
+  const systemInstructions = [
+    'あなたは長編小説の設定レビュー担当です。以下に渡す作品設定を横断的に読み、',
+    '「作品の芯」の要約と、気になる点のリストを日本語で JSON として返してください。',
+    '',
+    '出力は必ず次の JSON スキーマだけを、コードブロックの中に返すこと:',
+    '```json',
+    '{',
+    '  "coreConcept": "作品の芯を1〜2行で。読者が期待できる物語像を1文で。",',
+    '  "findings": [',
+    '    {',
+    '      "kind": "contradiction" | "undefined" | "suggestion",',
+    '      "target": { "kind": "world" | "systemPrompt" | "storyState" }',
+    '                | { "kind": "character", "characterId": "<id>", "characterName": "<name>" }',
+    '                | { "kind": "other", "label": "<短い対象名>" },',
+    '      "message": "気づきを1〜2文で",',
+    '      "detail": "根拠や補足（省略可）",',
+    '      "suggestedFix": "具体的な修正案（省略可）"',
+    '    }',
+    '  ]',
+    '}',
+    '```',
+    '',
+    'kind の判断基準:',
+    '- contradiction: 既存設定同士が食い違っている。人物設定と world、storyState と characters など。',
+    '- undefined: 生成が安定しない原因になりそうな空欄・欠落。年齢、口調、舞台の季節など。',
+    '- suggestion: あった方が良い追加情報。過度な提案は避け、価値の高いものだけ。',
+    '',
+    'ルール:',
+    `- findings は最大 ${MAX_FINDINGS} 件。重要度の高い順に並べる。`,
+    '- character を対象にする場合、characterId は必ず入力の <人物> 節の id を使う。',
+    '- 「文字数を増やしましょう」のような些末な指摘は書かない。',
+    '- 気になる点がなければ findings: [] を返す。',
+    '- JSON 以外の文字（挨拶、まとめ、Markdown 見出し）は一切含めない。',
+  ].join('\n');
+
+  const userPrompt = [
+    '【作品情報】',
+    `タイトル: ${input.project.title}`,
+    '',
+    '【システムプロンプト（現在有効な文体・視点の指示）】',
+    input.systemPrompt.trim() || '（未設定）',
+    '',
+    '【世界】',
+    input.world.trim() || '（未設定）',
+    '',
+    '【人物】',
+    renderCharactersForPrompt(input.characters),
+    '',
+    '【現在のストーリー状態（本文が既にある場合の圧縮版）】',
+    renderStoryStateForPrompt(input.storyState),
+    '',
+    '以上の内容を読み、指定の JSON スキーマだけを返してください。',
+  ].join('\n');
+
+  return { systemInstructions, userPrompt };
+}
+
+function renderCharactersForPrompt(characters: Character[]): string {
+  if (characters.length === 0) return '（未設定）';
+  return characters
+    .map((c) => {
+      const lines = [
+        `- id: ${c.characterId}`,
+        `  name: ${c.name || '（名前未設定）'}`,
+        `  role: ${c.role}`,
+        `  description: ${c.description.trim() || '（未記入）'}`,
+      ];
+      if ((c.speechStyle ?? '').trim()) {
+        lines.push(`  speechStyle: ${c.speechStyle!.trim()}`);
+      }
+      if ((c.relationshipNotes ?? '').trim()) {
+        lines.push(`  relationshipNotes: ${c.relationshipNotes!.trim()}`);
+      }
+      if ((c.secrets ?? '').trim()) {
+        lines.push(`  secrets: ${c.secrets!.trim()}`);
+      }
+      if ((c.currentState ?? '').trim()) {
+        lines.push(`  currentState: ${c.currentState!.trim()}`);
+      }
+      return lines.join('\n');
+    })
+    .join('\n\n');
+}
+
+function renderStoryStateForPrompt(state: StoryState | null): string {
+  if (!state) return '（本文未生成）';
+  const parts: string[] = [];
+  if (state.currentSituation.length) {
+    parts.push('- 現在の状況:');
+    for (const line of state.currentSituation) parts.push(`  - ${line}`);
+  }
+  if (state.characterStates.length) {
+    parts.push('- 人物の状態:');
+    for (const cs of state.characterStates) {
+      const extras: string[] = [];
+      if (cs.knowledge.length) extras.push(`知っていること: ${cs.knowledge.join(' / ')}`);
+      if (cs.relationships.length) extras.push(`関係: ${cs.relationships.join(' / ')}`);
+      const suffix = extras.length ? `（${extras.join(' / ')}）` : '';
+      parts.push(`  - ${cs.name}: ${cs.currentState}${suffix}`.trim());
+    }
+  }
+  if (state.importantEvents.length) {
+    parts.push('- 重要な出来事:');
+    for (const ev of state.importantEvents) parts.push(`  - ${ev.summary}`);
+  }
+  if (state.openThreads.length) {
+    parts.push('- 未回収の伏線:');
+    for (const th of state.openThreads) parts.push(`  - ${th.summary}`);
+  }
+  return parts.length > 0 ? parts.join('\n') : '（記録なし）';
+}
+
+interface ParsedScan {
+  coreConcept: string;
+  findings: unknown[];
+}
+
+function parseScanResult(text: string): ParsedScan | null {
+  const obj = parseJsonObject(text);
+  if (!obj) return null;
+  const coreConcept = typeof obj.coreConcept === 'string' ? obj.coreConcept : '';
+  const findings = Array.isArray(obj.findings) ? obj.findings : [];
+  return { coreConcept, findings };
+}
+
+// NOTE: setupSessionService.parseJsonObject と同じロジック。setup 側は非公開
+// なので複製している。将来共通ユーティリティに寄せてもよい。
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  const withoutFence = trimmed
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  const start = withoutFence.indexOf('{');
+  const end = withoutFence.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(withoutFence.slice(start, end + 1));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeFindings(raw: unknown[], characters: Character[]): RefineFinding[] {
+  const characterById = new Map(characters.map((c) => [c.characterId, c]));
+  const result: RefineFinding[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const kindRaw = typeof item.kind === 'string' ? item.kind.toLowerCase() : '';
+    if (!KIND_SET.has(kindRaw as RefineFindingKind)) continue;
+    const message = truncate(asString(item.message), MESSAGE_MAX_CHARS);
+    if (!message) continue;
+    const target = normalizeTarget(item.target, characterById);
+    if (!target) continue;
+    const detail = item.detail !== undefined ? truncate(asString(item.detail), DETAIL_MAX_CHARS) : '';
+    const suggestedFix =
+      item.suggestedFix !== undefined
+        ? truncate(asString(item.suggestedFix), SUGGESTED_FIX_MAX_CHARS)
+        : '';
+
+    result.push({
+      id: generateTimestampId('finding'),
+      kind: kindRaw as RefineFindingKind,
+      target,
+      message,
+      ...(detail ? { detail } : {}),
+      ...(suggestedFix ? { suggestedFix } : {}),
+    });
+    if (result.length >= MAX_FINDINGS) break;
+  }
+  return result;
+}
+
+function normalizeTarget(
+  raw: unknown,
+  characterById: Map<string, Character>
+): RefineFindingTarget | null {
+  if (!isRecord(raw)) return null;
+  const kind = typeof raw.kind === 'string' ? raw.kind : '';
+  switch (kind) {
+    case 'world':
+      return { kind: 'world' };
+    case 'systemPrompt':
+      return { kind: 'systemPrompt' };
+    case 'storyState':
+      return { kind: 'storyState' };
+    case 'character': {
+      const characterId = asString(raw.characterId);
+      // NOTE: モデルが id を偽装するケースがあるため、実在チェックを通す。
+      // 該当が無ければ「name のみで other 扱い」にフォールバック。
+      const existing = characterById.get(characterId);
+      const providedName = asString(raw.characterName);
+      if (existing) {
+        return {
+          kind: 'character',
+          characterId: existing.characterId,
+          characterName: existing.name || providedName || '（名前未設定）',
+        };
+      }
+      if (providedName) {
+        return { kind: 'other', label: `人物: ${providedName}` };
+      }
+      return null;
+    }
+    case 'other': {
+      const label = truncate(asString(raw.label), 60);
+      return label ? { kind: 'other', label } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function truncate(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return value.slice(0, maxChars - 1) + '…';
+}

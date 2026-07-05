@@ -16,6 +16,7 @@ import type {
   ProjectState,
   ProjectSummary,
   ReaderState,
+  RefineScanResult,
   SceneNavigationDirection,
   CreateSetupSessionBody,
   SendSetupMessageBody,
@@ -121,6 +122,11 @@ export const api = {
   archiveExpression: (id: string, expressionId: string) =>
     request<{ ok: true }>(`/projects/${id}/expressions/${expressionId}`, { method: 'DELETE' }),
   getExpressionReport: (id: string) => request<FrequencyReport>(`/projects/${id}/expressions/report`),
+
+  getRefineScan: (id: string) =>
+    request<RefineScanResult | null>(`/projects/${id}/refine/scan`),
+  scanRefine: (id: string) =>
+    request<RefineScanResult>(`/projects/${id}/refine/scan`, { method: 'POST' }),
 
   generate: (id: string, body: { wish: string; mode: 'continue' | 'regenerate' | 'variate' }) =>
     request<GenerationRecord>(`/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),

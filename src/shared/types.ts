@@ -590,3 +590,38 @@ export interface ContextCompressionResult {
   summary: string;
   contextUsage: ContextUsageEstimate | null;
 }
+
+// NOTE: 作品設定レビュー（refine scan）— 既存作品の設定 (world/characters/
+// systemPrompt/storyState) を AI が横断的に読み、矛盾/未定義/提案を返す。
+// Phase 2 では明示ボタンでのみ走らせる（トークン節約）。結果は refineScan.json
+// にキャッシュし、以降は cache 表示。
+export type RefineFindingKind = 'contradiction' | 'undefined' | 'suggestion';
+
+export type RefineFindingTarget =
+  | { kind: 'world' }
+  | { kind: 'systemPrompt' }
+  | { kind: 'character'; characterId: string; characterName: string }
+  | { kind: 'storyState' }
+  | { kind: 'other'; label: string };
+
+export interface RefineFinding {
+  id: string;
+  kind: RefineFindingKind;
+  target: RefineFindingTarget;
+  message: string;
+  detail?: string;
+  // NOTE: Phase 3 でチャット雛形の初期値として使う。Phase 2 では表示のみ。
+  suggestedFix?: string;
+}
+
+export interface RefineScanResult {
+  schemaVersion: 1;
+  generatedAt: string;
+  usedModel: { provider: string; modelName: string };
+  // NOTE: 「作品の芯」= AI が world+characters+systemPrompt から抽出した
+  // 1〜2 行の要旨。scan のたびに更新され、サマリーカードで最上部に表示。
+  coreConcept: string;
+  findings: RefineFinding[];
+  // NOTE: パース失敗や部分成功時のユーザー向けメッセージ。null なら正常。
+  lastError: string | null;
+}

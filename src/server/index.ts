@@ -13,6 +13,7 @@ import memoriesRouter from './routes/memories.js';
 import modelsRouter from './routes/models.js';
 import setupSessionsRouter from './routes/setupSessions.js';
 import systemRouter from './routes/system.js';
+import refineRouter from './routes/refine.js';
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
@@ -53,6 +54,7 @@ app.use('/api', memoriesRouter);
 app.use('/api', modelsRouter);
 app.use('/api', setupSessionsRouter);
 app.use('/api', systemRouter);
+app.use('/api', refineRouter);
 
 // 本番ビルド時はdist/clientを静的配信
 const staticClientDir = path.resolve(PROJECT_ROOT, 'dist', 'client');

@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import type { Character, PresetsFile, Project } from '@shared/types';
+import type {
+  Character,
+  PresetsFile,
+  Project,
+  RefineFindingKind,
+  RefineFindingTarget,
+  RefineScanResult,
+} from '@shared/types';
 
 interface Props {
   projectId: string;
@@ -49,6 +56,10 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
   const [systemPromptEditing, setSystemPromptEditing] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
 
+  const [refineScan, setRefineScan] = useState<RefineScanResult | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -81,6 +92,11 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
         setSystemPromptDraft(promptPreview.systemPrompt);
         setGeneratedSystemPrompt(promptPreview.generatedSystemPrompt);
         setIsSystemPromptCustomized(promptPreview.isCustomized);
+
+        // NOTE: 前回の scan 結果があれば表示。無ければ null のまま。
+        // 起動時に scan は自動実行しない（トークン消費を明示ボタンに限定）。
+        const cachedScan = await api.getRefineScan(projectId).catch(() => null);
+        if (!cancelled && cachedScan) setRefineScan(cachedScan);
       } catch (err) {
         if (!cancelled) onError(err instanceof Error ? err.message : '読み込みに失敗しました');
       }
@@ -179,6 +195,24 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
     setSystemPromptEditing(false);
   }
 
+  async function handleScanRefine() {
+    try {
+      setScanning(true);
+      setScanError(null);
+      const result = await api.scanRefine(projectId);
+      setRefineScan(result);
+      if (result.lastError) {
+        setScanError(result.lastError);
+      } else {
+        onFlashMessage('作品設定を再走査しました');
+      }
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : '走査に失敗しました');
+    } finally {
+      setScanning(false);
+    }
+  }
+
   async function handleResetSystemPrompt() {
     try {
       setPreviewLoading(true);
@@ -201,6 +235,82 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
 
   return (
     <div>
+      {/* 作品の芯 */}
+      {refineScan?.coreConcept && (
+        <section className="summary-card core-concept-card">
+          <header className="summary-card-header">
+            <h2>作品の芯</h2>
+            <span className="settings-meta">
+              {formatRelativeTime(refineScan.generatedAt)} 更新
+            </span>
+          </header>
+          <p className="core-concept-text">{refineScan.coreConcept}</p>
+        </section>
+      )}
+
+      {/* 気づき */}
+      <section className="summary-card refine-findings-card">
+        <header className="summary-card-header">
+          <h2>AI からの気づき</h2>
+          <div className="summary-card-badges">
+            {refineScan && (
+              <span className="settings-meta">
+                前回走査: {formatRelativeTime(refineScan.generatedAt)}
+              </span>
+            )}
+            <button
+              onClick={handleScanRefine}
+              disabled={scanning}
+              className="refine-scan-button"
+            >
+              {scanning ? '走査中…' : refineScan ? '再走査 🔄' : '気づきを走査 🔄'}
+            </button>
+          </div>
+        </header>
+        {scanError && <div className="refine-scan-error">{scanError}</div>}
+        {!refineScan && !scanning && (
+          <p className="summary-empty">
+            まだ走査していません。「気づきを走査」を押すと、AI が
+            世界設定・人物・システムプロンプト・ストーリー状態を横断して
+            矛盾や未定義項目を指摘します。
+          </p>
+        )}
+        {refineScan && refineScan.findings.length === 0 && !refineScan.lastError && (
+          <p className="summary-empty">
+            気になる点は見つかりませんでした（走査時点）。設定を編集したら
+            再走査すると新しい気づきが出るかもしれません。
+          </p>
+        )}
+        {refineScan && refineScan.findings.length > 0 && (
+          <ul className="refine-findings-list">
+            {refineScan.findings.map((f) => (
+              <li key={f.id} className={`refine-finding kind-${f.kind}`}>
+                <div className="refine-finding-header">
+                  <span className={`refine-finding-badge kind-${f.kind}`}>
+                    {kindLabel(f.kind)}
+                  </span>
+                  <span className="refine-finding-target">
+                    {formatFindingTarget(f.target)}
+                  </span>
+                </div>
+                <p className="refine-finding-message">{f.message}</p>
+                {f.detail && (
+                  <details className="refine-finding-detail">
+                    <summary>詳しく</summary>
+                    <p>{f.detail}</p>
+                  </details>
+                )}
+                {f.suggestedFix && (
+                  <p className="refine-finding-suggestion">
+                    <strong>提案:</strong> {f.suggestedFix}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
       {/* 文体・視点 */}
       <section className="summary-card">
         <header className="summary-card-header">
@@ -494,3 +604,46 @@ function deriveStyleTags(
   }
   return tags;
 }
+
+function kindLabel(kind: RefineFindingKind): string {
+  switch (kind) {
+    case 'contradiction':
+      return '⚠ 矛盾';
+    case 'undefined':
+      return '✎ 未定義';
+    case 'suggestion':
+      return '＋ 提案';
+  }
+}
+
+function formatFindingTarget(target: RefineFindingTarget): string {
+  switch (target.kind) {
+    case 'world':
+      return '世界設定';
+    case 'systemPrompt':
+      return 'システムプロンプト';
+    case 'storyState':
+      return 'ストーリー状態';
+    case 'character':
+      return `人物: ${target.characterName}`;
+    case 'other':
+      return target.label;
+  }
+}
+
+// NOTE: 「3日前」「5分前」等の相対時刻表示。
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const diffSec = Math.floor((Date.now() - then) / 1000);
+  if (diffSec < 60) return 'たった今';
+  const min = Math.floor(diffSec / 60);
+  if (min < 60) return `${min}分前`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour}時間前`;
+  const day = Math.floor(hour / 24);
+  if (day < 30) return `${day}日前`;
+  const month = Math.floor(day / 30);
+  return `${month}ヶ月前`;
+}
+

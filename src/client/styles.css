@@ -1080,6 +1080,134 @@ legend {
   font-size: 0.85rem;
 }
 
+.core-concept-card {
+  background: linear-gradient(180deg, rgba(107, 142, 159, 0.08), rgba(107, 142, 159, 0.02));
+  border-color: rgba(107, 142, 159, 0.4);
+}
+
+.core-concept-text {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.refine-findings-card {
+  border-color: rgba(180, 130, 200, 0.35);
+}
+
+.refine-scan-button {
+  padding: 0.35rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.refine-scan-error {
+  background: rgba(200, 90, 90, 0.15);
+  border: 1px solid rgba(200, 90, 90, 0.4);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+  color: #7a2f2f;
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+}
+
+.refine-findings-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.refine-finding {
+  padding: 0.7rem 0.85rem;
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-left-width: 3px;
+}
+
+.refine-finding.kind-contradiction {
+  border-left-color: #c86b3d;
+}
+
+.refine-finding.kind-undefined {
+  border-left-color: #b78c2a;
+}
+
+.refine-finding.kind-suggestion {
+  border-left-color: #6b8e9f;
+}
+
+.refine-finding-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.35rem;
+}
+
+.refine-finding-badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.refine-finding-badge.kind-contradiction {
+  background: rgba(200, 107, 61, 0.18);
+  color: #8a4020;
+  border: 1px solid rgba(200, 107, 61, 0.45);
+}
+
+.refine-finding-badge.kind-undefined {
+  background: rgba(220, 170, 70, 0.2);
+  color: #7a5410;
+  border: 1px solid rgba(220, 170, 70, 0.5);
+}
+
+.refine-finding-badge.kind-suggestion {
+  background: rgba(107, 142, 159, 0.18);
+  color: #395361;
+  border: 1px solid rgba(107, 142, 159, 0.45);
+}
+
+.refine-finding-target {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.refine-finding-message {
+  margin: 0;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.refine-finding-detail {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.refine-finding-detail summary {
+  cursor: pointer;
+}
+
+.refine-finding-detail p {
+  margin: 0.3rem 0 0;
+  white-space: pre-wrap;
+}
+
+.refine-finding-suggestion {
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.55rem;
+  background: rgba(107, 142, 159, 0.1);
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
 .settings-section {
   margin-bottom: 1.5rem;
 }

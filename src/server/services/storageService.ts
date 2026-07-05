@@ -18,6 +18,7 @@ import type {
   PresetsFile,
   Project,
   ProjectState,
+  RefineScanResult,
   SetupSession,
   StoryState,
 } from '../types/index.js';
@@ -74,6 +75,10 @@ export function storyStateJsonPath(projectId: string): string {
 
 export function expressionsJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'expressions.json');
+}
+
+export function refineScanJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'refineScan.json');
 }
 
 export function episodesDir(projectId: string): string {
@@ -213,6 +218,17 @@ export async function readExpressions(projectId: string): Promise<ExpressionsFil
 
 export async function writeExpressions(projectId: string, file: ExpressionsFile): Promise<void> {
   await safeWriteJson(expressionsJsonPath(projectId), file);
+}
+
+export async function readRefineScan(projectId: string): Promise<RefineScanResult | null> {
+  return readJsonFile<RefineScanResult>(refineScanJsonPath(projectId));
+}
+
+export async function writeRefineScan(
+  projectId: string,
+  scan: RefineScanResult
+): Promise<void> {
+  await safeWriteJson(refineScanJsonPath(projectId), scan);
 }
 
 export async function readWorld(projectId: string): Promise<string> {
