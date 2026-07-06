@@ -11,6 +11,8 @@
     "open:app:prod": "node open-app-window.js http://localhost:3001",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/index.js",
+    "start:lan": "node scripts/start-lan.mjs",
+    "build:start:lan": "npm run build && npm run start:lan",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"

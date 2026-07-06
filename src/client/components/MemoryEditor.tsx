@@ -4,7 +4,9 @@ import type { Memory } from '@shared/types';
 
 interface Props {
   projectId: string;
-  onBack: () => void;
+  // NOTE: onBack が undefined のときは埋め込み表示(独立画面ではなくタブ内)。
+  // ヘッダーを描画しない。
+  onBack?: () => void;
 }
 
 const typeLabels: Record<Memory['type'], string> = {
@@ -65,10 +67,12 @@ export default function MemoryEditor({ projectId, onBack }: Props) {
 
   return (
     <div className="memory-editor">
-      <header className="reader-header">
-        <button onClick={onBack}>← 戻る</button>
-        <h1>記憶の管理</h1>
-      </header>
+      {onBack && (
+        <header className="reader-header">
+          <button onClick={onBack}>← 戻る</button>
+          <h1>記憶の管理</h1>
+        </header>
+      )}
 
       {error && <div className="error-toast">{error}</div>}
 

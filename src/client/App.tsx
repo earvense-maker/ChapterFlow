@@ -2,11 +2,10 @@ import { useState } from 'react';
 import ProjectList from './components/ProjectList';
 import ProjectForm from './components/ProjectForm';
 import Reader from './components/Reader';
-import MemoryEditor from './components/MemoryEditor';
 import SettingPanel from './components/SettingPanel';
 import SetupWorkspace from './components/SetupWorkspace';
 
-type View = 'list' | 'new' | 'setup' | 'read' | 'settings' | 'memories';
+type View = 'list' | 'new' | 'setup' | 'read' | 'settings-work' | 'settings-app' | 'settings-memory';
 
 export default function App() {
   const [view, setView] = useState<View>('list');
@@ -27,6 +26,13 @@ export default function App() {
     setView('list');
   };
 
+  // NOTE: 記憶は SettingPanel の1タブに統合済み。旧 memories ビューは廃止し、
+  // メニューから「作品設定」「アプリ設定」「記憶(=作品設定の記憶タブ)」へ遷移する。
+  const settingsInitialTab =
+    view === 'settings-work' ? 'work' :
+    view === 'settings-app' ? 'tech' :
+    view === 'settings-memory' ? 'memory' : undefined;
+
   return (
     <div className="app">
       {view === 'list' && (
@@ -42,16 +48,19 @@ export default function App() {
         <Reader
           projectId={activeProjectId}
           onBack={handleBackToList}
-          onOpenSettings={() => setView('settings')}
-          onOpenMemories={() => setView('memories')}
+          onOpenWorkSettings={() => setView('settings-work')}
+          onOpenAppSettings={() => setView('settings-app')}
+          onOpenMemories={() => setView('settings-memory')}
         />
       )}
-      {view === 'settings' && activeProjectId && (
-        <SettingPanel projectId={activeProjectId} onBack={() => setView('read')} />
-      )}
-      {view === 'memories' && activeProjectId && (
-        <MemoryEditor projectId={activeProjectId} onBack={() => setView('read')} />
-      )}
+      {(view === 'settings-work' || view === 'settings-app' || view === 'settings-memory') &&
+        activeProjectId && (
+          <SettingPanel
+            projectId={activeProjectId}
+            onBack={() => setView('read')}
+            initialTab={settingsInitialTab}
+          />
+        )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
+import { useTheme } from '../hooks/useTheme';
 import type {
   ContextUsageEstimate,
   FrequencyReportItem,
@@ -15,11 +16,21 @@ import type {
 interface Props {
   projectId: string;
   onBack: () => void;
-  onOpenSettings: () => void;
+  onOpenWorkSettings: () => void;
+  onOpenAppSettings: () => void;
   onOpenMemories: () => void;
 }
 
-export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemories }: Props) {
+// NOTE: 文脈警告バッジを出す使用率のしきい値。0.7=70%。
+const CONTEXT_WARNING_THRESHOLD = 0.7;
+
+export default function Reader({
+  projectId,
+  onBack,
+  onOpenWorkSettings,
+  onOpenAppSettings,
+  onOpenMemories,
+}: Props) {
   const [project, setProject] = useState<Project | null>(null);
   const [text, setText] = useState('');
   const [generationId, setGenerationId] = useState<string | null>(null);
@@ -32,11 +43,11 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
   });
   const [currentScene, setCurrentScene] = useState<SceneRecord | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsageEstimate | null>(null);
-  const [contextSummaryExcerpt, setContextSummaryExcerpt] = useState('');
   const [storyStateRefresh, setStoryStateRefresh] = useState<StoryStateRefreshStatus | null>(null);
   const [wish, setWish] = useState('');
   const [rewriteWish, setRewriteWish] = useState('');
-  const [showRewriteForm, setShowRewriteForm] = useState(false);
+  const [rewriteSheetOpen, setRewriteSheetOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -50,7 +61,9 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
   const inputRef = useRef<HTMLInputElement>(null);
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const storyStatePollInFlightRef = useRef(false);
+  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
 
   async function load() {
     try {
@@ -76,7 +89,6 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     setCurrentScene(state.currentScene);
     setNavigation(state.navigation);
     setContextUsage(state.contextUsage);
-    setContextSummaryExcerpt(state.contextSummaryExcerpt);
     setStoryStateRefresh(state.state.storyStateRefresh ?? null);
   }
 
@@ -95,6 +107,25 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     }, 2000);
     return () => window.clearInterval(timer);
   }, [projectId, storyStateRefresh?.status]);
+
+  // NOTE: メニューの外側クリックで閉じる。Escでも閉じる。
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    function handleEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setMenuOpen(false);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleEsc);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleEsc);
+    };
+  }, [menuOpen]);
 
   async function handleGenerate(
     mode: 'continue' | 'regenerate' | 'variate',
@@ -124,7 +155,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
       setStatus(record.status);
       setWish('');
       setRewriteWish('');
-      setShowRewriteForm(false);
+      setRewriteSheetOpen(false);
       try {
         applyReaderState(await api.getReaderState(projectId));
       } catch {
@@ -138,8 +169,8 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     }
   }
 
-  function openRewriteForm() {
-    setShowRewriteForm((open) => !open);
+  function openRewriteSheet() {
+    setRewriteSheetOpen(true);
     setTimeout(() => rewriteInputRef.current?.focus(), 0);
   }
 
@@ -158,16 +189,16 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     }
   }
 
-  async function handleReject() {
-    if (!generationId) return;
+  async function handleUnaccept() {
+    if (!window.confirm('この場面の採用を取り消して下書きに戻しますか？')) return;
     try {
       setLoading(true);
       setError(null);
       setNotice(null);
-      await api.rejectGeneration(projectId, generationId);
+      await api.unacceptCurrentScene(projectId);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '破棄に失敗しました');
+      setError(err instanceof Error ? err.message : '採用取消に失敗しました');
     } finally {
       setLoading(false);
     }
@@ -198,22 +229,6 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
       applyReaderState(state);
     } catch (err) {
       setError(err instanceof Error ? err.message : '場面移動に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleCompressContext() {
-    try {
-      setLoading(true);
-      setError(null);
-      setNotice(null);
-      const result = await api.compressContext(projectId);
-      setContextUsage(result.contextUsage);
-      setContextSummaryExcerpt(result.summary.slice(0, 240));
-      setNotice('過去本文を次回生成用に圧縮しました');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '過去本文の圧縮に失敗しました');
     } finally {
       setLoading(false);
     }
@@ -252,6 +267,7 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
   async function handleToggleExpressionReport() {
     const next = !showExpressionReport;
     setShowExpressionReport(next);
+    setMenuOpen(false);
     if (next) {
       await loadExpressionReport();
     }
@@ -334,32 +350,6 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     return () => document.removeEventListener('selectionchange', handleSelectionChange);
   }, []);
 
-  const isDraft = status === 'draft';
-  const hasText = text.length > 0;
-  const storyStateIsStale = storyStateRefresh?.status === 'stale';
-  const storyStateIsPending = storyStateRefresh?.status === 'pending';
-  const scenePosition =
-    navigation.currentSceneOrder && navigation.totalScenes > 0
-      ? `${navigation.currentSceneOrder} / ${navigation.totalScenes}`
-      : '';
-
-  // NOTE: この場面の候補（draftGenerationIds）内で、いま画面に出ている案が何番目か、
-  // どれが採用済みかを一目で見せる。採用と選択が同じなら「採用済み」バッジ、
-  // 別なら「下書き（案 N/M）」＋「採用: 案 K」のヒントを出す。
-  const draftIds = currentScene?.draftGenerationIds ?? [];
-  const totalDrafts = draftIds.length;
-  const currentDraftIndex = generationId ? draftIds.indexOf(generationId) : -1;
-  const currentDraftLabel = currentDraftIndex >= 0 ? currentDraftIndex + 1 : null;
-  const acceptedDraftIndex = currentScene?.acceptedGenerationId
-    ? draftIds.indexOf(currentScene.acceptedGenerationId)
-    : -1;
-  const acceptedDraftLabel = acceptedDraftIndex >= 0 ? acceptedDraftIndex + 1 : null;
-  const isCurrentAccepted = Boolean(
-    currentScene?.acceptedGenerationId &&
-      generationId &&
-      currentScene.acceptedGenerationId === generationId
-  );
-
   async function handleShutdown() {
     if (!window.confirm('Yumeweaving を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
     try {
@@ -373,37 +363,180 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
     }, 300);
   }
 
+  const isDraft = status === 'draft';
+  const hasText = text.length > 0;
+  const storyStateIsStale = storyStateRefresh?.status === 'stale';
+  const storyStateIsPending = storyStateRefresh?.status === 'pending';
+
+  const draftIds = currentScene?.draftGenerationIds ?? [];
+  const totalDrafts = draftIds.length;
+  const currentDraftIndex = generationId ? draftIds.indexOf(generationId) : -1;
+  const currentDraftLabel = currentDraftIndex >= 0 ? currentDraftIndex + 1 : null;
+  const isCurrentAccepted = Boolean(
+    currentScene?.acceptedGenerationId &&
+      generationId &&
+      currentScene.acceptedGenerationId === generationId
+  );
+
+  // NOTE: 前の案に戻す — 現在の draft が1件目より前 かつ 採用済みが存在しない場合は無効。
+  const canRevert = totalDrafts > 1 && currentDraftIndex > 0;
+  // NOTE: 文脈使用率が閾値超えのときのみ、ヘッダー付近に警告バッジを出す。
+  const contextWarn =
+    contextUsage && contextUsage.usageRatio >= CONTEXT_WARNING_THRESHOLD
+      ? Math.round(contextUsage.usageRatio * 100)
+      : null;
+
   return (
     <div className="reader">
       <header className="reader-header">
-        <button onClick={onBack}>← 一覧</button>
+        <button className="reader-back" onClick={onBack}>
+          ← 一覧
+        </button>
         <h1>{project?.title || '読み込み中…'}</h1>
-        <div className="reader-header-actions">
+        <div className="scene-nav">
           <button
+            aria-label="前の場面"
             onClick={() => handleNavigateScene('previous')}
             disabled={loading || !navigation.hasPreviousScene}
           >
-            前の場面
+            ‹ 前
           </button>
-          <span className="scene-position">{scenePosition}</span>
           <button
+            aria-label="次の場面"
             onClick={() => handleNavigateScene('next')}
             disabled={loading || !navigation.hasNextScene}
           >
-            次の場面
-          </button>
-          <button onClick={() => adjustFontSize(-1)} title="文字を小さく">A-</button>
-          <button onClick={() => adjustFontSize(1)} title="文字を大きく">A+</button>
-          <button onClick={handleToggleExpressionReport}>
-            {showExpressionReport ? 'レポートを閉じる' : '表現レポート'}
-          </button>
-          <button onClick={onOpenMemories}>記憶</button>
-          <button onClick={onOpenSettings}>設定</button>
-          <button className="danger" onClick={handleShutdown} title="サーバーとターミナルも終了">
-            終了
+            次 ›
           </button>
         </div>
+        <div className="reader-menu-wrap" ref={menuRef}>
+          <button
+            className="reader-menu-toggle"
+            aria-label="メニュー"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            ⋯
+          </button>
+          {menuOpen && (
+            <div className="reader-menu" role="menu">
+              <div className="reader-menu-row reader-menu-row-fontsize">
+                <span className="reader-menu-label">文字サイズ</span>
+                <div className="reader-menu-fontsize-buttons">
+                  <button onClick={() => adjustFontSize(-1)} aria-label="小さく">A-</button>
+                  <button onClick={() => adjustFontSize(1)} aria-label="大きく">A+</button>
+                </div>
+              </div>
+              <button
+                className="reader-menu-item"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onOpenMemories();
+                }}
+              >
+                🧠 記憶
+              </button>
+              <button
+                className="reader-menu-item"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onOpenWorkSettings();
+                }}
+              >
+                📖 作品設定
+              </button>
+              <button
+                className="reader-menu-item"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onOpenAppSettings();
+                }}
+              >
+                ⚙ アプリ設定
+              </button>
+              <button
+                className="reader-menu-item"
+                onClick={handleToggleExpressionReport}
+              >
+                📊 表現レポート
+              </button>
+              <div className="reader-menu-row">
+                <span className="reader-menu-label">表示テーマ</span>
+                <div className="theme-toggle" role="radiogroup" aria-label="表示テーマ">
+                  <button
+                    role="radio"
+                    aria-checked={themeChoice === 'auto'}
+                    className={themeChoice === 'auto' ? 'active' : ''}
+                    onClick={() => setThemeChoice('auto')}
+                  >
+                    自動
+                  </button>
+                  <button
+                    role="radio"
+                    aria-checked={themeChoice === 'light'}
+                    className={themeChoice === 'light' ? 'active' : ''}
+                    onClick={() => setThemeChoice('light')}
+                  >
+                    ライト
+                  </button>
+                  <button
+                    role="radio"
+                    aria-checked={themeChoice === 'dark'}
+                    className={themeChoice === 'dark' ? 'active' : ''}
+                    onClick={() => setThemeChoice('dark')}
+                  >
+                    ダーク
+                  </button>
+                </div>
+              </div>
+              {generationId && (
+                <a
+                  className="reader-menu-item"
+                  href={api.generationMarkdownUrl(projectId, generationId)}
+                  download
+                  onClick={() => setMenuOpen(false)}
+                >
+                  ⬇ 現在の案をMDでエクスポート
+                </a>
+              )}
+              <button
+                className="reader-menu-item reader-menu-shutdown danger"
+                onClick={() => {
+                  setMenuOpen(false);
+                  handleShutdown();
+                }}
+              >
+                サーバー終了
+              </button>
+            </div>
+          )}
+        </div>
       </header>
+
+      <div className="reader-subheader">
+        {hasText && (
+          <span
+            className={`reader-status-badge ${isCurrentAccepted ? 'accepted' : isDraft ? 'draft' : 'other'}`}
+          >
+            {isCurrentAccepted ? '採' : isDraft ? '下' : '—'}
+            {currentDraftLabel && totalDrafts > 0 && (
+              <span className="reader-status-badge-count">
+                {' '}案 {currentDraftLabel}/{totalDrafts}
+              </span>
+            )}
+          </span>
+        )}
+        {navigation.currentSceneOrder && navigation.totalScenes > 0 && (
+          <span className="reader-scene-position">
+            場面 {navigation.currentSceneOrder}/{navigation.totalScenes}
+          </span>
+        )}
+        {contextWarn !== null && (
+          <span className="reader-context-badge" title="次回生成の文脈使用率">
+            ⚠ 文脈 {contextWarn}%
+          </span>
+        )}
+      </div>
 
       <main className="reader-body">
         {error && <div className="error-toast">{error}</div>}
@@ -476,35 +609,6 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
           </button>
         )}
 
-        {hasText && (
-          <div className="draft-badge-bar">
-            <span
-              className={`draft-status-badge ${isCurrentAccepted ? 'accepted' : isDraft ? 'draft' : 'other'}`}
-            >
-              {isCurrentAccepted
-                ? '採用済み'
-                : isDraft
-                ? '下書き'
-                : status === 'rejected'
-                ? '破棄済み'
-                : status === 'superseded'
-                ? '差替え済み'
-                : ''}
-            </span>
-            {currentDraftLabel && totalDrafts > 0 && (
-              <span className="draft-count-badge">
-                案 {currentDraftLabel} / {totalDrafts}
-              </span>
-            )}
-            {!isCurrentAccepted && acceptedDraftLabel && (
-              <span className="draft-hint">この場面の採用は 案 {acceptedDraftLabel}</span>
-            )}
-            {!isCurrentAccepted && !acceptedDraftLabel && totalDrafts > 1 && (
-              <span className="draft-hint">この場面はまだ未採用</span>
-            )}
-          </div>
-        )}
-
         {hasText ? (
           <article
             ref={textRef}
@@ -522,6 +626,26 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
       </main>
 
       <footer className="reader-controls">
+        {hasText && isDraft && (
+          <div className="draft-actions">
+            <button className="primary" onClick={handleAccept} disabled={loading}>
+              この案を採用
+            </button>
+            <button onClick={openRewriteSheet} disabled={loading}>
+              書き直す
+            </button>
+            <button onClick={handleRevert} disabled={loading || !canRevert}>
+              前の案
+            </button>
+          </div>
+        )}
+        {hasText && isCurrentAccepted && (
+          <div className="accepted-actions">
+            <button onClick={handleUnaccept} disabled={loading}>
+              採用取消
+            </button>
+          </div>
+        )}
         <form
           className="wish-input"
           onSubmit={(e) => {
@@ -538,46 +662,30 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
             disabled={loading}
           />
           <button type="submit" className="primary" disabled={loading}>
-            {loading ? '生成中…' : hasText ? '続きを生成' : '最初の場面を生成'}
+            {loading ? '生成中…' : '生成'}
           </button>
         </form>
+      </footer>
 
-        {contextUsage && (
-          <div className="context-panel">
-            <div className="context-panel-main">
-              <span>
-                次回文脈: 推定 {formatTokenCount(contextUsage.estimatedPromptTokens + contextUsage.estimatedMaxOutputTokens)}
-                {' / '}
-                {formatTokenCount(contextUsage.contextWindowTokens)}
-              </span>
-              <span>残り {formatTokenCount(contextUsage.estimatedAvailableTokens)}</span>
-              <span>
-                上限 {tokenLimitSourceLabel(contextUsage.tokenLimitSource)} / 入力 {tokenCountSourceLabel(contextUsage.promptTokenSource)}
-              </span>
-              <span>
-                要約 {contextUsage.summaryChars.toLocaleString()}字 / 直近 {contextUsage.recentContextChars.toLocaleString()}字
-              </span>
-            </div>
-            <progress max={1} value={contextUsage.usageRatio} />
-            <div className="context-panel-actions">
-              <button type="button" onClick={handleCompressContext} disabled={loading || !hasText}>
-                過去を圧縮
-              </button>
-              {contextSummaryExcerpt && <span>要約あり</span>}
-            </div>
-          </div>
-        )}
-
-        {hasText && showRewriteForm && (
-          <form
-            className="rewrite-input"
-            onSubmit={(e) => {
-              e.preventDefault();
-              handleGenerate('regenerate', rewriteWish);
-            }}
+      {rewriteSheetOpen && (
+        <div
+          className="bottom-sheet-overlay"
+          onMouseDown={() => setRewriteSheetOpen(false)}
+        >
+          <div
+            className="bottom-sheet"
+            role="dialog"
+            aria-label="書き直し指示"
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            <label>
-              書き直し指示
+            <div className="bottom-sheet-handle" />
+            <h3>書き直し指示</h3>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleGenerate('regenerate', rewriteWish);
+              }}
+            >
               <textarea
                 ref={rewriteInputRef}
                 value={rewriteWish}
@@ -585,82 +693,22 @@ export default function Reader({ projectId, onBack, onOpenSettings, onOpenMemori
                 placeholder="展開はそのまま心理描写を増やす、会話を多めにする、もっと静かな文体にする…"
                 disabled={loading}
               />
-            </label>
-            <div className="rewrite-actions">
-              <button type="submit" className="primary" disabled={loading}>
-                この指示で書き直す
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowRewriteForm(false)}
-                disabled={loading}
-              >
-                閉じる
-              </button>
-            </div>
-          </form>
-        )}
-
-        <div className="generation-actions">
-          {hasText && (
-            <>
-              <button onClick={openRewriteForm} disabled={loading}>
-                書き直す
-              </button>
-              <button onClick={() => handleGenerate('variate')} disabled={loading}>
-                少し変える
-              </button>
-              <button onClick={handleRevert} disabled={loading}>
-                前の案に戻す
-              </button>
-              {generationId && (
-                <a
-                  className="button-link"
-                  href={api.generationMarkdownUrl(projectId, generationId)}
-                  download
+              <div className="bottom-sheet-actions">
+                <button
+                  type="button"
+                  onClick={() => setRewriteSheetOpen(false)}
+                  disabled={loading}
                 >
-                  MDを保存
-                </a>
-              )}
-              {isDraft && (
-                <>
-                  <button className="primary" onClick={handleAccept} disabled={loading}>
-                    この案を採用
-                  </button>
-                  <button className="danger" onClick={handleReject} disabled={loading}>
-                    破棄
-                  </button>
-                </>
-              )}
-            </>
-          )}
+                  閉じる
+                </button>
+                <button type="submit" className="primary" disabled={loading}>
+                  {loading ? '生成中…' : 'この指示で書き直す'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
-
-        <div className="status-bar">
-          {loading && (project?.streamingEnabled ?? false) && 'ストリーミング生成中です'}
-          {!loading && isCurrentAccepted && '「この案を採用」で確定済みの場面'}
-          {!loading && !isCurrentAccepted && status === 'draft' &&
-            (acceptedDraftLabel
-              ? `別の案（案 ${acceptedDraftLabel}）が採用済み。この下書きを採用すると差替わります。`
-              : 'まだ採用されていない下書き。「この案を採用」で確定できます。')}
-        </div>
-      </footer>
+      )}
     </div>
   );
-}
-
-function formatTokenCount(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${Math.round(value / 100) / 10}k`;
-  return value.toLocaleString();
-}
-
-function tokenLimitSourceLabel(source: ContextUsageEstimate['tokenLimitSource']): string {
-  if (source === 'provider') return 'API取得';
-  if (source === 'catalog') return '公式値';
-  return '推定';
-}
-
-function tokenCountSourceLabel(source: ContextUsageEstimate['promptTokenSource']): string {
-  return source === 'provider' ? 'API実測' : '推定';
 }

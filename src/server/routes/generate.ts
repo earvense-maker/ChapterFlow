@@ -165,6 +165,16 @@ router.post('/projects/:id/revert', async (req, res, next) => {
   }
 });
 
+router.post('/projects/:id/unaccept', async (req, res, next) => {
+  try {
+    const record = await generationService.unacceptCurrentScene(req.params.id);
+    if (!record) return res.status(404).json({ error: 'No accepted generation to unaccept' });
+    res.json(record);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/projects/:id/navigate-scene', async (req, res, next) => {
   try {
     const { direction } = req.body as { direction?: SceneNavigationDirection };

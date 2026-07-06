@@ -3,20 +3,22 @@ import { api } from '../clientApi';
 import type { Project } from '@shared/types';
 import WorkSettingsTab from './WorkSettingsTab';
 import TechSettingsTab from './TechSettingsTab';
+import MemoryEditor from './MemoryEditor';
 
 interface Props {
   projectId: string;
   onBack: () => void;
+  initialTab?: Tab;
 }
 
 // NOTE: 作品ページ内から開いた場合の設定。プリセット再選択 UI は出さず、
 // 「作品設定（世界・人物・システムプロンプト）」と「技術設定（モデル・
-// サンプリング・NG 表現・APIキー）」の 2 タブに分ける。
-type Tab = 'work' | 'tech';
+// サンプリング・NG 表現・APIキー）」と「記憶」の 3 タブに分ける。
+type Tab = 'work' | 'tech' | 'memory';
 
-export default function SettingPanel({ projectId, onBack }: Props) {
+export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
   const [project, setProject] = useState<Project | null>(null);
-  const [tab, setTab] = useState<Tab>('work');
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'work');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -64,6 +66,14 @@ export default function SettingPanel({ projectId, onBack }: Props) {
         </button>
         <button
           role="tab"
+          aria-selected={tab === 'memory'}
+          className={tab === 'memory' ? 'settings-tab active' : 'settings-tab'}
+          onClick={() => setTab('memory')}
+        >
+          🧠 記憶
+        </button>
+        <button
+          role="tab"
           aria-selected={tab === 'tech'}
           className={tab === 'tech' ? 'settings-tab active' : 'settings-tab'}
           onClick={() => setTab('tech')}
@@ -92,6 +102,7 @@ export default function SettingPanel({ projectId, onBack }: Props) {
           onFlashMessage={flashMessage}
         />
       )}
+      {project && tab === 'memory' && <MemoryEditor projectId={projectId} />}
     </div>
   );
 }

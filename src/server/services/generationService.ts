@@ -651,6 +651,45 @@ async function acceptGenerationUnlocked(
   return generation;
 }
 
+export async function unacceptCurrentScene(projectId: string): Promise<GenerationRecord | null> {
+  return withProjectWriteLock(projectId, () => unacceptCurrentSceneUnlocked(projectId));
+}
+
+// NOTE: 現在シーンの採用を取り消し、draft 状態に戻す。episode markdown も再構築される。
+// 復元される status は 'draft'(supersededや他のdraftへの影響はしない)。
+async function unacceptCurrentSceneUnlocked(projectId: string): Promise<GenerationRecord | null> {
+  const state = await storage.readState(projectId);
+  if (!state?.currentEpisodeId || !state.currentSceneId) return null;
+
+  const episode = await storage.readEpisodeRecord(projectId, state.currentEpisodeId);
+  if (!episode) return null;
+
+  const scene = episode.scenes.find((s) => s.sceneId === state.currentSceneId);
+  if (!scene?.acceptedGenerationId) return null;
+
+  const acceptedId = scene.acceptedGenerationId;
+  const generation = await findGeneration(projectId, acceptedId);
+  if (!generation) return null;
+
+  generation.status = 'draft';
+  await storage.appendGenerationStatusLog(projectId, generation.generationId, generation.status);
+
+  scene.acceptedGenerationId = null;
+  await storage.writeEpisodeRecord(projectId, episode);
+
+  await updateEpisodeMarkdown(projectId, episode);
+
+  const nextState = {
+    ...state,
+    selectedDraftGenerationId: generation.generationId,
+    lastAcceptedGenerationId:
+      state.lastAcceptedGenerationId === acceptedId ? null : state.lastAcceptedGenerationId,
+  };
+  await storage.writeState(projectId, nextState);
+
+  return generation;
+}
+
 async function refreshStoryStateAfterAcceptance(
   projectId: string,
   generation: GenerationRecord

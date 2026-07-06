@@ -11,6 +11,17 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>Yumeweaving</title>
+    <script>
+      // NOTE: React 起動前にテーマを適用して、初回描画時のちらつき(FOUC)を防ぐ。
+      (function () {
+        try {
+          var stored = localStorage.getItem('yumeweaving:theme');
+          var osLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+          var theme = stored === 'light' || stored === 'dark' ? stored : (osLight ? 'light' : 'dark');
+          document.documentElement.setAttribute('data-theme', theme);
+        } catch (_) { /* localStorage 使用不能な環境は既定のダーク */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

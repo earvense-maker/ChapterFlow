@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { existsSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { PROJECT_ROOT, DATA_DIR } from './config.js';
 import { ensureDir } from './utils/safeWrite.js';
@@ -31,6 +32,21 @@ const allowedCorsOrigins = new Set(
     `http://127.0.0.1:${PORT}`,
   ]
 );
+
+// NOTE: HOST=0.0.0.0 の LAN 配信モードでは、スマホから http://<LAN_IP>:PORT を
+// 開いた際に same-origin fetch でも Origin ヘッダが付くケースがあるため、
+// 自分の LAN IPv4 を許可オリジンとして自動追加する。
+if (HOST === '0.0.0.0' && !configuredCorsOrigins) {
+  const nets = networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const info of nets[name] ?? []) {
+      if (info.family === 'IPv4' && !info.internal) {
+        allowedCorsOrigins.add(`http://${info.address}:${PORT}`);
+        allowedCorsOrigins.add(`http://${info.address}:${DEV_CLIENT_PORT}`);
+      }
+    }
+  }
+}
 
 app.use(
   cors({
@@ -71,10 +87,30 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
+function listLanUrls(port: number): string[] {
+  const urls: string[] = [];
+  const nets = networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const info of nets[name] ?? []) {
+      if (info.family === 'IPv4' && !info.internal) {
+        urls.push(`http://${info.address}:${port}`);
+      }
+    }
+  }
+  return urls;
+}
+
 async function main() {
   await ensureDir(DATA_DIR);
   app.listen(PORT, HOST, () => {
     console.log(`Yumeweaving server listening on http://${HOST}:${PORT}`);
+    if (HOST === '0.0.0.0') {
+      const lan = listLanUrls(PORT);
+      if (lan.length > 0) {
+        console.log('Reachable from this network at:');
+        for (const url of lan) console.log(`  ${url}`);
+      }
+    }
   });
 }
 
