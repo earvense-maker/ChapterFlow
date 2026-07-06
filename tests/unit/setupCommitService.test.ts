@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeSetupCommitData } from '../../src/server/services/setupCommitService';
+import { normalizeSetupCommitData, normalizeSetupCommitPlan } from '../../src/server/services/setupCommitService';
 import { createEmptySetupDraft } from '../../src/server/services/setupDraftPatchService';
 import type { SetupSession } from '../../src/server/types/index';
 
@@ -129,6 +129,82 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.worldText).toContain('江戸時代風の町');
   });
 
+  it('merges draft ng and tone into memories even when LLM returns none', () => {
+    const setupSession = session();
+    setupSession.draft.ng = ['流血表現', '残酷な死'];
+    setupSession.draft.tone = ['軽妙な掛け合い'];
+
+    const normalized = normalizeSetupCommitData({
+      session: setupSession,
+      now,
+      presetIdsByCategory: {
+        genre: ['modern-drama'],
+        style: ['natural-dialogue'],
+        pov: ['third-person-close'],
+        pacing: ['standard'],
+        density: ['balanced'],
+        relationshipPacing: ['standard'],
+      },
+      raw: {},
+    });
+
+    const ngMemories = normalized.memories.filter((memory) => memory.type === 'negative');
+    expect(ngMemories.map((memory) => memory.content)).toEqual(['流血表現', '残酷な死']);
+    expect(ngMemories.every((memory) => memory.importance === 'high')).toBe(true);
+    expect(normalized.memories.some((memory) => memory.content === '軽妙な掛け合い' && memory.type === 'preference')).toBe(true);
+  });
+
+  it('does not duplicate ng/tone memories when LLM already returns the same content', () => {
+    const setupSession = session();
+    setupSession.draft.ng = ['流血表現'];
+
+    const normalized = normalizeSetupCommitData({
+      session: setupSession,
+      now,
+      presetIdsByCategory: {
+        genre: ['modern-drama'],
+        style: ['natural-dialogue'],
+        pov: ['third-person-close'],
+        pacing: ['standard'],
+        density: ['balanced'],
+        relationshipPacing: ['standard'],
+      },
+      raw: {
+        memories: [{ type: 'negative', content: '流血表現', importance: 'high' }],
+      },
+    });
+
+    expect(normalized.memories.filter((memory) => memory.type === 'negative')).toHaveLength(1);
+  });
+
+  it('prioritizes ng memories over lower importance LLM memories at the 24 limit', () => {
+    const setupSession = session();
+    setupSession.draft.ng = ['NG表現'];
+
+    const normalized = normalizeSetupCommitData({
+      session: setupSession,
+      now,
+      presetIdsByCategory: {
+        genre: ['modern-drama'],
+        style: ['natural-dialogue'],
+        pov: ['third-person-close'],
+        pacing: ['standard'],
+        density: ['balanced'],
+        relationshipPacing: ['standard'],
+      },
+      raw: {
+        memories: Array.from({ length: 24 }, (_, index) => ({
+          type: 'preference',
+          content: `LLMメモ${index}`,
+          importance: index < 12 ? 'medium' : 'low',
+        })),
+      },
+    });
+
+    expect(normalized.memories).toHaveLength(24);
+    expect(normalized.memories.some((memory) => memory.content === 'NG表現' && memory.type === 'negative')).toBe(true);
+  });
+
   it('falls back to active draft characters when final conversion omits characters', () => {
     const setupSession = session();
     setupSession.draft.characters = [
@@ -182,5 +258,66 @@ describe('setupCommitService', () => {
         relationshipNotes: '岡っ引きに振り回される。',
       }),
     ]);
+  });
+
+  it('normalizeSetupCommitPlan behaves the same as normalizeSetupCommitData', () => {
+    const setupSession = session();
+    setupSession.draft.ng = ['流血表現'];
+
+    const planResult = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: {
+        genre: ['modern-drama'],
+        style: ['natural-dialogue'],
+        pov: ['third-person-close'],
+        pacing: ['standard'],
+        density: ['balanced'],
+        relationshipPacing: ['standard'],
+      },
+      raw: {
+        project: { title: 'plan title', outputLength: 5000, activePresetIds: { genre: 'modern-drama' } },
+        worldText: 'plan world',
+        characters: [{ name: 'plan char', role: 'protagonist', description: 'desc' }],
+        memories: [{ type: 'preference', content: 'plan memory', importance: 'medium' }],
+        storyState: { currentSituation: ['plan situation'], openThreads: [] },
+        customSystemPrompt: 'plan system',
+      },
+    });
+
+    expect(planResult.projectInput.title).toBe('plan title');
+    expect(planResult.projectInput.worldText).toBe('plan world');
+    expect(planResult.memories.some((memory) => memory.content === '流血表現' && memory.type === 'negative')).toBe(true);
+    expect(planResult.memories.some((memory) => memory.content === 'plan memory')).toBe(true);
+    expect(planResult.storyState.currentSituation).toContain('plan situation');
+  });
+
+  it('normalizes unknown preset IDs and broken storyState in edited plan', () => {
+    const setupSession = session();
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: {
+        genre: ['modern-drama'],
+        style: ['natural-dialogue'],
+        pov: ['third-person-close'],
+        pacing: ['standard'],
+        density: ['balanced'],
+        relationshipPacing: ['standard'],
+      },
+      raw: {
+        project: { title: 'edited', activePresetIds: { genre: 'unknown-genre', density: 'balanced' } },
+        worldText: 'edited world',
+        characters: [],
+        memories: [],
+        storyState: { currentSituation: ['ok'], openThreads: [{ summary: 'thread', importance: 'invalid' }] },
+        customSystemPrompt: '',
+      },
+    });
+
+    expect(normalized.projectInput.activePresetIds?.genre).toBe('modern-drama');
+    expect(normalized.projectInput.activePresetIds?.density).toBe('balanced');
+    expect(normalized.storyState.openThreads[0].importance).toBe('medium');
   });
 });

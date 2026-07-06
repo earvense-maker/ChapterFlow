@@ -17,7 +17,7 @@ describe('setupDraftPatchService', () => {
       locks: [],
       now,
       patch: {
-        confirmedAdd: [{ text: '強気なヒロイン' }, { text: '強気なヒロイン' }],
+        confirmedAdd: [{ text: '強気なヒロイン', source: 'user' }, { text: '強気なヒロイン', source: 'user' }],
         candidatesAdd: [
           {
             title: '女岡っ引き × 気弱な絵師',
@@ -31,7 +31,7 @@ describe('setupDraftPatchService', () => {
     expect(updated.confirmed).toHaveLength(1);
     expect(updated.confirmed[0]).toMatchObject({
       text: '強気なヒロイン',
-      source: 'llm',
+      source: 'user',
       status: 'active',
     });
     expect(updated.candidates).toHaveLength(1);
@@ -199,6 +199,71 @@ describe('setupDraftPatchService', () => {
     });
 
     expect(updated.candidates.map((candidate) => candidate.title)).toEqual(['候補A', '候補B']);
+  });
+
+  it('ignores ids provided by LLM patch additions and assigns new ones', () => {
+    const draft = createEmptySetupDraft();
+    draft.confirmed = [
+      {
+        id: 'existing-fact',
+        text: '既存項目',
+        source: 'manual',
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: {
+        confirmedAdd: [{ id: 'existing-fact', text: '新しい項目', source: 'user' }],
+      },
+    });
+
+    expect(updated.confirmed).toHaveLength(2);
+    expect(updated.confirmed[1].id).not.toBe('existing-fact');
+    expect(updated.confirmed[1].text).toBe('新しい項目');
+  });
+
+  it('renormalizes duplicate and invalid ids when normalizing a draft', () => {
+    const draft = normalizeSetupDraft({
+      confirmed: [
+        { id: 'dup', text: 'A' },
+        { id: 'dup', text: 'B' },
+        { id: 'draft.world', text: 'C' },
+        { id: '', text: 'D' },
+      ],
+    });
+
+    const ids = draft.confirmed.map((item) => item.id);
+    expect(new Set(ids).size).toBe(4);
+    expect(ids).not.toContain('draft.world');
+    expect(ids.every((id) => id.length > 0)).toBe(true);
+  });
+
+  it('downgrades LLM confirmedAdd without source user to undecided', () => {
+    const draft = createEmptySetupDraft();
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: {
+        confirmedAdd: [
+          { text: 'ユーザーが言った', source: 'user' },
+          { text: 'LLMが勝手に決めた', source: 'llm' },
+          { text: 'ソースなし' },
+        ],
+      },
+    });
+
+    expect(updated.confirmed).toHaveLength(1);
+    expect(updated.confirmed[0].text).toBe('ユーザーが言った');
+    expect(updated.undecided).toHaveLength(2);
+    expect(updated.undecided[0].reason).toBe('LLM提案のため未確定として保留');
   });
 
   it('normalizes malformed draft values to an empty safe shape', () => {

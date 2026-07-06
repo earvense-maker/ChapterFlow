@@ -105,6 +105,15 @@ export function listModelProviders(): ModelProviderInfo[] {
   return PROVIDERS.map((provider) => ({ ...provider }));
 }
 
+export async function listModelProvidersWithKeyInfo(): Promise<ModelProviderInfo[]> {
+  const credentials = await loadCredentials();
+  const storedProviders = Object.keys(credentials);
+  return PROVIDERS.map((provider) => ({
+    ...provider,
+    hasApiKey: storedProviders.includes(provider.name),
+  }));
+}
+
 export function isSupportedProvider(provider: string): boolean {
   return PROVIDERS.some((entry) => entry.name === provider);
 }

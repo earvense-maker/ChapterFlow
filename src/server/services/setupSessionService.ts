@@ -20,16 +20,27 @@ import {
 } from './setupPromptBuilder.js';
 import {
   normalizeSetupCommitData,
+  normalizeSetupCommitPlan,
   readPresetIdsByCategory,
 } from './setupCommitService.js';
+import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
   ActivePresets,
+  AdapterGenerateResult,
+  CommitSetupBody,
   CreateSetupSessionBody,
+  FinishReason,
+  PatchSetupSettingsBody,
+  RetrySetupMessageBody,
   SendSetupMessageBody,
+  SetLockStateBody,
+  SetupCommitPlan,
+  SetupCommitPlanResponse,
   SetupCommitResponse,
   SetupDraft,
   SetupDraftResponse,
   SetupLock,
+  SetupLockStateResponse,
   SetupMessage,
   SetupMessageResponse,
   SetupPreviewResponse,
@@ -85,7 +96,7 @@ export async function listSetupSessions(): Promise<SetupSessionSummary[]> {
 
   return sessions
     .filter((session): session is SetupSession => session !== null)
-    .map(toSetupSessionSummary)
+    .map((session) => toSetupSessionSummary(normalizeStoredSession(session)))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -154,10 +165,72 @@ export async function createSetupSession(
 
 export async function getSetupSession(sessionId: string): Promise<SetupSession | null> {
   try {
-    return await storage.readSetupSession(sessionId);
+    const session = await storage.readSetupSession(sessionId);
+    return session ? normalizeStoredSession(session) : null;
   } catch {
     throw new SetupServiceError('相談セッションIDが不正です。', 'invalid_setup_id', false, 400);
   }
+}
+
+export async function abandonSetupSession(sessionId: string): Promise<SetupSession> {
+  return withSessionLock(sessionId, async () => {
+    const session = await readSetupSessionOrThrow(sessionId);
+    if (session.status !== 'active') {
+      throw new SetupServiceError(
+        'この相談セッションは更新できません。',
+        'setup_not_active',
+        false,
+        400,
+        session
+      );
+    }
+    const nextSession: SetupSession = {
+      ...session,
+      status: 'abandoned',
+      revision: session.revision + 1,
+      updatedAt: nowIso(),
+    };
+    await storage.writeSetupSession(nextSession);
+    return nextSession;
+  });
+}
+
+export async function deleteSetupSession(sessionId: string): Promise<{ ok: true }> {
+  return withSessionLock(sessionId, async () => {
+    const exists = await storage.setupSessionExists(sessionId);
+    if (!exists) {
+      throw new SetupServiceError('相談セッションが見つかりません。', 'setup_not_found', false, 404);
+    }
+    await storage.deleteSetupSession(sessionId);
+    return { ok: true };
+  });
+}
+
+export async function patchSetupSettings(
+  sessionId: string,
+  body: PatchSetupSettingsBody
+): Promise<{ session: SetupSession; revision: number }> {
+  return withSessionLock(sessionId, async () => {
+    const session = await requireActiveSession(sessionId);
+    assertValidRevision(body.revision);
+    assertRevision(session, body.revision);
+
+    const provider = body.model?.provider;
+    if (!provider || !isSupportedProvider(provider)) {
+      throw new SetupServiceError('未対応のモデルプロバイダーです。', 'unsupported_provider', false, 400);
+    }
+
+    const modelName = body.model?.modelName?.trim() || defaultModelForProvider(provider);
+    const now = nowIso();
+    const nextSession: SetupSession = {
+      ...session,
+      model: { provider, modelName },
+      revision: session.revision + 1,
+      updatedAt: now,
+    };
+    await storage.writeSetupSession(nextSession);
+    return { session: nextSession, revision: nextSession.revision };
+  });
 }
 
 export async function sendSetupMessage(
@@ -166,11 +239,18 @@ export async function sendSetupMessage(
 ): Promise<SetupMessageResponse> {
   return withSessionLock(sessionId, async () => {
   const session = await requireActiveSession(sessionId);
+  assertValidRevision(body.revision);
   assertRevision(session, body.revision);
 
+  if (typeof body.message !== 'string') {
+    throw new SetupServiceError('メッセージを入力してください。', 'invalid_message', false, 400);
+  }
   const messageText = body.message.trim();
   if (!messageText) {
     throw new SetupServiceError('メッセージを入力してください。', 'invalid_message', false, 400);
+  }
+  if (messageText.length > 4000) {
+    throw new SetupServiceError('メッセージが長すぎます。', 'invalid_message', false, 400);
   }
 
   const now = nowIso();
@@ -181,7 +261,7 @@ export async function sendSetupMessage(
     createdAt: now,
   };
 
-  let workingSession: SetupSession = {
+  const workingSession: SetupSession = {
     ...session,
     messages: [...session.messages, userMessage],
     revision: session.revision + 1,
@@ -190,9 +270,19 @@ export async function sendSetupMessage(
   };
   await storage.writeSetupSession(workingSession);
 
+  return runChatTurn(workingSession);
+  });
+}
+
+async function runChatTurn(workingSession: SetupSession): Promise<SetupMessageResponse> {
+  const userMessage = workingSession.messages[workingSession.messages.length - 1];
+  if (!userMessage || userMessage.role !== 'user') {
+    throw new SetupServiceError('ユーザー発言が見つかりません。', 'nothing_to_retry', false, 400);
+  }
+
   const { systemInstructions, userPrompt } = buildSetupChatPrompt({
     session: workingSession,
-    userMessage: messageText,
+    userMessage: userMessage.content,
   });
 
   const result = await generateWithSessionModel(workingSession, {
@@ -201,17 +291,24 @@ export async function sendSetupMessage(
     outputLength: CHAT_OUTPUT_LENGTH,
     temperature: CHAT_TEMPERATURE,
   }).catch(async (err) => {
-    workingSession = await writeSessionError(workingSession, err);
-    throw toSetupServiceError(err, workingSession);
+    const nextSession = await writeSessionError(workingSession, err);
+    throw toSetupServiceError(err, nextSession);
   });
 
   if (result.finishReason === 'error' || result.finishReason === 'timeout') {
     const error = adapterResultToError(result);
-    workingSession = await writeSessionError(workingSession, error);
-    throw toSetupServiceError(error, workingSession);
+    const nextSession = await writeSessionError(workingSession, error);
+    throw toSetupServiceError(error, nextSession);
   }
 
-  const parsed = parseChatResult(result.text);
+  return finalizeChatTurn(workingSession, result.text);
+}
+
+async function finalizeChatTurn(
+  workingSession: SetupSession,
+  generatedText: string
+): Promise<SetupMessageResponse> {
+  const parsed = parseChatResult(generatedText);
   const draft = parsed.draftPatch
     ? applySetupDraftPatch({
         draft: workingSession.draft,
@@ -231,6 +328,9 @@ export async function sendSetupMessage(
     ...workingSession,
     messages: [...workingSession.messages, assistantMessage],
     draft,
+    conversationSummary: parsed.conversationSummary
+      ? parsed.conversationSummary.slice(0, MAX_CONVERSATION_SUMMARY_CHARS)
+      : workingSession.conversationSummary,
     revision: workingSession.revision + 1,
     lastError: null,
     updatedAt: nowIso(),
@@ -244,7 +344,231 @@ export async function sendSetupMessage(
     suggestedActions: parsed.suggestedActions,
     revision: nextSession.revision,
   };
+}
+
+export type SetupMessageStreamEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'result'; response: SetupMessageResponse }
+  | {
+      type: 'error';
+      error: {
+        error: string;
+        code: string;
+        retryable: boolean;
+        session?: SetupSession;
+      };
+    };
+
+export async function* sendSetupMessageStream(
+  sessionId: string,
+  body: SendSetupMessageBody,
+  abortSignal?: AbortSignal
+): AsyncGenerator<SetupMessageStreamEvent> {
+  const releaseLock = await acquireSessionLock(sessionId);
+  try {
+    yield* sendSetupMessageStreamUnlocked(sessionId, body, abortSignal);
+  } finally {
+    releaseLock();
+  }
+}
+
+async function* sendSetupMessageStreamUnlocked(
+  sessionId: string,
+  body: SendSetupMessageBody,
+  abortSignal?: AbortSignal
+): AsyncGenerator<SetupMessageStreamEvent> {
+  const session = await requireActiveSession(sessionId);
+  assertValidRevision(body.revision);
+  assertRevision(session, body.revision);
+
+  if (typeof body.message !== 'string') {
+    throw new SetupServiceError('メッセージを入力してください。', 'invalid_message', false, 400, session);
+  }
+  const messageText = body.message.trim();
+  if (!messageText) {
+    throw new SetupServiceError('メッセージを入力してください。', 'invalid_message', false, 400, session);
+  }
+  if (messageText.length > 4000) {
+    throw new SetupServiceError('メッセージが長すぎます。', 'invalid_message', false, 400, session);
+  }
+
+  const now = nowIso();
+  const userMessage: SetupMessage = {
+    messageId: generateTimestampId('msg'),
+    role: 'user',
+    content: messageText,
+    createdAt: now,
+  };
+
+  const workingSession: SetupSession = {
+    ...session,
+    messages: [...session.messages, userMessage],
+    revision: session.revision + 1,
+    lastError: null,
+    updatedAt: now,
+  };
+  await storage.writeSetupSession(workingSession);
+
+  yield* runChatTurnStream(workingSession, abortSignal);
+}
+
+async function* runChatTurnStream(
+  workingSession: SetupSession,
+  abortSignal?: AbortSignal
+): AsyncGenerator<SetupMessageStreamEvent> {
+  const userMessage = workingSession.messages[workingSession.messages.length - 1];
+  if (!userMessage || userMessage.role !== 'user') {
+    throw new SetupServiceError('ユーザー発言が見つかりません。', 'nothing_to_retry', false, 400, workingSession);
+  }
+
+  if (abortSignal?.aborted) {
+    throw new SetupServiceError('生成が中断されました', 'aborted', false, 499, workingSession);
+  }
+
+  const { systemInstructions, userPrompt } = buildSetupChatPrompt({
+    session: workingSession,
+    userMessage: userMessage.content,
   });
+
+  await reloadCredentials();
+  const adapter = adapterMap[workingSession.model.provider];
+  if (!adapter) {
+    throw new SetupServiceError(
+      `Unsupported provider: ${workingSession.model.provider}`,
+      'unsupported_provider',
+      false,
+      400,
+      workingSession
+    );
+  }
+
+  const request = {
+    systemInstructions,
+    userPrompt,
+    outputLength: CHAT_OUTPUT_LENGTH,
+    temperature: CHAT_TEMPERATURE,
+    timeoutMs: TIMEOUT_MS,
+    modelName: workingSession.model.modelName,
+    abortSignal,
+  };
+
+  if (!adapter.generateTextStream) {
+    const result = await adapter.generateText(request).catch(async (err) => {
+      const nextSession = await writeSessionError(workingSession, err);
+      throw toSetupServiceError(err, nextSession);
+    });
+
+    if (abortSignal?.aborted) {
+      throw new SetupServiceError('生成が中断されました', 'aborted', false, 499, workingSession);
+    }
+
+    if (result.finishReason === 'error' || result.finishReason === 'timeout') {
+      const error = adapterResultToError(result);
+      const nextSession = await writeSessionError(workingSession, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const response = await finalizeChatTurn(workingSession, result.text);
+    if (response.assistantMessage?.content) {
+      yield { type: 'delta', text: response.assistantMessage.content };
+    }
+    yield { type: 'result', response };
+    return;
+  }
+
+  let generatedText = '';
+  let finishReason: FinishReason = 'stop';
+  let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
+  let debugInfo: string | undefined;
+  let markerIndex: number | null = null;
+  let emittedIndex = 0;
+  const markerBufferLen = 20;
+
+  try {
+    for await (const event of adapter.generateTextStream(request)) {
+      if (abortSignal?.aborted) {
+        throw new SetupServiceError('生成が中断されました', 'aborted', false, 499, workingSession);
+      }
+
+      if (event.type === 'chunk') {
+        generatedText += event.text;
+        if (markerIndex === null) {
+          const found = generatedText.indexOf(DRAFT_PATCH_MARKER);
+          if (found >= 0) {
+            markerIndex = found;
+            const delta = generatedText.slice(emittedIndex, found);
+            emittedIndex = found;
+            if (delta) {
+              yield { type: 'delta', text: delta };
+            }
+          } else {
+            const safeEnd = Math.max(0, generatedText.length - markerBufferLen);
+            if (safeEnd > emittedIndex) {
+              yield { type: 'delta', text: generatedText.slice(emittedIndex, safeEnd) };
+              emittedIndex = safeEnd;
+            }
+          }
+        }
+      } else {
+        finishReason = event.finishReason;
+        rawUsage = event.rawUsage;
+        debugInfo = event.debugInfo;
+      }
+    }
+  } catch (err) {
+    if (err instanceof SetupServiceError) throw err;
+    if (err instanceof ModelAdapterError) {
+      const nextSession = await writeSessionError(workingSession, err);
+      throw toSetupServiceError(err, nextSession);
+    }
+    const nextSession = await writeSessionError(workingSession, err);
+    throw toSetupServiceError(err, nextSession);
+  }
+
+  if (abortSignal?.aborted) {
+    throw new SetupServiceError('生成が中断されました', 'aborted', false, 499, workingSession);
+  }
+
+  if (finishReason === 'error' || finishReason === 'timeout') {
+    const error = new SetupServiceError(
+      mapErrorMessage(finishReason),
+      finishReason,
+      true,
+      503,
+      workingSession
+    );
+    const nextSession = await writeSessionError(workingSession, error);
+    throw toSetupServiceError(error, nextSession);
+  }
+
+  const streamedText = generatedText.trim();
+  if (!streamedText) {
+    const emptyError = new SetupServiceError(
+      mapErrorMessage('empty_response', debugInfo),
+      'empty_response',
+      true,
+      503,
+      workingSession
+    );
+    const nextSession = await writeSessionError(workingSession, emptyError);
+    throw toSetupServiceError(emptyError, nextSession);
+  }
+
+  if (markerIndex !== null) {
+    const delta = generatedText.slice(emittedIndex, markerIndex);
+    emittedIndex = markerIndex;
+    if (delta) {
+      yield { type: 'delta', text: delta };
+    }
+  } else {
+    if (emittedIndex < generatedText.length) {
+      yield { type: 'delta', text: generatedText.slice(emittedIndex) };
+      emittedIndex = generatedText.length;
+    }
+  }
+
+  const response = await finalizeChatTurn(workingSession, generatedText);
+  yield { type: 'result', response };
 }
 
 export async function updateSetupDraft(
@@ -253,7 +577,11 @@ export async function updateSetupDraft(
 ): Promise<SetupDraftResponse> {
   return withSessionLock(sessionId, async () => {
   const session = await requireActiveSession(sessionId);
+  assertValidRevision(body.revision);
   assertRevision(session, body.revision);
+  if (!isRecord(body.draft)) {
+    throw new SetupServiceError('ドラフトの形式が不正です。', 'invalid_request', false, 400);
+  }
   const now = nowIso();
   const manualEditPaths = normalizeLockPaths(body.manualEditPaths);
 
@@ -274,29 +602,91 @@ export async function updateSetupDraft(
   });
 }
 
-export async function addSetupLock(
+export async function retrySetupMessage(
   sessionId: string,
-  path: string,
-  reason: SetupLockReason = 'user_locked'
-): Promise<SetupSession> {
+  _body: RetrySetupMessageBody = {}
+): Promise<SetupMessageResponse> {
   return withSessionLock(sessionId, async () => {
-  const session = await requireActiveSession(sessionId);
-  const normalizedPath = path.trim();
-  if (!normalizedPath) {
-    throw new SetupServiceError('path is required', 'invalid_lock_path', false, 400);
-  }
-  const normalizedReason = normalizeLockReason(reason);
-  const now = nowIso();
-
-  const nextSession: SetupSession = {
-    ...session,
-    locks: addLocks(session.locks, [normalizedPath], normalizedReason, now),
-    revision: session.revision + 1,
-    updatedAt: now,
-  };
-  await storage.writeSetupSession(nextSession);
-  return nextSession;
+    const session = await requireActiveSession(sessionId);
+    const lastMessage = session.messages[session.messages.length - 1];
+    if (!lastMessage || lastMessage.role !== 'user') {
+      throw new SetupServiceError(
+        '再試行できるユーザー発言がありません。',
+        'nothing_to_retry',
+        false,
+        400,
+        session
+      );
+    }
+    return runChatTurn({ ...session, lastError: null });
   });
+}
+
+export async function setLockState(
+  sessionId: string,
+  body: SetLockStateBody
+): Promise<SetupLockStateResponse> {
+  return withSessionLock(sessionId, async () => {
+    const session = await requireActiveSession(sessionId);
+    assertValidRevision(body.revision);
+    assertRevision(session, body.revision);
+    if (typeof body.path !== 'string' || typeof body.locked !== 'boolean') {
+      throw new SetupServiceError('リクエストの形式が不正です。', 'invalid_request', false, 400);
+    }
+    const normalizedPath = body.path.trim();
+    if (!normalizedPath) {
+      throw new SetupServiceError('path is required', 'invalid_lock_path', false, 400);
+    }
+
+    const now = nowIso();
+    const nextDraft = cloneDraft(session.draft);
+    const item = findDraftItemById(nextDraft, normalizedPath);
+    if (item) {
+      item.locked = body.locked;
+      item.updatedAt = now;
+    }
+
+    let nextLocks = session.locks;
+    if (body.locked) {
+      nextLocks = addLocks(session.locks, [normalizedPath], 'user_locked', now);
+    } else {
+      nextLocks = session.locks.filter((lock) => lock.path !== normalizedPath);
+    }
+
+    const nextSession: SetupSession = {
+      ...session,
+      draft: nextDraft,
+      locks: nextLocks,
+      revision: session.revision + 1,
+      lastError: null,
+      updatedAt: now,
+    };
+    await storage.writeSetupSession(nextSession);
+    return { session: nextSession, revision: nextSession.revision };
+  });
+}
+
+function cloneDraft(draft: SetupDraft): SetupDraft {
+  return JSON.parse(JSON.stringify(draft)) as SetupDraft;
+}
+
+function findDraftItemById(
+  draft: SetupDraft,
+  id: string
+): { locked?: boolean; updatedAt: string } | null {
+  for (const item of draft.confirmed) {
+    if (item.id === id) return item;
+  }
+  for (const item of draft.candidates) {
+    if (item.id === id) return item;
+  }
+  for (const item of draft.undecided) {
+    if (item.id === id) return item;
+  }
+  for (const item of draft.characters) {
+    if (item.id === id) return item;
+  }
+  return null;
 }
 
 function toSetupSessionSummary(session: SetupSession): SetupSessionSummary {
@@ -362,27 +752,6 @@ function normalizeLockPaths(value: unknown): string[] {
   return result;
 }
 
-function normalizeLockReason(value: unknown): SetupLockReason {
-  return value === 'manual_edit' ? 'manual_edit' : 'user_locked';
-}
-
-export async function removeSetupLock(
-  sessionId: string,
-  lockId: string
-): Promise<SetupSession> {
-  return withSessionLock(sessionId, async () => {
-  const session = await requireActiveSession(sessionId);
-  const nextSession: SetupSession = {
-    ...session,
-    locks: session.locks.filter((lock) => lock.lockId !== lockId),
-    revision: session.revision + 1,
-    updatedAt: nowIso(),
-  };
-  await storage.writeSetupSession(nextSession);
-  return nextSession;
-  });
-}
-
 export async function generateSetupPreview(
   sessionId: string
 ): Promise<SetupPreviewResponse> {
@@ -405,83 +774,138 @@ export async function generateSetupPreview(
     throw toSetupServiceError(error, nextSession);
   }
 
-  return { previewText: result.text.trim() };
+  const previewText = result.text.trim();
+  const now = nowIso();
+  const previews: NonNullable<SetupSession['previews']> = [...(session.previews ?? [])];
+  previews.push({
+    previewId: generateTimestampId('preview'),
+    text: previewText,
+    createdAt: now,
+  });
+  while (previews.length > 3) {
+    previews.shift();
+  }
+
+  const nextSession: SetupSession = {
+    ...session,
+    previews,
+    revision: session.revision + 1,
+    lastError: null,
+    updatedAt: now,
+  };
+  await storage.writeSetupSession(nextSession);
+
+  return { previewText, session: nextSession, revision: nextSession.revision };
+  });
+}
+
+export async function createSetupCommitPlan(
+  sessionId: string,
+  _body?: { revision?: number }
+): Promise<SetupCommitPlanResponse> {
+  return withSessionLock(sessionId, async () => {
+    const session = await requireActiveSession(sessionId);
+    const presetIdsByCategory = await readPresetIdsByCategory();
+    const { systemInstructions, userPrompt } = buildSetupCommitPrompt({
+      session,
+      presetIdsByCategory,
+    });
+
+    const result = await generateWithSessionModel(session, {
+      systemInstructions,
+      userPrompt,
+      outputLength: COMMIT_OUTPUT_LENGTH,
+      temperature: COMMIT_TEMPERATURE,
+    }).catch(async (err) => {
+      const nextSession = await writeSessionError(session, err);
+      throw toSetupServiceError(err, nextSession);
+    });
+
+    if (result.finishReason === 'error' || result.finishReason === 'timeout') {
+      const error = adapterResultToError(result);
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const parsed = parseJsonObject(result.text);
+    if (!parsed) {
+      const error = new SetupServiceError(
+        '最終変換のJSONを読み取れませんでした。もう一度試してください。',
+        'invalid_commit_json',
+        true,
+        503,
+        session
+      );
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const normalized = normalizeSetupCommitData({
+      raw: parsed,
+      session,
+      presetIdsByCategory,
+    });
+    const plan = normalizedToPlan(normalized);
+    const now = nowIso();
+    const nextSession: SetupSession = {
+      ...session,
+      commitPlan: { plan, createdAt: now },
+      revision: session.revision + 1,
+      lastError: null,
+      updatedAt: now,
+    };
+    await storage.writeSetupSession(nextSession);
+    return { plan, session: nextSession, revision: nextSession.revision };
   });
 }
 
 export async function commitSetupSession(
-  sessionId: string
+  sessionId: string,
+  body: CommitSetupBody
 ): Promise<SetupCommitResponse> {
   return withSessionLock(sessionId, async () => {
-  const existingSession = await readSetupSessionOrThrow(sessionId);
-  if (existingSession.status === 'committed' && existingSession.committedProjectId) {
-    return { projectId: existingSession.committedProjectId, session: existingSession };
-  }
-  const session = ensureActiveSession(existingSession);
-  const presetIdsByCategory = await readPresetIdsByCategory();
-  const { systemInstructions, userPrompt } = buildSetupCommitPrompt({
-    session,
-    presetIdsByCategory,
-  });
-
-  const result = await generateWithSessionModel(session, {
-    systemInstructions,
-    userPrompt,
-    outputLength: COMMIT_OUTPUT_LENGTH,
-    temperature: COMMIT_TEMPERATURE,
-  }).catch(async (err) => {
-    const nextSession = await writeSessionError(session, err);
-    throw toSetupServiceError(err, nextSession);
-  });
-
-  if (result.finishReason === 'error' || result.finishReason === 'timeout') {
-    const error = adapterResultToError(result);
-    const nextSession = await writeSessionError(session, error);
-    throw toSetupServiceError(error, nextSession);
-  }
-
-  const parsed = parseJsonObject(result.text);
-  if (!parsed) {
-    const error = new SetupServiceError(
-      '最終変換のJSONを読み取れませんでした。もう一度試してください。',
-      'invalid_commit_json',
-      true,
-      503,
-      session
-    );
-    const nextSession = await writeSessionError(session, error);
-    throw toSetupServiceError(error, nextSession);
-  }
-
-  const normalized = normalizeSetupCommitData({
-    raw: parsed,
-    session,
-    presetIdsByCategory,
-  });
-
-  let projectId: string | null = null;
-  try {
-    const project = await projectService.createProject(normalized.projectInput);
-    projectId = project.projectId;
-    await storage.writeMemories(project.projectId, normalized.memories);
-    await storage.writeStoryState(project.projectId, normalized.storyState);
-
-    const nextSession: SetupSession = {
-      ...session,
-      status: 'committed',
-      committedProjectId: project.projectId,
-      revision: session.revision + 1,
-      lastError: null,
-      updatedAt: nowIso(),
-    };
-    await storage.writeSetupSession(nextSession);
-    return { projectId: project.projectId, session: nextSession };
-  } catch (err) {
-    if (projectId) {
-      await storage.deleteProjectDir(projectId).catch(() => undefined);
+    const existingSession = await readSetupSessionOrThrow(sessionId);
+    if (existingSession.status === 'committed' && existingSession.committedProjectId) {
+      return { projectId: existingSession.committedProjectId, session: existingSession };
     }
-    throw err;
-  }
+    const session = ensureActiveSession(existingSession);
+    assertValidRevision(body?.revision);
+    assertRevision(session, body.revision);
+
+    if (!isRecord(body.plan)) {
+      throw new SetupServiceError('作成プランの形式が不正です。', 'invalid_request', false, 400, session);
+    }
+
+    const presetIdsByCategory = await readPresetIdsByCategory();
+    const normalized = normalizeSetupCommitPlan({
+      raw: body.plan,
+      session,
+      presetIdsByCategory,
+    });
+
+    let projectId: string | null = null;
+    try {
+      const project = await projectService.createProject(normalized.projectInput);
+      projectId = project.projectId;
+      await storage.writeMemories(project.projectId, normalized.memories);
+      await storage.writeStoryState(project.projectId, normalized.storyState);
+
+      const nextSession: SetupSession = {
+        ...session,
+        status: 'committed',
+        committedProjectId: project.projectId,
+        revision: session.revision + 1,
+        lastError: null,
+        updatedAt: nowIso(),
+      };
+      await storage.writeSetupSession(nextSession);
+      return { projectId: project.projectId, session: nextSession };
+    } catch (err) {
+      if (projectId) {
+        await storage.deleteProjectDir(projectId).catch(() => undefined);
+      }
+      throw err;
+    }
   });
 }
 
@@ -500,7 +924,32 @@ async function readSetupSessionOrThrow(sessionId: string): Promise<SetupSession>
   if (!session) {
     throw new SetupServiceError('相談セッションが見つかりません。', 'setup_not_found', false, 404);
   }
-  return session;
+  return normalizeStoredSession(session);
+}
+
+function normalizeStoredSession(session: SetupSession): SetupSession {
+  return {
+    ...session,
+    previews: session.previews ?? [],
+    conversationSummary: session.conversationSummary ?? '',
+    commitPlan: session.commitPlan ?? null,
+  };
+}
+
+function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPlan {
+  const { projectInput } = normalized;
+  return {
+    project: {
+      title: projectInput.title ?? '無題の作品',
+      outputLength: projectInput.outputLength ?? 3000,
+      activePresetIds: projectInput.activePresetIds ?? {},
+    },
+    worldText: projectInput.worldText ?? '',
+    characters: projectInput.characters ?? [],
+    memories: normalized.memories,
+    storyState: normalized.storyState,
+    customSystemPrompt: projectInput.customSystemPrompt ?? '',
+  };
 }
 
 function ensureActiveSession(session: SetupSession): SetupSession {
@@ -510,10 +959,7 @@ function ensureActiveSession(session: SetupSession): SetupSession {
   return session;
 }
 
-async function withSessionLock<T>(
-  sessionId: string,
-  task: () => Promise<T>
-): Promise<T> {
+async function acquireSessionLock(sessionId: string): Promise<() => void> {
   const previous = sessionMutexes.get(sessionId) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => {
@@ -523,13 +969,23 @@ async function withSessionLock<T>(
   sessionMutexes.set(sessionId, next);
 
   await previous.catch(() => undefined);
-  try {
-    return await task();
-  } finally {
+  return () => {
     release();
     if (sessionMutexes.get(sessionId) === next) {
       sessionMutexes.delete(sessionId);
     }
+  };
+}
+
+async function withSessionLock<T>(
+  sessionId: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const releaseLock = await acquireSessionLock(sessionId);
+  try {
+    return await task();
+  } finally {
+    releaseLock();
   }
 }
 
@@ -545,6 +1001,12 @@ function assertRevision(session: SetupSession, revision: number): void {
   }
 }
 
+function assertValidRevision(revision: unknown): asserts revision is number {
+  if (typeof revision !== 'number' || !Number.isInteger(revision)) {
+    throw new SetupServiceError('リクエストの形式が不正です。', 'invalid_request', false, 400);
+  }
+}
+
 async function generateWithSessionModel(
   session: SetupSession,
   request: {
@@ -552,6 +1014,7 @@ async function generateWithSessionModel(
     userPrompt: string;
     outputLength: number;
     temperature: number;
+    abortSignal?: AbortSignal;
   }
 ) {
   await reloadCredentials();
@@ -619,24 +1082,81 @@ function normalizeSessionError(err: unknown): SetupSessionError {
   };
 }
 
+const DRAFT_PATCH_MARKER = '===DRAFT_PATCH===';
+const MAX_CONVERSATION_SUMMARY_CHARS = 2000;
+
 export function parseChatResult(text: string): {
   visibleReply: string;
   draftPatch: unknown | null;
   suggestedActions: SetupSuggestedAction[];
+  conversationSummary: string | null;
 } {
-  const parsed = parseJsonObject(text);
-  if (!parsed) {
+  const markerIndex = text.indexOf(DRAFT_PATCH_MARKER);
+  if (markerIndex >= 0) {
+    const visibleReply = text.slice(0, markerIndex).trim();
+    const jsonPart = text.slice(markerIndex + DRAFT_PATCH_MARKER.length);
+    const parsed = parseJsonObject(jsonPart);
+    if (parsed) {
+      return {
+        visibleReply,
+        draftPatch: parsed.draftPatch ?? null,
+        suggestedActions: normalizeSuggestedActions(parsed.suggestedActions),
+        conversationSummary: asString(parsed.conversationSummary) || null,
+      };
+    }
     return {
-      visibleReply: UNREADABLE_CHAT_REPLY,
+      visibleReply,
       draftPatch: null,
-      suggestedActions: UNREADABLE_CHAT_ACTIONS.map((action) => ({ ...action })),
+      suggestedActions: [],
+      conversationSummary: null,
     };
   }
 
+  const parsed = parseJsonObject(text);
+  if (parsed) {
+    return {
+      visibleReply: asString(parsed.visibleReply),
+      draftPatch: parsed.draftPatch ?? null,
+      suggestedActions: normalizeSuggestedActions(parsed.suggestedActions),
+      conversationSummary: asString(parsed.conversationSummary) || null,
+    };
+  }
+
+  const plain = stripCodeFence(text).trim();
+  if (!plain) {
+    return unreadableChatFallback();
+  }
+  if (plain.includes('draftPatch') || plain.includes('visibleReply')) {
+    return unreadableChatFallback();
+  }
+
   return {
-    visibleReply: asString(parsed.visibleReply),
-    draftPatch: parsed.draftPatch ?? null,
-    suggestedActions: normalizeSuggestedActions(parsed.suggestedActions),
+    visibleReply: plain,
+    draftPatch: null,
+    suggestedActions: [],
+    conversationSummary: null,
+  };
+}
+
+function stripCodeFence(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+}
+
+function unreadableChatFallback(): {
+  visibleReply: string;
+  draftPatch: null;
+  suggestedActions: SetupSuggestedAction[];
+  conversationSummary: null;
+} {
+  return {
+    visibleReply: UNREADABLE_CHAT_REPLY,
+    draftPatch: null,
+    suggestedActions: UNREADABLE_CHAT_ACTIONS.map((action) => ({ ...action })),
+    conversationSummary: null,
   };
 }
 
@@ -729,7 +1249,7 @@ function normalizeProvider(value: string | undefined): string {
 }
 
 function normalizeOutputLength(value: number | undefined): number {
-  if (!Number.isFinite(value)) return 6000;
+  if (!Number.isFinite(value)) return 3000;
   return Math.max(500, Math.min(10000, Math.round(value as number)));
 }
 

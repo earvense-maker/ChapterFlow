@@ -43,7 +43,13 @@ export default function App() {
         />
       )}
       {view === 'new' && <ProjectForm onCreated={handleCreateProject} onCancel={handleBackToList} />}
-      {view === 'setup' && <SetupWorkspace onCreated={handleCreateProject} onCancel={handleBackToList} />}
+      {view === 'setup' && (
+        <SetupWorkspace
+          onCreated={handleCreateProject}
+          onCancel={handleBackToList}
+          onOpenSettings={() => setView('settings-app')}
+        />
+      )}
       {view === 'read' && activeProjectId && (
         <Reader
           projectId={activeProjectId}

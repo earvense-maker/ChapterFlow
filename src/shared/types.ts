@@ -281,6 +281,9 @@ export interface SetupSession {
   draft: SetupDraft;
   locks: SetupLock[];
   lastError: SetupSessionError | null;
+  previews?: SetupPreviewRecord[];
+  conversationSummary?: string;
+  commitPlan?: { plan: SetupCommitPlan; createdAt: string } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -327,10 +330,38 @@ export interface SendSetupMessageBody {
   revision: number;
 }
 
+export interface RetrySetupMessageBody {
+  revision?: number;
+}
+
 export interface UpdateSetupDraftBody {
   draft: SetupDraft;
   revision: number;
   manualEditPaths?: string[];
+}
+
+export interface SetLockStateBody {
+  path: string;
+  locked: boolean;
+  revision: number;
+}
+
+export interface SetupLockStateResponse {
+  session: SetupSession;
+  revision: number;
+}
+
+export interface PatchSetupSettingsBody {
+  model?: {
+    provider: string;
+    modelName?: string;
+  };
+  revision: number;
+}
+
+export interface PatchSetupSettingsResponse {
+  session: SetupSession;
+  revision: number;
 }
 
 export interface SetupSessionResponse {
@@ -354,8 +385,40 @@ export interface SetupDraftResponse {
   revision: number;
 }
 
+export interface SetupPreviewRecord {
+  previewId: string;
+  text: string;
+  createdAt: string;
+}
+
 export interface SetupPreviewResponse {
   previewText: string;
+  session: SetupSession;
+  revision: number;
+}
+
+export interface SetupCommitPlan {
+  project: {
+    title: string;
+    outputLength: number;
+    activePresetIds: Partial<ActivePresets>;
+  };
+  worldText: string;
+  characters: Character[];
+  memories: Memory[];
+  storyState: StoryState;
+  customSystemPrompt: string;
+}
+
+export interface SetupCommitPlanResponse {
+  plan: SetupCommitPlan;
+  session: SetupSession;
+  revision: number;
+}
+
+export interface CommitSetupBody {
+  plan: SetupCommitPlan;
+  revision: number;
 }
 
 export interface SetupCommitResponse {
@@ -441,6 +504,7 @@ export interface ModelProviderInfo {
   defaultModel: string;
   apiKeyPlaceholder: string;
   apiKeyHelp: string;
+  hasApiKey?: boolean;
 }
 
 export interface AdapterGenerateRequest {

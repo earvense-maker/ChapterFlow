@@ -3,15 +3,20 @@ import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
 import { GeminiAdapter } from '../adapters/geminiAdapter.js';
 import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
 import * as credentialService from '../services/credentialService.js';
-import { listModelProviders } from '../services/modelInfoService.js';
+import { listModelProvidersWithKeyInfo } from '../services/modelInfoService.js';
 import type { ModelConfig } from '../types/index.js';
 
 const router = Router();
 
 const adapters = [new OpenAIAdapter(), new GeminiAdapter(), new DeepSeekAdapter()];
 
-router.get('/models/providers', (_req, res) => {
-  res.json(listModelProviders());
+router.get('/models/providers', async (_req, res, next) => {
+  try {
+    const providers = await listModelProvidersWithKeyInfo();
+    res.json(providers);
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/models/validate', async (req, res, next) => {

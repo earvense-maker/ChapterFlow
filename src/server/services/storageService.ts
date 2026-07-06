@@ -132,6 +132,10 @@ export async function writeSetupSession(session: SetupSession): Promise<void> {
   await safeWriteJson(setupSessionJsonPath(session.sessionId), session);
 }
 
+export async function deleteSetupSession(sessionId: string): Promise<void> {
+  await fs.rm(setupSessionJsonPath(sessionId), { force: true });
+}
+
 export async function setupSessionExists(sessionId: string): Promise<boolean> {
   try {
     const stat = await fs.stat(setupSessionJsonPath(sessionId));

@@ -46,23 +46,35 @@ export function normalizeSetupDraft(value: unknown, fallbackNow = nowIso()): Set
 
   return {
     coreConcept: asString(value.coreConcept),
-    confirmed: asArray(value.confirmed)
-      .map((item) => normalizeTextItem(item, 'fact', fallbackNow))
-      .filter((item): item is SetupDraftTextItem => item !== null)
-      .slice(0, LIMITS.confirmed),
-    candidates: trimCandidates(
-      asArray(value.candidates)
-        .map((item) => normalizeCandidate(item, fallbackNow))
-        .filter((item): item is SetupDraftCandidate => item !== null)
+    confirmed: deduplicateAndFixItemIds(
+      asArray(value.confirmed)
+        .map((item) => normalizeTextItem(item, 'fact', fallbackNow))
+        .filter((item): item is SetupDraftTextItem => item !== null)
+        .slice(0, LIMITS.confirmed),
+      'fact'
     ),
-    undecided: asArray(value.undecided)
-      .map((item) => normalizeUndecided(item, fallbackNow))
-      .filter((item): item is SetupDraftUndecided => item !== null)
-      .slice(0, LIMITS.undecided),
-    characters: asArray(value.characters)
-      .map((item) => normalizeCharacter(item, fallbackNow))
-      .filter((item): item is SetupDraftCharacter => item !== null)
-      .slice(0, LIMITS.characters),
+    candidates: trimCandidates(
+      deduplicateAndFixItemIds(
+        asArray(value.candidates)
+          .map((item) => normalizeCandidate(item, fallbackNow))
+          .filter((item): item is SetupDraftCandidate => item !== null),
+        'cand'
+      )
+    ),
+    undecided: deduplicateAndFixItemIds(
+      asArray(value.undecided)
+        .map((item) => normalizeUndecided(item, fallbackNow))
+        .filter((item): item is SetupDraftUndecided => item !== null)
+        .slice(0, LIMITS.undecided),
+      'und'
+    ),
+    characters: deduplicateAndFixItemIds(
+      asArray(value.characters)
+        .map((item) => normalizeCharacter(item, fallbackNow))
+        .filter((item): item is SetupDraftCharacter => item !== null)
+        .slice(0, LIMITS.characters),
+      'char-draft'
+    ),
     relationshipSeeds: normalizeStringList(value.relationshipSeeds, LIMITS.relationshipSeeds),
     world: normalizeStringList(value.world, LIMITS.world),
     tone: normalizeStringList(value.tone, LIMITS.tone),
@@ -88,7 +100,24 @@ export function applySetupDraftPatch(input: {
     next.coreConcept = coreConcept;
   }
 
-  addTextItems(next.confirmed, patch.confirmedAdd, 'fact', LIMITS.confirmed, source, now);
+  if (source === 'llm') {
+    const confirmedAdditions = asArray(patch.confirmedAdd);
+    const userConfirmed = confirmedAdditions.filter((item) => extractSource(item) === 'user');
+    const pendingConfirmed = confirmedAdditions.filter((item) => extractSource(item) !== 'user');
+    addTextItems(next.confirmed, userConfirmed, 'fact', LIMITS.confirmed, source, now);
+    addUndecided(
+      next.undecided,
+      pendingConfirmed.map((item) =>
+        isRecord(item)
+          ? { ...item, reason: 'LLM提案のため未確定として保留' }
+          : { text: String(item), reason: 'LLM提案のため未確定として保留' }
+      ),
+      source,
+      now
+    );
+  } else {
+    addTextItems(next.confirmed, patch.confirmedAdd, 'fact', LIMITS.confirmed, source, now);
+  }
   addCandidates(next.candidates, patch.candidatesAdd, source, now);
   addUndecided(next.undecided, patch.undecidedAdd, source, now);
   addCharacters(next.characters, patch.charactersAdd, source, now);
@@ -113,7 +142,7 @@ function addTextItems(
   now: string
 ): void {
   for (const addition of asArray(additions)) {
-    const normalized = normalizeTextItem(addition, prefix, now, source);
+    const normalized = normalizeTextItem(addition, prefix, now, source, true);
     if (!normalized) continue;
     if (items.some((item) => item.status === 'active' && sameText(item.text, normalized.text))) continue;
     if (items.length >= limit) break;
@@ -128,7 +157,7 @@ function addCandidates(
   now: string
 ): void {
   for (const addition of asArray(additions)) {
-    const normalized = normalizeCandidate(addition, now, source);
+    const normalized = normalizeCandidate(addition, now, source, true);
     if (!normalized) continue;
     if (
       candidates.some(
@@ -150,7 +179,7 @@ function addUndecided(
   now: string
 ): void {
   for (const addition of asArray(additions)) {
-    const normalized = normalizeUndecided(addition, now, source);
+    const normalized = normalizeUndecided(addition, now, source, true);
     if (!normalized) continue;
     if (items.some((item) => item.status === 'active' && sameText(item.text, normalized.text))) continue;
     if (items.length >= LIMITS.undecided) break;
@@ -165,7 +194,7 @@ function addCharacters(
   now: string
 ): void {
   for (const addition of asArray(additions)) {
-    const normalized = normalizeCharacter(addition, now, source);
+    const normalized = normalizeCharacter(addition, now, source, true);
     if (!normalized) continue;
     if (
       characters.some(
@@ -196,21 +225,44 @@ function updateCharacters(
     if (!current || current.locked || isPathLocked(locks, id)) continue;
 
     const lockedFields = new Set(current.lockedFields ?? []);
+    let changed = false;
     const role = normalizeRole(update.role);
-    if (role && !lockedFields.has('role')) current.role = role;
-    const name = asString(update.name);
-    if (name && !lockedFields.has('name')) current.name = name;
-    const label = asString(update.label);
-    if (label && !lockedFields.has('label')) current.label = label;
-    const description = asString(update.description);
-    if (description && !lockedFields.has('description')) current.description = description;
-    const speechStyle = asString(update.speechStyle);
-    if (speechStyle && !lockedFields.has('speechStyle')) current.speechStyle = speechStyle;
-    const relationshipNotes = asString(update.relationshipNotes);
-    if (relationshipNotes && !lockedFields.has('relationshipNotes')) {
-      current.relationshipNotes = relationshipNotes;
+    if (role && !lockedFields.has('role') && current.role !== role) {
+      current.role = role;
+      changed = true;
     }
-    current.updatedAt = now;
+    const name = asString(update.name);
+    if (name && !lockedFields.has('name') && current.name !== name) {
+      current.name = name;
+      changed = true;
+    }
+    const label = asString(update.label);
+    if (label && !lockedFields.has('label') && current.label !== label) {
+      current.label = label;
+      changed = true;
+    }
+    const description = asString(update.description);
+    if (description && !lockedFields.has('description') && current.description !== description) {
+      current.description = description;
+      changed = true;
+    }
+    const speechStyle = asString(update.speechStyle);
+    if (speechStyle && !lockedFields.has('speechStyle') && current.speechStyle !== speechStyle) {
+      current.speechStyle = speechStyle;
+      changed = true;
+    }
+    const relationshipNotes = asString(update.relationshipNotes);
+    if (
+      relationshipNotes &&
+      !lockedFields.has('relationshipNotes') &&
+      current.relationshipNotes !== relationshipNotes
+    ) {
+      current.relationshipNotes = relationshipNotes;
+      changed = true;
+    }
+    if (changed) {
+      current.updatedAt = now;
+    }
   }
 }
 
@@ -257,14 +309,15 @@ function normalizeTextItem(
   value: unknown,
   prefix: string,
   fallbackNow: string,
-  fallbackSource: SetupDraftItemSource = 'manual'
+  fallbackSource: SetupDraftItemSource = 'manual',
+  forceNewId = false
 ): SetupDraftTextItem | null {
   const text = typeof value === 'string' ? value.trim() : isRecord(value) ? asString(value.text) : '';
   if (!text) return null;
   const record = isRecord(value) ? value : {};
   const createdAt = asString(record.createdAt) || fallbackNow;
   return {
-    id: asString(record.id) || generateTimestampId(prefix),
+    id: forceNewId ? generateTimestampId(prefix) : normalizeItemId(record.id, prefix),
     text,
     source: normalizeSource(record.source, fallbackSource),
     status: normalizeStatus(record.status),
@@ -278,7 +331,8 @@ function normalizeTextItem(
 function normalizeCandidate(
   value: unknown,
   fallbackNow: string,
-  fallbackSource: SetupDraftItemSource = 'manual'
+  fallbackSource: SetupDraftItemSource = 'manual',
+  forceNewId = false
 ): SetupDraftCandidate | null {
   if (!isRecord(value)) return null;
   const title = asString(value.title);
@@ -286,7 +340,7 @@ function normalizeCandidate(
   if (!title && !summary) return null;
   const createdAt = asString(value.createdAt) || fallbackNow;
   return {
-    id: asString(value.id) || generateTimestampId('cand'),
+    id: forceNewId ? generateTimestampId('cand') : normalizeItemId(value.id, 'cand'),
     title: title || summary.slice(0, 40),
     summary,
     source: normalizeSource(value.source, fallbackSource),
@@ -300,9 +354,10 @@ function normalizeCandidate(
 function normalizeUndecided(
   value: unknown,
   fallbackNow: string,
-  fallbackSource: SetupDraftItemSource = 'manual'
+  fallbackSource: SetupDraftItemSource = 'manual',
+  forceNewId = false
 ): SetupDraftUndecided | null {
-  const item = normalizeTextItem(value, 'und', fallbackNow, fallbackSource);
+  const item = normalizeTextItem(value, 'und', fallbackNow, fallbackSource, forceNewId);
   if (!item) return null;
   const record = isRecord(value) ? value : {};
   return {
@@ -314,7 +369,8 @@ function normalizeUndecided(
 function normalizeCharacter(
   value: unknown,
   fallbackNow: string,
-  fallbackSource: SetupDraftItemSource = 'manual'
+  fallbackSource: SetupDraftItemSource = 'manual',
+  forceNewId = false
 ): SetupDraftCharacter | null {
   if (!isRecord(value)) return null;
   const role = normalizeRole(value.role) ?? 'supporting';
@@ -324,7 +380,7 @@ function normalizeCharacter(
   if (!name && !label && !description) return null;
   const createdAt = asString(value.createdAt) || fallbackNow;
   return {
-    id: asString(value.id) || generateTimestampId('char-draft'),
+    id: forceNewId ? generateTimestampId('char-draft') : normalizeItemId(value.id, 'char-draft'),
     role,
     name,
     label,
@@ -338,6 +394,25 @@ function normalizeCharacter(
     createdAt,
     updatedAt: asString(value.updatedAt) || createdAt,
   };
+}
+
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+function normalizeItemId(value: unknown, prefix: string): string {
+  const text = asString(value);
+  if (text && !text.startsWith('draft.') && SAFE_PATH_SEGMENT.test(text)) return text;
+  return generateTimestampId(prefix);
+}
+
+function deduplicateAndFixItemIds<T extends { id: string }>(items: T[], prefix: string): T[] {
+  const seen = new Set<string>();
+  return items.map((item) => {
+    if (!item.id || item.id.startsWith('draft.') || !SAFE_PATH_SEGMENT.test(item.id) || seen.has(item.id)) {
+      return { ...item, id: generateTimestampId(prefix) };
+    }
+    seen.add(item.id);
+    return item;
+  });
 }
 
 function trimCandidates(candidates: SetupDraftCandidate[]): SetupDraftCandidate[] {
@@ -373,6 +448,10 @@ function isPathLocked(locks: SetupLock[], needle: string): boolean {
   });
 }
 
+function extractSource(value: unknown): string {
+  return isRecord(value) ? asString(value.source) : '';
+}
+
 function normalizeRole(value: unknown): CharacterRole | null {
   return value === 'protagonist' ||
     value === 'deuteragonist' ||
@@ -400,7 +479,7 @@ function sameNonEmptyText(a: string, b: string): boolean {
   return Boolean(left && right && left === right);
 }
 
-function normalizeComparableText(value: string): string {
+export function normalizeComparableText(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 

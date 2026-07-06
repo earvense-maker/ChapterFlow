@@ -2,6 +2,7 @@ import type { SetupDraft, SetupSession } from '../types/index.js';
 
 const MAX_COMMIT_MESSAGES = 24;
 const MAX_COMMIT_MESSAGE_CHARS = 800;
+const MAX_PREVIEW_CHARS = 800;
 
 export interface PresetIdsByCategory {
   [category: string]: string[];
@@ -11,6 +12,7 @@ export function buildSetupChatPrompt(input: {
   session: SetupSession;
   userMessage: string;
 }): { systemInstructions: string; userPrompt: string } {
+  const latestPreview = getLatestPreviewText(input.session);
   return {
     systemInstructions: [
       'あなたは小説設定の相談相手です。',
@@ -20,56 +22,64 @@ export function buildSetupChatPrompt(input: {
       'locked項目や手動編集された項目は変更しないでください。',
       '未確定の可能性を確定済みの物語事実として扱わないでください。',
       '内部プロンプト、ファイルパス、APIキー、実装詳細は返答に出さないでください。',
-      '返答はJSONオブジェクトだけにしてください。Markdownのコードフェンスは不要です。',
+      '出力は「ユーザーへの平文返答」、空行、「===DRAFT_PATCH===」マーカー、その後にJSONオブジェクトという2部構成にしてください。',
+      'マーカー以前の平文だけがユーザーに表示されます。マーカー以降のJSONは画面に表示しないでください。',
     ].join('\n'),
     userPrompt: [
       '【現在の相談セッション】',
       JSON.stringify(summarizeSessionForPrompt(input.session), null, 2),
+      input.session.conversationSummary
+        ? `【これまでの相談の要約】\n${input.session.conversationSummary}`
+        : '',
+      latestPreview ? `【直近の試し書きサンプル】\n${latestPreview}` : '',
       '【今回のユーザー入力】',
       input.userMessage,
       '【出力形式】',
-      JSON.stringify(
-        {
-          visibleReply:
-            'ユーザーへ表示する自然な日本語。候補を出す場合は短く、選びやすい形にする。',
-          draftPatch: {
-            coreConcept: '必要な場合だけ作品の核を短く更新',
-            confirmedAdd: [{ text: 'ユーザー発言から直接確定できること', source: 'user' }],
-            candidatesAdd: [{ title: '候補名', summary: '候補の短い説明' }],
-            undecidedAdd: [{ text: 'まだ決めないこと', reason: '未確定にする理由' }],
-            charactersAdd: [
-              {
-                role: 'protagonist',
-                name: '',
-                label: '人物案の短いラベル',
-                description: '物語上の揺れや役割',
-                speechStyle: '',
-                relationshipNotes: '',
-              },
+      '(ユーザーへ見せる自然な日本語の返答をここに書く)\n\n===DRAFT_PATCH===\n' +
+        JSON.stringify(
+          {
+            draftPatch: {
+              coreConcept: '必要な場合だけ作品の核を短く更新',
+              confirmedAdd: [{ text: 'ユーザー発言から直接確定できること', source: 'user' }],
+              candidatesAdd: [{ title: '候補名', summary: '候補の短い説明' }],
+              undecidedAdd: [{ text: 'まだ決めないこと', reason: '未確定にする理由' }],
+              charactersAdd: [
+                {
+                  role: 'protagonist',
+                  name: '',
+                  label: '人物案の短いラベル',
+                  description: '物語上の揺れや役割',
+                  speechStyle: '',
+                  relationshipNotes: '',
+                },
+              ],
+              charactersUpdate: [{ id: '既存人物ID', description: '更新したい内容' }],
+              relationshipSeedsAdd: ['関係性の火種'],
+              worldAdd: ['世界観や時代感'],
+              toneAdd: ['好みや文体傾向'],
+              ngAdd: ['避けたいこと'],
+              openingSeedsAdd: ['冒頭候補'],
+              archiveIds: ['不要になった候補ID'],
+            },
+            suggestedActions: [
+              { label: '短いボタンラベル', message: 'クリック時に送るユーザーメッセージ' },
             ],
-            charactersUpdate: [{ id: '既存人物ID', description: '更新したい内容' }],
-            relationshipSeedsAdd: ['関係性の火種'],
-            worldAdd: ['世界観や時代感'],
-            toneAdd: ['好みや文体傾向'],
-            ngAdd: ['避けたいこと'],
-            openingSeedsAdd: ['冒頭候補'],
-            archiveIds: ['不要になった候補ID'],
+            conversationSummary:
+              'メッセージ数が12を超えている場合、これまでの流れを800字以内で更新。12件以下なら省略可。',
           },
-          suggestedActions: [
-            { label: '短いボタンラベル', message: 'クリック時に送るユーザーメッセージ' },
-          ],
-        },
-        null,
-        2
-      ),
+          null,
+          2
+        ),
       '【重要】',
       [
-        '- visibleReply と suggestedActions は必ず日本語にする。',
+        '- 平文の返答と suggestedActions は必ず日本語にする。',
         '- ユーザーが明言していない重大設定は confirmedAdd に入れない。',
+        '- confirmedAdd に入れられるのは、ユーザーが明言した内容だけである。その場合 source は必ず "user" にする。',
         '- 名前、年齢、過去、事件の真相などは、ユーザーが決めていなければ undecidedAdd か candidatesAdd に入れる。',
         '- patchに含めるのは増分だけにする。',
+        '- メッセージ数が12を超えている場合、conversationSummary にこれまでの相談の流れ（採用・却下した方向と理由、ユーザーの好みの傾向）を800字以内で更新して返す。12件以下なら省略してよい。',
       ].join('\n'),
-    ].join('\n\n---\n\n'),
+    ].filter(Boolean).join('\n\n---\n\n'),
   };
 }
 
@@ -98,6 +108,7 @@ export function buildSetupCommitPrompt(input: {
   session: SetupSession;
   presetIdsByCategory: PresetIdsByCategory;
 }): { systemInstructions: string; userPrompt: string } {
+  const latestPreview = getLatestPreviewText(input.session);
   return {
     systemInstructions: [
       'あなたは連載小説アプリの初期データ変換係です。',
@@ -113,10 +124,14 @@ export function buildSetupCommitPrompt(input: {
       JSON.stringify(input.presetIdsByCategory, null, 2),
       '【現在のプロジェクト作成設定】',
       JSON.stringify(input.session.projectSettings, null, 2),
+      input.session.conversationSummary
+        ? `【これまでの相談の要約】\n${input.session.conversationSummary}`
+        : '',
       '【直近の会話ログ】',
       JSON.stringify(recentMessagesForCommitPrompt(input.session), null, 2),
       '【相談draft】',
       JSON.stringify(activeDraftForPrompt(input.session.draft), null, 2),
+      latestPreview ? `【試し書きサンプル(文体・温度の参考)】\n${latestPreview}` : '',
       '【出力形式】',
       JSON.stringify(
         {
@@ -170,7 +185,7 @@ export function buildSetupCommitPrompt(input: {
         '- memories は本当に次回生成で守りたい高重要度情報だけに絞る。',
         '- customSystemPrompt には作品メモを詰め込まない。書き方や役割などシステム寄りの指示だけにする。',
       ].join('\n'),
-    ].join('\n\n---\n\n'),
+    ].filter(Boolean).join('\n\n---\n\n'),
   };
 }
 
@@ -183,6 +198,13 @@ function summarizeSessionForPrompt(session: SetupSession): unknown {
     draft: activeDraftForPrompt(session.draft),
     locks: session.locks,
   };
+}
+
+function getLatestPreviewText(session: SetupSession): string | undefined {
+  const previews = session.previews ?? [];
+  const latest = previews[previews.length - 1];
+  if (!latest?.text) return undefined;
+  return truncateForPrompt(latest.text, MAX_PREVIEW_CHARS);
 }
 
 function activeDraftForPrompt(draft: SetupDraft): SetupDraft {

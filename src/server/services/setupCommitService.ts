@@ -18,6 +18,7 @@ import type {
   StoryThreadRecord,
 } from '../types/index.js';
 import type { PresetIdsByCategory } from './setupPromptBuilder.js';
+import { normalizeComparableText } from './setupDraftPatchService.js';
 
 const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
   genre: 'modern-drama',
@@ -56,6 +57,15 @@ export function normalizeSetupCommitData(input: {
   presetIdsByCategory: PresetIdsByCategory;
   now?: string;
 }): NormalizedSetupCommitData {
+  return normalizeSetupCommitPlan(input);
+}
+
+export function normalizeSetupCommitPlan(input: {
+  raw: unknown;
+  session: SetupSession;
+  presetIdsByCategory: PresetIdsByCategory;
+  now?: string;
+}): NormalizedSetupCommitData {
   const now = input.now ?? nowIso();
   const raw = isRecord(input.raw) ? input.raw : {};
   const rawProject = isRecord(raw.project) ? raw.project : {};
@@ -83,9 +93,15 @@ export function normalizeSetupCommitData(input: {
     customSystemPrompt: asString(raw.customSystemPrompt),
   };
 
+  const memories = mergeDraftPreferenceMemories(
+    normalizeMemories(raw.memories, now),
+    input.session.draft,
+    now
+  );
+
   return {
     projectInput,
-    memories: normalizeMemories(raw.memories, now),
+    memories,
     storyState: normalizeStoryState(raw.storyState, now),
   };
 }
@@ -177,6 +193,67 @@ function normalizeMemories(value: unknown, now: string): Memory[] {
     .map((item) => normalizeMemory(item, now))
     .filter((item): item is Memory => item !== null)
     .slice(0, 24);
+}
+
+function mergeDraftPreferenceMemories(memories: Memory[], draft: SetupSession['draft'], now: string): Memory[] {
+  const memoryTexts = new Set(memories.map((memory) => normalizeComparableText(memory.content)));
+  const next = [...memories];
+
+  for (const text of draft.ng) {
+    const normalized = normalizeComparableText(text);
+    if (!normalized || memoryTexts.has(normalized)) continue;
+    if (next.length >= 24) {
+      dropLowestImportanceLlmMemory(next);
+    }
+    if (next.length >= 24) continue;
+    next.push({
+      memoryId: generateTimestampId('mem'),
+      type: 'negative',
+      content: text,
+      importance: 'high',
+      relatedCharacters: [],
+      relatedEpisodes: [],
+      createdAt: now,
+      updatedAt: now,
+      sourceSceneId: null,
+      status: 'active',
+      source: 'manual',
+    });
+    memoryTexts.add(normalized);
+  }
+
+  for (const text of draft.tone) {
+    const normalized = normalizeComparableText(text);
+    if (!normalized || memoryTexts.has(normalized)) continue;
+    if (next.length >= 24) continue;
+    next.push({
+      memoryId: generateTimestampId('mem'),
+      type: 'preference',
+      content: text,
+      importance: 'medium',
+      relatedCharacters: [],
+      relatedEpisodes: [],
+      createdAt: now,
+      updatedAt: now,
+      sourceSceneId: null,
+      status: 'active',
+      source: 'manual',
+    });
+    memoryTexts.add(normalized);
+  }
+
+  return next.slice(0, 24);
+}
+
+function dropLowestImportanceLlmMemory(memories: Memory[]): void {
+  for (const importance of ['low', 'medium'] as const) {
+    for (let index = memories.length - 1; index >= 0; index--) {
+      if (memories[index].importance === importance) {
+        memories.splice(index, 1);
+        return;
+      }
+    }
+  }
 }
 
 function normalizeMemory(value: unknown, now: string): Memory | null {
@@ -279,6 +356,7 @@ function buildFallbackWorldText(session: SetupSession): string {
     session.draft.coreConcept,
     ...session.draft.world,
     ...session.draft.relationshipSeeds,
+    ...session.draft.tone.map((item) => `文体・トーンの希望: ${item}`),
     ...session.draft.openingSeeds.map((seed) => `冒頭候補: ${seed}`),
   ]
     .filter(Boolean)

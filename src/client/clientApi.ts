@@ -1,5 +1,6 @@
 import type {
   Character,
+  CommitSetupBody,
   ContextCompressionResult,
   CreateMemoryBody,
   CreateProjectBody,
@@ -22,9 +23,15 @@ import type {
   RefineSession,
   SceneNavigationDirection,
   CreateSetupSessionBody,
+  PatchSetupSettingsBody,
+  PatchSetupSettingsResponse,
+  RetrySetupMessageBody,
   SendSetupMessageBody,
+  SetLockStateBody,
+  SetupCommitPlanResponse,
   SetupCommitResponse,
   SetupDraftResponse,
+  SetupLockStateResponse,
   SetupMessageResponse,
   SetupPreviewResponse,
   SetupSession,
@@ -70,22 +77,39 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  retrySetupMessage: (id: string, body: RetrySetupMessageBody = {}) =>
+    request<SetupMessageResponse>(`/setup-sessions/${id}/messages/retry`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
   updateSetupDraft: (id: string, body: UpdateSetupDraftBody) =>
     request<SetupDraftResponse>(`/setup-sessions/${id}/draft`, {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
-  addSetupLock: (id: string, body: { path: string; reason?: 'user_locked' | 'manual_edit' }) =>
-    request<SetupSession>(`/setup-sessions/${id}/locks`, {
+  setSetupLockState: (id: string, body: SetLockStateBody) =>
+    request<SetupLockStateResponse>(`/setup-sessions/${id}/lock-state`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  previewSetup: (id: string) =>
+    request<SetupPreviewResponse>(`/setup-sessions/${id}/preview`, { method: 'POST' }),
+  createSetupCommitPlan: (id: string) =>
+    request<SetupCommitPlanResponse>(`/setup-sessions/${id}/commit-plan`, { method: 'POST' }),
+  commitSetup: (id: string, body: CommitSetupBody) =>
+    request<SetupCommitResponse>(`/setup-sessions/${id}/commit`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  removeSetupLock: (id: string, lockId: string) =>
-    request<SetupSession>(`/setup-sessions/${id}/locks/${lockId}`, { method: 'DELETE' }),
-  previewSetup: (id: string) =>
-    request<SetupPreviewResponse>(`/setup-sessions/${id}/preview`, { method: 'POST' }),
-  commitSetup: (id: string) =>
-    request<SetupCommitResponse>(`/setup-sessions/${id}/commit`, { method: 'POST' }),
+  abandonSetupSession: (id: string) =>
+    request<SetupSession>(`/setup-sessions/${id}/abandon`, { method: 'POST' }),
+  deleteSetupSession: (id: string) =>
+    request<{ ok: true }>(`/setup-sessions/${id}`, { method: 'DELETE' }),
+  patchSetupSettings: (id: string, body: PatchSetupSettingsBody) =>
+    request<PatchSetupSettingsResponse>(`/setup-sessions/${id}/settings`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
 
   getPresets: () => request<unknown>('/presets'),
   getProjectPresets: (id: string) => request<PresetsFile>(`/projects/${id}/presets`),
@@ -152,6 +176,12 @@ export const api = {
     request<GenerationRecord>(`/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   generateStream: (id: string, body: GenerateRequestBody, onChunk: (text: string) => void) =>
     requestGenerationStream(id, body, onChunk),
+  sendSetupMessageStream: (
+    id: string,
+    body: SendSetupMessageBody,
+    handlers: SetupMessageStreamHandlers,
+    abortSignal?: AbortSignal
+  ) => sendSetupMessageStream(id, body, handlers, abortSignal),
   acceptGeneration: (id: string, generationId: string) =>
     request<GenerationRecord>(`/projects/${id}/accept`, { method: 'POST', body: JSON.stringify({ generationId }) }),
   rejectGeneration: (id: string, generationId: string) =>
@@ -176,6 +206,78 @@ export const api = {
   updateState: (id: string, state: Partial<ProjectState>) =>
     request<ProjectState>(`/projects/${id}/state`, { method: 'PUT', body: JSON.stringify(state) }),
 };
+
+export interface SetupMessageStreamHandlers {
+  onDelta: (text: string) => void;
+  onResult: (response: SetupMessageResponse) => void;
+  onError: (error: {
+    error: string;
+    code?: string;
+    retryable?: boolean;
+    session?: SetupSession;
+  }) => void;
+}
+
+async function sendSetupMessageStream(
+  id: string,
+  body: SendSetupMessageBody,
+  handlers: SetupMessageStreamHandlers,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/setup-sessions/${id}/messages/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: abortSignal,
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    throw new Error(formatApiError(errorBody, res.status));
+  }
+  if (!res.body) throw new Error('ストリーミング応答を読み取れませんでした');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const handleEvent = (event: string, data: string) => {
+    if (event === 'delta') {
+      const payload = JSON.parse(data) as { text?: string };
+      if (payload.text) handlers.onDelta(payload.text);
+    }
+    if (event === 'result') {
+      handlers.onResult(JSON.parse(data) as SetupMessageResponse);
+    }
+    if (event === 'error') {
+      const payload = JSON.parse(data) as {
+        error?: string;
+        code?: string;
+        retryable?: boolean;
+        session?: SetupSession;
+      };
+      handlers.onError({
+        error: payload.error ?? '相談処理に失敗しました',
+        code: payload.code,
+        retryable: payload.retryable,
+        session: payload.session,
+      });
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    buffer = drainStreamEvents(buffer, handleEvent);
+  }
+
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    drainStreamEvents(`${buffer}\n\n`, handleEvent);
+  }
+}
 
 async function requestGenerationStream(
   id: string,
