@@ -11,6 +11,7 @@ import * as projectService from './projectService.js';
 import {
   applySetupDraftPatch,
   createEmptySetupDraft,
+  normalizeComparableText,
   normalizeSetupDraft,
 } from './setupDraftPatchService.js';
 import {
@@ -753,17 +754,13 @@ function normalizeLockPaths(value: unknown): string[] {
 }
 
 export async function generateSetupPreview(
-  sessionId: string
+  sessionId: string,
+  body: { instruction?: string } = {}
 ): Promise<SetupPreviewResponse> {
   return withSessionLock(sessionId, async () => {
   const session = await requireActiveSession(sessionId);
-  const { systemInstructions, userPrompt } = buildSetupPreviewPrompt(session);
-  const result = await generateWithSessionModel(session, {
-    systemInstructions,
-    userPrompt,
-    outputLength: PREVIEW_OUTPUT_LENGTH,
-    temperature: PREVIEW_TEMPERATURE,
-  }).catch(async (err) => {
+  const instruction = typeof body.instruction === 'string' ? body.instruction.trim() : '';
+  const result = await generateSetupPreviewText(session, instruction).catch(async (err) => {
     const nextSession = await writeSessionError(session, err);
     throw toSetupServiceError(err, nextSession);
   });
@@ -776,6 +773,7 @@ export async function generateSetupPreview(
 
   const previewText = result.text.trim();
   const now = nowIso();
+  const draft = instruction ? addToneHint(session.draft, instruction) : session.draft;
   const previews: NonNullable<SetupSession['previews']> = [...(session.previews ?? [])];
   previews.push({
     previewId: generateTimestampId('preview'),
@@ -788,6 +786,7 @@ export async function generateSetupPreview(
 
   const nextSession: SetupSession = {
     ...session,
+    draft,
     previews,
     revision: session.revision + 1,
     lastError: null,
@@ -799,6 +798,16 @@ export async function generateSetupPreview(
   });
 }
 
+async function generateSetupPreviewText(session: SetupSession, instruction = '') {
+  const { systemInstructions, userPrompt } = buildSetupPreviewPrompt(session, instruction);
+  return generateWithSessionModel(session, {
+    systemInstructions,
+    userPrompt,
+    outputLength: PREVIEW_OUTPUT_LENGTH,
+    temperature: PREVIEW_TEMPERATURE,
+  });
+}
+
 export async function createSetupCommitPlan(
   sessionId: string,
   _body?: { revision?: number }
@@ -806,6 +815,7 @@ export async function createSetupCommitPlan(
   return withSessionLock(sessionId, async () => {
     const session = await requireActiveSession(sessionId);
     const presetIdsByCategory = await readPresetIdsByCategory();
+    const styleSample = await resolveAutoStyleSample(session);
     const { systemInstructions, userPrompt } = buildSetupCommitPrompt({
       session,
       presetIdsByCategory,
@@ -846,6 +856,7 @@ export async function createSetupCommitPlan(
       presetIdsByCategory,
     });
     const plan = normalizedToPlan(normalized);
+    plan.styleSample = styleSample || '';
     const now = nowIso();
     const nextSession: SetupSession = {
       ...session,
@@ -857,6 +868,18 @@ export async function createSetupCommitPlan(
     await storage.writeSetupSession(nextSession);
     return { plan, session: nextSession, revision: nextSession.revision };
   });
+}
+
+async function resolveAutoStyleSample(session: SetupSession): Promise<string> {
+  const latestPreview = session.previews?.at(-1)?.text.trim();
+  if (latestPreview) return latestPreview.slice(0, 1000);
+  try {
+    const result = await generateSetupPreviewText(session);
+    if (result.finishReason === 'error' || result.finishReason === 'timeout') return '';
+    return result.text.trim().slice(0, 1000);
+  } catch {
+    return '';
+  }
 }
 
 export async function commitSetupSession(
@@ -944,11 +967,26 @@ function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPla
       outputLength: projectInput.outputLength ?? 3000,
       activePresetIds: projectInput.activePresetIds ?? {},
     },
+    coreConcept: projectInput.coreConcept ?? '',
+    firstWishSuggestion: projectInput.firstWishSuggestion ?? '',
+    styleSample: projectInput.styleSample ?? '',
     worldText: projectInput.worldText ?? '',
     characters: projectInput.characters ?? [],
     memories: normalized.memories,
     storyState: normalized.storyState,
     customSystemPrompt: projectInput.customSystemPrompt ?? '',
+  };
+}
+
+function addToneHint(draft: SetupDraft, hint: string): SetupDraft {
+  const text = hint.trim();
+  if (!text) return draft;
+  if (draft.tone.some((item) => normalizeComparableText(item) === normalizeComparableText(text))) {
+    return draft;
+  }
+  return {
+    ...draft,
+    tone: [...draft.tone.slice(-11), text],
   };
 }
 

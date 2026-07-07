@@ -320,4 +320,41 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.activePresetIds?.density).toBe('balanced');
     expect(normalized.storyState.openThreads[0].importance).toBe('medium');
   });
+
+  it('drops story event visibility IDs that do not match committed characters', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: {
+        genre: ['modern-drama'],
+        style: ['natural-dialogue'],
+        pov: ['third-person-close'],
+        pacing: ['standard'],
+        density: ['balanced'],
+        relationshipPacing: ['standard'],
+      },
+      raw: {
+        characters: [
+          {
+            characterId: 'char-a',
+            name: 'A',
+            role: 'protagonist',
+            description: 'A protagonist.',
+          },
+        ],
+        storyState: {
+          importantEvents: [
+            {
+              summary: 'A found the sealed letter.',
+              knownBy: ['A', 'char-a', 'char-missing'],
+              explicitlyUnknownBy: ['char-a', 'char-missing'],
+            },
+          ],
+        },
+      },
+    });
+
+    expect(normalized.storyState.importantEvents[0].knownBy).toEqual(['char-a']);
+    expect(normalized.storyState.importantEvents[0].explicitlyUnknownBy).toEqual([]);
+  });
 });

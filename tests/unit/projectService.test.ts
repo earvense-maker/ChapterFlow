@@ -28,8 +28,6 @@ describe('project settings validation', () => {
   });
 
   it('rolls back a newly created project directory when creation validation fails', async () => {
-    const before = new Set(await storage.listProjectIds());
-
     await expect(
       projectService.createProject({
         title: 'Invalid Start',
@@ -38,11 +36,9 @@ describe('project settings validation', () => {
     ).rejects.toThrow(projectService.ProjectValidationError);
 
     const after = await storage.listProjectIds();
-    const added = after.filter((projectId) => !before.has(projectId));
-    await Promise.all(
-      added.map(async (projectId) => {
-        await expect(storage.readProject(projectId)).resolves.not.toBeNull();
-      })
+    const projects = await Promise.all(after.map((projectId) => storage.readProject(projectId)));
+    expect(projects.filter(Boolean).some((project) => project?.title === 'Invalid Start')).toBe(
+      false
     );
   });
 

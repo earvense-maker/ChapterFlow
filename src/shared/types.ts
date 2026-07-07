@@ -31,6 +31,9 @@ export interface Project {
   schemaVersion: number;
   projectId: ProjectId;
   title: string;
+  coreConcept?: string;
+  firstWishSuggestion?: string;
+  styleSample?: string;
   createdAt: string; // ISO 8601
   updatedAt: string;
   activeModelProvider: string;
@@ -49,6 +52,7 @@ export interface ProjectState {
   lastAcceptedGenerationId: GenerationId | null;
   pendingMemoryCandidateIds: MemoryId[];
   storyStateRefresh?: StoryStateRefreshStatus;
+  storyStateBacklogCount?: number;
   uiState: {
     readingPosition: number;
     fontSize: number;
@@ -67,11 +71,14 @@ export type CharacterRole = 'protagonist' | 'deuteragonist' | 'supporting' | 'ot
 export interface Character {
   characterId: CharacterId;
   name: string;
+  aliases?: string[];
   role: CharacterRole;
   description: string;
   speechStyle?: string;
   relationshipNotes?: string;
   secrets?: string;
+  want?: string;
+  fear?: string;
   currentState?: string;
 }
 
@@ -144,6 +151,8 @@ export interface StoryEventRecord {
   summary: string;
   characters: string[];
   visibility: string;
+  knownBy?: CharacterId[];
+  explicitlyUnknownBy?: CharacterId[];
   importance: MemoryImportance;
   status: StoryItemStatus;
   updatedAt: string;
@@ -158,13 +167,50 @@ export interface StoryThreadRecord {
   updatedAt: string;
 }
 
+export interface StoryAuthorUndecidedRecord {
+  id: string;
+  text: string;
+  reason?: string;
+  status: StoryItemStatus;
+  updatedAt: string;
+}
+
+export interface StoryClock {
+  day: number;
+  timeOfDay?: string;
+  note?: string;
+}
+
 export interface StoryState {
   schemaVersion: 1;
   currentSituation: string[];
   characterStates: StoryCharacterState[];
   importantEvents: StoryEventRecord[];
   openThreads: StoryThreadRecord[];
+  authorUndecided?: StoryAuthorUndecidedRecord[];
+  clock?: StoryClock;
+  processedGenerationIds?: GenerationId[];
   updatedAt: string;
+}
+
+export interface StoryStateDiffSummary {
+  addedEvents: string[];
+  updatedEvents: string[];
+  addedThreads: string[];
+  resolvedThreads: string[];
+  updatedCharacters: string[];
+  clockChanged: boolean;
+}
+
+export interface StoryStateDiffRecord {
+  diffId: string;
+  generationId: GenerationId;
+  sceneId: SceneId;
+  appliedAt: string;
+  summary: StoryStateDiffSummary;
+  beforeState?: StoryState;
+  resultUpdatedAt: string;
+  reverted: boolean;
 }
 
 export type SetupSessionId = string;
@@ -233,6 +279,9 @@ export interface SetupDraftCharacter {
   description: string;
   speechStyle?: string;
   relationshipNotes?: string;
+  want?: string;
+  fear?: string;
+  secret?: string;
   lockedFields?: string[];
   source: SetupDraftItemSource;
   status: SetupDraftItemStatus;
@@ -403,6 +452,9 @@ export interface SetupCommitPlan {
     outputLength: number;
     activePresetIds: Partial<ActivePresets>;
   };
+  coreConcept?: string;
+  firstWishSuggestion?: string;
+  styleSample?: string;
   worldText: string;
   characters: Character[];
   memories: Memory[];
@@ -594,6 +646,9 @@ export interface CreateProjectBody {
   activePresetIds?: Partial<ActivePresets>;
   samplingConfig?: Partial<SamplingConfig>;
   duplicateFrom?: ProjectId;
+  coreConcept?: string;
+  firstWishSuggestion?: string;
+  styleSample?: string;
   worldText?: string;
   characters?: Character[];
   customSystemPrompt?: string;
@@ -601,6 +656,9 @@ export interface CreateProjectBody {
 
 export interface UpdateProjectBody {
   title?: string;
+  coreConcept?: string;
+  firstWishSuggestion?: string;
+  styleSample?: string;
   outputLength?: number;
   streamingEnabled?: boolean;
   activeModelProvider?: string;
@@ -621,6 +679,7 @@ export type AdapterGenerateStreamEvent =
 export interface ReaderState {
   project: Project;
   state: ProjectState;
+  storyStateBacklogCount?: number;
   currentEpisode: EpisodeRecord | null;
   currentScene: SceneRecord | null;
   currentGeneration: GenerationRecord | null;

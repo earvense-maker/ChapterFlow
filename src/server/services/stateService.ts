@@ -15,9 +15,10 @@ export async function updateState(
 ): Promise<ProjectState> {
   const state = await storage.readState(projectId);
   if (!state) throw new Error(`State not found: ${projectId}`);
+  const { storyStateBacklogCount: _storyStateBacklogCount, ...persistableUpdates } = updates;
   const next: ProjectState = {
     ...state,
-    ...updates,
+    ...persistableUpdates,
     uiState: updates.uiState ? { ...state.uiState, ...updates.uiState } : state.uiState,
   };
   await storage.writeState(projectId, next);

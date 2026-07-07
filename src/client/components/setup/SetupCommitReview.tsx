@@ -15,6 +15,7 @@ interface Props {
   onCommit: (plan: SetupCommitPlan) => void;
   onBack: () => void;
   onRecreate: () => void;
+  onRegenerateStyleSample?: (instruction: string) => Promise<string>;
 }
 
 const ROLE_LABELS: Record<CharacterRole, string> = {
@@ -42,9 +43,13 @@ export default function SetupCommitReview({
   onCommit,
   onBack,
   onRecreate,
+  onRegenerateStyleSample,
 }: Props) {
   const [edited, setEdited] = useState<SetupCommitPlan>(() => structuredClone(plan));
   const [situationDraft, setSituationDraft] = useState('');
+  const [styleInstruction, setStyleInstruction] = useState('');
+  const [styleLoading, setStyleLoading] = useState(false);
+  const [styleError, setStyleError] = useState<string | null>(null);
   const [memoryDraft, setMemoryDraft] = useState<{
     type: MemoryType;
     importance: MemoryImportance;
@@ -60,12 +65,30 @@ export default function SetupCommitReview({
     }));
   }
 
+  function updatePlan(partial: Partial<SetupCommitPlan>) {
+    setEdited((current) => ({ ...current, ...partial }));
+  }
+
   function updateCharacter(index: number, partial: Partial<Character>) {
     setEdited((current) => {
       const characters = [...current.characters];
       characters[index] = { ...characters[index], ...partial } as Character;
       return { ...current, characters };
     });
+  }
+
+  async function handleRegenerateStyleSample() {
+    if (!onRegenerateStyleSample) return;
+    try {
+      setStyleLoading(true);
+      setStyleError(null);
+      const text = await onRegenerateStyleSample(styleInstruction);
+      setEdited((current) => ({ ...current, styleSample: text }));
+    } catch (err) {
+      setStyleError(err instanceof Error ? err.message : '文体見本の作成に失敗しました');
+    } finally {
+      setStyleLoading(false);
+    }
   }
 
   function addCharacter() {
@@ -203,6 +226,63 @@ export default function SetupCommitReview({
       </section>
 
       <section className="setup-commit-section">
+        <h3>作品の核</h3>
+        <textarea
+          className="setup-commit-textarea compact"
+          value={edited.coreConcept ?? ''}
+          onChange={(e) => updatePlan({ coreConcept: e.target.value })}
+          disabled={disabled}
+          placeholder="この作品が何の話で、どんな読み味を約束するか"
+        />
+      </section>
+
+      <section className="setup-commit-section">
+        <h3>初回生成の希望</h3>
+        <textarea
+          className="setup-commit-textarea compact"
+          value={edited.firstWishSuggestion ?? ''}
+          onChange={(e) => updatePlan({ firstWishSuggestion: e.target.value })}
+          disabled={disabled}
+          placeholder="第1話冒頭に流したい希望"
+        />
+      </section>
+
+      <section className="setup-commit-section">
+        <h3>文体見本</h3>
+        <textarea
+          className="setup-commit-textarea"
+          value={edited.styleSample ?? ''}
+          onChange={(e) => updatePlan({ styleSample: e.target.value })}
+          disabled={disabled || styleLoading}
+          placeholder="本文生成で書き方だけを参考にする短い見本"
+        />
+        <textarea
+          className="setup-commit-textarea compact"
+          value={styleInstruction}
+          onChange={(e) => setStyleInstruction(e.target.value)}
+          disabled={disabled || styleLoading}
+          placeholder="もっと会話を増やして、湿度高めに、この指示で作り直す…"
+        />
+        <div className="setup-commit-row-actions">
+          <button
+            type="button"
+            onClick={handleRegenerateStyleSample}
+            disabled={disabled || styleLoading || !onRegenerateStyleSample}
+          >
+            {styleLoading ? '作成中…' : 'この指示で作り直す'}
+          </button>
+          <button
+            type="button"
+            onClick={() => updatePlan({ styleSample: '' })}
+            disabled={disabled || styleLoading}
+          >
+            見本を使わない
+          </button>
+        </div>
+        {styleError && <div className="error-toast">{styleError}</div>}
+      </section>
+
+      <section className="setup-commit-section">
         <h3>世界観・作品の核</h3>
         <textarea
           className="setup-commit-textarea"
@@ -258,6 +338,41 @@ export default function SetupCommitReview({
                 value={character.relationshipNotes ?? ''}
                 onChange={(e) => updateCharacter(index, { relationshipNotes: e.target.value })}
                 placeholder="関係性"
+                disabled={disabled}
+              />
+              <textarea
+                className="setup-commit-textarea compact"
+                value={(character.aliases ?? []).join(', ')}
+                onChange={(e) =>
+                  updateCharacter(index, {
+                    aliases: e.target.value
+                      .split(',')
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  })
+                }
+                placeholder="呼び名（カンマ区切り）"
+                disabled={disabled}
+              />
+              <textarea
+                className="setup-commit-textarea compact"
+                value={character.want ?? ''}
+                onChange={(e) => updateCharacter(index, { want: e.target.value })}
+                placeholder="欲求"
+                disabled={disabled}
+              />
+              <textarea
+                className="setup-commit-textarea compact"
+                value={character.fear ?? ''}
+                onChange={(e) => updateCharacter(index, { fear: e.target.value })}
+                placeholder="恐れ"
+                disabled={disabled}
+              />
+              <textarea
+                className="setup-commit-textarea compact"
+                value={character.secrets ?? ''}
+                onChange={(e) => updateCharacter(index, { secrets: e.target.value })}
+                placeholder="秘密"
                 disabled={disabled}
               />
               <div className="setup-commit-row-actions">

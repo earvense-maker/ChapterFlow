@@ -22,6 +22,7 @@ import type {
   RefineSession,
   SetupSession,
   StoryState,
+  StoryStateDiffRecord,
 } from '../types/index.js';
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
@@ -72,6 +73,10 @@ export function contextSummaryMdPath(projectId: string): string {
 
 export function storyStateJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'story-state.json');
+}
+
+export function storyStateDiffsJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'story-state-diffs.json');
 }
 
 export function expressionsJsonPath(projectId: string): string {
@@ -218,6 +223,18 @@ export async function readStoryState(projectId: string): Promise<StoryState | nu
 
 export async function writeStoryState(projectId: string, storyState: StoryState): Promise<void> {
   await safeWriteJson(storyStateJsonPath(projectId), storyState);
+}
+
+export async function readStoryStateDiffs(projectId: string): Promise<StoryStateDiffRecord[]> {
+  const data = await readJsonFile<StoryStateDiffRecord[]>(storyStateDiffsJsonPath(projectId));
+  return data ?? [];
+}
+
+export async function writeStoryStateDiffs(
+  projectId: string,
+  diffs: StoryStateDiffRecord[]
+): Promise<void> {
+  await safeWriteJson(storyStateDiffsJsonPath(projectId), diffs);
 }
 
 export async function readExpressions(projectId: string): Promise<ExpressionsFile> {

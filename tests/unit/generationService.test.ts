@@ -10,6 +10,7 @@ import type {
   EpisodeRecord,
   GenerationRecord,
   Project,
+  StoryState,
 } from '../../src/server/types/index';
 
 const createdProjectIds: string[] = [];
@@ -208,6 +209,80 @@ describe('generationService generation', () => {
 });
 
 describe('generationService state operations', () => {
+  it('does not mark the pending accepted generation as processed during legacy story-state initialization', async () => {
+    const project = await createTrackedProject();
+    const episode: EpisodeRecord = {
+      episodeId: 'ep-backlog',
+      title: 'Episode',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId: 'scene-old',
+          episodeId: 'ep-backlog',
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: 'gen-old',
+          draftGenerationIds: ['gen-old'],
+        },
+        {
+          sceneId: 'scene-new',
+          episodeId: 'ep-backlog',
+          order: 2,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: 'gen-new',
+          draftGenerationIds: ['gen-new'],
+        },
+      ],
+    };
+    await storage.writeEpisodeRecord(project.projectId, episode);
+
+    for (const generationId of ['gen-old', 'gen-new']) {
+      await storage.appendGenerationLog(project.projectId, {
+        generationId,
+        sceneId: generationId === 'gen-old' ? 'scene-old' : 'scene-new',
+        episodeId: 'ep-backlog',
+        request: { wish: '', outputLength: 1000, previousContextText: '' },
+        responseText: `${generationId} text`,
+        usedPresets: project.activePresetIds,
+        usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+        referencedMemoryIds: [],
+        status: 'accepted',
+        createdAt: '2026-07-02T00:00:00Z',
+        parentGenerationId: null,
+      });
+    }
+
+    await storage.writeStoryState(project.projectId, {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: [],
+      openThreads: [],
+      updatedAt: '2026-07-02T00:00:00Z',
+    } as StoryState);
+    const state = await storage.readState(project.projectId);
+    expect(state).not.toBeNull();
+    await storage.writeState(project.projectId, {
+      ...state!,
+      storyStateRefresh: {
+        status: 'pending',
+        generationId: 'gen-new',
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    });
+
+    const backlog = await generationService.calculateStoryStateBacklog(project.projectId);
+
+    expect(backlog.map((item) => item.generationId)).toEqual(['gen-new']);
+    await expect(storage.readStoryState(project.projectId)).resolves.toMatchObject({
+      processedGenerationIds: ['gen-old'],
+    });
+  });
+
   it.todo('acceptGeneration marks a draft as accepted');
   it.todo('rejectGeneration marks a draft as rejected');
   it.todo('revertToPrevious returns the previous draft');

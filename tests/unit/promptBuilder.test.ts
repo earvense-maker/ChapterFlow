@@ -94,7 +94,7 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('切りがよいところで自然に終える');
   });
 
-  it('includes high importance memories only', async () => {
+  it('includes high story facts and medium preference memories', async () => {
     const memories: Memory[] = [
       {
         memoryId: 'mem-1',
@@ -122,6 +122,19 @@ describe('buildPrompt', () => {
         status: 'active',
         source: 'manual',
       },
+      {
+        memoryId: 'mem-3',
+        type: 'preference',
+        content: '低い好み',
+        importance: 'low',
+        relatedCharacters: [],
+        relatedEpisodes: [],
+        createdAt: '',
+        updatedAt: '',
+        sourceSceneId: null,
+        status: 'active',
+        source: 'manual',
+      },
     ];
     const { userPrompt } = await buildPrompt({
       project: makeProject(),
@@ -132,7 +145,8 @@ describe('buildPrompt', () => {
       worldText: '',
     });
     expect(userPrompt).toContain('重要な事実');
-    expect(userPrompt).not.toContain('中程度の好み');
+    expect(userPrompt).toContain('中程度の好み');
+    expect(userPrompt).not.toContain('低い好み');
   });
 
   it('includes world and characters', async () => {
@@ -156,6 +170,52 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('現代日本の地方都市');
     expect(userPrompt).toContain('太郎');
     expect(userPrompt).toContain('主人公');
+  });
+
+  it('matches legacy character knowledge by character name when characterId is missing', async () => {
+    const project = makeProject(promptStateProjectId);
+    const characters: Character[] = [
+      {
+        characterId: 'char-modern-a',
+        name: 'Modern A',
+        aliases: ['Legacy A'],
+        role: 'protagonist',
+        description: 'A protagonist.',
+      },
+    ];
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [
+        {
+          characterId: null,
+          name: 'Legacy A',
+          currentState: '',
+          knowledge: ['Legacy-only knowledge survives migration.'],
+          relationships: [],
+          updatedAt: '2026-07-02T00:00:00Z',
+        },
+      ],
+      importantEvents: [],
+      openThreads: [],
+      updatedAt: '2026-07-02T00:00:00Z',
+    };
+
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: '',
+      memories: [],
+      characters,
+      worldText: '',
+    });
+
+    expect(userPrompt).toContain('Modern A');
+    expect(userPrompt).toContain('Legacy-only knowledge survives migration.');
   });
 
   it('adds banned expressions section after output conditions', async () => {

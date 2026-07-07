@@ -8,6 +8,8 @@ import type {
   RefineFindingKind,
   RefineFindingTarget,
   RefineScanResult,
+  StoryState,
+  StoryStateDiffRecord,
 } from '@shared/types';
 
 interface Props {
@@ -45,6 +47,13 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
   const [worldDraft, setWorldDraft] = useState('');
   const [worldExpanded, setWorldExpanded] = useState(false);
   const [worldEditing, setWorldEditing] = useState(false);
+  const [projectDetails, setProjectDetails] = useState({
+    coreConcept: project.coreConcept ?? '',
+    firstWishSuggestion: project.firstWishSuggestion ?? '',
+    styleSample: project.styleSample ?? '',
+  });
+  const [projectDetailsDraft, setProjectDetailsDraft] = useState(projectDetails);
+  const [projectDetailsEditing, setProjectDetailsEditing] = useState(false);
 
   const [characters, setCharacters] = useState<Character[]>([]);
   const [charactersDraft, setCharactersDraft] = useState<Character[]>([]);
@@ -60,6 +69,10 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
   const [refineScan, setRefineScan] = useState<RefineScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [storyState, setStoryState] = useState<StoryState | null>(null);
+  const [storyStateDraft, setStoryStateDraft] = useState('');
+  const [storyStateEditing, setStoryStateEditing] = useState(false);
+  const [storyStateDiffs, setStoryStateDiffs] = useState<StoryStateDiffRecord[]>([]);
 
   const [loading, setLoading] = useState(false);
 
@@ -69,11 +82,13 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
     async function load() {
       try {
         onError(null);
-        const [presetsData, worldData, charsData, presetMeta] = await Promise.all([
+        const [presetsData, worldData, charsData, presetMeta, storyData, diffData] = await Promise.all([
           api.getProjectPresets(projectId),
           api.getWorld(projectId),
           api.getCharacters(projectId),
           api.getPresets(),
+          api.getStoryState(projectId),
+          api.getStoryStateDiffs(projectId),
         ]);
         if (cancelled) return;
         setPresets(presetsData);
@@ -82,6 +97,9 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
         setCharacters(charsData);
         setCharactersDraft(charsData);
         setCategories((presetMeta as { categories: Record<string, PresetCategory> }).categories);
+        setStoryState(storyData);
+        setStoryStateDraft(JSON.stringify(storyData, null, 2));
+        setStoryStateDiffs(diffData);
 
         const promptPreview = await api.previewSystemPrompt(
           projectId,
@@ -171,6 +189,32 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
     setCharactersEditing(false);
   }
 
+  async function handleSaveProjectDetails() {
+    try {
+      setLoading(true);
+      onError(null);
+      const updated = await api.updateProject(projectId, projectDetailsDraft);
+      const next = {
+        coreConcept: updated.coreConcept ?? '',
+        firstWishSuggestion: updated.firstWishSuggestion ?? '',
+        styleSample: updated.styleSample ?? '',
+      };
+      setProjectDetails(next);
+      setProjectDetailsDraft(next);
+      setProjectDetailsEditing(false);
+      onFlashMessage('詳細設定を保存しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleCancelProjectDetails() {
+    setProjectDetailsDraft(projectDetails);
+    setProjectDetailsEditing(false);
+  }
+
   function updateCharacterDraft(index: number, patch: Partial<Character>) {
     setCharactersDraft((prev) => prev.map((c, i) => (i === index ? { ...c, ...patch } : c)));
   }
@@ -247,6 +291,40 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
       onError(err instanceof Error ? err.message : 'プロンプトの更新に失敗しました');
     } finally {
       setPreviewLoading(false);
+    }
+  }
+
+  async function handleSaveStoryState() {
+    try {
+      setLoading(true);
+      onError(null);
+      const parsed = JSON.parse(storyStateDraft) as StoryState;
+      const saved = await api.updateStoryState(projectId, parsed);
+      setStoryState(saved);
+      setStoryStateDraft(JSON.stringify(saved, null, 2));
+      setStoryStateEditing(false);
+      onFlashMessage('物語状態を保存しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRevertStoryDiff(diffId: string) {
+    try {
+      setLoading(true);
+      onError(null);
+      const result = await api.revertStoryStateDiff(projectId, diffId);
+      const diffs = await api.getStoryStateDiffs(projectId);
+      setStoryState(result.storyState);
+      setStoryStateDraft(JSON.stringify(result.storyState, null, 2));
+      setStoryStateDiffs(diffs);
+      onFlashMessage('自動更新を取り消しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '取り消しに失敗しました');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -330,6 +408,89 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section className="summary-card">
+        <header className="summary-card-header">
+          <h2>詳細設定</h2>
+          <div className="summary-card-badges">
+            {projectDetails.coreConcept.trim() && <span className="settings-badge preset">核あり</span>}
+            {projectDetails.styleSample.trim() && <span className="settings-badge preset">見本あり</span>}
+          </div>
+        </header>
+        {!projectDetailsEditing && (
+          <>
+            <dl className="character-summary-fields">
+              <div>
+                <dt>作品の核</dt>
+                <dd>{projectDetails.coreConcept || <span className="summary-field-missing">未記入</span>}</dd>
+              </div>
+              <div>
+                <dt>初回生成の希望</dt>
+                <dd>{projectDetails.firstWishSuggestion || <span className="summary-field-missing">未記入</span>}</dd>
+              </div>
+              <div>
+                <dt>文体見本</dt>
+                <dd>
+                  {projectDetails.styleSample ? (
+                    <span className="summary-prewrap-inline">{extractExcerpt(projectDetails.styleSample, 180)}</span>
+                  ) : (
+                    <span className="summary-field-missing">未記入</span>
+                  )}
+                </dd>
+              </div>
+            </dl>
+            <div className="summary-card-actions">
+              <button
+                onClick={() => {
+                  setProjectDetailsDraft(projectDetails);
+                  setProjectDetailsEditing(true);
+                }}
+              >
+                編集
+              </button>
+            </div>
+          </>
+        )}
+        {projectDetailsEditing && (
+          <>
+            <textarea
+              value={projectDetailsDraft.coreConcept}
+              onChange={(e) =>
+                setProjectDetailsDraft((current) => ({ ...current, coreConcept: e.target.value }))
+              }
+              placeholder="作品の核"
+              rows={3}
+            />
+            <textarea
+              value={projectDetailsDraft.firstWishSuggestion}
+              onChange={(e) =>
+                setProjectDetailsDraft((current) => ({
+                  ...current,
+                  firstWishSuggestion: e.target.value,
+                }))
+              }
+              placeholder="初回生成の希望"
+              rows={3}
+            />
+            <textarea
+              value={projectDetailsDraft.styleSample}
+              onChange={(e) =>
+                setProjectDetailsDraft((current) => ({ ...current, styleSample: e.target.value }))
+              }
+              placeholder="文体見本"
+              rows={8}
+            />
+            <div className="summary-card-actions">
+              <button onClick={handleCancelProjectDetails} disabled={loading}>
+                キャンセル
+              </button>
+              <button className="primary" onClick={handleSaveProjectDetails} disabled={loading}>
+                保存
+              </button>
+            </div>
+          </>
         )}
       </section>
 
@@ -524,6 +685,21 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
                             )}
                           </dd>
                         </div>
+                        {(c.aliases?.length || c.want || c.fear || c.secrets) && (
+                          <div>
+                            <dt>詳細</dt>
+                            <dd>
+                              <span className="summary-prewrap-inline">
+                                {[
+                                  c.aliases?.length ? `呼び名: ${c.aliases.join(' / ')}` : '',
+                                  c.want ? `欲求: ${c.want}` : '',
+                                  c.fear ? `恐れ: ${c.fear}` : '',
+                                  c.secrets ? `秘密: ${c.secrets}` : '',
+                                ].filter(Boolean).join('\n')}
+                              </span>
+                            </dd>
+                          </div>
+                        )}
                       </dl>
                     </li>
                   );
@@ -575,6 +751,34 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
                     onChange={(e) => updateCharacterDraft(i, { speechStyle: e.target.value })}
                     placeholder="口調（例：丁寧語、時々方言、独り言が多い）"
                   />
+                  <input
+                    type="text"
+                    value={(c.aliases ?? []).join(', ')}
+                    onChange={(e) =>
+                      updateCharacterDraft(i, {
+                        aliases: e.target.value
+                          .split(',')
+                          .map((item) => item.trim())
+                          .filter(Boolean),
+                      })
+                    }
+                    placeholder="呼び名（カンマ区切り）"
+                  />
+                  <textarea
+                    value={c.want || ''}
+                    onChange={(e) => updateCharacterDraft(i, { want: e.target.value })}
+                    placeholder="欲求"
+                  />
+                  <textarea
+                    value={c.fear || ''}
+                    onChange={(e) => updateCharacterDraft(i, { fear: e.target.value })}
+                    placeholder="恐れ"
+                  />
+                  <textarea
+                    value={c.secrets || ''}
+                    onChange={(e) => updateCharacterDraft(i, { secrets: e.target.value })}
+                    placeholder="秘密"
+                  />
                   <button className="danger" onClick={() => removeCharacterDraft(i)}>
                     削除
                   </button>
@@ -591,6 +795,118 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
               </button>
             </div>
           </>
+        )}
+      </section>
+
+      <section className="summary-card">
+        <header className="summary-card-header">
+          <h2>物語状態</h2>
+          <div className="summary-card-badges">
+            {storyState?.clock && (
+              <span className="settings-meta">
+                {storyState.clock.day}日目{storyState.clock.timeOfDay ? `・${storyState.clock.timeOfDay}` : ''}
+              </span>
+            )}
+            {storyState && <span className="settings-meta">{storyState.updatedAt.slice(0, 10)}</span>}
+          </div>
+        </header>
+        {storyState && !storyStateEditing && (
+          <>
+            <dl className="character-summary-fields">
+              <div>
+                <dt>現在の状況</dt>
+                <dd>
+                  {storyState.currentSituation.length > 0
+                    ? storyState.currentSituation.join('\n')
+                    : <span className="summary-field-missing">未記入</span>}
+                </dd>
+              </div>
+              <div>
+                <dt>重要イベント</dt>
+                <dd>{storyState.importantEvents.filter((event) => event.status !== 'archived').length}件</dd>
+              </div>
+              <div>
+                <dt>未解決</dt>
+                <dd>{storyState.openThreads.filter((thread) => thread.status === 'active').length}件</dd>
+              </div>
+              <div>
+                <dt>未確定</dt>
+                <dd>{(storyState.authorUndecided ?? []).filter((item) => item.status === 'active').length}件</dd>
+              </div>
+            </dl>
+            <details className="summary-details">
+              <summary>状態JSON</summary>
+              <pre className="summary-prewrap">{JSON.stringify(storyState, null, 2)}</pre>
+            </details>
+            <div className="summary-card-actions">
+              <button
+                onClick={() => {
+                  setStoryStateDraft(JSON.stringify(storyState, null, 2));
+                  setStoryStateEditing(true);
+                }}
+              >
+                編集
+              </button>
+            </div>
+          </>
+        )}
+        {storyStateEditing && (
+          <>
+            <textarea
+              value={storyStateDraft}
+              onChange={(e) => setStoryStateDraft(e.target.value)}
+              rows={18}
+              className="system-prompt-editor"
+            />
+            <div className="summary-card-actions">
+              <button
+                onClick={() => {
+                  setStoryStateDraft(storyState ? JSON.stringify(storyState, null, 2) : '');
+                  setStoryStateEditing(false);
+                }}
+                disabled={loading}
+              >
+                キャンセル
+              </button>
+              <button className="primary" onClick={handleSaveStoryState} disabled={loading}>
+                保存
+              </button>
+            </div>
+          </>
+        )}
+        {storyStateDiffs.length > 0 && (
+          <div className="story-diff-list">
+            <h3>自動更新の履歴</h3>
+            <ul className="setup-commit-edit-list">
+              {storyStateDiffs.map((diff) => {
+                const latestRevertible = storyStateDiffs.find((item) => !item.reverted);
+                const canRevert =
+                  latestRevertible?.diffId === diff.diffId && Boolean(diff.beforeState);
+                return (
+                  <li key={diff.diffId} className="setup-commit-edit-row">
+                    <div>
+                      <strong>{formatStoryDiffSummary(diff)}</strong>
+                      <div className="settings-meta">
+                        {formatRelativeTime(diff.appliedAt)}
+                        {diff.reverted ? ' / 取り消し済み' : ''}
+                      </div>
+                    </div>
+                    {canRevert && (
+                      <div className="setup-commit-row-actions">
+                        <button
+                          type="button"
+                          onClick={() => handleRevertStoryDiff(diff.diffId)}
+                          disabled={loading}
+                        >
+                          この更新を取り消す
+                        </button>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
       </section>
 
@@ -660,6 +976,18 @@ function formatFindingTarget(target: RefineFindingTarget): string {
   }
 }
 
+function formatStoryDiffSummary(diff: StoryStateDiffRecord): string {
+  const parts = [
+    diff.summary.addedEvents.length ? `イベント+${diff.summary.addedEvents.length}` : '',
+    diff.summary.updatedEvents.length ? `イベント更新${diff.summary.updatedEvents.length}` : '',
+    diff.summary.addedThreads.length ? `未解決+${diff.summary.addedThreads.length}` : '',
+    diff.summary.resolvedThreads.length ? `解決${diff.summary.resolvedThreads.length}` : '',
+    diff.summary.updatedCharacters.length ? `人物${diff.summary.updatedCharacters.length}名` : '',
+    diff.summary.clockChanged ? '時間更新' : '',
+  ].filter(Boolean);
+  return parts.join(' / ') || `自動更新 ${diff.generationId}`;
+}
+
 // NOTE: 「3日前」「5分前」等の相対時刻表示。
 function formatRelativeTime(iso: string): string {
   const then = new Date(iso).getTime();
@@ -675,4 +1003,3 @@ function formatRelativeTime(iso: string): string {
   const month = Math.floor(day / 30);
   return `${month}ヶ月前`;
 }
-

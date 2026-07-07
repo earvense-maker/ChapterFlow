@@ -44,6 +44,7 @@ export default function Reader({
   const [currentScene, setCurrentScene] = useState<SceneRecord | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsageEstimate | null>(null);
   const [storyStateRefresh, setStoryStateRefresh] = useState<StoryStateRefreshStatus | null>(null);
+  const [storyStateBacklogCount, setStoryStateBacklogCount] = useState(0);
   const [wish, setWish] = useState('');
   const [rewriteWish, setRewriteWish] = useState('');
   const [rewriteSheetOpen, setRewriteSheetOpen] = useState(false);
@@ -63,6 +64,7 @@ export default function Reader({
   const textRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const storyStatePollInFlightRef = useRef(false);
+  const initialWishPrefilledRef = useRef(false);
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
 
   async function load() {
@@ -90,9 +92,19 @@ export default function Reader({
     setNavigation(state.navigation);
     setContextUsage(state.contextUsage);
     setStoryStateRefresh(state.state.storyStateRefresh ?? null);
+    setStoryStateBacklogCount(state.storyStateBacklogCount ?? state.state.storyStateBacklogCount ?? 0);
+    if (
+      !initialWishPrefilledRef.current &&
+      state.state.lastAcceptedGenerationId === null &&
+      state.project.firstWishSuggestion?.trim()
+    ) {
+      initialWishPrefilledRef.current = true;
+      setWish((current) => (current.trim() ? current : state.project.firstWishSuggestion!.trim()));
+    }
   }
 
   useEffect(() => {
+    initialWishPrefilledRef.current = false;
     load();
   }, [projectId]);
 
@@ -365,7 +377,7 @@ export default function Reader({
 
   const isDraft = status === 'draft';
   const hasText = text.length > 0;
-  const storyStateIsStale = storyStateRefresh?.status === 'stale';
+  const storyStateIsStale = storyStateRefresh?.status === 'stale' || storyStateBacklogCount > 0;
   const storyStateIsPending = storyStateRefresh?.status === 'pending';
 
   const draftIds = currentScene?.draftGenerationIds ?? [];
@@ -545,11 +557,17 @@ export default function Reader({
           <div className={`story-state-alert ${storyStateIsStale ? 'stale' : 'pending'}`}>
             <div>
               <strong>
-                {storyStateIsPending ? '物語の状態を更新中です' : '物語の状態を更新できませんでした'}
+                {storyStateIsPending
+                  ? '物語の状態を更新中です'
+                  : storyStateBacklogCount > 0
+                    ? `物語の状態: ${storyStateBacklogCount}場面未反映`
+                    : '物語の状態を更新できませんでした'}
               </strong>
               <p>
                 {storyStateIsPending
                   ? '採用済み本文から、次回生成で使う人物状態や伏線を整理しています。'
+                  : storyStateBacklogCount > 0
+                    ? '採用済み本文から、次回生成で使う人物状態や伏線を再抽出してください。'
                   : storyStateRefresh?.errorMessage ||
                     '採用済み本文から物語の状態を再抽出してください。'}
               </p>

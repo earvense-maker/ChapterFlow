@@ -14,7 +14,12 @@ import { GeminiAdapter } from '../adapters/geminiAdapter.js';
 import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
 import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
-import { updateStoryStateFromAcceptedScene } from './storyStateService.js';
+import {
+  normalizeStoryState,
+  revertLatestStoryStateDiffForGeneration,
+  updateStoryStateFromAcceptedScene,
+  withStoryStateLock,
+} from './storyStateService.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
@@ -640,10 +645,10 @@ async function acceptGenerationUnlocked(
     storyStateRefresh,
   });
 
-  void refreshStoryStateAfterAcceptance(projectId, generation).catch((err) => {
+  void refreshStoryStateAfterAcceptance(projectId).catch((err) => {
     console.warn('Story state refresh failed', {
       projectId,
-      generationId: generation.generationId,
+    generationId: generation.generationId,
       error: err instanceof Error ? err.message : String(err),
     });
   });
@@ -687,60 +692,117 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
   };
   await storage.writeState(projectId, nextState);
 
+  const revertedStoryState = await revertLatestStoryStateDiffForGeneration(
+    projectId,
+    generation.generationId
+  ).catch((err) => {
+    console.warn('Story state auto-revert after unaccept failed', {
+      projectId,
+      generationId: generation.generationId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  });
+  if (revertedStoryState) {
+    await writeStoryStateRefreshUnlocked(
+      projectId,
+      buildStoryStateRefreshStatus('stale', generation.generationId, '採用取消に合わせて物語状態を戻しました。必要なら再抽出してください。')
+    );
+  }
+
   return generation;
 }
 
-async function refreshStoryStateAfterAcceptance(
-  projectId: string,
-  generation: GenerationRecord
-): Promise<void> {
-  const status = await refreshStoryStateForGeneration(projectId, generation, {
+async function refreshStoryStateAfterAcceptance(projectId: string): Promise<void> {
+  const status = await drainStoryStateBacklog(projectId, {
     lockRefreshStatusWrites: true,
   });
   if (status.status === 'stale') {
     console.warn('Story state refresh produced no update', {
       projectId,
-      generationId: generation.generationId,
+      generationId: status.generationId,
       error: status.errorMessage,
     });
   }
 }
 
 export async function refreshStoryState(projectId: string): Promise<ReaderState> {
-  return withProjectWriteLock(projectId, () => refreshStoryStateUnlocked(projectId));
+  return refreshStoryStateUnlocked(projectId);
 }
 
 async function refreshStoryStateUnlocked(projectId: string): Promise<ReaderState> {
-  const state = await storage.readState(projectId);
-  if (!state) throw new Error(`State not found: ${projectId}`);
-
-  const generationId = state.lastAcceptedGenerationId ?? state.selectedDraftGenerationId;
-  if (!generationId) {
-    throw new GenerateError(
-      '再抽出できる採用済み本文がまだありません。',
-      'no_accepted_generation',
-      false
-    );
+  const backlog = await calculateStoryStateBacklog(projectId);
+  if (backlog.length === 0) {
+    await writeStoryStateRefresh(projectId, buildStoryStateRefreshStatus('fresh', null));
+    return getReaderState(projectId);
   }
-
-  const generation = await findGeneration(projectId, generationId);
-  if (!generation || generation.status !== 'accepted') {
-    throw new GenerateError(
-      '再抽出できる採用済み本文が見つかりません。',
-      'accepted_generation_not_found',
-      false
-    );
-  }
-
-  await writeStoryStateRefreshUnlocked(projectId, buildStoryStateRefreshStatus('pending', generation.generationId));
-  await refreshStoryStateForGeneration(projectId, generation);
+  await writeStoryStateRefresh(projectId, buildStoryStateRefreshStatus('pending', backlog[0].generationId));
+  await drainStoryStateBacklog(projectId, { lockRefreshStatusWrites: true });
   return getReaderState(projectId);
+}
+
+async function drainStoryStateBacklog(
+  projectId: string,
+  options: { lockRefreshStatusWrites?: boolean } = {}
+): Promise<StoryStateRefreshStatus> {
+  const writeRefreshStatus = options.lockRefreshStatusWrites
+    ? writeStoryStateRefresh
+    : writeStoryStateRefreshUnlocked;
+
+  try {
+    const backlog = await calculateStoryStateBacklog(projectId);
+    const firstGenerationId = backlog[0]?.generationId ?? null;
+    if (backlog.length === 0) {
+      return writeRefreshStatus(projectId, buildStoryStateRefreshStatus('fresh', null));
+    }
+
+    const limit = backlog.slice(0, 10);
+    let processed = 0;
+    let currentGenerationId = firstGenerationId;
+    for (const item of limit) {
+      currentGenerationId = item.generationId;
+      const generation = await findGeneration(projectId, item.generationId);
+      if (!generation || generation.status !== 'accepted') {
+        return writeRefreshStatus(
+          projectId,
+          buildStoryStateRefreshStatus('stale', item.generationId, '未反映の採用済み本文が見つかりません。')
+        );
+      }
+      const status = await refreshStoryStateForGeneration(projectId, generation, {
+        lockRefreshStatusWrites: options.lockRefreshStatusWrites,
+        skipRefreshStatusWrite: true,
+      });
+      if (status.status === 'stale') {
+        return writeRefreshStatus(projectId, status);
+      }
+      processed += 1;
+    }
+
+    const remaining = Math.max(0, backlog.length - processed);
+    return writeRefreshStatus(
+      projectId,
+      buildStoryStateRefreshStatus(
+        remaining > 0 ? 'stale' : 'fresh',
+        currentGenerationId,
+        remaining > 0 ? `物語の状態に未反映の場面があと${remaining}件あります。` : undefined
+      )
+    );
+  } catch (err) {
+    return writeRefreshStatus(
+      projectId,
+      buildStoryStateRefreshStatus(
+        'stale',
+        null,
+        storyStateErrorMessage(err)
+      )
+    );
+  }
 }
 
 async function refreshStoryStateForGeneration(
   projectId: string,
   generation: GenerationRecord,
-  options: { lockRefreshStatusWrites?: boolean } = {}
+  options: { lockRefreshStatusWrites?: boolean; skipRefreshStatusWrite?: boolean } = {}
 ): Promise<StoryStateRefreshStatus> {
   const writeRefreshStatus = options.lockRefreshStatusWrites
     ? writeStoryStateRefresh
@@ -770,25 +832,19 @@ async function refreshStoryStateForGeneration(
     });
 
     if (!updated) {
-      return writeRefreshStatus(
-        projectId,
-        buildStoryStateRefreshStatus(
-          'stale',
-          generation.generationId,
-          '物語の状態を更新できませんでした。設定を確認して再抽出してください。'
-        )
+      const stale = buildStoryStateRefreshStatus(
+        'stale',
+        generation.generationId,
+        '物語の状態を更新できませんでした。設定を確認して再抽出してください。'
       );
+      return options.skipRefreshStatusWrite ? stale : writeRefreshStatus(projectId, stale);
     }
 
-    return writeRefreshStatus(
-      projectId,
-      buildStoryStateRefreshStatus('fresh', generation.generationId)
-    );
+    const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
+    return options.skipRefreshStatusWrite ? fresh : writeRefreshStatus(projectId, fresh);
   } catch (err) {
-    return writeRefreshStatus(
-      projectId,
-      buildStoryStateRefreshStatus('stale', generation.generationId, storyStateErrorMessage(err))
-    );
+    const stale = buildStoryStateRefreshStatus('stale', generation.generationId, storyStateErrorMessage(err));
+    return options.skipRefreshStatusWrite ? stale : writeRefreshStatus(projectId, stale);
   }
 }
 
@@ -994,6 +1050,64 @@ export async function getGenerationMarkdown(
   };
 }
 
+type AcceptedGenerationRef = {
+  generationId: string;
+  episodeId: string;
+  sceneId: string;
+};
+
+export async function calculateStoryStateBacklog(projectId: string): Promise<AcceptedGenerationRef[]> {
+  const accepted = await listAcceptedGenerationRefs(projectId);
+  const state = await storage.readState(projectId);
+  const pendingGenerationId =
+    state?.storyStateRefresh?.status === 'pending'
+      ? state.storyStateRefresh.generationId
+      : null;
+  const processedIds = await withStoryStateLock(projectId, async () => {
+    const rawStoryState = await storage.readStoryState(projectId);
+    const hadProcessedIds =
+      isRecord(rawStoryState) && Array.isArray(rawStoryState.processedGenerationIds);
+    const storyState = normalizeStoryState(rawStoryState ?? undefined);
+
+    if (!hadProcessedIds) {
+      storyState.processedGenerationIds = accepted
+        .map((item) => item.generationId)
+        .filter((generationId) => generationId !== pendingGenerationId);
+      await storage.writeStoryState(projectId, storyState);
+    }
+
+    return storyState.processedGenerationIds ?? [];
+  });
+
+  const processed = new Set(processedIds);
+  return accepted.filter((item) => !processed.has(item.generationId));
+}
+
+async function listAcceptedGenerationRefs(projectId: string): Promise<AcceptedGenerationRef[]> {
+  const episodeIds = await storage.listEpisodeIds(projectId);
+  const episodes = await Promise.all(
+    episodeIds.map((episodeId) => storage.readEpisodeRecord(projectId, episodeId))
+  );
+  return episodes
+    .filter((episode): episode is EpisodeRecord => episode !== null)
+    .sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt))
+    .flatMap((episode) =>
+      [...episode.scenes]
+        .sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt))
+        .flatMap((scene) =>
+          scene.acceptedGenerationId
+            ? [
+                {
+                  generationId: scene.acceptedGenerationId,
+                  episodeId: episode.episodeId,
+                  sceneId: scene.sceneId,
+                },
+              ]
+            : []
+        )
+    );
+}
+
 async function updateEpisodeMarkdown(projectId: string, episode: EpisodeRecord): Promise<void> {
   const text = await buildEpisodeMarkdown(projectId, episode);
   await storage.writeEpisodeText(projectId, episode.episodeId, text);
@@ -1104,10 +1218,16 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
   const navigation = buildNavigationState(currentEpisode, currentScene);
   const contextUsage = await buildReaderContextUsage(project, state, '');
   const contextSummary = await storage.readContextSummary(projectId);
+  const storyStateBacklogCount = (await calculateStoryStateBacklog(projectId)).length;
+  const stateWithBacklog: ProjectState = {
+    ...state,
+    storyStateBacklogCount,
+  };
 
   return {
     project,
-    state,
+    state: stateWithBacklog,
+    storyStateBacklogCount,
     currentEpisode,
     currentScene,
     currentGeneration,
@@ -1116,6 +1236,10 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
     contextUsage,
     contextSummaryExcerpt: contextSummary.slice(0, 240),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function writeStoryStateRefresh(

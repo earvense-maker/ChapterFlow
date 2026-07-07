@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import * as generationService from '../services/generationService.js';
+import * as storage from '../services/storageService.js';
+import * as storyStateService from '../services/storyStateService.js';
 import type { GenerateRequestBody, SceneNavigationDirection } from '../types/index.js';
 
 const router = Router();
@@ -215,6 +217,53 @@ router.post('/projects/:id/story-state/refresh', async (req, res, next) => {
         code: err.code,
         retryable: err.retryable,
       });
+    }
+    next(err);
+  }
+});
+
+router.get('/projects/:id/story-state', async (req, res, next) => {
+  try {
+    const state = await storyStateService.readStoryState(req.params.id);
+    res.json(state);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put('/projects/:id/story-state', async (req, res, next) => {
+  try {
+    const characters = await storage.readCharacters(req.params.id);
+    const state = await storyStateService.replaceStoryState({
+      projectId: req.params.id,
+      storyState: req.body,
+      characters,
+    });
+    res.json(state);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/projects/:id/story-state/diffs', async (req, res, next) => {
+  try {
+    const diffs = await storyStateService.readStoryStateDiffs(req.params.id);
+    res.json(diffs);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/projects/:id/story-state/diffs/:diffId/revert', async (req, res, next) => {
+  try {
+    const result = await storyStateService.revertLatestStoryStateDiff(
+      req.params.id,
+      req.params.diffId
+    );
+    res.json(result);
+  } catch (err) {
+    if (err instanceof storyStateService.StoryStateServiceError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
     }
     next(err);
   }

@@ -174,6 +174,32 @@ describe('mergeStoryState', () => {
   });
 });
 
+describe('mergeStoryState clock', () => {
+  it('preserves time and note when a clock patch only advances the day', () => {
+    const merged = mergeStoryState(
+      storyState({
+        clock: {
+          day: 2,
+          timeOfDay: 'night',
+          note: 'before the festival',
+        },
+      }),
+      {
+        clock: {
+          day: 3,
+        },
+      },
+      now
+    );
+
+    expect(merged.clock).toEqual({
+      day: 3,
+      timeOfDay: 'night',
+      note: 'before the festival',
+    });
+  });
+});
+
 describe('updateStoryStateFromAcceptedScene', () => {
   it('merges model output with the latest stored state before writing', async () => {
     await storage.createProjectDir(projectId);

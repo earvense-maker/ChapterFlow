@@ -22,6 +22,8 @@ import type {
   RefineScanResult,
   RefineSession,
   SceneNavigationDirection,
+  StoryState,
+  StoryStateDiffRecord,
   CreateSetupSessionBody,
   PatchSetupSettingsBody,
   PatchSetupSettingsResponse,
@@ -92,8 +94,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
-  previewSetup: (id: string) =>
-    request<SetupPreviewResponse>(`/setup-sessions/${id}/preview`, { method: 'POST' }),
+  previewSetup: (id: string, instruction?: string) =>
+    request<SetupPreviewResponse>(`/setup-sessions/${id}/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ instruction }),
+    }),
   createSetupCommitPlan: (id: string) =>
     request<SetupCommitPlanResponse>(`/setup-sessions/${id}/commit-plan`, { method: 'POST' }),
   commitSetup: (id: string, body: CommitSetupBody) =>
@@ -134,6 +139,17 @@ export const api = {
   getWorld: (id: string) => request<{ text: string }>(`/projects/${id}/world`),
   updateWorld: (id: string, text: string) =>
     request<{ text: string }>(`/projects/${id}/world`, { method: 'PUT', body: JSON.stringify({ text }) }),
+
+  getStoryState: (id: string) => request<StoryState>(`/projects/${id}/story-state`),
+  updateStoryState: (id: string, state: StoryState) =>
+    request<StoryState>(`/projects/${id}/story-state`, { method: 'PUT', body: JSON.stringify(state) }),
+  getStoryStateDiffs: (id: string) =>
+    request<StoryStateDiffRecord[]>(`/projects/${id}/story-state/diffs`),
+  revertStoryStateDiff: (id: string, diffId: string) =>
+    request<{ storyState: StoryState; diff: StoryStateDiffRecord }>(
+      `/projects/${id}/story-state/diffs/${diffId}/revert`,
+      { method: 'POST' }
+    ),
 
   getMemories: (id: string) => request<Memory[]>(`/projects/${id}/memories`),
   createMemory: (id: string, memory: CreateMemoryBody) =>

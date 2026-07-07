@@ -173,7 +173,10 @@ router.put('/setup-sessions/:id/lock-state', async (req, res, next) => {
 
 router.post('/setup-sessions/:id/preview', async (req, res, next) => {
   try {
-    const result = await setupSessionService.generateSetupPreview(req.params.id);
+    const result = await setupSessionService.generateSetupPreview(
+      req.params.id,
+      (req.body ?? {}) as { instruction?: string }
+    );
     res.json(result);
   } catch (err) {
     handleSetupError(err, res, next);

@@ -52,6 +52,13 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
   );
 
   const parts: string[] = [];
+  const viewpointCharacter = detectViewpointCharacter(wish, characters);
+
+  if (project.coreConcept?.trim()) {
+    parts.push(
+      `【この作品の核】\n${project.coreConcept.trim()}\nこの核から外れた作風・テーマの展開を書かないこと。`
+    );
+  }
 
   // 作品設定
   const settingParts: string[] = [];
@@ -69,19 +76,21 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
   const storyState = await getStoryState(project.projectId);
 
   // 現在状態は過去要約より先に置き、今回の生成で守るべき制約として扱わせる。
-  const currentState = renderCurrentState(storyState, characters);
+  const currentState = renderCurrentState(storyState, characters, viewpointCharacter);
   if (currentState) {
     parts.push(currentState);
   }
 
-  // 記憶（重要度 high のみ）
-  const highMemories = memories.filter((m) => m.status === 'active' && m.importance === 'high');
-  const importantPast = renderImportantPast(storyState, highMemories);
+  const storyFactMemories = memories.filter(
+    (m) => m.status === 'active' && m.importance === 'high' && m.type === 'storyFact'
+  );
+  const preferenceMemories = selectPreferenceMemories(memories);
+  const importantPast = renderImportantPast(storyState, storyFactMemories, characters);
   if (importantPast) {
     parts.push(importantPast);
   }
 
-  const preferenceNotes = renderPreferenceNotes(highMemories);
+  const preferenceNotes = renderPreferenceNotes(preferenceMemories);
   if (preferenceNotes) {
     parts.push(preferenceNotes);
   }
@@ -128,8 +137,14 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
   // 今回の希望
   parts.push(`【今回の希望】\n${resolveWishLine(wish, mode)}`);
 
+  if (project.styleSample?.trim()) {
+    parts.push(
+      `【文体見本】\n以下は文体・リズム・描写の密度の見本である。内容・人物・出来事は本編と無関係であり、参照しないこと。書き方だけを参考にすること。\n\n${project.styleSample.trim().slice(0, 600)}`
+    );
+  }
+
   // 出力条件
-  parts.push(renderOutputConditions(project, wish, mode));
+  parts.push(renderOutputConditions(project, wish, mode, viewpointCharacter));
 
   const bannedSection = renderBannedExpressions(bannedExpressions);
   if (bannedSection) {
@@ -144,8 +159,16 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
 function renderCharacters(characters: Character[]): string {
   const lines = characters.map((c) => {
     const parts = [`- ${c.name}（${roleLabel(c.role)}）`];
+    if ((c.aliases ?? []).length > 0) parts.push(`  呼び名: ${c.aliases!.join(' / ')}`);
     if (c.description) parts.push(`  概要: ${c.description}`);
     if (c.speechStyle) parts.push(`  口調: ${c.speechStyle}`);
+    if (c.want) parts.push(`  欲求: ${c.want}`);
+    if (c.fear) parts.push(`  恐れ: ${c.fear}`);
+    if (c.secrets) {
+      parts.push(
+        `  秘密: ${c.secrets}（本人だけが知る。知らない人物の前では言動に出さず、地の文でも軽々に明かさないこと）`
+      );
+    }
     return parts.join('\n');
   });
   return `【人物設定】\n${lines.join('\n')}`;
@@ -169,11 +192,19 @@ function renderRelationships(characters: Character[]): string {
   return `【関係性設定】\n${notes.join('\n')}`;
 }
 
-function renderCurrentState(storyState: StoryState, characters: Character[]): string {
+function renderCurrentState(
+  storyState: StoryState,
+  characters: Character[],
+  viewpointCharacter: Character | null
+): string {
   const sections: string[] = [];
 
-  if (storyState.currentSituation.length > 0) {
-    sections.push(`【現在の状況】\n${storyState.currentSituation.map((item) => `- ${item}`).join('\n')}`);
+  const situationLines = [
+    storyState.clock ? `- 物語内時間: ${formatClock(storyState.clock)}` : '',
+    ...storyState.currentSituation.map((item) => `- ${item}`),
+  ].filter(Boolean);
+  if (situationLines.length > 0) {
+    sections.push(`【現在の状況】\n${situationLines.join('\n')}`);
   }
 
   const characterLines = [
@@ -193,6 +224,11 @@ function renderCurrentState(storyState: StoryState, characters: Character[]): st
     sections.push(`【人物の現在状態】\n${characterLines.join('\n')}`);
   }
 
+  const knowledgeState = renderCharacterKnowledgeState(storyState, characters, viewpointCharacter);
+  if (knowledgeState) {
+    sections.push(knowledgeState);
+  }
+
   const openThreads = storyState.openThreads.filter((thread) => thread.status === 'active');
   if (openThreads.length > 0) {
     sections.push(
@@ -200,11 +236,24 @@ function renderCurrentState(storyState: StoryState, characters: Character[]): st
     );
   }
 
+  const authorUndecided = (storyState.authorUndecided ?? []).filter((item) => item.status === 'active');
+  if (authorUndecided.length > 0) {
+    sections.push(
+      `【まだ確定させないこと】\n以下は作者がまだ決めていない事項である。作中で真相・答え・正体を確定させず、曖昧さを保ったまま書くこと。\n${authorUndecided
+        .map((item) => `- ${item.text}${item.reason ? `（${item.reason}）` : ''}`)
+        .join('\n')}`
+    );
+  }
+
   if (sections.length === 0) return '';
   return `【現在状態スナップショット】\n${sections.join('\n\n')}`;
 }
 
-function renderImportantPast(storyState: StoryState, memories: Memory[]): string {
+function renderImportantPast(
+  storyState: StoryState,
+  memories: Memory[],
+  characters: Character[]
+): string {
   const storyFacts = memories.filter((m) => m.type === 'storyFact');
   const events = storyState.importantEvents.filter((event) => event.status !== 'archived');
   const parts: string[] = [];
@@ -213,10 +262,17 @@ function renderImportantPast(storyState: StoryState, memories: Memory[]): string
     parts.push(
       `【採用済み本文から抽出した重要イベント】\n${events
         .map((event) => {
+          const knownNames = (event.knownBy ?? [])
+            .map((id) => characterNameForId(id, characters))
+            .filter(Boolean);
           const meta = [
             event.importance !== 'medium' ? `重要度: ${event.importance}` : '',
             event.characters.length > 0 ? `関係人物: ${event.characters.join(' / ')}` : '',
-            event.visibility ? `認識範囲: ${event.visibility}` : '',
+            knownNames.length > 0
+              ? `知っている人物: ${knownNames.join(' / ')}`
+              : event.visibility
+                ? `認識範囲: ${event.visibility}`
+                : '',
           ].filter(Boolean);
           return `- ${event.summary}${meta.length > 0 ? `（${meta.join('、')}）` : ''}`;
         })
@@ -245,6 +301,138 @@ function renderPreferenceNotes(memories: Memory[]): string {
   }
   if (parts.length === 0) return '';
   return `【好み・NG】\n${parts.join('\n\n')}`;
+}
+
+function selectPreferenceMemories(memories: Memory[]): Memory[] {
+  return memories
+    .filter(
+      (m) =>
+        m.status === 'active' &&
+        (m.type === 'preference' || m.type === 'negative') &&
+        (m.importance === 'high' || m.importance === 'medium')
+    )
+    .sort((a, b) => {
+      const importance = importanceRank(b.importance) - importanceRank(a.importance);
+      if (importance !== 0) return importance;
+      return b.updatedAt.localeCompare(a.updatedAt);
+    })
+    .slice(0, 16);
+}
+
+function importanceRank(value: Memory['importance']): number {
+  if (value === 'high') return 2;
+  if (value === 'medium') return 1;
+  return 0;
+}
+
+function renderCharacterKnowledgeState(
+  storyState: StoryState,
+  characters: Character[],
+  viewpointCharacter: Character | null
+): string {
+  const stateByCharacterId = new Map(
+    storyState.characterStates
+      .filter((state) => state.characterId)
+      .map((state) => [state.characterId!, state])
+  );
+  const stateByName = new Map(
+    storyState.characterStates.map((state) => [normalizeComparableText(state.name), state])
+  );
+  const events = storyState.importantEvents.filter((event) => event.status !== 'archived');
+  const orderedCharacters = viewpointCharacter
+    ? [
+        viewpointCharacter,
+        ...characters.filter((character) => character.characterId !== viewpointCharacter.characterId),
+      ]
+    : characters;
+  const rows: string[] = [];
+
+  for (const character of orderedCharacters) {
+    const known: string[] = [];
+    const unknown: string[] = [];
+    const state =
+      stateByCharacterId.get(character.characterId) ??
+      stateByName.get(normalizeComparableText(character.name)) ??
+      (character.aliases ?? [])
+        .map((alias) => stateByName.get(normalizeComparableText(alias)))
+        .find((item): item is NonNullable<typeof item> => Boolean(item));
+    if (state?.knowledge.length) {
+      known.push(...state.knowledge);
+    }
+    const knownEvents = events
+      .filter((event) => (event.knownBy ?? []).includes(character.characterId))
+      .sort((a, b) => {
+        const importance = importanceRank(b.importance) - importanceRank(a.importance);
+        if (importance !== 0) return importance;
+        return b.updatedAt.localeCompare(a.updatedAt);
+      })
+      .slice(0, 6)
+      .map((event) => event.summary);
+    known.push(...knownEvents);
+    unknown.push(
+      ...events
+        .filter(
+          (event) =>
+            !(event.knownBy ?? []).includes(character.characterId) &&
+            (event.explicitlyUnknownBy ?? []).includes(character.characterId)
+        )
+        .map((event) => event.summary)
+    );
+    const knownLines = dedupeText(known).slice(0, 6);
+    const unknownLines = dedupeText(unknown);
+    if (knownLines.length === 0 && unknownLines.length === 0) continue;
+    const details = [`- ${character.name}`];
+    if (knownLines.length > 0) details.push(`  知っている: ${knownLines.join(' / ')}`);
+    if (unknownLines.length > 0) details.push(`  まだ知らない: ${unknownLines.join(' / ')}`);
+    rows.push(details.join('\n'));
+  }
+
+  if (rows.length === 0) return '';
+  return `【人物の情報状態】\n${rows.join('\n')}`;
+}
+
+function dedupeText(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const text = value.trim();
+    if (!text) continue;
+    const key = text.replace(/\s+/g, ' ').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
+}
+
+function normalizeComparableText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function formatClock(clock: NonNullable<StoryState['clock']>): string {
+  const parts = [`${clock.day}日目`];
+  if (clock.timeOfDay) parts.push(clock.timeOfDay);
+  const text = parts.join('・');
+  return clock.note ? `${text}（${clock.note}）` : text;
+}
+
+function detectViewpointCharacter(wish: string, characters: Character[]): Character | null {
+  const candidates: Array<{ character: Character; token: string }> = [];
+  for (const character of characters) {
+    for (const token of [character.name, ...(character.aliases ?? [])]) {
+      const trimmed = token.trim();
+      if (!trimmed) continue;
+      if (wish.includes(`${trimmed}の視点`) || wish.includes(`${trimmed}視点`)) {
+        candidates.push({ character, token: trimmed });
+      }
+    }
+  }
+  candidates.sort((a, b) => b.token.length - a.token.length);
+  return candidates[0]?.character ?? null;
+}
+
+function characterNameForId(characterId: string, characters: Character[]): string | null {
+  return characters.find((character) => character.characterId === characterId)?.name ?? null;
 }
 
 function renderBannedExpressions(expressions: string[] | undefined): string {
@@ -276,7 +464,8 @@ function resolveWishLine(wish: string, mode: 'continue' | 'regenerate' | 'variat
 function renderOutputConditions(
   project: Project,
   wish: string,
-  mode: 'continue' | 'regenerate' | 'variate'
+  mode: 'continue' | 'regenerate' | 'variate',
+  viewpointCharacter: Character | null
 ): string {
   const outputRange = getApproximateOutputRange(project.outputLength);
   const presetText = Object.entries(project.activePresetIds)
@@ -287,6 +476,9 @@ function renderOutputConditions(
     mode === 'continue'
       ? ''
       : `\n- 今回は${mode === 'variate' ? '別案' : '書き直し'}のため、直近本文の続きを書かず、直前の場面と同じ位置の内容を別の書き方で描くこと。`;
+  const viewpointHint = viewpointCharacter
+    ? `\n- 視点人物: ${viewpointCharacter.name}。この場面は${viewpointCharacter.name}の視点で書く。`
+    : '';
 
   return `【出力条件】
 - 出力は日本語の小説本文のみ。Markdownファイルに保存される本文として書く。
@@ -296,7 +488,12 @@ function renderOutputConditions(
 - 選択された設定: ${presetText || '指定なし'}
 - 今回の希望: ${resolveWishLine(wish, mode)}
 - 現在状態スナップショットと重要な過去イベントに反する展開を書かないこと。
+- 【人物の情報状態】で「まだ知らない」とされた事実を、その人物の台詞・内心・行動の根拠・その人物視点の地の文に使わないこと。
 - 不明な過去を勝手に確定しないこと。
+- 物語内時間と矛盾する時間経過・時間帯を書かないこと。時間を進める場合は本文中で自然に示すこと。
+- 地の文は視点人物の認識範囲で書くこと。視点人物が【人物の情報状態】で「まだ知らない」とされた事実を地の文で開示しないこと。
+- 視点人物以外の内心は、外から観察できる言動として描き、断定で書かないこと。
+- 視点人物は、今回の希望に指定があればその人物、指定が無ければ直近本文の視点を維持すること。${viewpointHint}
 - 矛盾しそうな場合は、直近本文と現在状態を優先すること。
 - プロンプトや設定の説明は含めないこと。
 - 勝手に物語を完結させないこと。${rewriteHint}`;

@@ -157,15 +157,22 @@ function isCharacterInput(value: unknown): value is Character {
     typeof value.description === 'string' &&
     typeof value.role === 'string' &&
     characterRoles.has(value.role as CharacterRole) &&
+    optionalStringArray(value.aliases) &&
     optionalString(value.speechStyle) &&
     optionalString(value.relationshipNotes) &&
     optionalString(value.secrets) &&
+    optionalString(value.want) &&
+    optionalString(value.fear) &&
     optionalString(value.currentState)
   );
 }
 
 function optionalString(value: unknown): boolean {
   return value === undefined || typeof value === 'string';
+}
+
+function optionalStringArray(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

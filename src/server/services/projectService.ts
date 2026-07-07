@@ -38,6 +38,17 @@ const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
 };
 
 export async function createProject(body: CreateProjectBody): Promise<Project> {
+  validateProjectUpdates({
+    outputLength: body.outputLength,
+    streamingEnabled: body.streamingEnabled,
+    activeModelProvider: body.activeModelProvider,
+    activeModelName: body.activeModelName,
+    activePresetIds: body.activePresetIds,
+    samplingConfig: body.samplingConfig,
+    coreConcept: body.coreConcept,
+    firstWishSuggestion: body.firstWishSuggestion,
+    styleSample: body.styleSample,
+  });
   const projectId = generateTimestampId('proj');
   try {
   await storage.createProjectDir(projectId);
@@ -82,6 +93,12 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     schemaVersion: 1,
     projectId,
     title,
+    coreConcept: normalizeOptionalText(body.coreConcept ?? sourceProject?.coreConcept, 300),
+    firstWishSuggestion: normalizeOptionalText(
+      body.firstWishSuggestion ?? sourceProject?.firstWishSuggestion,
+      300
+    ),
+    styleSample: normalizeOptionalText(body.styleSample ?? sourceProject?.styleSample, 1000),
     createdAt: now,
     updatedAt: now,
     activeModelProvider: normalizedSettings.activeModelProvider ?? DEFAULT_MODEL_PROVIDER,
@@ -289,7 +306,27 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
     };
   }
 
+  if ('coreConcept' in updates) {
+    normalized.coreConcept = normalizeOptionalText(updates.coreConcept, 300);
+  }
+  if ('firstWishSuggestion' in updates) {
+    normalized.firstWishSuggestion = normalizeOptionalText(updates.firstWishSuggestion, 300);
+  }
+  if ('styleSample' in updates) {
+    normalized.styleSample = normalizeOptionalText(updates.styleSample, 1000);
+  }
+
   return normalized;
+}
+
+function normalizeOptionalText(value: unknown, maxChars: number): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new ProjectValidationError('text fields must be strings');
+  }
+  const text = value.trim();
+  if (!text) return undefined;
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
 function normalizePenalty(value: unknown, name: string): number | undefined {

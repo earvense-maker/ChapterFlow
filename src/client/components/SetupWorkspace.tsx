@@ -538,6 +538,15 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     }
   }
 
+  async function regenerateStyleSample(instruction: string): Promise<string> {
+    if (!session) throw new Error('相談セッションが見つかりません');
+    const result = await api.previewSetup(session.sessionId, instruction);
+    setSession(result.session);
+    rememberSetupSession(result.session.sessionId);
+    setPreviewText(result.previewText);
+    return result.previewText;
+  }
+
   async function handleCommit() {
     if (!session || committing) return;
     if (hasUnsavedDraftEdits) {
@@ -766,6 +775,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           onCommit={commitFromReview}
           onBack={backToChat}
           onRecreate={handleCommit}
+          onRegenerateStyleSample={regenerateStyleSample}
         />
       ) : (
         <main className="setup-main">

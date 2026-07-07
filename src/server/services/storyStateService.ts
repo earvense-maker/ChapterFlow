@@ -4,13 +4,18 @@ import * as storage from './storageService.js';
 import type { ModelAdapter } from '../adapters/modelAdapter.js';
 import type {
   Character,
+  CharacterId,
   GenerationRecord,
   MemoryImportance,
   Project,
+  StoryAuthorUndecidedRecord,
   StoryCharacterState,
+  StoryClock,
   StoryEventRecord,
   StoryItemStatus,
   StoryState,
+  StoryStateDiffRecord,
+  StoryStateDiffSummary,
   StoryThreadRecord,
 } from '../types/index.js';
 
@@ -20,6 +25,11 @@ const MAX_CURRENT_SITUATION = 12;
 const MAX_CHARACTER_STATES = 24;
 const MAX_IMPORTANT_EVENTS = 48;
 const MAX_OPEN_THREADS = 36;
+const MAX_AUTHOR_UNDECIDED = 12;
+const MAX_EXPLICITLY_UNKNOWN = 4;
+const MAX_EVENT_KNOWN_BY = 12;
+const MAX_DIFF_RECORDS = 20;
+const MAX_DIFF_SNAPSHOTS = 3;
 const storyStateMutexes = new Map<string, Promise<void>>();
 
 export function createEmptyStoryState(updatedAt = nowIso()): StoryState {
@@ -29,6 +39,9 @@ export function createEmptyStoryState(updatedAt = nowIso()): StoryState {
     characterStates: [],
     importantEvents: [],
     openThreads: [],
+    authorUndecided: [],
+    clock: { day: 1 },
+    processedGenerationIds: [],
     updatedAt,
   };
 }
@@ -45,31 +58,47 @@ export async function updateStoryStateFromAcceptedScene(input: {
   worldText: string;
   timeoutMs: number;
 }): Promise<StoryState | null> {
+  const promptState = await readStoryState(input.project.projectId);
+  const result = await input.adapter.generateText({
+    systemInstructions: buildSystemInstructions(),
+    userPrompt: buildUpdatePrompt({
+      previousState: promptState,
+      generation: input.generation,
+      characters: input.characters,
+      worldText: input.worldText,
+    }),
+    outputLength: STORY_STATE_OUTPUT_LENGTH,
+    temperature: STORY_STATE_TEMPERATURE,
+    timeoutMs: input.timeoutMs,
+    modelName: input.project.activeModelName,
+  });
+
+  if (result.finishReason === 'error' || result.finishReason === 'timeout') {
+    return null;
+  }
+
+  const parsed = parseStoryStateJson(result.text);
+  if (!parsed) return null;
+
   return withStoryStateLock(input.project.projectId, async () => {
     const previousState = await readStoryState(input.project.projectId);
-    const result = await input.adapter.generateText({
-      systemInstructions: buildSystemInstructions(),
-      userPrompt: buildUpdatePrompt({
-        previousState,
-        generation: input.generation,
-        characters: input.characters,
-        worldText: input.worldText,
-      }),
-      outputLength: STORY_STATE_OUTPUT_LENGTH,
-      temperature: STORY_STATE_TEMPERATURE,
-      timeoutMs: input.timeoutMs,
-      modelName: input.project.activeModelName,
-    });
-
-    if (result.finishReason === 'error' || result.finishReason === 'timeout') {
-      return null;
-    }
-
-    const parsed = parseStoryStateJson(result.text);
-    if (!parsed) return null;
-
-    const nextState = mergeStoryState(previousState, parsed, nowIso());
+    const appliedAt = nowIso();
+    const nextState = mergeStoryState(previousState, parsed, appliedAt, input.characters);
+    nextState.processedGenerationIds = appendUnique(
+      previousState.processedGenerationIds ?? [],
+      input.generation.generationId
+    );
     await storage.writeStoryState(input.project.projectId, nextState);
+    await appendStoryStateDiff(input.project.projectId, {
+      diffId: generateTimestampId('diff'),
+      generationId: input.generation.generationId,
+      sceneId: input.generation.sceneId,
+      appliedAt,
+      summary: summarizeDiff(previousState, nextState, input.characters),
+      beforeState: previousState,
+      resultUpdatedAt: nextState.updatedAt,
+      reverted: false,
+    });
     return nextState;
   });
 }
@@ -92,6 +121,7 @@ function buildUpdatePrompt(input: {
   const characterHints = input.characters.map((character) => ({
     characterId: character.characterId,
     name: character.name,
+    aliases: character.aliases ?? [],
     role: character.role,
     currentState: character.currentState || '',
     relationshipNotes: character.relationshipNotes || '',
@@ -115,8 +145,13 @@ function buildUpdatePrompt(input: {
       '- 出力は既存JSONの全置換ではなく、今回の場面から必要になった差分だけにする。',
       '- currentSituation には、次の場面開始時点の現在状況だけを短く入れる。',
       '- characterStates には、新規または更新が必要な人物だけを入れる。',
+      '- characterStates の knowledge は更新対象ではないため出力しない。',
       '- importantEvents には、新規または更新が必要な不可逆な出来事・約束・秘密の開示だけを入れる。',
-      '- openThreads には、新規または更新が必要な未解決の伏線だけを入れる。解決済みは既存threadIdを使い status を resolved にする。',
+      '- importantEvents の characters は出来事の当事者名、presentCharacters はその場に居合わせた人物のcharacterId、learnedBy は伝聞・立ち聞き・観察などでこの場面で新たに知った人物のcharacterId。',
+      '- knownBy / explicitlyUnknownBy には人物ヒントのcharacterIdだけを使う。本文中の呼び名・あだ名は aliases を参照して必ずcharacterIdへ解決する。',
+      '- explicitlyUnknownBy は通常0〜2名。知らないことが物語上の緊張や皮肉を生む人物だけを入れ、その場にいなかった人物を機械的に列挙しない。',
+      '- openThreads には、作中で提示済みの謎・伏線だけを入れる。作者がまだ決めていない事項は authorUndecided であり、抽出・更新しない。解決済みは既存threadIdを使い status を resolved にする。',
+      '- clock には場面終了時点の物語内時間を入れる。経過が読み取れない場合は既存値をそのまま返す。日をまたいだ描写があればdayを進める。',
       '- 既存項目を更新する場合は eventId/threadId/characterId を維持する。',
       '- 古い項目を出力から省略しても削除にはならない。削除したい場合は archiveEventIds または archiveThreadIds にIDを入れる。',
       '- 各配列は簡潔に保つ。長い本文引用は入れない。',
@@ -131,17 +166,24 @@ function buildUpdatePrompt(input: {
             characterId: '既存characterIdまたはnull',
             name: '人物名',
             currentState: '今回更新が必要な現在状態',
-            knowledge: ['今回更新が必要な認識'],
             relationships: ['今回更新が必要な関係変化'],
           },
         ],
+        clock: {
+          day: input.previousState.clock?.day ?? 1,
+          timeOfDay: input.previousState.clock?.timeOfDay ?? '',
+          note: input.previousState.clock?.note ?? '',
+        },
         importantEvents: [
           {
             eventId: '既存eventIdまたは空文字',
             sceneId: input.generation.sceneId,
             summary: '今回追加または更新が必要な重要イベント',
             characters: ['関係人物'],
-            visibility: '誰が知っているか',
+            presentCharacters: ['char-id'],
+            learnedBy: ['char-id'],
+            knownBy: ['char-id'],
+            explicitlyUnknownBy: ['char-id'],
             importance: 'high',
             status: 'active',
           },
@@ -184,9 +226,10 @@ export function parseStoryStateJson(text: string): unknown | null {
 export function mergeStoryState(
   previousValue: unknown,
   patchValue: unknown,
-  fallbackUpdatedAt = nowIso()
+  fallbackUpdatedAt = nowIso(),
+  characters: Character[] = []
 ): StoryState {
-  const previous = normalizeStoryState(previousValue, fallbackUpdatedAt);
+  const previous = normalizeStoryState(previousValue, fallbackUpdatedAt, characters);
   if (!isRecord(patchValue)) {
     return previous;
   }
@@ -199,18 +242,25 @@ export function mergeStoryState(
     characterStates: mergeCharacterStates(
       previous.characterStates,
       patchValue.characterStates,
-      fallbackUpdatedAt
+      fallbackUpdatedAt,
+      characters
     ),
     importantEvents: mergeEventRecords(
       previous.importantEvents,
       patchValue.importantEvents,
-      fallbackUpdatedAt
+      fallbackUpdatedAt,
+      characters
     ),
     openThreads: mergeThreadRecords(
       previous.openThreads,
       patchValue.openThreads,
       fallbackUpdatedAt
     ),
+    authorUndecided: previous.authorUndecided,
+    clock: hasField(patchValue, 'clock')
+      ? mergeClock(previous.clock, patchValue.clock)
+      : previous.clock,
+    processedGenerationIds: previous.processedGenerationIds,
     updatedAt: fallbackUpdatedAt,
   };
 
@@ -229,7 +279,11 @@ export function mergeStoryState(
   };
 }
 
-function normalizeStoryState(value: unknown, fallbackUpdatedAt = nowIso()): StoryState {
+export function normalizeStoryState(
+  value: unknown,
+  fallbackUpdatedAt = nowIso(),
+  characters: Character[] = []
+): StoryState {
   if (!isRecord(value)) return createEmptyStoryState(fallbackUpdatedAt);
 
   return {
@@ -240,13 +294,19 @@ function normalizeStoryState(value: unknown, fallbackUpdatedAt = nowIso()): Stor
       .filter((item): item is StoryCharacterState => item !== null)
       .slice(0, MAX_CHARACTER_STATES),
     importantEvents: asArray(value.importantEvents)
-      .map((item) => normalizeEventRecord(item, fallbackUpdatedAt))
+      .map((item) => normalizeEventRecord(item, fallbackUpdatedAt, characters))
       .filter((item): item is StoryEventRecord => item !== null)
       .slice(0, MAX_IMPORTANT_EVENTS),
     openThreads: asArray(value.openThreads)
       .map((item) => normalizeThreadRecord(item, fallbackUpdatedAt))
       .filter((item): item is StoryThreadRecord => item !== null)
       .slice(0, MAX_OPEN_THREADS),
+    authorUndecided: asArray(value.authorUndecided)
+      .map((item) => normalizeAuthorUndecided(item, fallbackUpdatedAt))
+      .filter((item): item is StoryAuthorUndecidedRecord => item !== null)
+      .slice(0, MAX_AUTHOR_UNDECIDED),
+    clock: normalizeClock(value.clock),
+    processedGenerationIds: asStringArray(value.processedGenerationIds, Number.MAX_SAFE_INTEGER),
     updatedAt: asString(value.updatedAt) || fallbackUpdatedAt,
   };
 }
@@ -268,18 +328,61 @@ function normalizeCharacterState(value: unknown, fallbackUpdatedAt: string): Sto
   };
 }
 
+function normalizeAuthorUndecided(
+  value: unknown,
+  fallbackUpdatedAt: string
+): StoryAuthorUndecidedRecord | null {
+  if (!isRecord(value)) return null;
+  const text = asString(value.text);
+  if (!text) return null;
+  return {
+    id: normalizeId(value.id, 'und'),
+    text,
+    reason: asString(value.reason) || undefined,
+    status: asStatus(value.status, 'active'),
+    updatedAt: asString(value.updatedAt) || fallbackUpdatedAt,
+  };
+}
+
+function normalizeClock(value: unknown): StoryClock | undefined {
+  if (!isRecord(value)) return undefined;
+  const dayValue = value.day;
+  const day =
+    typeof dayValue === 'number' && Number.isFinite(dayValue)
+      ? Math.max(1, Math.floor(dayValue))
+      : 1;
+  return {
+    day,
+    timeOfDay: asString(value.timeOfDay) || undefined,
+    note: asString(value.note) || undefined,
+  };
+}
+
+function mergeClock(previous: StoryClock | undefined, patch: unknown): StoryClock | undefined {
+  const next = normalizeClock(patch);
+  if (!next) return previous;
+  if (previous && next.day < previous.day) return previous;
+  if (!isRecord(patch)) return next;
+  return {
+    day: next.day,
+    timeOfDay: hasField(patch, 'timeOfDay') ? next.timeOfDay : previous?.timeOfDay,
+    note: hasField(patch, 'note') ? next.note : previous?.note,
+  };
+}
+
 function mergeCharacterStates(
   previous: StoryCharacterState[],
   rawUpdates: unknown,
-  fallbackUpdatedAt: string
+  fallbackUpdatedAt: string,
+  characters: Character[]
 ): StoryCharacterState[] {
   const next = previous.map((item) => ({ ...item }));
 
   for (const raw of asArray(rawUpdates)) {
     if (!isRecord(raw)) continue;
-    const existingIndex = findCharacterStateIndex(next, raw);
+    const existingIndex = findCharacterStateIndex(next, raw, characters);
     const existing = existingIndex >= 0 ? next[existingIndex] : undefined;
-    const merged = normalizeCharacterStatePatch(raw, existing, fallbackUpdatedAt);
+    const merged = normalizeCharacterStatePatch(raw, existing, fallbackUpdatedAt, characters);
     if (!merged) continue;
     if (existingIndex >= 0) {
       next[existingIndex] = merged;
@@ -294,12 +397,15 @@ function mergeCharacterStates(
 function normalizeCharacterStatePatch(
   value: Record<string, unknown>,
   existing: StoryCharacterState | undefined,
-  fallbackUpdatedAt: string
+  fallbackUpdatedAt: string,
+  characters: Character[]
 ): StoryCharacterState | null {
+  const rawName = hasField(value, 'name') ? asString(value.name) : existing?.name ?? '';
+  const matchedCharacter = rawName ? findCharacterByNameOrAlias(characters, rawName) : null;
   const characterId = hasField(value, 'characterId')
-    ? asNullableString(value.characterId)
-    : existing?.characterId ?? null;
-  const name = hasField(value, 'name') ? asString(value.name) : existing?.name ?? '';
+    ? asNullableString(value.characterId) ?? matchedCharacter?.characterId ?? null
+    : existing?.characterId ?? matchedCharacter?.characterId ?? null;
+  const name = matchedCharacter?.name ?? rawName;
   const currentState = hasField(value, 'currentState')
     ? asString(value.currentState)
     : existing?.currentState ?? '';
@@ -309,9 +415,7 @@ function normalizeCharacterStatePatch(
     characterId,
     name: name || existing?.name || 'Unknown',
     currentState,
-    knowledge: hasField(value, 'knowledge')
-      ? asStringArray(value.knowledge, 12)
-      : existing?.knowledge ?? [],
+    knowledge: existing?.knowledge ?? [],
     relationships: hasField(value, 'relationships')
       ? asStringArray(value.relationships, 12)
       : existing?.relationships ?? [],
@@ -321,7 +425,8 @@ function normalizeCharacterStatePatch(
 
 function findCharacterStateIndex(
   states: StoryCharacterState[],
-  raw: Record<string, unknown>
+  raw: Record<string, unknown>,
+  characters: Character[]
 ): number {
   const characterId = asString(raw.characterId);
   if (characterId) {
@@ -330,14 +435,35 @@ function findCharacterStateIndex(
   }
 
   const name = asString(raw.name);
-  return name ? states.findIndex((state) => state.name === name) : -1;
+  if (name) {
+    const byName = states.findIndex((state) => state.name === name);
+    if (byName >= 0) return byName;
+    const canonical = findCharacterByNameOrAlias(characters, name);
+    if (canonical) {
+      const byCanonicalId = states.findIndex((state) => state.characterId === canonical.characterId);
+      if (byCanonicalId >= 0) return byCanonicalId;
+      const byCanonicalName = states.findIndex((state) => state.name === canonical.name);
+      if (byCanonicalName >= 0) return byCanonicalName;
+    }
+  }
+  return -1;
 }
 
-function normalizeEventRecord(value: unknown, fallbackUpdatedAt: string): StoryEventRecord | null {
+function normalizeEventRecord(
+  value: unknown,
+  fallbackUpdatedAt: string,
+  characters: Character[] = []
+): StoryEventRecord | null {
   if (!isRecord(value)) return null;
 
   const summary = asString(value.summary);
   if (!summary) return null;
+  const knownBy = normalizeCharacterIdList(value.knownBy, characters, MAX_EVENT_KNOWN_BY);
+  const explicitlyUnknownBy = normalizeCharacterIdList(
+    value.explicitlyUnknownBy,
+    characters,
+    MAX_EXPLICITLY_UNKNOWN
+  ).filter((id) => !knownBy.includes(id));
 
   return {
     eventId: normalizeId(value.eventId, 'evt'),
@@ -345,6 +471,8 @@ function normalizeEventRecord(value: unknown, fallbackUpdatedAt: string): StoryE
     summary,
     characters: asStringArray(value.characters, 12),
     visibility: asString(value.visibility),
+    knownBy,
+    explicitlyUnknownBy,
     importance: asImportance(value.importance, 'medium'),
     status: asStatus(value.status, 'active'),
     updatedAt: asString(value.updatedAt) || fallbackUpdatedAt,
@@ -354,7 +482,8 @@ function normalizeEventRecord(value: unknown, fallbackUpdatedAt: string): StoryE
 function mergeEventRecords(
   previous: StoryEventRecord[],
   rawUpdates: unknown,
-  fallbackUpdatedAt: string
+  fallbackUpdatedAt: string,
+  characters: Character[]
 ): StoryEventRecord[] {
   const next = previous.map((item) => ({ ...item }));
 
@@ -362,7 +491,7 @@ function mergeEventRecords(
     if (!isRecord(raw)) continue;
     const existingIndex = findEventIndex(next, raw);
     const existing = existingIndex >= 0 ? next[existingIndex] : undefined;
-    const merged = normalizeEventPatch(raw, existing, fallbackUpdatedAt);
+    const merged = normalizeEventPatch(raw, existing, fallbackUpdatedAt, characters);
     if (!merged) continue;
     if (existingIndex >= 0) {
       next[existingIndex] = merged;
@@ -377,10 +506,35 @@ function mergeEventRecords(
 function normalizeEventPatch(
   value: Record<string, unknown>,
   existing: StoryEventRecord | undefined,
-  fallbackUpdatedAt: string
+  fallbackUpdatedAt: string,
+  characters: Character[]
 ): StoryEventRecord | null {
   const summary = hasField(value, 'summary') ? asString(value.summary) : existing?.summary ?? '';
   if (!summary) return null;
+  const validExistingKnown = normalizeCharacterIdList(
+    existing?.knownBy ?? [],
+    characters,
+    MAX_EVENT_KNOWN_BY
+  );
+  const explicitKnownPatchIds = hasField(value, 'knownBy')
+    ? normalizeCharacterIdList(value.knownBy, characters, MAX_EVENT_KNOWN_BY)
+    : [];
+  const presentIds = normalizeCharacterIdList(value.presentCharacters, characters, MAX_EVENT_KNOWN_BY);
+  const learnedIds = normalizeCharacterIdList(value.learnedBy, characters, MAX_EVENT_KNOWN_BY);
+  const knownBy = mergeUniqueStrings([
+    ...validExistingKnown,
+    ...explicitKnownPatchIds,
+    ...presentIds,
+    ...learnedIds,
+  ]).slice(0, MAX_EVENT_KNOWN_BY);
+  const explicitUnknownSource = hasField(value, 'explicitlyUnknownBy')
+    ? value.explicitlyUnknownBy
+    : existing?.explicitlyUnknownBy ?? [];
+  const explicitlyUnknownBy = normalizeCharacterIdList(
+    explicitUnknownSource,
+    characters,
+    MAX_EXPLICITLY_UNKNOWN
+  ).filter((id) => !knownBy.includes(id));
 
   return {
     eventId: existing?.eventId ?? normalizeId(value.eventId, 'evt'),
@@ -392,6 +546,8 @@ function normalizeEventPatch(
       ? asStringArray(value.characters, 12)
       : existing?.characters ?? [],
     visibility: hasField(value, 'visibility') ? asString(value.visibility) : existing?.visibility ?? '',
+    knownBy,
+    explicitlyUnknownBy,
     importance: hasField(value, 'importance')
       ? asImportance(value.importance, existing?.importance ?? 'medium')
       : existing?.importance ?? 'medium',
@@ -519,6 +675,248 @@ function archiveThreads(
   );
 }
 
+function normalizeCharacterIdList(value: unknown, characters: Character[], maxItems: number): CharacterId[] {
+  const validIds = new Set(characters.map((character) => character.characterId));
+  const allowAny = validIds.size === 0;
+  const result: CharacterId[] = [];
+  for (const id of asStringArray(value, maxItems * 2)) {
+    if (!allowAny && !validIds.has(id)) continue;
+    if (result.includes(id)) continue;
+    result.push(id);
+    if (result.length >= maxItems) break;
+  }
+  return result;
+}
+
+function mergeUniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const text = value.trim();
+    if (!text) continue;
+    const key = normalizeComparableSummary(text);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+  }
+  return result;
+}
+
+function appendUnique(values: string[], value: string): string[] {
+  return values.includes(value) ? values : [...values, value];
+}
+
+function findCharacterByNameOrAlias(characters: Character[], value: string): Character | null {
+  const normalized = normalizeComparableSummary(value);
+  if (!normalized) return null;
+  return (
+    characters.find((character) => normalizeComparableSummary(character.name) === normalized) ??
+    characters.find((character) =>
+      (character.aliases ?? []).some((alias) => normalizeComparableSummary(alias) === normalized)
+    ) ??
+    null
+  );
+}
+
+function characterNameForId(characterId: string, characters: Character[]): string | null {
+  return characters.find((character) => character.characterId === characterId)?.name ?? null;
+}
+
+export async function readStoryStateDiffs(projectId: string): Promise<StoryStateDiffRecord[]> {
+  const diffs = await storage.readStoryStateDiffs(projectId);
+  return normalizeDiffRecords(diffs);
+}
+
+export async function revertLatestStoryStateDiff(
+  projectId: string,
+  diffId: string
+): Promise<{ storyState: StoryState; diff: StoryStateDiffRecord }> {
+  return withStoryStateLock(projectId, async () => {
+    const diffs = normalizeDiffRecords(await storage.readStoryStateDiffs(projectId));
+    const latest = findLatestRevertibleDiff(diffs);
+    if (!latest || latest.diffId !== diffId) {
+      throw new StoryStateServiceError(
+        '取り消せるのは最新の自動更新だけです。',
+        'story_state_diff_not_latest',
+        409
+      );
+    }
+    if (!latest.beforeState) {
+      throw new StoryStateServiceError(
+        'この自動更新は復元用データが残っていません。',
+        'story_state_snapshot_missing',
+        409
+      );
+    }
+
+    const current = await readStoryState(projectId);
+    if (current.updatedAt !== latest.resultUpdatedAt) {
+      throw new StoryStateServiceError(
+        '状態が手動編集されているため取り消せません。',
+        'story_state_stale',
+        409
+      );
+    }
+
+    await storage.writeStoryState(projectId, latest.beforeState);
+    const { beforeState: _beforeState, ...diffWithoutSnapshot } = latest;
+    const nextDiff = { ...diffWithoutSnapshot, reverted: true };
+    const nextDiffs = diffs.map((diff) => (diff.diffId === diffId ? nextDiff : diff));
+    await storage.writeStoryStateDiffs(projectId, nextDiffs);
+    return { storyState: latest.beforeState, diff: nextDiff };
+  });
+}
+
+export async function revertLatestStoryStateDiffForGeneration(
+  projectId: string,
+  generationId: string
+): Promise<boolean> {
+  return withStoryStateLock(projectId, async () => {
+    const diffs = normalizeDiffRecords(await storage.readStoryStateDiffs(projectId));
+    const latest = findLatestRevertibleDiff(diffs);
+    if (!latest || latest.generationId !== generationId || !latest.beforeState) return false;
+    const current = await readStoryState(projectId);
+    if (current.updatedAt !== latest.resultUpdatedAt) return false;
+
+    await storage.writeStoryState(projectId, latest.beforeState);
+    const { beforeState: _beforeState, ...diffWithoutSnapshot } = latest;
+    await storage.writeStoryStateDiffs(
+      projectId,
+      diffs.map((diff) =>
+        diff.diffId === latest.diffId ? { ...diffWithoutSnapshot, reverted: true } : diff
+      )
+    );
+    return true;
+  });
+}
+
+export async function replaceStoryState(input: {
+  projectId: string;
+  storyState: unknown;
+  characters: Character[];
+}): Promise<StoryState> {
+  return withStoryStateLock(input.projectId, async () => {
+    const existing = await readStoryState(input.projectId);
+    const normalized = normalizeStoryState(input.storyState, nowIso(), input.characters);
+    const next: StoryState = {
+      ...normalized,
+      processedGenerationIds: existing.processedGenerationIds ?? [],
+      updatedAt: nowIso(),
+    };
+    await storage.writeStoryState(input.projectId, next);
+    return next;
+  });
+}
+
+async function appendStoryStateDiff(
+  projectId: string,
+  record: StoryStateDiffRecord
+): Promise<void> {
+  const existing = normalizeDiffRecords(await storage.readStoryStateDiffs(projectId));
+  const next = [record, ...existing].slice(0, MAX_DIFF_RECORDS);
+  let snapshotsLeft = MAX_DIFF_SNAPSHOTS;
+  const trimmed = next.map((diff) => {
+    if (diff.reverted || !diff.beforeState) return diff;
+    if (snapshotsLeft > 0) {
+      snapshotsLeft -= 1;
+      return diff;
+    }
+    const { beforeState: _beforeState, ...rest } = diff;
+    return rest;
+  });
+  await storage.writeStoryStateDiffs(projectId, trimmed);
+}
+
+function normalizeDiffRecords(value: unknown): StoryStateDiffRecord[] {
+  return asArray(value)
+    .map((item): StoryStateDiffRecord | null => {
+      if (!isRecord(item)) return null;
+      const diffId = asString(item.diffId);
+      const generationId = asString(item.generationId);
+      const sceneId = asString(item.sceneId);
+      if (!diffId || !generationId || !sceneId) return null;
+      const beforeState = isRecord(item.beforeState)
+        ? normalizeStoryState(item.beforeState, asString(item.appliedAt) || nowIso())
+        : undefined;
+      return {
+        diffId,
+        generationId,
+        sceneId,
+        appliedAt: asString(item.appliedAt) || nowIso(),
+        summary: normalizeDiffSummary(item.summary),
+        ...(beforeState ? { beforeState } : {}),
+        resultUpdatedAt: asString(item.resultUpdatedAt),
+        reverted: item.reverted === true,
+      };
+    })
+    .filter((item): item is StoryStateDiffRecord => item !== null)
+    .slice(0, MAX_DIFF_RECORDS);
+}
+
+function normalizeDiffSummary(value: unknown): StoryStateDiffSummary {
+  const record = isRecord(value) ? value : {};
+  return {
+    addedEvents: asStringArray(record.addedEvents, 8),
+    updatedEvents: asStringArray(record.updatedEvents, 8),
+    addedThreads: asStringArray(record.addedThreads, 8),
+    resolvedThreads: asStringArray(record.resolvedThreads, 8),
+    updatedCharacters: asStringArray(record.updatedCharacters, 8),
+    clockChanged: record.clockChanged === true,
+  };
+}
+
+function findLatestRevertibleDiff(diffs: StoryStateDiffRecord[]): StoryStateDiffRecord | null {
+  return diffs.find((diff) => !diff.reverted) ?? null;
+}
+
+function summarizeDiff(
+  previous: StoryState,
+  next: StoryState,
+  characters: Character[]
+): StoryStateDiffSummary {
+  const previousEvents = new Map(previous.importantEvents.map((event) => [event.eventId, event]));
+  const addedEvents: string[] = [];
+  const updatedEvents: string[] = [];
+  for (const event of next.importantEvents) {
+    const before = previousEvents.get(event.eventId);
+    if (!before) {
+      addedEvents.push(event.summary);
+    } else if (JSON.stringify(before) !== JSON.stringify(event)) {
+      updatedEvents.push(event.summary);
+    }
+  }
+
+  const previousThreads = new Map(previous.openThreads.map((thread) => [thread.threadId, thread]));
+  const addedThreads: string[] = [];
+  const resolvedThreads: string[] = [];
+  for (const thread of next.openThreads) {
+    const before = previousThreads.get(thread.threadId);
+    if (!before) {
+      addedThreads.push(thread.summary);
+    } else if (before.status !== 'resolved' && thread.status === 'resolved') {
+      resolvedThreads.push(thread.summary);
+    }
+  }
+
+  const previousCharacters = new Map(previous.characterStates.map((state) => [state.characterId ?? state.name, state]));
+  const updatedCharacters = next.characterStates
+    .filter((state) => {
+      const before = previousCharacters.get(state.characterId ?? state.name);
+      return !before || JSON.stringify(before) !== JSON.stringify(state);
+    })
+    .map((state) => characterNameForId(state.characterId ?? '', characters) ?? state.name)
+    .filter(Boolean);
+
+  return {
+    addedEvents: addedEvents.slice(0, 8),
+    updatedEvents: updatedEvents.slice(0, 8),
+    addedThreads: addedThreads.slice(0, 8),
+    resolvedThreads: resolvedThreads.slice(0, 8),
+    updatedCharacters: mergeUniqueStrings(updatedCharacters).slice(0, 8),
+    clockChanged: JSON.stringify(previous.clock) !== JSON.stringify(next.clock),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -564,7 +962,7 @@ function normalizeComparableSummary(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-async function withStoryStateLock<T>(
+export async function withStoryStateLock<T>(
   projectId: string,
   task: () => Promise<T>
 ): Promise<T> {
@@ -584,5 +982,16 @@ async function withStoryStateLock<T>(
     if (storyStateMutexes.get(projectId) === next) {
       storyStateMutexes.delete(projectId);
     }
+  }
+}
+
+export class StoryStateServiceError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = 'StoryStateServiceError';
   }
 }

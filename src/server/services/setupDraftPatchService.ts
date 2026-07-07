@@ -260,6 +260,21 @@ function updateCharacters(
       current.relationshipNotes = relationshipNotes;
       changed = true;
     }
+    const want = asString(update.want);
+    if (want && !lockedFields.has('want') && current.want !== want) {
+      current.want = want;
+      changed = true;
+    }
+    const fear = asString(update.fear);
+    if (fear && !lockedFields.has('fear') && current.fear !== fear) {
+      current.fear = fear;
+      changed = true;
+    }
+    const secret = asString(update.secret);
+    if (secret && !lockedFields.has('secret') && current.secret !== secret) {
+      current.secret = secret;
+      changed = true;
+    }
     if (changed) {
       current.updatedAt = now;
     }
@@ -387,6 +402,9 @@ function normalizeCharacter(
     description,
     speechStyle: asString(value.speechStyle) || undefined,
     relationshipNotes: asString(value.relationshipNotes) || undefined,
+    want: asString(value.want) || undefined,
+    fear: asString(value.fear) || undefined,
+    secret: asString(value.secret) || undefined,
     lockedFields: normalizeStringList(value.lockedFields, 12),
     source: normalizeSource(value.source, fallbackSource),
     status: normalizeStatus(value.status),

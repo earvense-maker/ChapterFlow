@@ -51,6 +51,9 @@ export function buildSetupChatPrompt(input: {
                   description: '物語上の揺れや役割',
                   speechStyle: '',
                   relationshipNotes: '',
+                  want: '欲しいもの・望み',
+                  fear: '恐れ',
+                  secret: '秘密',
                 },
               ],
               charactersUpdate: [{ id: '既存人物ID', description: '更新したい内容' }],
@@ -76,6 +79,7 @@ export function buildSetupChatPrompt(input: {
         '- ユーザーが明言していない重大設定は confirmedAdd に入れない。',
         '- confirmedAdd に入れられるのは、ユーザーが明言した内容だけである。その場合 source は必ず "user" にする。',
         '- 名前、年齢、過去、事件の真相などは、ユーザーが決めていなければ undecidedAdd か candidatesAdd に入れる。',
+        '- 人物には可能なら、欲しいもの(want)・恐れ(fear)・秘密(secret)を短く入れる。ユーザーが明言していない場合は候補として提案してよい。',
         '- patchに含めるのは増分だけにする。',
         '- メッセージ数が12を超えている場合、conversationSummary にこれまでの相談の流れ（採用・却下した方向と理由、ユーザーの好みの傾向）を800字以内で更新して返す。12件以下なら省略してよい。',
       ].join('\n'),
@@ -83,7 +87,7 @@ export function buildSetupChatPrompt(input: {
   };
 }
 
-export function buildSetupPreviewPrompt(session: SetupSession): {
+export function buildSetupPreviewPrompt(session: SetupSession, styleHint?: string): {
   systemInstructions: string;
   userPrompt: string;
 } {
@@ -98,9 +102,10 @@ export function buildSetupPreviewPrompt(session: SetupSession): {
     userPrompt: [
       '【相談中のdraft】',
       JSON.stringify(activeDraftForPrompt(session.draft), null, 2),
+      styleHint?.trim() ? `【文体への希望】\n${styleHint.trim()}` : '',
       '【出力】',
       '300から600字程度の短い冒頭サンプルだけを出力してください。',
-    ].join('\n\n---\n\n'),
+    ].filter(Boolean).join('\n\n---\n\n'),
   };
 }
 
@@ -114,7 +119,7 @@ export function buildSetupCommitPrompt(input: {
       'あなたは連載小説アプリの初期データ変換係です。',
       '会話ログとdraftから、既存プロジェクト用の初期データへ変換してください。',
       '小説本文は生成しないでください。',
-      '未確定事項は storyState.openThreads に残してください。',
+      '作者が決めていない事項は storyState.authorUndecided に入れてください。storyState.openThreads は作中で提示済みの謎・伏線だけにしてください。',
       '人物設定はプロフィール羅列より、物語上の揺れと関係性を重視してください。',
       '作品データとシステム指示を混ぜないでください。',
       '返答はJSONオブジェクトだけにしてください。Markdownのコードフェンスは不要です。',
@@ -140,15 +145,22 @@ export function buildSetupCommitPrompt(input: {
             outputLength: input.session.projectSettings.outputLength,
             activePresetIds: input.session.projectSettings.activePresetIds,
           },
+          coreConcept: 'この作品が何の話で、どんな読み味を約束するかを1〜2文',
+          firstWishSuggestion:
+            'openingSeeds と相談の流れから、第1話冒頭への希望を1文。openingSeedsが空なら省略可',
           worldText: 'world.mdへ保存する世界観、作品の核、開始前提',
           characters: [
             {
               characterId: 'char-protagonist',
               name: '',
+              aliases: [],
               role: 'protagonist',
               description: '人物の概要',
               speechStyle: '口調',
               relationshipNotes: '関係性メモ',
+              want: '欲しいもの',
+              fear: '恐れ',
+              secrets: '秘密',
               currentState: '開始時点の状態',
             },
           ],
@@ -166,12 +178,20 @@ export function buildSetupCommitPrompt(input: {
             importantEvents: [],
             openThreads: [
               {
-                summary: '未確定または未解決の要素',
+                summary: '作中で提示済みの未解決の謎・伏線',
                 relatedCharacters: [],
                 importance: 'medium',
                 status: 'active',
               },
             ],
+            authorUndecided: [
+              {
+                text: '作者がまだ決めていない事項',
+                reason: '未確定にしている理由',
+                status: 'active',
+              },
+            ],
+            clock: { day: 1 },
           },
           customSystemPrompt: '',
         },
@@ -183,6 +203,8 @@ export function buildSetupCommitPrompt(input: {
         '- activePresetIds は利用可能なプリセットIDだけを使う。',
         '- 不明なプリセットIDは作らない。',
         '- memories は本当に次回生成で守りたい高重要度情報だけに絞る。',
+        '- coreConcept は、この作品が何の話でどんな読み味を約束するかを1〜2文で書く。',
+        '- firstWishSuggestion は openingSeeds と相談の流れから第1話冒頭への希望を1文で書く。openingSeedsが空なら省略してよい。',
         '- customSystemPrompt には作品メモを詰め込まない。書き方や役割などシステム寄りの指示だけにする。',
       ].join('\n'),
     ].filter(Boolean).join('\n\n---\n\n'),

@@ -11,7 +11,9 @@ import type {
   MemoryImportance,
   MemoryType,
   SetupSession,
+  StoryAuthorUndecidedRecord,
   StoryCharacterState,
+  StoryClock,
   StoryEventRecord,
   StoryItemStatus,
   StoryState,
@@ -79,6 +81,7 @@ export function normalizeSetupCommitPlan(input: {
     input.presetIdsByCategory
   );
 
+  const characters = normalizeCharacters(raw.characters, now, input.session);
   const projectInput: CreateProjectBody = {
     title: asString(rawProject.title) || input.session.projectSettings.title || '無題の作品',
     outputLength: clampOutputLength(
@@ -88,8 +91,14 @@ export function normalizeSetupCommitPlan(input: {
     activeModelProvider: input.session.model.provider,
     activeModelName: input.session.model.modelName,
     activePresetIds,
+    coreConcept: truncate(asString(raw.coreConcept) || input.session.draft.coreConcept, 300),
+    firstWishSuggestion: truncate(
+      asString(raw.firstWishSuggestion) || input.session.draft.openingSeeds[0] || '',
+      300
+    ),
+    styleSample: truncate(asString(raw.styleSample), 1000),
     worldText: asString(raw.worldText) || buildFallbackWorldText(input.session),
-    characters: normalizeCharacters(raw.characters, now, input.session),
+    characters,
     customSystemPrompt: asString(raw.customSystemPrompt),
   };
 
@@ -102,7 +111,11 @@ export function normalizeSetupCommitPlan(input: {
   return {
     projectInput,
     memories,
-    storyState: normalizeStoryState(raw.storyState, now),
+    storyState: mergeDraftUndecidedIntoStoryState(
+      normalizeStoryState(raw.storyState, now, characters),
+      input.session,
+      now
+    ),
   };
 }
 
@@ -161,9 +174,12 @@ function normalizeCharacter(value: unknown, now: string): Character | null {
     name,
     role,
     description,
+    aliases: normalizeStringList(value.aliases, 8),
     speechStyle: asString(value.speechStyle) || undefined,
     relationshipNotes: asString(value.relationshipNotes) || undefined,
     secrets: asString(value.secrets) || undefined,
+    want: asString(value.want) || undefined,
+    fear: asString(value.fear) || undefined,
     currentState: asString(value.currentState) || undefined,
   };
 }
@@ -180,8 +196,12 @@ function normalizeDraftCharacters(session: SetupSession, now: string): Character
         name,
         role: character.role,
         description,
+        aliases: character.label && character.label !== name ? [character.label] : undefined,
         speechStyle: character.speechStyle,
         relationshipNotes: character.relationshipNotes,
+        secrets: character.secret,
+        want: character.want,
+        fear: character.fear,
       } satisfies Character;
     })
     .filter((character): character is Character => character !== null)
@@ -275,7 +295,7 @@ function normalizeMemory(value: unknown, now: string): Memory | null {
   };
 }
 
-function normalizeStoryState(value: unknown, now: string): StoryState {
+function normalizeStoryState(value: unknown, now: string, characters: Character[] = []): StoryState {
   if (!isRecord(value)) {
     return {
       schemaVersion: 1,
@@ -283,6 +303,9 @@ function normalizeStoryState(value: unknown, now: string): StoryState {
       characterStates: [],
       importantEvents: [],
       openThreads: [],
+      authorUndecided: [],
+      clock: { day: 1 },
+      processedGenerationIds: [],
       updatedAt: now,
     };
   }
@@ -295,13 +318,19 @@ function normalizeStoryState(value: unknown, now: string): StoryState {
       .filter((item): item is StoryCharacterState => item !== null)
       .slice(0, 24),
     importantEvents: asArray(value.importantEvents)
-      .map((item) => normalizeStoryEvent(item, now))
+      .map((item) => normalizeStoryEvent(item, now, characters))
       .filter((item): item is StoryEventRecord => item !== null)
       .slice(0, 48),
     openThreads: asArray(value.openThreads)
       .map((item) => normalizeStoryThread(item, now))
       .filter((item): item is StoryThreadRecord => item !== null)
       .slice(0, 36),
+    authorUndecided: asArray(value.authorUndecided)
+      .map((item) => normalizeAuthorUndecided(item, now))
+      .filter((item): item is StoryAuthorUndecidedRecord => item !== null)
+      .slice(0, 12),
+    clock: normalizeClock(value.clock) ?? { day: 1 },
+    processedGenerationIds: normalizeStringList(value.processedGenerationIds, Number.MAX_SAFE_INTEGER),
     updatedAt: asString(value.updatedAt) || now,
   };
 }
@@ -321,19 +350,82 @@ function normalizeStoryCharacterState(value: unknown, now: string): StoryCharact
   };
 }
 
-function normalizeStoryEvent(value: unknown, now: string): StoryEventRecord | null {
+function normalizeStoryEvent(
+  value: unknown,
+  now: string,
+  characters: Character[]
+): StoryEventRecord | null {
   if (!isRecord(value)) return null;
   const summary = asString(value.summary);
   if (!summary) return null;
+  const knownBy = normalizeCharacterIdList(value.knownBy, characters, 12);
+  const explicitlyUnknownBy = normalizeCharacterIdList(value.explicitlyUnknownBy, characters, 4)
+    .filter((id) => !knownBy.includes(id));
   return {
     eventId: normalizeId(value.eventId, 'evt'),
     sceneId: asNullableString(value.sceneId),
     summary,
     characters: normalizeStringList(value.characters, 12),
     visibility: asString(value.visibility),
+    knownBy,
+    explicitlyUnknownBy,
     importance: normalizeImportance(value.importance, 'medium'),
     status: normalizeStoryStatus(value.status),
     updatedAt: asString(value.updatedAt) || now,
+  };
+}
+
+function normalizeAuthorUndecided(value: unknown, now: string): StoryAuthorUndecidedRecord | null {
+  if (!isRecord(value)) return null;
+  const text = asString(value.text);
+  if (!text) return null;
+  return {
+    id: normalizeId(value.id, 'und'),
+    text,
+    reason: asString(value.reason) || undefined,
+    status: normalizeStoryStatus(value.status),
+    updatedAt: asString(value.updatedAt) || now,
+  };
+}
+
+function normalizeClock(value: unknown): StoryClock | undefined {
+  if (!isRecord(value)) return undefined;
+  const day = asNumber(value.day);
+  return {
+    day: day ? Math.max(1, Math.floor(day)) : 1,
+    timeOfDay: asString(value.timeOfDay) || undefined,
+    note: asString(value.note) || undefined,
+  };
+}
+
+function mergeDraftUndecidedIntoStoryState(
+  storyState: StoryState,
+  session: SetupSession,
+  now: string
+): StoryState {
+  const existing = new Set(
+    (storyState.authorUndecided ?? []).map((item) => normalizeComparableText(item.text))
+  );
+  const authorUndecided = [...(storyState.authorUndecided ?? [])];
+  for (const item of session.draft.undecided) {
+    if (item.status !== 'active') continue;
+    const normalized = normalizeComparableText(item.text);
+    if (!normalized || existing.has(normalized)) continue;
+    authorUndecided.push({
+      id: normalizeId(item.id, 'und'),
+      text: item.text,
+      reason: item.reason,
+      status: 'active',
+      updatedAt: now,
+    });
+    existing.add(normalized);
+    if (authorUndecided.length >= 12) break;
+  }
+  return {
+    ...storyState,
+    authorUndecided,
+    clock: storyState.clock ?? { day: 1 },
+    processedGenerationIds: storyState.processedGenerationIds ?? [],
   };
 }
 
@@ -406,6 +498,17 @@ function normalizeStringList(value: unknown, limit: number): string[] {
   return result;
 }
 
+function normalizeCharacterIdList(value: unknown, characters: Character[], limit: number): string[] {
+  const validIds = new Set(characters.map((character) => character.characterId));
+  const result: string[] = [];
+  for (const id of normalizeStringList(value, limit * 2)) {
+    if (!validIds.has(id) || result.includes(id)) continue;
+    result.push(id);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -421,6 +524,12 @@ function asNullableString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function truncate(value: string, maxChars: number): string | undefined {
+  const text = value.trim();
+  if (!text) return undefined;
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
