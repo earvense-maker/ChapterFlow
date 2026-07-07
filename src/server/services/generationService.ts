@@ -59,6 +59,9 @@ function resolveTemperature(
   if (mode === 'variate') return Math.min(base + TEMPERATURE_VARIATE_DELTA, TEMPERATURE_MAX);
   return base;
 }
+// NOTE: ストリーミング生成では「無通信タイムアウト」（イベント受信ごとにリセット）、
+// 非ストリーミングでは従来どおり総時間。非ストリーミングで長い文字数設定＋遅い
+// モデルだと総時間側に当たりうるが、既定はストリーミングなので据え置き。
 const TIMEOUT_MS = 120_000;
 const STORY_STATE_TIMEOUT_MS = 30_000;
 const SUMMARY_CHUNK_CHARS = 20_000;

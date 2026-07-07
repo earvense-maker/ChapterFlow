@@ -41,7 +41,15 @@ export class OpenAIAdapter implements ModelAdapter {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+    // NOTE: ストリーミングでは timeoutMs を「総時間」ではなく「無通信時間」として使う。
+    // 総時間で切ると、長い本文が順調に流れていても終盤で必ず落ちる（固定120秒だと
+    // 3000字級の生成が最後の方で切れて全損する事故が実際に起きた）。SSEイベント受信の
+    // たびにリセットするので、reasoning系モデルの思考デルタでもタイマーは維持される。
+    let timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+    };
     const handleAbort = () => controller.abort();
     if (request.abortSignal?.aborted) {
       throw new ModelAdapterError('生成が中断されました', 'aborted', false);
@@ -93,6 +101,7 @@ export class OpenAIAdapter implements ModelAdapter {
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
 
       for await (const eventData of readServerSentEvents(res.body)) {
+        resetTimeout();
         if (eventData === '[DONE]') break;
 
         const data = JSON.parse(eventData) as OpenAIStreamChunk;

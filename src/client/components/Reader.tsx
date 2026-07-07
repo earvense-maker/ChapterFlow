@@ -143,6 +143,10 @@ export default function Reader({
     mode: 'continue' | 'regenerate' | 'variate',
     requestWish = wish
   ) {
+    // NOTE: 生成失敗時に元の画面へ戻すためのスナップショット。ストリーミングは
+    // 途中経過で text を上書きするが、エラー時の部分テキストはサーバーに保存されて
+    // いないため、表示に残すと「見えているのに採用できない本文」になる。
+    const previous = { text, generationId, status };
     try {
       setLoading(true);
       setError(null);
@@ -175,6 +179,16 @@ export default function Reader({
       }
       inputRef.current?.focus();
     } catch (err) {
+      // 未保存の部分テキストを消して生成前の表示へ戻し、指示を入力欄に復元して
+      // そのまま再生成できるようにする。
+      setText(previous.text);
+      setGenerationId(previous.generationId);
+      setStatus(previous.status);
+      if (mode === 'continue') {
+        setWish(requestWish);
+      } else {
+        setRewriteWish(requestWish);
+      }
       setError(err instanceof Error ? err.message : '生成に失敗しました');
     } finally {
       setLoading(false);

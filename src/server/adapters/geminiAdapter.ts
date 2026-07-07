@@ -25,7 +25,13 @@ export class GeminiAdapter implements ModelAdapter {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+    // NOTE: ストリーミングでは timeoutMs を「総時間」ではなく「無通信時間」として使う
+    // （openaiAdapter と同じ方針。総時間だと長い生成が終盤で必ず切れる）。
+    let timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => controller.abort(), request.timeoutMs);
+    };
     const handleAbort = () => controller.abort();
     if (request.abortSignal?.aborted) {
       throw new ModelAdapterError('生成が中断されました', 'aborted', false);
@@ -59,6 +65,7 @@ export class GeminiAdapter implements ModelAdapter {
       let lastData: GeminiGenerateContentResponse | null = null;
 
       for await (const eventData of readServerSentEvents(res.body)) {
+        resetTimeout();
         const data = JSON.parse(eventData) as GeminiGenerateContentResponse;
         lastData = data;
         const candidate = data.candidates?.[0];
