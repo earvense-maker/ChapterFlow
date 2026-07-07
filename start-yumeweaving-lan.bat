@@ -1,6 +1,8 @@
 @echo off
 chcp 65001 > nul
 cd /d "C:\Users\Yuhei\Desktop\Yumeweaving"
+rem NOTE: 執筆データはリポジトリ外に置く（start-yumeweaving.bat と同じ値にすること）。
+set "YUMEWEAVING_DATA_DIR=C:\Users\Yuhei\Documents\Yumeweaving"
 
 if not exist "dist\server\index.js" (
   echo [LAN] dist not found. Building...

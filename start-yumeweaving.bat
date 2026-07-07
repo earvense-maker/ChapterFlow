@@ -1,6 +1,9 @@
 @echo off
 chcp 65001 > nul
 cd /d "C:\Users\Yuhei\Desktop\Yumeweaving"
+rem NOTE: 執筆データはリポジトリ外に置く。未設定だと data\ にフォールバックし、
+rem 開発用フィクスチャと実データが混ざるので必ずここで指定する。
+set "YUMEWEAVING_DATA_DIR=C:\Users\Yuhei\Documents\Yumeweaving"
 npm run dev
 if errorlevel 1 (
   echo.
