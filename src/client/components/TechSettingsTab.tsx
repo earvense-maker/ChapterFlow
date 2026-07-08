@@ -37,6 +37,7 @@ export default function TechSettingsTab({
   const [temperature, setTemperature] = useState(project.samplingConfig?.temperature ?? 0.7);
   const [ngExpressions, setNgExpressions] = useState<NgExpression[]>([]);
   const [newNgText, setNewNgText] = useState('');
+  const [appVersion, setAppVersion] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -44,6 +45,7 @@ export default function TechSettingsTab({
     async function load() {
       try {
         onError(null);
+        const versionPromise = api.getSystemVersion().catch(() => null);
         const [providerList, expressionsData] = await Promise.all([
           api.getModelProviders(),
           api.getExpressions(projectId),
@@ -51,6 +53,8 @@ export default function TechSettingsTab({
         if (cancelled) return;
         setProviders(providerList);
         setNgExpressions(expressionsData.ngExpressions);
+        const versionData = await versionPromise;
+        if (!cancelled) setAppVersion(versionData?.version ?? '');
       } catch (err) {
         if (!cancelled) onError(err instanceof Error ? err.message : '読み込みに失敗しました');
       }
@@ -330,6 +334,15 @@ export default function TechSettingsTab({
           </p>
         )}
       </section>
+
+      {appVersion && (
+        <section className="settings-section">
+          <h2>アプリ情報</h2>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+            バージョン {appVersion}
+          </p>
+        </section>
+      )}
     </div>
   );
 }

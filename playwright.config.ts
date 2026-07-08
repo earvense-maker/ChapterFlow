@@ -18,7 +18,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'set YUMEWEAVING_SKIP_OPEN=1&& set YUMEWEAVING_DATA_DIR=.tmp/e2e-data&& set PORT=3002&& set VITE_DEV_PORT=5174&& npm run dev',
+    command: 'set YUMEWEAVING_SKIP_OPEN=1&& set YUMEWEAVING_DATA_DIR=.tmp/e2e-data&& set PORT=3002&& set YUMEWEAVING_API_PORT=3002&& set VITE_DEV_PORT=5174&& npm run dev',
     url: 'http://localhost:5174',
     reuseExistingServer: false,
   },

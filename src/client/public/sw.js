@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yumeweaving-pwa-v1';
+const CACHE_NAME = 'yumeweaving-pwa-v2';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -46,7 +46,9 @@ async function networkFirst(request, fallbackPath) {
   const cache = await caches.open(CACHE_NAME);
   try {
     const response = await fetch(request);
-    cache.put(request, response.clone());
+    if (response.ok) {
+      cache.put(request, response.clone());
+    }
     return response;
   } catch {
     return (await cache.match(request)) || (await cache.match(fallbackPath));

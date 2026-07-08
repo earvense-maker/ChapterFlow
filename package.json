@@ -2,14 +2,20 @@
   "name": "yumeweaving",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "main": "dist/electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
     "dev:client": "vite",
-    "dev:server": "tsx watch src/server/index.ts",
+    "dev:server": "node scripts/dev-server.mjs",
     "open:app": "node open-app-window.js http://localhost:5173",
     "open:app:prod": "node open-app-window.js http://localhost:3001",
     "build": "tsc -p tsconfig.server.json && vite build",
+    "build:electron": "npm run build && tsc -p tsconfig.electron.json",
+    "dev:electron": "npm run build:electron && electron dist/electron/main.js",
+    "dist:electron": "npm run build:electron && electron-builder --win",
+    "package": "node scripts/package.mjs",
     "start": "node dist/server/index.js",
     "start:lan": "node scripts/start-lan.mjs",
     "build:start:lan": "npm run build && npm run start:lan",
@@ -20,8 +26,6 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
     "uuid": "^10.0.0"
   },
   "devDependencies": {
@@ -36,10 +40,41 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^8.2.2",
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.12",
     "jsdom": "^24.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3",
     "vite": "^5.3.3",
     "vitest": "^1.6.0"
+  },
+  "build": {
+    "appId": "com.yumeweaving.app",
+    "productName": "Yumeweaving",
+    "directories": {
+      "output": "release/electron"
+    },
+    "files": [
+      "dist/server/**",
+      "dist/client/**",
+      "dist/electron/**",
+      "presets/**",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
   }
 }
