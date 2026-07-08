@@ -4,12 +4,14 @@ import ProjectForm from './components/ProjectForm';
 import Reader from './components/Reader';
 import SettingPanel from './components/SettingPanel';
 import SetupWorkspace from './components/SetupWorkspace';
+import AppSettingsPanel from './components/AppSettingsPanel';
 
-type View = 'list' | 'new' | 'setup' | 'read' | 'settings-work' | 'settings-app' | 'settings-memory';
+type View = 'list' | 'new' | 'setup' | 'read' | 'app-settings' | 'settings-work' | 'settings-memory';
 
 export default function App() {
   const [view, setView] = useState<View>('list');
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [appSettingsBackView, setAppSettingsBackView] = useState<View>('list');
 
   const handleOpenProject = (projectId: string) => {
     setActiveProjectId(projectId);
@@ -30,8 +32,12 @@ export default function App() {
   // メニューから「作品設定」「アプリ設定」「記憶(=作品設定の記憶タブ)」へ遷移する。
   const settingsInitialTab =
     view === 'settings-work' ? 'work' :
-    view === 'settings-app' ? 'tech' :
     view === 'settings-memory' ? 'memory' : undefined;
+
+  const openAppSettings = (backView: View) => {
+    setAppSettingsBackView(backView);
+    setView('app-settings');
+  };
 
   return (
     <div className="app">
@@ -40,6 +46,7 @@ export default function App() {
           onOpen={handleOpenProject}
           onNew={() => setView('new')}
           onSetupNew={() => setView('setup')}
+          onOpenAppSettings={() => openAppSettings('list')}
         />
       )}
       {view === 'new' && <ProjectForm onCreated={handleCreateProject} onCancel={handleBackToList} />}
@@ -47,7 +54,7 @@ export default function App() {
         <SetupWorkspace
           onCreated={handleCreateProject}
           onCancel={handleBackToList}
-          onOpenSettings={() => setView('settings-app')}
+          onOpenSettings={() => openAppSettings('setup')}
         />
       )}
       {view === 'read' && activeProjectId && (
@@ -55,11 +62,14 @@ export default function App() {
           projectId={activeProjectId}
           onBack={handleBackToList}
           onOpenWorkSettings={() => setView('settings-work')}
-          onOpenAppSettings={() => setView('settings-app')}
+          onOpenAppSettings={() => openAppSettings('read')}
           onOpenMemories={() => setView('settings-memory')}
         />
       )}
-      {(view === 'settings-work' || view === 'settings-app' || view === 'settings-memory') &&
+      {view === 'app-settings' && (
+        <AppSettingsPanel onBack={() => setView(appSettingsBackView)} />
+      )}
+      {(view === 'settings-work' || view === 'settings-memory') &&
         activeProjectId && (
           <SettingPanel
             projectId={activeProjectId}

@@ -6,9 +6,10 @@ interface Props {
   onOpen: (projectId: string) => void;
   onNew: () => void;
   onSetupNew: () => void;
+  onOpenAppSettings: () => void;
 }
 
-export default function ProjectList({ onOpen, onNew, onSetupNew }: Props) {
+export default function ProjectList({ onOpen, onNew, onSetupNew, onOpenAppSettings }: Props) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +91,7 @@ export default function ProjectList({ onOpen, onNew, onSetupNew }: Props) {
         <div className="project-list-actions">
           <button onClick={onSetupNew}>相談して作る</button>
           <button className="primary" onClick={onNew}>新規作品</button>
+          <button onClick={onOpenAppSettings}>アプリ設定</button>
           <button className="danger" onClick={handleShutdown} title="サーバーとターミナルも終了">
             終了
           </button>

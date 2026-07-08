@@ -4,6 +4,9 @@ import type {
   ContextCompressionResult,
   CreateMemoryBody,
   CreateProjectBody,
+  DataDirApplyResponse,
+  DataDirInfo,
+  DataDirPreview,
   FrequencyReport,
   GenerateRequestBody,
   GenerationRecord,
@@ -39,6 +42,7 @@ import type {
   SetupSession,
   SetupSessionResponse,
   SetupSessionSummary,
+  SystemVersionInfo,
   SystemPromptPreview,
   UpdateSetupDraftBody,
   UpdateProjectBody,
@@ -69,7 +73,18 @@ export const api = {
     request<Project>(`/projects/${id}/duplicate`, { method: 'POST', body: JSON.stringify({ title }) }),
   deleteProject: (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' }),
   shutdown: () => request<{ ok: boolean }>('/shutdown', { method: 'POST' }),
-  getSystemVersion: () => request<{ version: string }>('/system/version'),
+  getSystemVersion: () => request<SystemVersionInfo>('/system/version'),
+  getDataDirInfo: () => request<DataDirInfo>('/system/data-dir'),
+  previewDataDirMove: (targetPath: string) =>
+    request<DataDirPreview>('/system/data-dir/preview', {
+      method: 'POST',
+      body: JSON.stringify({ targetPath }),
+    }),
+  applyDataDirMove: (targetPath: string) =>
+    request<DataDirApplyResponse>('/system/data-dir/apply', {
+      method: 'POST',
+      body: JSON.stringify({ targetPath }),
+    }),
 
   createSetupSession: (body: CreateSetupSessionBody) =>
     request<SetupSessionResponse>('/setup-sessions', { method: 'POST', body: JSON.stringify(body) }),

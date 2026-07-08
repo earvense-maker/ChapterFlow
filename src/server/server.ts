@@ -14,6 +14,7 @@ export interface StartServerOptions {
   port?: number;
   host?: string;
   onShutdownRequest?: () => void;
+  onRestartRequest?: () => void;
   onRuntimeError?: (err: NodeJS.ErrnoException) => void;
 }
 
@@ -44,6 +45,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
     getActualPort: () => actualPort,
     lanAuthToken,
     onShutdownRequest: options.onShutdownRequest,
+    onRestartRequest: options.onRestartRequest,
   });
   const server = await listen(app.listen.bind(app), port, host);
   server.on('error', (err: NodeJS.ErrnoException) => {

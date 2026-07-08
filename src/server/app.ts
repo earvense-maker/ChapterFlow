@@ -18,6 +18,7 @@ import {
   createLanAuthMiddleware,
   isLanAuthRequiredForHost,
 } from './services/lanAuthService.js';
+import { DataDirLockedError } from './services/dataDirLock.js';
 
 export interface CreateAppOptions {
   host: string;
@@ -25,6 +26,7 @@ export interface CreateAppOptions {
   getActualPort?: () => number | null;
   lanAuthToken?: string | null;
   onShutdownRequest?: () => void;
+  onRestartRequest?: () => void;
 }
 
 export function createApp(options: CreateAppOptions): express.Express {
@@ -63,8 +65,29 @@ export function createApp(options: CreateAppOptions): express.Express {
   app.use('/api', memoriesRouter);
   app.use('/api', modelsRouter);
   app.use('/api', setupSessionsRouter);
-  app.use('/api', createSystemRouter({ onShutdownRequest: options.onShutdownRequest }));
+  app.use('/api', createSystemRouter({
+    onShutdownRequest: options.onShutdownRequest,
+    onRestartRequest: options.onRestartRequest,
+  }));
   app.use('/api', refineRouter);
+
+  app.use(
+    (
+      err: Error,
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (err instanceof DataDirLockedError) {
+        return res.status(503).json({
+          error: err.message,
+          code: 'data_dir_moving',
+          retryable: true,
+        });
+      }
+      next(err);
+    }
+  );
 
   const staticClientDir = path.resolve(PROJECT_ROOT, 'dist', 'client');
   if (existsSync(staticClientDir)) {

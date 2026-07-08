@@ -21,6 +21,7 @@ import {
   withStoryStateLock,
 } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
+import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
@@ -597,14 +598,25 @@ async function persistTargetScene(
   await storage.writeEpisodeRecord(projectId, episode);
 }
 
+interface AcceptGenerationResult {
+  record: GenerationRecord;
+  refreshStoryState: boolean;
+}
+
 export async function acceptGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
-  return withProjectWriteLock(projectId, () => acceptGenerationUnlocked(projectId, generationId));
+  const result = await withProjectWriteLock(projectId, () =>
+    acceptGenerationUnlocked(projectId, generationId)
+  );
+  if (result.refreshStoryState) {
+    startStoryStateRefreshAfterAcceptance(projectId, result.record.generationId);
+  }
+  return result.record;
 }
 
 async function acceptGenerationUnlocked(
   projectId: string,
   generationId?: string
-): Promise<GenerationRecord> {
+): Promise<AcceptGenerationResult> {
   const state = await storage.readState(projectId);
   if (!state) throw new Error(`State not found: ${projectId}`);
 
@@ -614,7 +626,9 @@ async function acceptGenerationUnlocked(
   const generation = await findGeneration(projectId, targetId);
   if (!generation) throw new Error(`Generation not found: ${targetId}`);
 
-  if (generation.status === 'accepted') return generation;
+  if (generation.status === 'accepted') {
+    return { record: generation, refreshStoryState: false };
+  }
 
   generation.status = 'accepted';
   await storage.appendGenerationStatusLog(projectId, generation.generationId, generation.status);
@@ -655,15 +669,19 @@ async function acceptGenerationUnlocked(
     storyStateRefresh,
   });
 
-  void refreshStoryStateAfterAcceptance(projectId).catch((err) => {
-    console.warn('Story state refresh failed', {
-      projectId,
-    generationId: generation.generationId,
-      error: err instanceof Error ? err.message : String(err),
+  return { record: generation, refreshStoryState: true };
+}
+
+function startStoryStateRefreshAfterAcceptance(projectId: string, generationId: string): void {
+  runOutsideDataDirWrite(() => {
+    void refreshStoryStateAfterAcceptance(projectId).catch((err) => {
+      console.warn('Story state refresh failed', {
+        projectId,
+        generationId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     });
   });
-
-  return generation;
 }
 
 async function writeProjectShortcut(projectId: string): Promise<void> {
@@ -730,16 +748,18 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
 }
 
 async function refreshStoryStateAfterAcceptance(projectId: string): Promise<void> {
-  const status = await drainStoryStateBacklog(projectId, {
-    lockRefreshStatusWrites: true,
-  });
-  if (status.status === 'stale') {
-    console.warn('Story state refresh produced no update', {
-      projectId,
-      generationId: status.generationId,
-      error: status.errorMessage,
+  await withDataDirWrite(async () => {
+    const status = await drainStoryStateBacklog(projectId, {
+      lockRefreshStatusWrites: true,
     });
-  }
+    if (status.status === 'stale') {
+      console.warn('Story state refresh produced no update', {
+        projectId,
+        generationId: status.generationId,
+        error: status.errorMessage,
+      });
+    }
+  });
 }
 
 export async function refreshStoryState(projectId: string): Promise<ReaderState> {
@@ -1317,7 +1337,7 @@ export async function withProjectWriteLock<T>(
 
   await previous.catch(() => undefined);
   try {
-    return await task();
+    return await withDataDirWrite(task);
   } finally {
     release();
     if (projectWriteMutexes.get(projectId) === next) {

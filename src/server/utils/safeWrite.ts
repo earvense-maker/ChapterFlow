@@ -1,28 +1,31 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { withDataDirWrite } from '../services/dataDirLock.js';
 
 export async function safeWriteFile(filePath: string, data: string | Buffer): Promise<void> {
-  const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true });
-  const tempPath = path.join(
-    dir,
-    `${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  );
-  try {
-    if (typeof data === 'string') {
-      await fs.writeFile(tempPath, data, 'utf-8');
-    } else {
-      await fs.writeFile(tempPath, data);
-    }
-    await fs.rename(tempPath, filePath);
-  } catch (err) {
+  await withDataDirWrite(async () => {
+    const dir = path.dirname(filePath);
+    await fs.mkdir(dir, { recursive: true });
+    const tempPath = path.join(
+      dir,
+      `${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
     try {
-      await fs.unlink(tempPath);
-    } catch {
-      // 一時ファイルが存在しなくても無視
+      if (typeof data === 'string') {
+        await fs.writeFile(tempPath, data, 'utf-8');
+      } else {
+        await fs.writeFile(tempPath, data);
+      }
+      await fs.rename(tempPath, filePath);
+    } catch (err) {
+      try {
+        await fs.unlink(tempPath);
+      } catch {
+        // 一時ファイルが存在しなくても無視
+      }
+      throw err;
     }
-    throw err;
-  }
+  });
 }
 
 export async function safeWriteJson(filePath: string, data: unknown): Promise<void> {
@@ -52,5 +55,5 @@ export async function readTextFile(filePath: string): Promise<string | null> {
 }
 
 export async function ensureDir(dirPath: string): Promise<void> {
-  await fs.mkdir(dirPath, { recursive: true });
+  await withDataDirWrite(() => fs.mkdir(dirPath, { recursive: true }));
 }

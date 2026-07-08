@@ -2,9 +2,16 @@ import { Router } from 'express';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { PROJECT_ROOT } from '../config.js';
+import {
+  applyDataDirMove,
+  DataDirMoveError,
+  getDataDirInfo,
+  previewDataDirMove,
+} from '../services/dataDirMoveService.js';
 
 export interface SystemRouterOptions {
   onShutdownRequest?: () => void;
+  onRestartRequest?: () => void;
 }
 
 let cachedVersion: string | null = null;
@@ -14,8 +21,49 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
 
   router.get('/system/version', async (_req, res, next) => {
     try {
-      res.json({ version: await readPackageVersion() });
+      res.json({
+        version: await readPackageVersion(),
+        runtime: process.versions.electron ? 'electron' : 'server',
+      });
     } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/system/data-dir', async (_req, res, next) => {
+    try {
+      res.json(await getDataDirInfo());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/system/data-dir/preview', async (req, res, next) => {
+    try {
+      const { targetPath } = req.body as { targetPath?: string };
+      res.json(await previewDataDirMove(targetPath ?? ''));
+    } catch (err) {
+      if (err instanceof DataDirMoveError) {
+        return res.status(err.status).json({ error: err.message });
+      }
+      next(err);
+    }
+  });
+
+  router.post('/system/data-dir/apply', async (req, res, next) => {
+    try {
+      const { targetPath } = req.body as { targetPath?: string };
+      const result = await applyDataDirMove(targetPath ?? '');
+      res.json(result);
+      setTimeout(() => requestRestart(options), 250);
+    } catch (err) {
+      if (err instanceof DataDirMoveError) {
+        return res.status(err.status).json({
+          error: err.message,
+          ...(err.code ? { code: err.code } : {}),
+          ...(err.retryable ? { retryable: true } : {}),
+        });
+      }
       next(err);
     }
   });
@@ -41,6 +89,14 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
   });
 
   return router;
+}
+
+function requestRestart(options: SystemRouterOptions): void {
+  if (options.onRestartRequest) {
+    options.onRestartRequest();
+    return;
+  }
+  process.exit(0);
 }
 
 async function readPackageVersion(): Promise<string> {

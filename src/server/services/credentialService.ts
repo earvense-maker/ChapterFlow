@@ -1,4 +1,3 @@
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from '../config.js';
 import { ensureDir, readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
@@ -20,8 +19,7 @@ export async function loadCredentials(): Promise<CredentialsFile> {
 
 export async function saveCredential(provider: string, apiKey: string): Promise<void> {
   await ensureDir(CONFIG_DIR);
-  const credentials = await loadCredentials();
-  credentials[provider] = apiKey;
+  const credentials = { ...(await loadCredentials()), [provider]: apiKey };
   await safeWriteJson(CREDENTIALS_PATH, credentials);
   cache = credentials;
 }

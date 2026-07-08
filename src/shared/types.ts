@@ -667,6 +667,36 @@ export interface UpdateProjectBody {
   samplingConfig?: Partial<SamplingConfig>;
 }
 
+export type RuntimeKind = 'electron' | 'server';
+
+export interface SystemVersionInfo {
+  version: string;
+  runtime: RuntimeKind;
+}
+
+export interface DataDirInfo {
+  current: string;
+  defaultPath: string;
+  isUsingDefault: boolean;
+  pendingCleanup?: string | null;
+}
+
+export interface DataDirPreview {
+  resolvedPath: string;
+  targetIsEmpty: boolean;
+  hasFreeSpace: boolean;
+  estimatedSize: number;
+  sameAsCurrentDir: boolean;
+  invalidReason?: string;
+}
+
+export interface DataDirApplyResponse {
+  ok: true;
+  dataDir: string;
+  pendingCleanup: string;
+  restartScheduled: boolean;
+}
+
 export type AdapterGenerateStreamEvent =
   | { type: 'chunk'; text: string }
   | {

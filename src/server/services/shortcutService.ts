@@ -3,6 +3,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../config.js';
 import * as storage from './storageService.js';
+import { withDataDirWrite } from './dataDirLock.js';
+import { ensureDir } from '../utils/safeWrite.js';
 
 const SHORTCUTS_DIR_NAME = '作品一覧';
 const MAX_SHORTCUT_BASENAME_LENGTH = 120;
@@ -30,7 +32,7 @@ export function shortcutsDir(): string {
 }
 
 export async function ensureShortcutsDir(): Promise<void> {
-  await fs.mkdir(shortcutsDir(), { recursive: true });
+  await ensureDir(shortcutsDir());
 }
 
 export function sanitizeShortcutBaseName(title: string | undefined, projectId: string): string {
@@ -82,37 +84,41 @@ export async function writeShortcut(projectId: string, title: string): Promise<v
     return;
   }
 
-  await ensureShortcutsDir();
-  const existingTargets = await readExistingShortcutTargets();
-  const item = buildShortcutItem(projectId, baseName, targetPath, existingTargets);
-  await writeShortcutItems([item]);
-  shortcutWriteCache.set(projectId, { baseName, lnkPath: item.lnkPath, targetPath });
+  await withDataDirWrite(async () => {
+    await fs.mkdir(shortcutsDir(), { recursive: true });
+    const existingTargets = await readExistingShortcutTargets();
+    const item = buildShortcutItem(projectId, baseName, targetPath, existingTargets);
+    await writeShortcutItems([item]);
+    shortcutWriteCache.set(projectId, { baseName, lnkPath: item.lnkPath, targetPath });
+  });
 }
 
 export async function regenerateAllShortcuts(): Promise<void> {
-  const dir = shortcutsDir();
-  await fs.rm(dir, { recursive: true, force: true });
-  await fs.mkdir(dir, { recursive: true });
+  await withDataDirWrite(async () => {
+    const dir = shortcutsDir();
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.mkdir(dir, { recursive: true });
 
-  const existingTargets: ShortcutTargets = new Map();
-  const items: ShortcutItem[] = [];
-  for (const projectId of (await storage.listProjectIds()).sort()) {
-    const project = await storage.readProject(projectId);
-    if (!project) continue;
-    const targetPath = await resolveShortcutTargetPath(projectId);
-    if (!targetPath) continue;
-    const baseName = sanitizeShortcutBaseName(project.title, projectId);
-    items.push(buildShortcutItem(projectId, baseName, targetPath, existingTargets));
-  }
-  await writeShortcutItems(items);
-  shortcutWriteCache.clear();
-  for (const item of items) {
-    shortcutWriteCache.set(item.projectId, {
-      baseName: item.baseName,
-      lnkPath: item.lnkPath,
-      targetPath: item.targetPath,
-    });
-  }
+    const existingTargets: ShortcutTargets = new Map();
+    const items: ShortcutItem[] = [];
+    for (const projectId of (await storage.listProjectIds()).sort()) {
+      const project = await storage.readProject(projectId);
+      if (!project) continue;
+      const targetPath = await resolveShortcutTargetPath(projectId);
+      if (!targetPath) continue;
+      const baseName = sanitizeShortcutBaseName(project.title, projectId);
+      items.push(buildShortcutItem(projectId, baseName, targetPath, existingTargets));
+    }
+    await writeShortcutItems(items);
+    shortcutWriteCache.clear();
+    for (const item of items) {
+      shortcutWriteCache.set(item.projectId, {
+        baseName: item.baseName,
+        lnkPath: item.lnkPath,
+        targetPath: item.targetPath,
+      });
+    }
+  });
 }
 
 function buildShortcutItem(

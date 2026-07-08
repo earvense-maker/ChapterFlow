@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as generationService from '../../src/server/services/generationService';
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
+import { withDataDirLock } from '../../src/server/services/dataDirLock';
 import type { EpisodeRecord, GenerationRecord } from '../../src/server/types/index';
 
 const openAiGenerateTextMock = vi.hoisted(() => vi.fn());
@@ -145,7 +146,16 @@ describe('generationService project write lock', () => {
       selectedDraftGenerationId: generationId,
     });
 
-    openAiGenerateTextMock.mockImplementation(() => new Promise(() => undefined));
+    let resolveBackgroundRefresh!: () => void;
+    openAiGenerateTextMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveBackgroundRefresh = () => resolve({
+          text: '{}',
+          finishReason: 'stop',
+          retryable: false,
+        });
+      })
+    );
 
     await generationService.acceptGeneration(project.projectId, generationId);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -155,6 +165,98 @@ describe('generationService project write lock', () => {
     ).resolves.toMatchObject({
       project: expect.objectContaining({ projectId: project.projectId }),
     });
+
+    resolveBackgroundRefresh();
+    await withTimeout(withDataDirLock(async () => undefined), 1000);
+  });
+
+  it('holds the data directory write scope while background story state refresh waits on the model', async () => {
+    const project = await projectService.createProject({
+      title: 'Background Refresh Data Lock Test',
+      activeModelProvider: 'openai',
+      activeModelName: 'gpt-test',
+    });
+    createdProjectIds.push(project.projectId);
+
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+
+    const episodeId = 'ep-data-lock-test';
+    const sceneId = 'scene-data-lock-test';
+    const generationId = 'gen-data-lock-test';
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: '第1章',
+      order: 1,
+      createdAt: '2026-07-04T12:00:00.000Z',
+      updatedAt: '2026-07-04T12:00:00.000Z',
+      scenes: [
+        {
+          sceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-04T12:00:00.000Z',
+          updatedAt: '2026-07-04T12:00:00.000Z',
+          acceptedGenerationId: null,
+          draftGenerationIds: [generationId],
+        },
+      ],
+    };
+    const generation: GenerationRecord = {
+      generationId,
+      sceneId,
+      episodeId,
+      request: {
+        wish: '',
+        outputLength: project.outputLength,
+        previousContextText: '',
+      },
+      responseText: '採用する本文',
+      usedPresets: project.activePresetIds,
+      usedModel: {
+        provider: project.activeModelProvider,
+        modelName: project.activeModelName,
+      },
+      referencedMemoryIds: [],
+      status: 'draft',
+      createdAt: '2026-07-04T12:00:00.000Z',
+      parentGenerationId: null,
+    };
+
+    await storage.writeEpisodeRecord(project.projectId, episode);
+    await storage.appendGenerationLog(project.projectId, generation);
+    await storage.writeState(project.projectId, {
+      ...state,
+      currentEpisodeId: episodeId,
+      currentSceneId: sceneId,
+      selectedDraftGenerationId: generationId,
+    });
+
+    let resolveModel!: () => void;
+    openAiGenerateTextMock.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveModel = () => resolve({
+          text: '{}',
+          finishReason: 'stop',
+          retryable: false,
+        });
+      })
+    );
+
+    await generationService.acceptGeneration(project.projectId, generationId);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    let lockEntered = false;
+    const lockPromise = withDataDirLock(async () => {
+      lockEntered = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(lockEntered).toBe(false);
+
+    resolveModel();
+    await withTimeout(lockPromise, 1000);
+    expect(lockEntered).toBe(true);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   safeWriteFile,
   safeWriteJson,
 } from '../utils/safeWrite.js';
+import { withDataDirWrite } from './dataDirLock.js';
 import type {
   Character,
   EpisodeRecord,
@@ -26,6 +27,10 @@ import type {
 } from '../types/index.js';
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+async function removeDataPath(filePath: string, options: Parameters<typeof fs.rm>[1]): Promise<void> {
+  await withDataDirWrite(() => fs.rm(filePath, options));
+}
 
 function assertSafePathSegment(value: string, label: string): void {
   if (!SAFE_PATH_SEGMENT.test(value)) {
@@ -138,7 +143,7 @@ export async function writeSetupSession(session: SetupSession): Promise<void> {
 }
 
 export async function deleteSetupSession(sessionId: string): Promise<void> {
-  await fs.rm(setupSessionJsonPath(sessionId), { force: true });
+  await removeDataPath(setupSessionJsonPath(sessionId), { force: true });
 }
 
 export async function setupSessionExists(sessionId: string): Promise<boolean> {
@@ -269,7 +274,7 @@ export async function writeRefineSession(
 }
 
 export async function deleteRefineSession(projectId: string): Promise<void> {
-  await fs.rm(refineSessionJsonPath(projectId), { force: true });
+  await removeDataPath(refineSessionJsonPath(projectId), { force: true });
 }
 
 export async function readWorld(projectId: string): Promise<string> {
@@ -323,9 +328,11 @@ export async function writeEpisodeText(projectId: string, episodeId: string, tex
 
 export async function appendGenerationLog(projectId: string, record: GenerationRecord): Promise<void> {
   const logPath = generationLogPath(projectId);
-  await ensureDir(generationsDir(projectId));
-  const line = JSON.stringify(record) + '\n';
-  await fs.appendFile(logPath, line, 'utf-8');
+  await withDataDirWrite(async () => {
+    await ensureDir(generationsDir(projectId));
+    const line = JSON.stringify(record) + '\n';
+    await fs.appendFile(logPath, line, 'utf-8');
+  });
 }
 
 export async function appendGenerationStatusLog(
@@ -334,15 +341,17 @@ export async function appendGenerationStatusLog(
   status: GenerationStatus
 ): Promise<void> {
   const logPath = generationLogPath(projectId);
-  await ensureDir(generationsDir(projectId));
-  const line =
-    JSON.stringify({
-      entryType: 'status',
-      generationId,
-      status,
-      updatedAt: new Date().toISOString(),
-    }) + '\n';
-  await fs.appendFile(logPath, line, 'utf-8');
+  await withDataDirWrite(async () => {
+    await ensureDir(generationsDir(projectId));
+    const line =
+      JSON.stringify({
+        entryType: 'status',
+        generationId,
+        status,
+        updatedAt: new Date().toISOString(),
+      }) + '\n';
+    await fs.appendFile(logPath, line, 'utf-8');
+  });
 }
 
 export async function findGenerationRecord(
@@ -394,8 +403,10 @@ export async function writeGenerationMarkdown(
   generationId: string,
   text: string
 ): Promise<void> {
-  await ensureDir(generationsDir(projectId));
-  await safeWriteFile(generationMdPath(projectId, generationId), text);
+  await withDataDirWrite(async () => {
+    await ensureDir(generationsDir(projectId));
+    await safeWriteFile(generationMdPath(projectId, generationId), text);
+  });
 }
 
 export async function writeGenerationPromptSnapshot(
@@ -403,8 +414,10 @@ export async function writeGenerationPromptSnapshot(
   generationId: string,
   text: string
 ): Promise<void> {
-  await ensureDir(generationsDir(projectId));
-  await safeWriteFile(generationPromptPath(projectId, generationId), text);
+  await withDataDirWrite(async () => {
+    await ensureDir(generationsDir(projectId));
+    await safeWriteFile(generationPromptPath(projectId, generationId), text);
+  });
 }
 
 export async function projectExists(projectId: string): Promise<boolean> {
@@ -417,7 +430,7 @@ export async function projectExists(projectId: string): Promise<boolean> {
 }
 
 export async function deleteProjectDir(projectId: string): Promise<void> {
-  await fs.rm(projectDir(projectId), { recursive: true, force: true });
+  await removeDataPath(projectDir(projectId), { recursive: true, force: true });
 }
 
 function isGenerationStatus(value: unknown): value is GenerationStatus {

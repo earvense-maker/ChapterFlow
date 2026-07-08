@@ -2,6 +2,7 @@ import { Router } from 'express';
 import * as generationService from '../services/generationService.js';
 import * as storage from '../services/storageService.js';
 import * as storyStateService from '../services/storyStateService.js';
+import { DataDirLockedError } from '../services/dataDirLock.js';
 import type { GenerateRequestBody, SceneNavigationDirection } from '../types/index.js';
 
 const router = Router();
@@ -70,7 +71,13 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
     send('done', { record });
   } catch (err) {
     if (abortController.signal.aborted) return;
-    if (err instanceof generationService.GenerateError) {
+    if (err instanceof DataDirLockedError) {
+      send('error', {
+        error: err.message,
+        code: 'data_dir_moving',
+        retryable: true,
+      });
+    } else if (err instanceof generationService.GenerateError) {
       console.warn('Streaming generation failed', {
         projectId: req.params.id,
         code: err.code,
