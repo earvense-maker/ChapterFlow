@@ -20,6 +20,7 @@ import {
   updateStoryStateFromAcceptedScene,
   withStoryStateLock,
 } from './storyStateService.js';
+import { writeShortcut } from './shortcutService.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
@@ -639,6 +640,12 @@ async function acceptGenerationUnlocked(
 
   // Markdown更新
   await updateEpisodeMarkdown(projectId, episode);
+  await writeProjectShortcut(projectId).catch((err) => {
+    console.warn('Project shortcut update failed', {
+      projectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
 
   const storyStateRefresh = buildStoryStateRefreshStatus('pending', generation.generationId);
   await storage.writeState(projectId, {
@@ -657,6 +664,12 @@ async function acceptGenerationUnlocked(
   });
 
   return generation;
+}
+
+async function writeProjectShortcut(projectId: string): Promise<void> {
+  const project = await storage.readProject(projectId);
+  if (!project) return;
+  await writeShortcut(project.projectId, project.title);
 }
 
 export async function unacceptCurrentScene(projectId: string): Promise<GenerationRecord | null> {

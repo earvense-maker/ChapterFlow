@@ -6,6 +6,7 @@ import {
   isSupportedProvider,
 } from './modelInfoService.js';
 import { createEmptyStoryState } from './storyStateService.js';
+import { writeShortcut } from './shortcutService.js';
 import type {
   ActivePresets,
   Character,
@@ -224,7 +225,19 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
   };
 
   await storage.writeProject(updated);
+  if (typeof rest.title === 'string' && rest.title !== project.title) {
+    await writeProjectShortcut(updated).catch((err) => {
+      console.warn('Project shortcut update failed', {
+        projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
   return updated;
+}
+
+async function writeProjectShortcut(project: Project): Promise<void> {
+  await writeShortcut(project.projectId, project.title);
 }
 
 export class ProjectValidationError extends Error {

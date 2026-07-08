@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { useTheme } from '../hooks/useTheme';
+import { GeneratingLabel } from './GeneratingLabel';
 import type {
   ContextUsageEstimate,
   FrequencyReportItem,
@@ -151,6 +152,7 @@ export default function Reader({
       setLoading(true);
       setError(null);
       setNotice(null);
+      scrollReaderToTop();
       const shouldStream = project?.streamingEnabled ?? false;
       setGenerationId(null);
       setStatus(null);
@@ -193,6 +195,15 @@ export default function Reader({
     } finally {
       setLoading(false);
     }
+  }
+
+  function scrollReaderToTop() {
+    window.requestAnimationFrame(() => {
+      const reduceMotion =
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      window.scrollTo({ top: 0, behavior: reduceMotion ? 'auto' : 'smooth' });
+    });
   }
 
   function openRewriteSheet() {
@@ -694,7 +705,7 @@ export default function Reader({
             disabled={loading}
           />
           <button type="submit" className="primary" disabled={loading}>
-            {loading ? '生成中…' : '生成'}
+            {loading ? <GeneratingLabel /> : '生成'}
           </button>
         </form>
       </footer>
@@ -734,7 +745,7 @@ export default function Reader({
                   閉じる
                 </button>
                 <button type="submit" className="primary" disabled={loading}>
-                  {loading ? '生成中…' : 'この指示で書き直す'}
+                  {loading ? <GeneratingLabel /> : 'この指示で書き直す'}
                 </button>
               </div>
             </form>

@@ -8,6 +8,7 @@ import {
   ensureLanToken,
   isLanAuthRequiredForHost,
 } from './services/lanAuthService.js';
+import { ensureShortcutsDir } from './services/shortcutService.js';
 
 export interface StartServerOptions {
   port?: number;
@@ -35,6 +36,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   let actualPort: number | null = port > 0 ? port : null;
 
   await ensureDir(DATA_DIR);
+  await ensureShortcutsDir();
 
   const app = createApp({
     host,

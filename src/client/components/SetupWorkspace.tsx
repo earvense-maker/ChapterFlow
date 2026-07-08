@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../clientApi';
+import { GeneratingLabel } from './GeneratingLabel';
 import SetupCommitReview from './setup/SetupCommitReview';
 import type {
   CharacterRole,
@@ -705,10 +706,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
             />
           </label>
           <button type="button" onClick={handlePreview} disabled={!session || busy || hasUnsavedDraftEdits || currentProviderMissingKey}>
-            {previewing ? '試し書き中...' : '試し書き'}
+            {previewing ? <GeneratingLabel text="試し書き中..." /> : '試し書き'}
           </button>
           <button type="button" className="primary" onClick={handleCommit} disabled={!session || busy || hasUnsavedDraftEdits || currentProviderMissingKey}>
-            {committing ? '作品化中...' : 'この内容で作品を作る'}
+            {committing ? <GeneratingLabel text="作品化中..." /> : 'この内容で作品を作る'}
           </button>
         </div>
       </header>
@@ -853,7 +854,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 className="primary"
                 disabled={sending || committing || hasUnsavedDraftEdits || !message.trim() || currentProviderMissingKey}
               >
-                {sending ? '相談中...' : '送る'}
+                {sending ? <GeneratingLabel text="相談中..." /> : '送る'}
               </button>
             )}
           </form>

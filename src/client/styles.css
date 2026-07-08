@@ -796,6 +796,29 @@ legend {
   flex: 1;
 }
 
+.wish-input button,
+.setup-input button {
+  min-width: 5.75rem;
+}
+
+.generating-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4em;
+  white-space: nowrap;
+  animation: yw-pulse 2s ease-in-out infinite;
+}
+
+.generating-spinner {
+  width: 0.9em;
+  height: 0.9em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: yw-rotate 1.1s linear infinite;
+}
+
 .generation-actions {
   max-width: var(--max-width);
   margin: 0.75rem auto 0;
@@ -1243,9 +1266,42 @@ legend {
   justify-content: flex-end;
 }
 
+.bottom-sheet-actions .primary {
+  min-width: 9rem;
+}
+
+@keyframes yw-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes yw-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.55;
+  }
+}
+
 @keyframes bs-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generating-label {
+    animation: none;
+  }
+
+  .generating-spinner {
+    animation: none;
+    border-right-color: currentColor;
+    opacity: 0.5;
+  }
 }
 
 /* MemoryEditor */
