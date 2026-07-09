@@ -15,7 +15,6 @@
     "build:electron": "npm run build && tsc -p tsconfig.electron.json",
     "dev:electron": "npm run build:electron && electron dist/electron/main.js",
     "dist:electron": "npm run build:electron && electron-builder --win",
-    "package": "node scripts/package.mjs",
     "start": "node dist/server/index.js",
     "start:lan": "node scripts/start-lan.mjs",
     "build:start:lan": "npm run build && npm run start:lan",

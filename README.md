@@ -35,26 +35,21 @@ npm run dev:electron
 npm run build
 ```
 
-Electron配布物を作る場合は、NSISインストーラとポータブルexeを生成します。
+## Electron配布物作成
+
+配布前に `package.json` の `version` を上げてから実行します。不具合報告と配布物を突き合わせるため、配布ごとにバージョンを更新してください。
+
+NSISインストーラ版とポータブルexe版だけを生成します。成果物は `release/electron/` に作成されます。
 
 ```bash
 npm run dist:electron
 ```
 
-## 配布 zip 作成
+`win-unpacked/` は動作確認用の中間成果物で、配布対象ではありません。
 
-配布前に `package.json` の `version` を上げてから実行します。不具合報告と配布物を突き合わせるため、配布ごとにバージョンを更新してください。
+## スマホから使う (開発・作者用 LAN配信)
 
-```bash
-npm run package
-```
-
-成果物は `release/yumeweaving-v<version>.zip` に作成されます。
-配布 zip 内の起動ファイルは `Start-Yumeweaving.bat`、スマホ共有用は `Start-Yumeweaving-LAN.bat` です。
-
-## スマホから使う (Phase A: LAN配信)
-
-同じ Wi-Fi 上のスマホから使う簡易モード。PCが起動している間だけ使えます。
+同じ Wi-Fi 上のスマホから使う簡易モード。Electron配布物には含めず、開発・作者用の起動手段として残しています。PCが起動している間だけ使えます。
 
 ```bash
 npm run build:start:lan

@@ -8,7 +8,7 @@ const distEntry = path.resolve(process.cwd(), 'dist', 'server', 'index.js');
 
 if (!existsSync(distEntry)) {
   console.error(
-    '[start:lan] dist/server/index.js が見つかりません。開発環境では npm run build を実行してください。配布版では zip を展開し直してください。'
+    '[start:lan] dist/server/index.js が見つかりません。npm run build を実行してから、もう一度 LAN モードを起動してください。'
   );
   process.exit(1);
 }
