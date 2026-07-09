@@ -1,4 +1,5 @@
 import { loadCredentials } from './credentialService.js';
+import { applyGeminiSystemPreamble } from '../prompts/geminiSystemPreamble.js';
 import type {
   ModelProviderInfo,
   TokenCountSource,
@@ -164,11 +165,9 @@ export async function countPromptTokens(
       },
     };
 
-    if (systemInstructions.trim()) {
-      body.generateContentRequest.systemInstruction = {
-        parts: [{ text: systemInstructions }],
-      };
-    }
+    body.generateContentRequest.systemInstruction = {
+      parts: [{ text: applyGeminiSystemPreamble(systemInstructions) }],
+    };
 
     const res = await fetch(
       `${GEMINI_API_BASE}/models/${normalizedModel}:countTokens`,

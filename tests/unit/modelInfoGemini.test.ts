@@ -3,6 +3,7 @@ import {
   countPromptTokens,
   resolveModelTokenLimits,
 } from '../../src/server/services/modelInfoService';
+import { GEMINI_FICTION_SAFETY_PREAMBLE } from '../../src/server/prompts/geminiSystemPreamble';
 
 vi.mock('../../src/server/services/credentialService', () => ({
   loadCredentials: vi.fn(async () => ({ gemini: 'test-gemini-key' })),
@@ -28,6 +29,10 @@ describe('modelInfoService Gemini API calls', () => {
     expect(init.headers).toMatchObject({
       'x-goog-api-key': 'test-gemini-key',
     });
+    const body = JSON.parse(init.body as string);
+    expect(body.generateContentRequest.systemInstruction.parts[0].text).toBe(
+      `${GEMINI_FICTION_SAFETY_PREAMBLE}\n\nsystem`
+    );
   });
 
   it('fetches Gemini model limits with the API key header instead of a URL query', async () => {

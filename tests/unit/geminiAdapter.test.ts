@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
+import { GEMINI_FICTION_SAFETY_PREAMBLE } from '../../src/server/prompts/geminiSystemPreamble';
 import type { AdapterGenerateRequest } from '../../src/shared/types';
 
 vi.mock('../../src/server/services/credentialService', () => ({
@@ -63,6 +64,25 @@ describe('GeminiAdapter', () => {
     const body = JSON.parse(init.body as string);
     expect(body.generationConfig.frequencyPenalty).toBe(0.5);
     expect(body.generationConfig.presencePenalty).toBe(0.3);
+  });
+
+  it('prepends the Gemini fiction safety preamble to system instructions', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText(baseRequest);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const systemText = body.systemInstruction.parts[0].text;
+
+    expect(systemText).toBe(`${GEMINI_FICTION_SAFETY_PREAMBLE}\n\nsystem`);
+    expect(systemText.indexOf(GEMINI_FICTION_SAFETY_PREAMBLE)).toBeLessThan(
+      systemText.indexOf('system')
+    );
   });
 
   it('does not include penalty fields when they are 0 or undefined', async () => {

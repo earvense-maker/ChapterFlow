@@ -7,6 +7,7 @@ import type {
   ModelConfig,
 } from '../types/index.js';
 import { ModelAdapter, ModelAdapterError } from './modelAdapter.js';
+import { applyGeminiSystemPreamble } from '../prompts/geminiSystemPreamble.js';
 import { estimateMaxOutputTokens } from '../utils/outputLength.js';
 import { readServerSentEvents } from '../utils/sse.js';
 
@@ -230,6 +231,7 @@ const CREATIVE_SAFETY_SETTINGS: Array<{ category: string; threshold: 'BLOCK_NONE
 ];
 
 function buildRequestBody(request: AdapterGenerateRequest): unknown {
+  const systemInstructions = applyGeminiSystemPreamble(request.systemInstructions);
   const body: {
     contents: Array<{ role: 'user'; parts: Array<{ text: string }> }>;
     systemInstruction?: { parts: Array<{ text: string }> };
@@ -262,9 +264,7 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     body.generationConfig.responseMimeType = request.responseMimeType;
   }
 
-  if (request.systemInstructions.trim()) {
-    body.systemInstruction = { parts: [{ text: request.systemInstructions }] };
-  }
+  body.systemInstruction = { parts: [{ text: systemInstructions }] };
 
   if (request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0) {
     body.generationConfig.frequencyPenalty = request.frequencyPenalty;
