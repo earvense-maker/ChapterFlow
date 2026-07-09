@@ -156,14 +156,4 @@ describe('expressionService banned expression resolution', () => {
     expect(banned.length).toBe(expressionService.BAN_LIMIT_TOTAL);
   });
 
-  it('marks registered expressions in frequency report', async () => {
-    const projectId = await createTrackedProject();
-    const text = '登録済み表現。'.repeat(5);
-    await writeAcceptedText(projectId, text);
-    await expressionService.createExpression(projectId, { text: '登録済み表現' });
-    const report = await expressionService.buildFrequencyReport(projectId);
-    const item = report.phrases.find((p) => p.text === '登録済み表現');
-    expect(item).toBeDefined();
-    expect(item!.isNg).toBe(true);
-  });
 });

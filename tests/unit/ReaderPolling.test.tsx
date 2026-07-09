@@ -8,7 +8,6 @@ vi.mock('../../src/client/clientApi', () => ({
   api: {
     getReaderState: vi.fn(),
     updateState: vi.fn(),
-    generationMarkdownUrl: vi.fn(() => '#'),
   },
 }));
 
@@ -38,7 +37,8 @@ describe('Reader story state polling', () => {
       <Reader
         projectId="proj-reader-poll"
         onBack={vi.fn()}
-        onOpenSettings={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
         onOpenMemories={vi.fn()}
       />
     );

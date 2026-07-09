@@ -21,6 +21,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'work');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [navigationLocked, setNavigationLocked] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +52,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
   return (
     <div className="settings-panel">
       <header className="reader-header">
-        <button onClick={onBack}>← 戻る</button>
+        <button onClick={onBack} disabled={navigationLocked}>← 戻る</button>
         <h1>作品設定{project ? `: ${project.title}` : ''}</h1>
       </header>
 
@@ -61,6 +62,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
           aria-selected={tab === 'work'}
           className={tab === 'work' ? 'settings-tab active' : 'settings-tab'}
           onClick={() => setTab('work')}
+          disabled={navigationLocked}
         >
           📖 作品設定
         </button>
@@ -69,6 +71,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
           aria-selected={tab === 'memory'}
           className={tab === 'memory' ? 'settings-tab active' : 'settings-tab'}
           onClick={() => setTab('memory')}
+          disabled={navigationLocked}
         >
           🧠 記憶
         </button>
@@ -77,6 +80,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
           aria-selected={tab === 'tech'}
           className={tab === 'tech' ? 'settings-tab active' : 'settings-tab'}
           onClick={() => setTab('tech')}
+          disabled={navigationLocked}
         >
           ⚙ 技術設定
         </button>
@@ -100,6 +104,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
           onProjectUpdated={setProject}
           onError={showError}
           onFlashMessage={flashMessage}
+          onDataDirBusyChange={setNavigationLocked}
         />
       )}
       {project && tab === 'memory' && <MemoryEditor projectId={projectId} />}

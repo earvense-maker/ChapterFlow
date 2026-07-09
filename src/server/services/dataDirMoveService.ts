@@ -1,7 +1,7 @@
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, DEFAULT_DATA_DIR } from '../config.js';
-import { readAppSettings, writeAppSettings } from './appSettingsService.js';
+import { readAppSettings, updateAppSettings } from './appSettingsService.js';
 import { hasActiveDataDirWrites, withDataDirLock } from './dataDirLock.js';
 import type { DataDirApplyResponse, DataDirInfo, DataDirPreview } from '../types/index.js';
 
@@ -119,12 +119,11 @@ async function persistDataDirMoveSettings(
   oldDataDir: string
 ): Promise<DataDirApplyResponse> {
   try {
-    const currentSettings = await readAppSettings();
-    await writeAppSettings({
-      ...currentSettings,
+    await updateAppSettings((settings) => ({
+      ...settings,
       dataDir: newDataDir,
       pendingCleanup: oldDataDir,
-    });
+    }));
     return {
       ok: true,
       dataDir: newDataDir,

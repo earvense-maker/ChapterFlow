@@ -7,7 +7,8 @@ import type {
   DataDirApplyResponse,
   DataDirInfo,
   DataDirPreview,
-  FrequencyReport,
+  DataDirSelectResponse,
+  AppModelSettings,
   GenerateRequestBody,
   GenerationRecord,
   Memory,
@@ -85,6 +86,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ targetPath }),
     }),
+  selectDataDirFolder: (currentPath?: string) =>
+    request<DataDirSelectResponse>('/system/data-dir/select-folder', {
+      method: 'POST',
+      body: JSON.stringify({ currentPath }),
+    }),
 
   createSetupSession: (body: CreateSetupSessionBody) =>
     request<SetupSessionResponse>('/setup-sessions', { method: 'POST', body: JSON.stringify(body) }),
@@ -147,6 +153,12 @@ export const api = {
       body: JSON.stringify({ provider, apiKey }),
     }),
   getModelProviders: () => request<ModelProviderInfo[]>('/models/providers'),
+  getDefaultModelSettings: () => request<AppModelSettings>('/models/default'),
+  updateDefaultModelSettings: (body: AppModelSettings) =>
+    request<AppModelSettings>('/models/default', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 
   getCharacters: (id: string) => request<Character[]>(`/projects/${id}/characters`),
   updateCharacters: (id: string, characters: Character[]) =>
@@ -180,7 +192,6 @@ export const api = {
     request<NgExpression>(`/projects/${id}/expressions`, { method: 'POST', body: JSON.stringify(body) }),
   archiveExpression: (id: string, expressionId: string) =>
     request<{ ok: true }>(`/projects/${id}/expressions/${expressionId}`, { method: 'DELETE' }),
-  getExpressionReport: (id: string) => request<FrequencyReport>(`/projects/${id}/expressions/report`),
 
   getRefineScan: (id: string) =>
     request<RefineScanResult | null>(`/projects/${id}/refine/scan`),
@@ -231,8 +242,6 @@ export const api = {
     request<ContextCompressionResult>(`/projects/${id}/context/compress`, { method: 'POST' }),
   refreshStoryState: (id: string) =>
     request<ReaderState>(`/projects/${id}/story-state/refresh`, { method: 'POST' }),
-  generationMarkdownUrl: (id: string, generationId: string, download = true) =>
-    `${API_BASE}/projects/${id}/generations/${generationId}/markdown${download ? '?download=1' : ''}`,
 
   getReaderState: (id: string) => request<ReaderState>(`/projects/${id}/reader-state`),
   updateState: (id: string, state: Partial<ProjectState>) =>

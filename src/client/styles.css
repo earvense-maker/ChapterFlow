@@ -607,54 +607,6 @@ legend {
   background: rgba(107, 142, 159, 0.12);
 }
 
-.setup-commit-review {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  padding: 1rem;
-  overflow-y: auto;
-}
-
-.setup-commit-review-header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.setup-commit-review-header h2 {
-  margin: 0;
-}
-
-.setup-commit-review-header p {
-  margin: 0;
-  color: var(--text-muted);
-}
-
-.setup-commit-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel-bg);
-}
-
-.setup-commit-section h3 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.setup-commit-textarea {
-  width: 100%;
-  min-height: 6rem;
-  resize: vertical;
-}
-
-.setup-commit-textarea.compact {
-  min-height: 3rem;
-}
-
 .setup-commit-edit-list {
   list-style: none;
   margin: 0;
@@ -673,40 +625,10 @@ legend {
   border-radius: var(--radius);
 }
 
-.setup-commit-character-grid,
-.setup-commit-memory-grid {
-  display: grid;
-  grid-template-columns: minmax(110px, 0.8fr) minmax(110px, 0.8fr) minmax(0, 1fr);
-  gap: 0.45rem;
-}
-
 .setup-commit-row-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.4rem;
-}
-
-.setup-commit-add-memory,
-.setup-commit-add-situation {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.5rem;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-}
-
-.setup-commit-review-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--border);
-}
-
-.setup-commit-unsaved {
-  color: var(--text-muted);
-  font-size: 0.85rem;
 }
 
 /* Reader */
@@ -807,7 +729,10 @@ legend {
   justify-content: center;
   gap: 0.4em;
   white-space: nowrap;
-  animation: yw-pulse 2s ease-in-out infinite;
+}
+
+button:disabled:has(.generating-label) {
+  opacity: 1;
 }
 
 .generating-spinner {
@@ -1276,17 +1201,6 @@ legend {
   }
 }
 
-@keyframes yw-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.55;
-  }
-}
-
 @keyframes bs-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -1523,6 +1437,27 @@ legend {
   overflow-wrap: anywhere;
   font-family: var(--font-ui);
   color: var(--text);
+}
+
+.data-dir-target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.data-dir-target-row button {
+  white-space: nowrap;
+}
+
+.data-dir-preview-panel {
+  margin-top: 1rem;
+}
+
+.data-dir-preview-panel h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .data-dir-preview {
@@ -2021,67 +1956,8 @@ legend {
   font-size: 0.85rem;
 }
 
-/* Expression report panel */
 .reader-body {
   position: relative;
-}
-
-.expression-report-panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1rem;
-  margin-bottom: 1rem;
-}
-
-.expression-report-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-
-.expression-report-header h3 {
-  margin: 0;
-  font-size: 1rem;
-  font-family: var(--font-body);
-  font-weight: normal;
-}
-
-.expression-report-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.expression-report-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  padding: 0.45rem 0.6rem;
-  background: var(--sticky-bg-soft);
-  border-radius: var(--radius);
-}
-
-.expression-report-text {
-  font-family: var(--font-body);
-}
-
-.expression-report-count {
-  color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
-.expression-report-badge {
-  font-size: 0.8rem;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius);
-  padding: 0.15rem 0.4rem;
 }
 
 .ng-expression-float-button {
@@ -2218,6 +2094,10 @@ legend {
     padding: 0.4rem 0.9rem;
     font-size: 0.85rem;
     white-space: nowrap;
+  }
+
+  .data-dir-target-row {
+    grid-template-columns: 1fr;
   }
 
   .story-state-alert {

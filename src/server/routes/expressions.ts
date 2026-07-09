@@ -33,15 +33,6 @@ router.post('/projects/:id/expressions', async (req, res, next) => {
   }
 });
 
-router.get('/projects/:id/expressions/report', async (req, res, next) => {
-  try {
-    const report = await expressionService.buildFrequencyReport(req.params.id);
-    res.json(report);
-  } catch (err) {
-    next(err);
-  }
-});
-
 router.delete('/projects/:id/expressions/:expressionId', async (req, res, next) => {
   try {
     await expressionService.archiveExpression(req.params.id, req.params.expressionId);

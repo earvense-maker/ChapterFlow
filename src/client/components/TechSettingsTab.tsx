@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import DataDirSettingsSection from './DataDirSettingsSection';
 import type {
   ModelProviderInfo,
   NgExpression,
   NgExpressionSource,
   Project,
+  SystemVersionInfo,
 } from '@shared/types';
 
 interface Props {
@@ -13,6 +15,7 @@ interface Props {
   onProjectUpdated: (project: Project) => void;
   onError: (msg: string | null) => void;
   onFlashMessage: (msg: string) => void;
+  onDataDirBusyChange?: (busy: boolean) => void;
 }
 
 export default function TechSettingsTab({
@@ -21,6 +24,7 @@ export default function TechSettingsTab({
   onProjectUpdated,
   onError,
   onFlashMessage,
+  onDataDirBusyChange,
 }: Props) {
   const [outputLength, setOutputLength] = useState(project.outputLength);
   const [streamingEnabled, setStreamingEnabled] = useState(project.streamingEnabled ?? false);
@@ -38,6 +42,8 @@ export default function TechSettingsTab({
   const [ngExpressions, setNgExpressions] = useState<NgExpression[]>([]);
   const [newNgText, setNewNgText] = useState('');
   const [appVersion, setAppVersion] = useState('');
+  const [systemVersion, setSystemVersion] = useState<SystemVersionInfo | null>(null);
+  const [systemVersionLoaded, setSystemVersionLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -54,7 +60,11 @@ export default function TechSettingsTab({
         setProviders(providerList);
         setNgExpressions(expressionsData.ngExpressions);
         const versionData = await versionPromise;
-        if (!cancelled) setAppVersion(versionData?.version ?? '');
+        if (!cancelled) {
+          setSystemVersion(versionData);
+          setSystemVersionLoaded(true);
+          setAppVersion(versionData?.version ?? '');
+        }
       } catch (err) {
         if (!cancelled) onError(err instanceof Error ? err.message : '読み込みに失敗しました');
       }
@@ -194,6 +204,7 @@ export default function TechSettingsTab({
             onChange={(e) => {
               const next = e.target.value;
               setProvider(next);
+              setApiKey('');
               const defaultModel = providers.find((p) => p.name === next)?.defaultModel;
               if (defaultModel) setModelName(defaultModel);
             }}
@@ -342,6 +353,13 @@ export default function TechSettingsTab({
             バージョン {appVersion}
           </p>
         </section>
+      )}
+
+      {systemVersionLoaded && (
+        <DataDirSettingsSection
+          systemVersion={systemVersion}
+          onBusyChange={onDataDirBusyChange}
+        />
       )}
     </div>
   );

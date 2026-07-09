@@ -4,7 +4,6 @@ import { useTheme } from '../hooks/useTheme';
 import { GeneratingLabel } from './GeneratingLabel';
 import type {
   ContextUsageEstimate,
-  FrequencyReportItem,
   GenerationRecord,
   Project,
   ReaderNavigationState,
@@ -18,7 +17,7 @@ interface Props {
   projectId: string;
   onBack: () => void;
   onOpenWorkSettings: () => void;
-  onOpenAppSettings: () => void;
+  onOpenTechSettings: () => void;
   onOpenMemories: () => void;
 }
 
@@ -29,7 +28,7 @@ export default function Reader({
   projectId,
   onBack,
   onOpenWorkSettings,
-  onOpenAppSettings,
+  onOpenTechSettings,
   onOpenMemories,
 }: Props) {
   const [project, setProject] = useState<Project | null>(null);
@@ -54,10 +53,6 @@ export default function Reader({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(18);
-  const [showExpressionReport, setShowExpressionReport] = useState(false);
-  const [expressionReport, setExpressionReport] = useState<FrequencyReportItem[]>([]);
-  const [expressionReportLoading, setExpressionReportLoading] = useState(false);
-  const [expressionReportError, setExpressionReportError] = useState<string | null>(null);
   const [selectedText, setSelectedText] = useState('');
   const [selectionButtonPosition, setSelectionButtonPosition] = useState<{ top: number; left: number } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -301,43 +296,6 @@ export default function Reader({
     }
   }
 
-  async function handleToggleExpressionReport() {
-    const next = !showExpressionReport;
-    setShowExpressionReport(next);
-    setMenuOpen(false);
-    if (next) {
-      await loadExpressionReport();
-    }
-  }
-
-  async function loadExpressionReport() {
-    try {
-      setExpressionReportLoading(true);
-      setExpressionReportError(null);
-      const report = await api.getExpressionReport(projectId);
-      setExpressionReport(report.phrases);
-    } catch (err) {
-      setExpressionReportError(err instanceof Error ? err.message : 'レポートの取得に失敗しました');
-    } finally {
-      setExpressionReportLoading(false);
-    }
-  }
-
-  async function handleRegisterReportPhrase(text: string) {
-    try {
-      setLoading(true);
-      setError(null);
-      await api.createExpression(projectId, { text, source: 'report' });
-      setNotice(`「${text}」をNG表現に登録しました`);
-      setTimeout(() => setNotice(null), 2000);
-      await loadExpressionReport();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '登録に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
   function handleTextSelected() {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) {
@@ -486,16 +444,10 @@ export default function Reader({
                 className="reader-menu-item"
                 onClick={() => {
                   setMenuOpen(false);
-                  onOpenAppSettings();
+                  onOpenTechSettings();
                 }}
               >
-                ⚙ アプリ設定
-              </button>
-              <button
-                className="reader-menu-item"
-                onClick={handleToggleExpressionReport}
-              >
-                📊 表現レポート
+                ⚙ 技術設定
               </button>
               <div className="reader-menu-row">
                 <span className="reader-menu-label">表示テーマ</span>
@@ -526,16 +478,6 @@ export default function Reader({
                   </button>
                 </div>
               </div>
-              {generationId && (
-                <a
-                  className="reader-menu-item"
-                  href={api.generationMarkdownUrl(projectId, generationId)}
-                  download
-                  onClick={() => setMenuOpen(false)}
-                >
-                  ⬇ 現在の案をMDでエクスポート
-                </a>
-              )}
               <button
                 className="reader-menu-item reader-menu-shutdown danger"
                 onClick={() => {
@@ -602,38 +544,6 @@ export default function Reader({
                 再抽出
               </button>
             )}
-          </div>
-        )}
-
-        {showExpressionReport && (
-          <div className="expression-report-panel">
-            <div className="expression-report-header">
-              <h3>頻出表現レポート</h3>
-              <button onClick={() => setShowExpressionReport(false)}>閉じる</button>
-            </div>
-            {expressionReportLoading && <p>読み込み中…</p>}
-            {expressionReportError && <p className="error-toast">{expressionReportError}</p>}
-            {!expressionReportLoading && expressionReport.length === 0 && (
-              <p style={{ color: 'var(--text-muted)' }}>頻出表現は見つかりませんでした。</p>
-            )}
-            <ul className="expression-report-list">
-              {expressionReport.map((item) => (
-                <li key={item.text} className="expression-report-item">
-                  <span className="expression-report-text">「{item.text}」</span>
-                  <span className="expression-report-count">{item.count}回</span>
-                  {item.isNg ? (
-                    <span className="expression-report-badge">登録済み</span>
-                  ) : (
-                    <button
-                      onClick={() => handleRegisterReportPhrase(item.text)}
-                      disabled={loading}
-                    >
-                      NGに登録
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
           </div>
         )}
 

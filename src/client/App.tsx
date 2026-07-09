@@ -6,7 +6,15 @@ import SettingPanel from './components/SettingPanel';
 import SetupWorkspace from './components/SetupWorkspace';
 import AppSettingsPanel from './components/AppSettingsPanel';
 
-type View = 'list' | 'new' | 'setup' | 'read' | 'app-settings' | 'settings-work' | 'settings-memory';
+type View =
+  | 'list'
+  | 'new'
+  | 'setup'
+  | 'read'
+  | 'app-settings'
+  | 'settings-work'
+  | 'settings-tech'
+  | 'settings-memory';
 
 export default function App() {
   const [view, setView] = useState<View>('list');
@@ -29,14 +37,19 @@ export default function App() {
   };
 
   // NOTE: 記憶は SettingPanel の1タブに統合済み。旧 memories ビューは廃止し、
-  // メニューから「作品設定」「アプリ設定」「記憶(=作品設定の記憶タブ)」へ遷移する。
+  // メニューから「作品設定」「技術設定」「記憶」へ直接遷移する。
   const settingsInitialTab =
     view === 'settings-work' ? 'work' :
+    view === 'settings-tech' ? 'tech' :
     view === 'settings-memory' ? 'memory' : undefined;
 
   const openAppSettings = (backView: View) => {
     setAppSettingsBackView(backView);
     setView('app-settings');
+  };
+
+  const openSettings = (nextView: 'settings-work' | 'settings-tech' | 'settings-memory') => {
+    setView(nextView);
   };
 
   return (
@@ -61,15 +74,15 @@ export default function App() {
         <Reader
           projectId={activeProjectId}
           onBack={handleBackToList}
-          onOpenWorkSettings={() => setView('settings-work')}
-          onOpenAppSettings={() => openAppSettings('read')}
-          onOpenMemories={() => setView('settings-memory')}
+          onOpenWorkSettings={() => openSettings('settings-work')}
+          onOpenTechSettings={() => openSettings('settings-tech')}
+          onOpenMemories={() => openSettings('settings-memory')}
         />
       )}
       {view === 'app-settings' && (
         <AppSettingsPanel onBack={() => setView(appSettingsBackView)} />
       )}
-      {(view === 'settings-work' || view === 'settings-memory') &&
+      {(view === 'settings-work' || view === 'settings-tech' || view === 'settings-memory') &&
         activeProjectId && (
           <SettingPanel
             projectId={activeProjectId}

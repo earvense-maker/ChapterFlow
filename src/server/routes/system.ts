@@ -68,6 +68,18 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
     }
   });
 
+  router.post('/system/data-dir/select-folder', async (req, res, next) => {
+    try {
+      if (!process.versions.electron) {
+        return res.status(409).json({ error: 'フォルダ参照は Electron 版のアプリでのみ使えます' });
+      }
+      const { currentPath } = req.body as { currentPath?: string };
+      res.json({ path: await selectDataDirFolder(currentPath) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // NOTE: UI の「終了」ボタンから呼ばれる。dev モードは
   // concurrently -> npm -> dev-server.mjs -> tsx watch -> server という多段起動なので、
   // server だけを exit すると tsx watch が再起動として扱う。Electron では main
@@ -106,4 +118,18 @@ async function readPackageVersion(): Promise<string> {
   const parsed = JSON.parse(raw) as { version?: unknown };
   cachedVersion = typeof parsed.version === 'string' ? parsed.version : '0.0.0';
   return cachedVersion;
+}
+
+async function selectDataDirFolder(currentPath?: string): Promise<string | null> {
+  const { BrowserWindow, dialog } = await import('electron');
+  const options = {
+    title: '新しい保存先フォルダを選択',
+    defaultPath: currentPath || undefined,
+    properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+  };
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  const result = focusedWindow
+    ? await dialog.showOpenDialog(focusedWindow, options)
+    : await dialog.showOpenDialog(options);
+  return result.canceled ? null : result.filePaths[0] ?? null;
 }

@@ -123,19 +123,6 @@ export interface NgExpressionsResponse {
   ngExpressions: NgExpression[];
 }
 
-export interface FrequencyReportItem {
-  text: string;
-  count: number;
-  score: number;
-  isNg: boolean;
-}
-
-export interface FrequencyReport {
-  generatedAt: string;
-  analyzedChars: number;
-  phrases: FrequencyReportItem[];
-}
-
 export interface StoryCharacterState {
   characterId: CharacterId | null;
   name: string;
@@ -559,6 +546,11 @@ export interface ModelProviderInfo {
   hasApiKey?: boolean;
 }
 
+export interface AppModelSettings {
+  provider: string;
+  modelName: string;
+}
+
 export interface AdapterGenerateRequest {
   systemInstructions: string;
   userPrompt: string;
@@ -695,6 +687,10 @@ export interface DataDirApplyResponse {
   dataDir: string;
   pendingCleanup: string;
   restartScheduled: boolean;
+}
+
+export interface DataDirSelectResponse {
+  path: string | null;
 }
 
 export type AdapterGenerateStreamEvent =

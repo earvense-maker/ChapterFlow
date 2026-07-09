@@ -91,7 +91,7 @@ export default function ProjectList({ onOpen, onNew, onSetupNew, onOpenAppSettin
         <div className="project-list-actions">
           <button onClick={onSetupNew}>相談して作る</button>
           <button className="primary" onClick={onNew}>新規作品</button>
-          <button onClick={onOpenAppSettings}>アプリ設定</button>
+          <button onClick={onOpenAppSettings}>技術設定</button>
           <button className="danger" onClick={handleShutdown} title="サーバーとターミナルも終了">
             終了
           </button>

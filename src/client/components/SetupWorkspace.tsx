@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { GeneratingLabel } from './GeneratingLabel';
-import SetupCommitReview from './setup/SetupCommitReview';
 import type {
   CharacterRole,
   ModelProviderInfo,
-  SetupCommitPlan,
   SetupDraft,
   SetupDraftCandidate,
   SetupDraftCharacter,
@@ -13,7 +11,6 @@ import type {
   SetupDraftUndecided,
   SetupLock,
   SetupSession,
-  SetupSessionSummary,
   SetupSuggestedAction,
 } from '@shared/types';
 
@@ -64,7 +61,6 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   const [creatingNew, setCreatingNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showRetry, setShowRetry] = useState(false);
-  const [reviewPlan, setReviewPlan] = useState<SetupCommitPlan | null>(null);
   const [dirtyDraftEditKeys, setDirtyDraftEditKeys] = useState<Set<string>>(() => new Set());
   const [streamingMessage, setStreamingMessage] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -83,11 +79,6 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   });
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
-  const [providersLoading, setProvidersLoading] = useState(true);
-  const [showHistory, setShowHistory] = useState(false);
-  const [historySessions, setHistorySessions] = useState<SetupSessionSummary[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [modelNameDraft, setModelNameDraft] = useState('');
 
   const currentProviderMissingKey = useMemo(() => {
     if (!session) return false;
@@ -181,10 +172,13 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         if (ignore) return;
 
         if (restored) {
-          setSession(restored);
+          const synced = await syncFreshSessionModel(restored);
+          if (ignore) return;
+          setSession(synced.session);
           setDirtyDraftEditKeys(new Set());
-          rememberSetupSession(restored.sessionId);
+          rememberSetupSession(synced.session.sessionId);
           setSuggestedActions([]);
+          if (synced.error) setError(synced.error);
           return;
         }
 
@@ -211,14 +205,11 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     let ignore = false;
     async function loadProviders() {
       try {
-        setProvidersLoading(true);
         const result = await api.getModelProviders();
         if (ignore) return;
         setProviders(result);
       } catch {
         if (!ignore) setProviders([]);
-      } finally {
-        if (!ignore) setProvidersLoading(false);
       }
     }
     loadProviders();
@@ -227,12 +218,8 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     };
   }, []);
 
-  useEffect(() => {
-    setModelNameDraft(session?.model.modelName ?? '');
-  }, [session?.sessionId, session?.model.modelName]);
-
   const draft = session?.draft;
-  const busy = sending || savingDraft || previewing || committing || creatingNew || Boolean(reviewPlan);
+  const busy = sending || savingDraft || previewing || committing || creatingNew;
   const hasUnsavedDraftEdits = dirtyDraftEditKeys.size > 0;
 
   const markDraftDirty = useCallback((key: string, dirty: boolean) => {
@@ -249,7 +236,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   }, []);
 
   async function startNewSession() {
-    if ((session?.messages.length || hasUnsavedDraftEdits) && !window.confirm('今の相談を閉じて、新しく始めますか？')) return;
+    if ((session?.messages.length || hasUnsavedDraftEdits) && !window.confirm('今の相談内容をリセットしますか？')) return;
     try {
       setCreatingNew(true);
       setError(null);
@@ -279,120 +266,6 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       setError(err instanceof Error ? err.message : '新しい相談を作れませんでした');
     } finally {
       setCreatingNew(false);
-    }
-  }
-
-  async function loadHistory() {
-    try {
-      setHistoryLoading(true);
-      const sessions = await api.listSetupSessions();
-      setHistorySessions(sessions);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '相談履歴の読み込みに失敗しました');
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  function openHistory() {
-    setShowHistory(true);
-    void loadHistory();
-  }
-
-  async function resumeSession(sessionId: string) {
-    try {
-      setLoading(true);
-      setError(null);
-      const resumed = await api.getSetupSession(sessionId);
-      if (resumed.status !== 'active') {
-        setError('この相談は再開できません。');
-        return;
-      }
-      setSession(resumed);
-      setDirtyDraftEditKeys(new Set());
-      rememberSetupSession(resumed.sessionId);
-      setSuggestedActions([]);
-      setPreviewText('');
-      setShowHistory(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '相談の再開に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function deleteHistorySession(sessionId: string) {
-    if (!window.confirm('この相談履歴を削除しますか？')) return;
-    try {
-      await api.deleteSetupSession(sessionId);
-      setHistorySessions((current) => current.filter((s) => s.sessionId !== sessionId));
-      if (session?.sessionId === sessionId) {
-        forgetSetupSession(sessionId);
-        const result = await createDefaultSetupSession(providers);
-        setSession(result.session);
-        setDirtyDraftEditKeys(new Set());
-        setPendingConfirmed([]);
-        setPendingUndecided([]);
-        setPendingCandidates([]);
-        setPendingCharacters([]);
-        setPendingStrings({
-          world: [],
-          relationshipSeeds: [],
-          tone: [],
-          ng: [],
-          openingSeeds: [],
-        });
-        setSelectedCandidateIds(new Set());
-        rememberSetupSession(result.sessionId);
-        setSuggestedActions(result.suggestedActions);
-        setMessage('');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '相談履歴の削除に失敗しました');
-      await loadHistory();
-    }
-  }
-
-  async function handleProviderChange(providerName: string) {
-    if (!session || busy) return;
-    const provider = providers.find((p) => p.name === providerName);
-    if (!provider) return;
-    try {
-      setSavingDraft(true);
-      setError(null);
-      const result = await api.patchSetupSettings(session.sessionId, {
-        model: { provider: providerName, modelName: provider.defaultModel },
-        revision: session.revision,
-      });
-      setSession(result.session);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'モデル設定の更新に失敗しました');
-      await reloadLatestSession(session.sessionId);
-    } finally {
-      setSavingDraft(false);
-    }
-  }
-
-  async function handleModelNameChange(modelName: string) {
-    if (!session || busy) return;
-    const trimmed = modelName.trim();
-    if (!trimmed || trimmed === session.model.modelName) {
-      setModelNameDraft(session.model.modelName);
-      return;
-    }
-    try {
-      setSavingDraft(true);
-      setError(null);
-      const result = await api.patchSetupSettings(session.sessionId, {
-        model: { provider: session.model.provider, modelName: trimmed },
-        revision: session.revision,
-      });
-      setSession(result.session);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'モデル設定の更新に失敗しました');
-      await reloadLatestSession(session.sessionId);
-    } finally {
-      setSavingDraft(false);
     }
   }
 
@@ -539,15 +412,6 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     }
   }
 
-  async function regenerateStyleSample(instruction: string): Promise<string> {
-    if (!session) throw new Error('相談セッションが見つかりません');
-    const result = await api.previewSetup(session.sessionId, instruction);
-    setSession(result.session);
-    rememberSetupSession(result.session.sessionId);
-    setPreviewText(result.previewText);
-    return result.previewText;
-  }
-
   async function handleCommit() {
     if (!session || committing) return;
     if (hasUnsavedDraftEdits) {
@@ -557,38 +421,19 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     try {
       setCommitting(true);
       setError(null);
-      const result = await api.createSetupCommitPlan(session.sessionId);
-      setSession(result.session);
-      rememberSetupSession(result.session.sessionId);
-      setReviewPlan(result.plan);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '作品化準備に失敗しました');
-    } finally {
-      setCommitting(false);
-    }
-  }
-
-  async function commitFromReview(plan: SetupCommitPlan) {
-    if (!session || committing) return;
-    try {
-      setCommitting(true);
-      setError(null);
-      const result = await api.commitSetup(session.sessionId, {
-        plan,
-        revision: session.revision,
+      const planResult = await api.createSetupCommitPlan(session.sessionId);
+      const commitResult = await api.commitSetup(session.sessionId, {
+        plan: planResult.plan,
+        revision: planResult.revision,
       });
-      setSession(result.session);
-      forgetSetupSession(result.session.sessionId);
-      onCreated(result.projectId);
+      setSession(commitResult.session);
+      forgetSetupSession(commitResult.session.sessionId);
+      onCreated(commitResult.projectId);
     } catch (err) {
       setError(err instanceof Error ? err.message : '作品化に失敗しました');
     } finally {
       setCommitting(false);
     }
-  }
-
-  function backToChat() {
-    setReviewPlan(null);
   }
 
   async function reloadLatestSession(sessionId: string): Promise<SetupSession | null> {
@@ -675,36 +520,12 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         </div>
         <div className="setup-header-actions">
           <button type="button" onClick={onCancel}>戻る</button>
-          <button type="button" onClick={openHistory} disabled={busy}>
-            相談履歴
-          </button>
           <button type="button" onClick={startNewSession} disabled={busy}>
-            {creatingNew ? '作成中...' : '新しく始める'}
+            {creatingNew ? 'リセット中...' : 'リセット'}
           </button>
-          <label className="setup-model-select">
-            モデル:
-            <select
-              value={session?.model.provider ?? ''}
-              onChange={(e) => handleProviderChange(e.target.value)}
-              disabled={!session || busy || providersLoading}
-            >
-              {providers.map((provider) => (
-                <option key={provider.name} value={provider.name}>
-                  {provider.label}{provider.hasApiKey === false ? '（キー未設定）' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="setup-model-input">
-            <input
-              type="text"
-              value={modelNameDraft}
-              onChange={(e) => setModelNameDraft(e.target.value)}
-              onBlur={(e) => handleModelNameChange(e.target.value)}
-              disabled={!session || busy}
-              placeholder="モデル名"
-            />
-          </label>
+          <button type="button" onClick={onOpenSettings} disabled={busy}>
+            技術設定
+          </button>
           <button type="button" onClick={handlePreview} disabled={!session || busy || hasUnsavedDraftEdits || currentProviderMissingKey}>
             {previewing ? <GeneratingLabel text="試し書き中..." /> : '試し書き'}
           </button>
@@ -714,72 +535,12 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         </div>
       </header>
 
-      {showHistory && (
-        <div className="setup-history-modal" role="dialog" aria-label="相談履歴">
-          <div className="setup-history-panel">
-            <div className="setup-history-header">
-              <h2>相談履歴</h2>
-              <button type="button" onClick={() => setShowHistory(false)}>閉じる</button>
-            </div>
-            {historyLoading ? (
-              <p>読み込み中...</p>
-            ) : historySessions.length === 0 ? (
-              <p>履歴はありません。</p>
-            ) : (
-              <ul className="setup-history-list">
-                {historySessions.map((entry) => (
-                  <li key={entry.sessionId} className="setup-history-row">
-                    <div className="setup-history-info">
-                      <div className="setup-history-excerpt">{entry.draftExcerpt || '（タイトルなし）'}</div>
-                      <div className="setup-history-meta">
-                        <span className={`setup-history-status ${entry.status}`}>{statusLabel(entry.status)}</span>
-                        <span>更新: {formatDate(entry.updatedAt)}</span>
-                        <span>メッセージ: {entry.messageCount}件</span>
-                      </div>
-                    </div>
-                    <div className="setup-history-actions">
-                      {entry.status === 'active' && (
-                        <button
-                          type="button"
-                          onClick={() => resumeSession(entry.sessionId)}
-                          disabled={busy}
-                        >
-                          再開
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => deleteHistorySession(entry.sessionId)}
-                        disabled={busy}
-                      >
-                        削除
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
-
       {error && <div className="error-toast setup-error">{error}</div>}
-      {session?.lastError && !error && !reviewPlan && (
+      {session?.lastError && !error && (
         <div className="error-toast setup-error">{session.lastError.message}</div>
       )}
 
-      {reviewPlan && session ? (
-        <SetupCommitReview
-          plan={reviewPlan}
-          disabled={committing}
-          onCommit={commitFromReview}
-          onBack={backToChat}
-          onRecreate={handleCommit}
-          onRegenerateStyleSample={regenerateStyleSample}
-        />
-      ) : (
-        <main className="setup-main">
+      <main className="setup-main">
           <section className="setup-chat" aria-label="相談チャット">
           <div className="setup-messages">
             {session && session.messages.length > 0 ? (
@@ -830,9 +591,9 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
 
           {currentProviderMissingKey && (
             <div className="setup-api-key-warning">
-              APIキーが未設定です。設定画面で入力してください。
+              APIキーが未設定です。技術設定で入力してください。
               <button type="button" onClick={onOpenSettings}>
-                設定を開く
+                技術設定を開く
               </button>
             </div>
           )}
@@ -1177,7 +938,6 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           )}
         </aside>
       </main>
-      )}
     </div>
   );
 
@@ -2172,13 +1932,44 @@ async function createDefaultSetupSession(knownProviders?: ModelProviderInfo[]) {
     knownProviders && knownProviders.length > 0
       ? knownProviders
       : await api.getModelProviders().catch(() => [] as ModelProviderInfo[]);
-  const defaultProvider = providers.find((provider) => provider.name === 'gemini') ?? providers[0];
+  const savedModel = await api.getDefaultModelSettings().catch(() => null);
+  const savedProvider = savedModel
+    ? providers.find((provider) => provider.name === savedModel.provider)
+    : undefined;
+  const defaultProvider = savedProvider ?? providers.find((provider) => provider.name === 'gemini') ?? providers[0];
+  const modelName = savedProvider && savedModel?.modelName.trim()
+    ? savedModel.modelName.trim()
+    : defaultProvider?.defaultModel;
   return api.createSetupSession({
     projectSettings: DEFAULT_PROJECT_SETTINGS,
     model: defaultProvider
-      ? { provider: defaultProvider.name, modelName: defaultProvider.defaultModel }
+      ? { provider: defaultProvider.name, modelName: modelName ?? defaultProvider.defaultModel }
       : undefined,
   });
+}
+
+async function syncFreshSessionModel(session: SetupSession): Promise<{ session: SetupSession; error?: string }> {
+  if (session.messages.length > 0) return { session };
+  const defaultModel = await api.getDefaultModelSettings().catch(() => null);
+  const modelName = defaultModel?.modelName.trim();
+  if (!defaultModel || !modelName) return { session };
+  if (session.model.provider === defaultModel.provider && session.model.modelName === modelName) {
+    return { session };
+  }
+  try {
+    const result = await api.patchSetupSettings(session.sessionId, {
+      model: { provider: defaultModel.provider, modelName },
+      revision: session.revision,
+    });
+    return { session: result.session };
+  } catch (err) {
+    console.warn('[setup] Failed to sync default model into fresh session', err);
+    const detail = err instanceof Error ? err.message : '不明なエラー';
+    return {
+      session,
+      error: `技術設定のモデルをこの相談に反映できませんでした: ${detail}`,
+    };
+  }
 }
 
 async function findRestorableSetupSession(): Promise<SetupSession | null> {
@@ -2213,27 +2004,6 @@ function archiveById<T extends { id: string; status: 'active' | 'archived'; upda
 
 function directLocks(locks: SetupLock[], path: string): SetupLock[] {
   return locks.filter((lock) => lock.path === path);
-}
-
-function statusLabel(status: SetupSessionSummary['status']): string {
-  switch (status) {
-    case 'active':
-      return '相談中';
-    case 'committed':
-      return '作品化済み';
-    case 'abandoned':
-      return '中断';
-    default:
-      return status;
-  }
-}
-
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString('ja-JP');
-  } catch {
-    return iso;
-  }
 }
 
 function readStoredSetupSessionId(): string | null {
