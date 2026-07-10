@@ -1,15 +1,11 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import RefineChatPanel from './RefineChatPanel';
-import LightMarkdown from './LightMarkdown';
 import type {
   Character,
   PresetsFile,
   Project,
-  RefineFindingKind,
-  RefineFindingTarget,
   RefineScanResult,
-  SetupSession,
   StoryState,
   StoryStateDiffRecord,
 } from '@shared/types';
@@ -26,6 +22,8 @@ type PresetCategory = {
   label: string;
   items: Record<string, { id: string; label: string; text: string }>;
 };
+
+type DetailSettingsTab = 'basic' | 'style' | 'world' | 'characters' | 'story';
 
 const roleOptions: { value: Character['role']; label: string }[] = [
   { value: 'protagonist', label: '主人公' },
@@ -59,12 +57,11 @@ export default function WorkSettingsTab({
   const [projectDetails, setProjectDetails] = useState({
     title: project.title,
     coreConcept: project.coreConcept ?? '',
-    firstWishSuggestion: project.firstWishSuggestion ?? '',
     styleSample: project.styleSample ?? '',
   });
   const [projectDetailsDraft, setProjectDetailsDraft] = useState(projectDetails);
   const [projectDetailsEditing, setProjectDetailsEditing] = useState(false);
-  const [sourceSetupSession, setSourceSetupSession] = useState<SetupSession | null>(null);
+  const [detailSettingsTab, setDetailSettingsTab] = useState<DetailSettingsTab>('basic');
 
   const [characters, setCharacters] = useState<Character[]>([]);
   const [charactersDraft, setCharactersDraft] = useState<Character[]>([]);
@@ -132,12 +129,6 @@ export default function WorkSettingsTab({
           if (cachedScan.lastError) setScanError(cachedScan.lastError);
         }
 
-        const sourceSummary = (await api.listSetupSessions().catch(() => []))
-          .find((item) => item.committedProjectId === projectId);
-        if (sourceSummary && !cancelled) {
-          const sourceSession = await api.getSetupSession(sourceSummary.sessionId).catch(() => null);
-          if (!cancelled) setSourceSetupSession(sourceSession);
-        }
       } catch (err) {
         if (!cancelled) onError(err instanceof Error ? err.message : '読み込みに失敗しました');
       }
@@ -215,7 +206,6 @@ export default function WorkSettingsTab({
       const next = {
         title: updated.title,
         coreConcept: updated.coreConcept ?? '',
-        firstWishSuggestion: updated.firstWishSuggestion ?? '',
         styleSample: updated.styleSample ?? '',
       };
       setProjectDetails(next);
@@ -355,90 +345,76 @@ export default function WorkSettingsTab({
 
   return (
     <div>
-      {/* 作品の芯 */}
-      {refineScan?.coreConcept && (
-        <section className="summary-card core-concept-card">
-          <header className="summary-card-header">
-            <h2>作品の芯</h2>
-            <span className="settings-meta">
-              {formatRelativeTime(refineScan.generatedAt)} 更新
-            </span>
-          </header>
-          <p className="core-concept-text">{refineScan.coreConcept}</p>
-        </section>
-      )}
+      {/* AI と相談して編集 */}
+      <RefineChatPanel
+        projectId={projectId}
+        characters={characters}
+        refineScan={refineScan}
+        scanning={scanning}
+        scanError={scanError}
+        onScanRefine={handleScanRefine}
+        onSettingsChanged={refreshWorldAndCharacters}
+      />
 
-      {/* 気づき */}
-      <section className="summary-card refine-findings-card">
-        <header className="summary-card-header">
-          <h2>AI からの気づき</h2>
-          <div className="summary-card-badges">
-            {refineScan && (
-              <span className="settings-meta">
-                前回走査: {formatRelativeTime(refineScan.generatedAt)}
-              </span>
-            )}
-            <button
-              onClick={handleScanRefine}
-              disabled={scanning}
-              className="refine-scan-button"
-            >
-              {scanning ? '走査中…' : refineScan ? '再走査 🔄' : '気づきを走査 🔄'}
-            </button>
-          </div>
-        </header>
-        {scanError && <div className="refine-scan-error">{scanError}</div>}
-        {!refineScan && !scanning && (
-          <p className="summary-empty">
-            まだ走査していません。「気づきを走査」を押すと、AI が
-            世界設定・人物・システムプロンプト・ストーリー状態を横断して
-            矛盾や未定義項目を指摘します。
-          </p>
-        )}
-        {refineScan && refineScan.findings.length === 0 && !refineScan.lastError && (
-          <p className="summary-empty">
-            気になる点は見つかりませんでした（走査時点）。設定を編集したら
-            再走査すると新しい気づきが出るかもしれません。
-          </p>
-        )}
-        {refineScan && refineScan.findings.length > 0 && (
-          <ul className="refine-findings-list">
-            {refineScan.findings.map((f) => (
-              <li key={f.id} className={`refine-finding kind-${f.kind}`}>
-                <div className="refine-finding-header">
-                  <span className={`refine-finding-badge kind-${f.kind}`}>
-                    {kindLabel(f.kind)}
-                  </span>
-                  <span className="refine-finding-target">
-                    {formatFindingTarget(f.target)}
-                  </span>
-                </div>
-                <p className="refine-finding-message">{f.message}</p>
-                {f.detail && (
-                  <details className="refine-finding-detail">
-                    <summary>詳しく</summary>
-                    <p>{f.detail}</p>
-                  </details>
-                )}
-                {f.suggestedFix && (
-                  <p className="refine-finding-suggestion">
-                    <strong>提案:</strong> {f.suggestedFix}
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="summary-card">
+      <section className="summary-card detail-settings-card">
         <header className="summary-card-header">
           <h2>詳細設定</h2>
           <div className="summary-card-badges">
             {projectDetails.coreConcept.trim() && <span className="settings-badge preset">核あり</span>}
             {projectDetails.styleSample.trim() && <span className="settings-badge preset">見本あり</span>}
+            {!worldText.trim() && <span className="settings-badge warn">世界未設定 ⚠</span>}
+            <span className="settings-meta">人物 {characters.length}人</span>
           </div>
         </header>
+        <div className="detail-settings-tabs" role="tablist" aria-label="詳細設定">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailSettingsTab === 'basic'}
+            className={detailSettingsTab === 'basic' ? 'active' : ''}
+            onClick={() => setDetailSettingsTab('basic')}
+          >
+            基本
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailSettingsTab === 'style'}
+            className={detailSettingsTab === 'style' ? 'active' : ''}
+            onClick={() => setDetailSettingsTab('style')}
+          >
+            文体・視点
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailSettingsTab === 'world'}
+            className={detailSettingsTab === 'world' ? 'active' : ''}
+            onClick={() => setDetailSettingsTab('world')}
+          >
+            世界
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailSettingsTab === 'characters'}
+            className={detailSettingsTab === 'characters' ? 'active' : ''}
+            onClick={() => setDetailSettingsTab('characters')}
+          >
+            人物
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailSettingsTab === 'story'}
+            className={detailSettingsTab === 'story' ? 'active' : ''}
+            onClick={() => setDetailSettingsTab('story')}
+          >
+            物語状態
+          </button>
+        </div>
+        {detailSettingsTab === 'basic' && (
+          <div className="detail-settings-panel" role="tabpanel">
         {!projectDetailsEditing && (
           <>
             <dl className="character-summary-fields">
@@ -449,10 +425,6 @@ export default function WorkSettingsTab({
               <div>
                 <dt>作品の核</dt>
                 <dd>{projectDetails.coreConcept || <span className="summary-field-missing">未記入</span>}</dd>
-              </div>
-              <div>
-                <dt>初回生成の希望</dt>
-                <dd>{projectDetails.firstWishSuggestion || <span className="summary-field-missing">未記入</span>}</dd>
               </div>
               <div>
                 <dt>文体見本</dt>
@@ -499,17 +471,6 @@ export default function WorkSettingsTab({
               rows={3}
             />
             <textarea
-              value={projectDetailsDraft.firstWishSuggestion}
-              onChange={(e) =>
-                setProjectDetailsDraft((current) => ({
-                  ...current,
-                  firstWishSuggestion: e.target.value,
-                }))
-              }
-              placeholder="初回生成の希望"
-              rows={3}
-            />
-            <textarea
               value={projectDetailsDraft.styleSample}
               onChange={(e) =>
                 setProjectDetailsDraft((current) => ({ ...current, styleSample: e.target.value }))
@@ -527,32 +488,12 @@ export default function WorkSettingsTab({
             </div>
           </>
         )}
+          </div>
+        )}
       </section>
 
-      {sourceSetupSession && (
-        <section className="summary-card">
-          <header className="summary-card-header">
-            <h2>作成時の相談</h2>
-            <span className="settings-meta">{sourceSetupSession.messages.length}件</span>
-          </header>
-          <details className="summary-details setup-history-details">
-            <summary>相談内容を振り返る</summary>
-            <div className="setup-history-messages">
-              {sourceSetupSession.messages.map((entry) => (
-                <article key={entry.messageId} className={`setup-message ${entry.role}`}>
-                  <div className="setup-message-role">
-                    {entry.role === 'user' ? 'あなた' : '相談相手'}
-                  </div>
-                  <LightMarkdown text={entry.content} />
-                </article>
-              ))}
-            </div>
-          </details>
-        </section>
-      )}
-
-      {/* 文体・視点 */}
-      <section className="summary-card">
+      {detailSettingsTab === 'style' && (
+      <section className="summary-card detail-settings-panel-card">
         <header className="summary-card-header">
           <h2>文体・視点</h2>
           <div className="summary-card-badges">
@@ -620,9 +561,10 @@ export default function WorkSettingsTab({
           </>
         )}
       </section>
+      )}
 
-      {/* 世界 */}
-      <section className="summary-card">
+      {detailSettingsTab === 'world' && (
+      <section className="summary-card detail-settings-panel-card">
         <header className="summary-card-header">
           <h2>世界</h2>
           <div className="summary-card-badges">
@@ -692,9 +634,10 @@ export default function WorkSettingsTab({
           </>
         )}
       </section>
+      )}
 
-      {/* 人物 */}
-      <section className="summary-card">
+      {detailSettingsTab === 'characters' && (
+      <section className="summary-card detail-settings-panel-card">
         <header className="summary-card-header">
           <h2>人物 ({(charactersEditing ? charactersDraft : characters).length}人)</h2>
           <div className="summary-card-badges">
@@ -854,8 +797,10 @@ export default function WorkSettingsTab({
           </>
         )}
       </section>
+      )}
 
-      <section className="summary-card">
+      {detailSettingsTab === 'story' && (
+      <section className="summary-card detail-settings-panel-card">
         <header className="summary-card-header">
           <h2>物語状態</h2>
           <div className="summary-card-badges">
@@ -966,13 +911,8 @@ export default function WorkSettingsTab({
           </div>
         )}
       </section>
+      )}
 
-      {/* AI と相談して編集 (Phase 3) */}
-      <RefineChatPanel
-        projectId={projectId}
-        characters={characters}
-        onSettingsChanged={refreshWorldAndCharacters}
-      />
     </div>
   );
 }
@@ -1005,32 +945,6 @@ function deriveStyleTags(
     if (item) tags.push(item.label);
   }
   return tags;
-}
-
-function kindLabel(kind: RefineFindingKind): string {
-  switch (kind) {
-    case 'contradiction':
-      return '⚠ 矛盾';
-    case 'undefined':
-      return '✎ 未定義';
-    case 'suggestion':
-      return '＋ 提案';
-  }
-}
-
-function formatFindingTarget(target: RefineFindingTarget): string {
-  switch (target.kind) {
-    case 'world':
-      return '世界設定';
-    case 'systemPrompt':
-      return 'システムプロンプト';
-    case 'storyState':
-      return 'ストーリー状態';
-    case 'character':
-      return `人物: ${target.characterName}`;
-    case 'other':
-      return target.label;
-  }
 }
 
 function formatStoryDiffSummary(diff: StoryStateDiffRecord): string {

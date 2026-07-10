@@ -15,15 +15,25 @@ afterEach(() => {
 });
 
 describe('modelInfoService', () => {
-  it('lists Gemini, DeepSeek and OpenAI providers', () => {
+  it('lists Gemini, DeepSeek, OpenAI and xAI providers', () => {
     const providers = listModelProviders();
 
     expect(providers.map((provider) => provider.name)).toEqual([
       'gemini',
       'deepseek',
       'openai',
+      'xai',
     ]);
     expect(defaultModelForProvider('deepseek')).toBe('deepseek-v4-flash');
+    expect(defaultModelForProvider('xai')).toBe('grok-4.3');
+  });
+
+  it('uses catalog limits for current Grok models', async () => {
+    const grok43 = await resolveModelTokenLimits('xai', 'grok-4.3');
+    const grok45 = await resolveModelTokenLimits('xai', 'grok-4.5');
+
+    expect(grok43).toMatchObject({ contextWindowTokens: 1_000_000, source: 'catalog' });
+    expect(grok45).toMatchObject({ contextWindowTokens: 500_000, source: 'catalog' });
   });
 
   it('uses catalog limits for DeepSeek models', async () => {
@@ -40,5 +50,6 @@ describe('modelInfoService', () => {
     expect(providers.find((p) => p.name === 'gemini')?.hasApiKey).toBe(true);
     expect(providers.find((p) => p.name === 'deepseek')?.hasApiKey).toBe(false);
     expect(providers.find((p) => p.name === 'openai')?.hasApiKey).toBe(false);
+    expect(providers.find((p) => p.name === 'xai')?.hasApiKey).toBe(false);
   });
 });

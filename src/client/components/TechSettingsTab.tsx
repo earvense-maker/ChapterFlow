@@ -232,6 +232,11 @@ export default function TechSettingsTab({
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '1rem' }}>
           Penalty は語彙の反復を抑えます。上げすぎると文が不自然に。目安 0.1〜0.5。
         </p>
+        {provider === 'xai' && (
+          <p className="settings-help">
+            xAIのGrok推論モデルはPenaltyを受け付けないため、この2項目は送信されません。
+          </p>
+        )}
         <label>
           Frequency penalty（同じ語の繰り返し抑制）
           <input
@@ -241,6 +246,7 @@ export default function TechSettingsTab({
             step={0.05}
             value={frequencyPenalty}
             onChange={(e) => setFrequencyPenalty(Number(e.target.value))}
+            disabled={loading || provider === 'xai'}
           />
           <span>{frequencyPenalty.toFixed(2)}</span>
         </label>
@@ -253,6 +259,7 @@ export default function TechSettingsTab({
             step={0.05}
             value={presencePenalty}
             onChange={(e) => setPresencePenalty(Number(e.target.value))}
+            disabled={loading || provider === 'xai'}
           />
           <span>{presencePenalty.toFixed(2)}</span>
         </label>

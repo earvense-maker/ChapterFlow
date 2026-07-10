@@ -574,6 +574,18 @@ describe('setupSessionService', () => {
     expect(patched.revision).toBe(result.session.revision + 1);
   });
 
+  it('uses Grok 4.3 as the default xAI consultation model', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const patched = await setupSessionService.patchSetupSettings(result.sessionId, {
+      model: { provider: 'xai' },
+      revision: result.session.revision,
+    });
+
+    expect(patched.session.model).toEqual({ provider: 'xai', modelName: 'grok-4.3' });
+  });
+
   it('patches model settings with explicit model name', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);

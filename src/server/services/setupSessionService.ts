@@ -1,6 +1,7 @@
 import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
 import { GeminiAdapter } from '../adapters/geminiAdapter.js';
 import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
+import { XAIAdapter } from '../adapters/xaiAdapter.js';
 import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { defaultModelForProvider, isSupportedProvider } from './modelInfoService.js';
 import { reloadCredentials } from './credentialService.js';
@@ -83,6 +84,7 @@ const adapterMap: Record<string, ModelAdapter> = {
   openai: new OpenAIAdapter(),
   gemini: new GeminiAdapter(),
   deepseek: new DeepSeekAdapter(),
+  xai: new XAIAdapter(),
 };
 
 const sessionMutexes = new Map<string, Promise<void>>();

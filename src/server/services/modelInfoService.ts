@@ -43,6 +43,14 @@ const PROVIDERS: ModelProviderInfo[] = [
     apiKeyPlaceholder: 'sk-...',
     apiKeyHelp: 'OpenAI APIキーを保存します。文脈上限はアプリ内のモデル表を使います。',
   },
+  {
+    name: 'xai',
+    label: 'xAI',
+    defaultModel: 'grok-4.3',
+    apiKeyPlaceholder: 'xai-...',
+    apiKeyHelp:
+      'xAI APIキーを保存します。既定は長文・コスト重視の grok-4.3、最高性能を優先する場合は grok-4.5 を指定できます。',
+  },
 ];
 
 // NOTE: DeepSeek は公式に一覧APIを持たないため、値はドキュメント記載の実測に寄せる。
@@ -96,6 +104,16 @@ const CATALOG_LIMITS: Record<string, Record<string, Omit<ModelTokenLimits, 'sour
       contextWindowTokens: 400_000,
       inputTokenLimit: 400_000,
       outputTokenLimit: 128_000,
+    },
+  },
+  xai: {
+    'grok-4.3': {
+      contextWindowTokens: 1_000_000,
+      inputTokenLimit: 1_000_000,
+    },
+    'grok-4.5': {
+      contextWindowTokens: 500_000,
+      inputTokenLimit: 500_000,
     },
   },
 };
@@ -258,6 +276,15 @@ function inferModelTokenLimits(provider: string, modelName: string): ModelTokenL
       contextWindowTokens: 1_000_000,
       inputTokenLimit: 1_000_000,
       outputTokenLimit: 384_000,
+      source: 'inferred',
+    };
+  }
+
+  if (provider === 'xai' || model.includes('grok')) {
+    return {
+      contextWindowTokens: 1_000_000,
+      inputTokenLimit: 1_000_000,
+      outputTokenLimit: 16_384,
       source: 'inferred',
     };
   }

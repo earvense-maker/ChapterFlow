@@ -8,6 +8,7 @@ export class DeepSeekAdapter extends OpenAIAdapter {
   constructor() {
     super({
       providerName: PROVIDER_NAME,
+      apiLabel: 'DeepSeek',
       apiBase: API_BASE,
       maxCompletionTokens: MAX_COMPLETION_TOKENS,
       // NOTE: DeepSeek も OpenAI 互換で stream_options.include_usage をサポートする

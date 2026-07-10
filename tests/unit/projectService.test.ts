@@ -152,6 +152,18 @@ describe('project settings validation', () => {
     expect(updated.activeModelName).toBe('deepseek-v4-flash');
   });
 
+  it('accepts xAI as a supported provider', async () => {
+    const project = await createTrackedProject();
+
+    const updated = await projectService.updateProject(project.projectId, {
+      activeModelProvider: 'xai',
+      activeModelName: ' grok-4.3 ',
+    });
+
+    expect(updated.activeModelProvider).toBe('xai');
+    expect(updated.activeModelName).toBe('grok-4.3');
+  });
+
   it('creates a project with initial detailed settings', async () => {
     const project = await projectService.createProject({
       title: 'Detailed Start',

@@ -5,7 +5,7 @@
 ## 必要環境
 
 - Node.js 20+
-- Gemini / DeepSeek / OpenAI のAPIキー（生成を利用する場合）
+- Gemini / DeepSeek / OpenAI / xAI のAPIキー（生成を利用する場合）
 
 ## セットアップ
 
@@ -74,7 +74,7 @@ npm run test:e2e
 
 ## 設定
 
-初回起動後、作品設定画面または `data/config/credentials.json` にGemini / DeepSeek / OpenAI のAPIキーを保存してください。APIキーは作品データとは別に管理されます。
+初回起動後、アプリ設定画面または `data/config/credentials.json` にGemini / DeepSeek / OpenAI / xAI のAPIキーを保存してください。APIキーは作品データとは別に管理されます。
 
 ## データ保存場所
 

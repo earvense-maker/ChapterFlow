@@ -2,22 +2,41 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import type {
   Character,
+  RefineFinding,
+  RefineFindingKind,
+  RefineFindingTarget,
   RefineMessage,
   RefinePatch,
   RefinePatchOperation,
   RefinePatchStatus,
+  RefineScanResult,
   RefineSession,
 } from '@shared/types';
 
 interface Props {
   projectId: string;
   characters: Character[];
+  refineScan: RefineScanResult | null;
+  scanning: boolean;
+  scanError: string | null;
+  onScanRefine: () => void | Promise<void>;
   onSettingsChanged: () => void;
 }
 
-export default function RefineChatPanel({ projectId, characters, onSettingsChanged }: Props) {
+type RefineTab = 'findings' | 'history';
+
+export default function RefineChatPanel({
+  projectId,
+  characters,
+  refineScan,
+  scanning,
+  scanError,
+  onScanRefine,
+  onSettingsChanged,
+}: Props) {
   const [session, setSession] = useState<RefineSession | null>(null);
   const [input, setInput] = useState('');
+  const [activeTab, setActiveTab] = useState<RefineTab>('findings');
   const [sending, setSending] = useState(false);
   const [busyPatchId, setBusyPatchId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +79,7 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
       const result = await api.sendRefineMessage(projectId, content);
       setSession(result.session);
       setInput('');
+      setActiveTab('history');
     } catch (err) {
       setError(err instanceof Error ? err.message : '送信に失敗しました');
     } finally {
@@ -121,6 +141,25 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
     }
   }
 
+  async function handleScanClick() {
+    setActiveTab('findings');
+    await onScanRefine();
+  }
+
+  function handleConsultFinding(finding: RefineFinding) {
+    const nextInput = [
+      'この気づきについて相談したいです。',
+      '',
+      `対象: ${formatFindingTarget(finding.target)}`,
+      `気づき: ${finding.message}`,
+      finding.detail ? `詳しく: ${finding.detail}` : '',
+      finding.suggestedFix ? `提案: ${finding.suggestedFix}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    setInput(nextInput);
+  }
+
   const patchesByMessageId = new Map<string, RefinePatch[]>();
   if (session) {
     for (const patch of session.patches) {
@@ -133,6 +172,8 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
   if (loading) return <div className="loading">相談セッションを読み込んでいます…</div>;
 
   const patchActionDisabled = sending || busyPatchId !== null;
+  const findingCount = refineScan?.findings.length ?? 0;
+  const messageCount = session?.messages.length ?? 0;
 
   return (
     <section className="summary-card refine-chat-card">
@@ -143,6 +184,13 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
             世界設定・人物設定について対話で修正できます
           </span>
           <button
+            onClick={handleScanClick}
+            disabled={scanning}
+            className="refine-scan-button"
+          >
+            {scanning ? '走査中…' : refineScan ? '再走査 🔄' : '気づきを走査 🔄'}
+          </button>
+          <button
             onClick={handleReset}
             disabled={sending || busyPatchId !== null || !session?.messages.length}
           >
@@ -152,31 +200,67 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
       </header>
 
       {error && <div className="refine-scan-error">{error}</div>}
+      {scanError && <div className="refine-scan-error">{scanError}</div>}
 
-      <div className="refine-chat-messages" ref={scrollRef}>
-        {(!session || session.messages.length === 0) && (
-          <p className="summary-empty">
-            例：「望月の年齢を28歳に設定して」「世界設定に長崎の描写を追加したい」など、
-            変えたい・足したい点を話しかけてください。
-          </p>
-        )}
-        {session?.messages.map((msg) => (
-          <div key={msg.messageId}>
-            <ChatBubble message={msg} />
-            {(patchesByMessageId.get(msg.messageId) ?? []).map((patch) => (
-              <PatchCard
-                key={patch.patchId}
-                patch={patch}
-                characters={characters}
-                busy={busyPatchId === patch.patchId}
-                disabled={patchActionDisabled}
-                onApply={() => handleApply(patch.patchId)}
-                onReject={() => handleReject(patch.patchId)}
-              />
-            ))}
-          </div>
-        ))}
+      <div className="refine-chat-tabs" role="tablist" aria-label="相談欄">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'findings'}
+          className={activeTab === 'findings' ? 'active' : ''}
+          onClick={() => setActiveTab('findings')}
+        >
+          AIからの気づき
+          <span>{findingCount}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'history'}
+          className={activeTab === 'history' ? 'active' : ''}
+          onClick={() => setActiveTab('history')}
+        >
+          相談履歴
+          <span>{messageCount}</span>
+        </button>
       </div>
+
+      {activeTab === 'findings' && (
+        <div className="refine-chat-scroll refine-findings-scroll" role="tabpanel">
+          <RefineFindingsView
+            refineScan={refineScan}
+            scanning={scanning}
+            onConsultFinding={handleConsultFinding}
+          />
+        </div>
+      )}
+
+      {activeTab === 'history' && (
+        <div className="refine-chat-scroll refine-chat-messages" ref={scrollRef} role="tabpanel">
+          {(!session || session.messages.length === 0) && (
+            <p className="summary-empty">
+              例：「望月の年齢を28歳に設定して」「世界設定に長崎の描写を追加したい」など、
+              変えたい・足したい点を話しかけてください。
+            </p>
+          )}
+          {session?.messages.map((msg) => (
+            <div key={msg.messageId}>
+              <ChatBubble message={msg} />
+              {(patchesByMessageId.get(msg.messageId) ?? []).map((patch) => (
+                <PatchCard
+                  key={patch.patchId}
+                  patch={patch}
+                  characters={characters}
+                  busy={busyPatchId === patch.patchId}
+                  disabled={patchActionDisabled}
+                  onApply={() => handleApply(patch.patchId)}
+                  onReject={() => handleReject(patch.patchId)}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
 
       <form
         className="refine-chat-input"
@@ -208,6 +292,71 @@ export default function RefineChatPanel({ projectId, characters, onSettingsChang
       </form>
       <p className="refine-chat-hint">Ctrl/Cmd+Enter でも送信できます。</p>
     </section>
+  );
+}
+
+function RefineFindingsView({
+  refineScan,
+  scanning,
+  onConsultFinding,
+}: {
+  refineScan: RefineScanResult | null;
+  scanning: boolean;
+  onConsultFinding: (finding: RefineFinding) => void;
+}) {
+  if (!refineScan && !scanning) {
+    return (
+      <p className="summary-empty">
+        まだ走査していません。「気づきを走査」を押すと、AI が
+        世界設定・人物・システムプロンプト・ストーリー状態を横断して
+        矛盾や未定義項目を指摘します。
+      </p>
+    );
+  }
+
+  if (refineScan && refineScan.findings.length === 0 && !refineScan.lastError) {
+    return (
+      <p className="summary-empty">
+        気になる点は見つかりませんでした（走査時点）。設定を編集したら
+        再走査すると新しい気づきが出るかもしれません。
+      </p>
+    );
+  }
+
+  if (!refineScan || refineScan.findings.length === 0) return null;
+
+  return (
+    <ul className="refine-findings-list">
+      {refineScan.findings.map((f) => (
+        <li key={f.id} className={`refine-finding kind-${f.kind}`}>
+          <div className="refine-finding-header">
+            <span className={`refine-finding-badge kind-${f.kind}`}>
+              {kindLabel(f.kind)}
+            </span>
+            <span className="refine-finding-target">
+              {formatFindingTarget(f.target)}
+            </span>
+          </div>
+          <p className="refine-finding-message">{f.message}</p>
+          {f.detail && (
+            <details className="refine-finding-detail">
+              <summary>詳しく</summary>
+              <p>{f.detail}</p>
+            </details>
+          )}
+          {f.suggestedFix && (
+            <p className="refine-finding-suggestion">
+              <strong>提案:</strong> {f.suggestedFix}
+            </p>
+          )}
+          <div className="refine-finding-actions">
+            <button type="button" onClick={() => onConsultFinding(f)}>
+              この気づきを相談
+            </button>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -349,6 +498,32 @@ function statusLabel(status: RefinePatchStatus): string {
       return '却下';
     case 'stale':
       return '古い提案';
+  }
+}
+
+function kindLabel(kind: RefineFindingKind): string {
+  switch (kind) {
+    case 'contradiction':
+      return '⚠ 矛盾';
+    case 'undefined':
+      return '✎ 未定義';
+    case 'suggestion':
+      return '＋ 提案';
+  }
+}
+
+function formatFindingTarget(target: RefineFindingTarget): string {
+  switch (target.kind) {
+    case 'world':
+      return '世界設定';
+    case 'systemPrompt':
+      return 'システムプロンプト';
+    case 'storyState':
+      return 'ストーリー状態';
+    case 'character':
+      return `人物: ${target.characterName}`;
+    case 'other':
+      return target.label;
   }
 }
 

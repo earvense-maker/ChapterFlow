@@ -16,22 +16,28 @@ const MAX_COMPLETION_TOKENS = 16_384;
 
 interface OpenAIAdapterOptions {
   providerName?: string;
+  apiLabel?: string;
   apiBase?: string;
   maxCompletionTokens?: number;
   includeStreamOptions?: boolean;
+  omitPenaltyFields?: boolean;
 }
 
 export class OpenAIAdapter implements ModelAdapter {
   readonly providerName: string;
+  private readonly apiLabel: string;
   private readonly apiBase: string;
   private readonly maxCompletionTokens: number;
   private readonly includeStreamOptions: boolean;
+  private readonly omitPenaltyFields: boolean;
 
   constructor(options: OpenAIAdapterOptions = {}) {
     this.providerName = options.providerName ?? PROVIDER_NAME;
+    this.apiLabel = options.apiLabel ?? 'OpenAI';
     this.apiBase = options.apiBase ?? API_BASE;
     this.maxCompletionTokens = options.maxCompletionTokens ?? MAX_COMPLETION_TOKENS;
     this.includeStreamOptions = options.includeStreamOptions ?? true;
+    this.omitPenaltyFields = options.omitPenaltyFields ?? false;
   }
 
   async *generateTextStream(request: AdapterGenerateRequest): AsyncGenerator<AdapterGenerateStreamEvent> {
@@ -73,13 +79,13 @@ export class OpenAIAdapter implements ModelAdapter {
           max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
           stream: true,
           ...(this.includeStreamOptions ? { stream_options: { include_usage: true } } : {}),
-          ...(request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
+          ...(!this.omitPenaltyFields && request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
             ? { frequency_penalty: request.frequencyPenalty }
             : {}),
-          ...(request.presencePenalty !== undefined && request.presencePenalty !== 0
+          ...(!this.omitPenaltyFields && request.presencePenalty !== undefined && request.presencePenalty !== 0
             ? { presence_penalty: request.presencePenalty }
             : {}),
-          // NOTE: 構造化 JSON 出力。OpenAI/DeepSeek は response_format で
+          // NOTE: 構造化 JSON 出力。OpenAI互換プロバイダーは response_format で
           // JSON モードを指定できる。scan/chat が使う。
           ...(request.responseMimeType === 'application/json'
             ? { response_format: { type: 'json_object' } }
@@ -91,7 +97,7 @@ export class OpenAIAdapter implements ModelAdapter {
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new ModelAdapterError(
-          body.error?.message || `OpenAI API error: ${res.status}`,
+          body.error?.message || `${this.apiLabel} API error: ${res.status}`,
           mapHttpStatus(res.status, body),
           res.status >= 500 || res.status === 429
         );
@@ -167,13 +173,13 @@ export class OpenAIAdapter implements ModelAdapter {
           ],
           temperature: request.temperature,
           max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
-          ...(request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
+          ...(!this.omitPenaltyFields && request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
             ? { frequency_penalty: request.frequencyPenalty }
             : {}),
-          ...(request.presencePenalty !== undefined && request.presencePenalty !== 0
+          ...(!this.omitPenaltyFields && request.presencePenalty !== undefined && request.presencePenalty !== 0
             ? { presence_penalty: request.presencePenalty }
             : {}),
-          // NOTE: 構造化 JSON 出力。OpenAI/DeepSeek は response_format で
+          // NOTE: 構造化 JSON 出力。OpenAI互換プロバイダーは response_format で
           // JSON モードを指定できる。scan/chat が使う。
           ...(request.responseMimeType === 'application/json'
             ? { response_format: { type: 'json_object' } }
@@ -186,7 +192,7 @@ export class OpenAIAdapter implements ModelAdapter {
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        const message = body.error?.message || `OpenAI API error: ${res.status}`;
+        const message = body.error?.message || `${this.apiLabel} API error: ${res.status}`;
         return {
           text: '',
           finishReason: 'error',

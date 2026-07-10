@@ -34,6 +34,14 @@ const providers = [
     apiKeyHelp: 'DeepSeek help',
     hasApiKey: false,
   },
+  {
+    name: 'xai',
+    label: 'xAI',
+    defaultModel: 'grok-4.3',
+    apiKeyPlaceholder: 'xai-...',
+    apiKeyHelp: 'xAI help',
+    hasApiKey: false,
+  },
 ];
 
 describe('AppSettingsPanel', () => {
@@ -53,6 +61,7 @@ describe('AppSettingsPanel', () => {
     render(<AppSettingsPanel onBack={() => undefined} />);
 
     const providerSelect = await screen.findByLabelText('プロバイダー');
+    expect(screen.getByRole('option', { name: 'xAI（キー未設定）' })).toBeInTheDocument();
     fireEvent.change(providerSelect, { target: { value: 'deepseek' } });
     fireEvent.change(screen.getByPlaceholderText('deepseek-key'), {
       target: { value: 'secret-test-key' },
