@@ -66,6 +66,20 @@ describe('project settings validation', () => {
     expect(updated.streamingEnabled).toBe(true);
   });
 
+  it('trims titles and rejects blank title updates', async () => {
+    const project = await createTrackedProject();
+
+    const updated = await projectService.updateProject(project.projectId, {
+      title: '  Renamed Story  ',
+    });
+    expect(updated.title).toBe('Renamed Story');
+
+    await expect(
+      projectService.updateProject(project.projectId, { title: '   ' })
+    ).rejects.toThrow(projectService.ProjectValidationError);
+    expect((await projectService.getProject(project.projectId))?.title).toBe('Renamed Story');
+  });
+
   it('normalizes samplingConfig penalties to 0..1', async () => {
     const project = await createTrackedProject();
 

@@ -447,7 +447,7 @@ export default function Reader({
                   onOpenTechSettings();
                 }}
               >
-                ⚙ 技術設定
+                ⚙ 生成設定
               </button>
               <div className="reader-menu-row">
                 <span className="reader-menu-label">表示テーマ</span>

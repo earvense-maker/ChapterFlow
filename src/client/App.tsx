@@ -20,6 +20,7 @@ export default function App() {
   const [view, setView] = useState<View>('list');
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [appSettingsBackView, setAppSettingsBackView] = useState<View>('list');
+  const [appSettingsInitialProvider, setAppSettingsInitialProvider] = useState<string | undefined>();
 
   const handleOpenProject = (projectId: string) => {
     setActiveProjectId(projectId);
@@ -37,14 +38,15 @@ export default function App() {
   };
 
   // NOTE: 記憶は SettingPanel の1タブに統合済み。旧 memories ビューは廃止し、
-  // メニューから「作品設定」「技術設定」「記憶」へ直接遷移する。
+  // メニューから「作品設定」「生成設定」「記憶」へ直接遷移する。
   const settingsInitialTab =
     view === 'settings-work' ? 'work' :
     view === 'settings-tech' ? 'tech' :
     view === 'settings-memory' ? 'memory' : undefined;
 
-  const openAppSettings = (backView: View) => {
+  const openAppSettings = (backView: View, initialProvider?: string) => {
     setAppSettingsBackView(backView);
+    setAppSettingsInitialProvider(initialProvider);
     setView('app-settings');
   };
 
@@ -80,13 +82,17 @@ export default function App() {
         />
       )}
       {view === 'app-settings' && (
-        <AppSettingsPanel onBack={() => setView(appSettingsBackView)} />
+        <AppSettingsPanel
+          initialProvider={appSettingsInitialProvider}
+          onBack={() => setView(appSettingsBackView)}
+        />
       )}
       {(view === 'settings-work' || view === 'settings-tech' || view === 'settings-memory') &&
         activeProjectId && (
           <SettingPanel
             projectId={activeProjectId}
             onBack={() => setView('read')}
+            onOpenAppSettings={(provider) => openAppSettings('settings-tech', provider)}
             initialTab={settingsInitialTab}
           />
         )}

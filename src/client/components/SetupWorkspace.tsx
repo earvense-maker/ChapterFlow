@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { GeneratingLabel } from './GeneratingLabel';
+import LightMarkdown from './LightMarkdown';
 import type {
   CharacterRole,
   ModelProviderInfo,
+  SetupCommitPlan,
   SetupDraft,
   SetupDraftCandidate,
   SetupDraftCharacter,
@@ -58,6 +60,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   const [savingDraft, setSavingDraft] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [commitStage, setCommitStage] = useState<'planning' | 'saving' | null>(null);
+  const [commitPlan, setCommitPlan] = useState<SetupCommitPlan | null>(null);
+  const [commitRevision, setCommitRevision] = useState<number | null>(null);
+  const [commitError, setCommitError] = useState<string | null>(null);
   const [creatingNew, setCreatingNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showRetry, setShowRetry] = useState(false);
@@ -65,6 +71,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   const [streamingMessage, setStreamingMessage] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const sendAbortController = useRef<AbortController | null>(null);
+  const createProjectButtonRef = useRef<HTMLButtonElement | null>(null);
   const pendingIdCounter = useRef(0);
   const [pendingConfirmed, setPendingConfirmed] = useState<PendingDescriptor[]>([]);
   const [pendingUndecided, setPendingUndecided] = useState<PendingDescriptor[]>([]);
@@ -79,12 +86,20 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   });
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
+  const [providersLoaded, setProvidersLoaded] = useState(false);
+  const [sessionModelProvider, setSessionModelProvider] = useState('');
+  const [sessionModelName, setSessionModelName] = useState('');
 
   const currentProviderMissingKey = useMemo(() => {
     if (!session) return false;
     const provider = providers.find((p) => p.name === session.model.provider);
     return provider ? provider.hasApiKey === false : false;
   }, [session, providers]);
+
+  const currentProvider = useMemo(
+    () => providers.find((provider) => provider.name === session?.model.provider),
+    [providers, session?.model.provider]
+  );
 
   function generatePendingId(): string {
     pendingIdCounter.current += 1;
@@ -210,6 +225,8 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         setProviders(result);
       } catch {
         if (!ignore) setProviders([]);
+      } finally {
+        if (!ignore) setProvidersLoaded(true);
       }
     }
     loadProviders();
@@ -218,8 +235,30 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     };
   }, []);
 
+  useEffect(() => {
+    if (!session) return;
+    setSessionModelProvider(session.model.provider);
+    setSessionModelName(session.model.modelName);
+  }, [session?.sessionId, session?.model.provider, session?.model.modelName]);
+
+  useEffect(() => {
+    if (!commitPlan) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !committing) closeCommitReview();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [commitPlan, committing]);
+
   const draft = session?.draft;
-  const busy = sending || savingDraft || previewing || committing || creatingNew;
+  const hasMeaningfulContent = useMemo(
+    () => (session ? hasMeaningfulSetupContent(session) : false),
+    [session]
+  );
+  const modelAvailabilityPending = Boolean(session) && !providersLoaded;
+  const currentProviderUnavailable = Boolean(session) && providersLoaded && !currentProvider;
+  const modelUnavailable = modelAvailabilityPending || currentProviderUnavailable || currentProviderMissingKey;
+  const busy = sending || savingDraft || previewing || committing || creatingNew || Boolean(commitPlan);
   const hasUnsavedDraftEdits = dirtyDraftEditKeys.size > 0;
 
   const markDraftDirty = useCallback((key: string, dirty: boolean) => {
@@ -236,11 +275,16 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   }, []);
 
   async function startNewSession() {
-    if ((session?.messages.length || hasUnsavedDraftEdits) && !window.confirm('今の相談内容をリセットしますか？')) return;
+    if (
+      (session?.messages.length || hasUnsavedDraftEdits) &&
+      !window.confirm('今の相談を終了して、新しい相談を始めますか？')
+    ) return;
     try {
       setCreatingNew(true);
       setError(null);
       setPreviewText('');
+      setCommitPlan(null);
+      setCommitRevision(null);
       if (session?.status === 'active') {
         await api.abandonSetupSession(session.sessionId).catch(() => undefined);
       }
@@ -418,21 +462,87 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       setError('メモに未保存の変更があります。保存してから作品化してください。');
       return;
     }
+    if (!hasMeaningfulContent) {
+      setError('作品の種がまだありません。相談するか、作品の種メモを入力してください。');
+      return;
+    }
     try {
       setCommitting(true);
+      setCommitStage('planning');
       setError(null);
+      setCommitError(null);
       const planResult = await api.createSetupCommitPlan(session.sessionId);
+      setSession(planResult.session);
+      setCommitPlan(planResult.plan);
+      setCommitRevision(planResult.revision);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '作品化に失敗しました');
+    } finally {
+      setCommitting(false);
+      setCommitStage(null);
+    }
+  }
+
+  async function confirmCommit() {
+    if (!session || !commitPlan || commitRevision === null || committing) return;
+    const title = commitPlan.project.title.trim();
+    if (!title) {
+      setCommitError('作品タイトルを入力してください。');
+      return;
+    }
+    try {
+      setCommitting(true);
+      setCommitStage('saving');
+      setError(null);
+      setCommitError(null);
       const commitResult = await api.commitSetup(session.sessionId, {
-        plan: planResult.plan,
-        revision: planResult.revision,
+        plan: { ...commitPlan, project: { ...commitPlan.project, title } },
+        revision: commitRevision,
       });
       setSession(commitResult.session);
       forgetSetupSession(commitResult.session.sessionId);
       onCreated(commitResult.projectId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '作品化に失敗しました');
+      const detail = err instanceof Error ? err.message : '作品化に失敗しました';
+      if (detail.includes('コード: revision_conflict')) {
+        await reloadLatestSession(session.sessionId);
+        setCommitPlan(null);
+        setCommitRevision(null);
+        setCommitError(null);
+        setError('相談内容が更新されたため、作品にする内容をもう一度確認してください。');
+        window.setTimeout(() => createProjectButtonRef.current?.focus(), 0);
+      } else {
+        setCommitError(detail);
+      }
     } finally {
       setCommitting(false);
+      setCommitStage(null);
+    }
+  }
+
+  function closeCommitReview() {
+    setCommitPlan(null);
+    setCommitRevision(null);
+    setCommitError(null);
+    window.setTimeout(() => createProjectButtonRef.current?.focus(), 0);
+  }
+
+  async function saveSessionModel() {
+    if (!session || busy || !sessionModelProvider || !sessionModelName.trim()) return;
+    try {
+      setSavingDraft(true);
+      setError(null);
+      const result = await api.patchSetupSettings(session.sessionId, {
+        model: { provider: sessionModelProvider, modelName: sessionModelName.trim() },
+        revision: session.revision,
+      });
+      setSession(result.session);
+      rememberSetupSession(result.session.sessionId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '相談モデルを変更できませんでした');
+      await reloadLatestSession(session.sessionId);
+    } finally {
+      setSavingDraft(false);
     }
   }
 
@@ -513,24 +623,33 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
 
   return (
     <div className="setup-workspace">
-      <header className="setup-header">
+      <header className="setup-header" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
         <div>
           <h1>相談して作る</h1>
           <p>読みたい物語の種を、そのまま話してください。</p>
         </div>
         <div className="setup-header-actions">
-          <button type="button" onClick={onCancel}>戻る</button>
+          <button type="button" onClick={onCancel} disabled={busy}>戻る</button>
           <button type="button" onClick={startNewSession} disabled={busy}>
-            {creatingNew ? 'リセット中...' : 'リセット'}
+            {creatingNew ? '準備中...' : '新しい相談'}
           </button>
           <button type="button" onClick={onOpenSettings} disabled={busy}>
-            技術設定
+            アプリ設定
           </button>
-          <button type="button" onClick={handlePreview} disabled={!session || busy || hasUnsavedDraftEdits || currentProviderMissingKey}>
+          <button type="button" onClick={handlePreview} disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable}>
             {previewing ? <GeneratingLabel text="試し書き中..." /> : '試し書き'}
           </button>
-          <button type="button" className="primary" onClick={handleCommit} disabled={!session || busy || hasUnsavedDraftEdits || currentProviderMissingKey}>
-            {committing ? <GeneratingLabel text="作品化中..." /> : 'この内容で作品を作る'}
+          <button
+            type="button"
+            ref={createProjectButtonRef}
+            className="primary"
+            onClick={handleCommit}
+            disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable || !hasMeaningfulContent}
+            title={!hasMeaningfulContent ? '相談するか、作品の種メモを入力してください' : undefined}
+          >
+            {committing ? (
+              <GeneratingLabel text={commitStage === 'saving' ? '作品を保存中...' : '設定を整理中...'} />
+            ) : 'この内容で作品を作る'}
           </button>
         </div>
       </header>
@@ -540,7 +659,62 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         <div className="error-toast setup-error">{session.lastError.message}</div>
       )}
 
-      <main className="setup-main">
+      {session && (
+        <section
+          className="setup-model-bar"
+          aria-label="この相談のモデル"
+          inert={Boolean(commitPlan)}
+          aria-hidden={Boolean(commitPlan)}
+        >
+          <div>
+            <strong>この相談のモデル:</strong>{' '}
+            {currentProvider?.label ?? session.model.provider} / {session.model.modelName}
+          </div>
+          <details>
+            <summary>変更</summary>
+            <div className="setup-model-controls">
+              <label>
+                プロバイダー
+                <select
+                  value={sessionModelProvider}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setSessionModelProvider(next);
+                    setSessionModelName(
+                      providers.find((provider) => provider.name === next)?.defaultModel ?? ''
+                    );
+                  }}
+                  disabled={busy}
+                >
+                  {providers.map((provider) => (
+                    <option key={provider.name} value={provider.name}>
+                      {provider.label}{provider.hasApiKey === false ? '（キー未設定）' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                モデル名
+                <input
+                  value={sessionModelName}
+                  onChange={(event) => setSessionModelName(event.target.value)}
+                  disabled={busy}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={saveSessionModel}
+                disabled={busy || !sessionModelProvider || !sessionModelName.trim()}
+              >
+                この相談のモデルを変更
+              </button>
+              <span>会話履歴は残り、次の返答から新しいモデルを使います。</span>
+            </div>
+          </details>
+        </section>
+      )}
+
+      <main className="setup-main" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
           <section className="setup-chat" aria-label="相談チャット">
           <div className="setup-messages">
             {session && session.messages.length > 0 ? (
@@ -549,7 +723,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                   <div className="setup-message-role">
                     {entry.role === 'user' ? 'あなた' : '相談相手'}
                   </div>
-                  <p>{entry.content}</p>
+                  <LightMarkdown text={entry.content} />
                 </article>
               ))
             ) : (
@@ -560,7 +734,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
             {(isStreaming || streamingMessage) && (
               <article key="streaming" className="setup-message assistant">
                 <div className="setup-message-role">相談相手</div>
-                <p>{streamingMessage}</p>
+                <LightMarkdown text={streamingMessage} />
               </article>
             )}
           </div>
@@ -591,9 +765,20 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
 
           {currentProviderMissingKey && (
             <div className="setup-api-key-warning">
-              APIキーが未設定です。技術設定で入力してください。
-              <button type="button" onClick={onOpenSettings}>
-                技術設定を開く
+              {currentProvider?.label ?? session?.model.provider} のAPIキーが未設定です。アプリ設定で入力してください。
+              <button type="button" onClick={onOpenSettings} disabled={busy}>
+                アプリ設定を開く
+              </button>
+            </div>
+          )}
+          {modelAvailabilityPending && (
+            <div className="setup-api-key-warning">モデル設定を確認中です...</div>
+          )}
+          {currentProviderUnavailable && (
+            <div className="setup-api-key-warning">
+              現在のモデル情報を確認できません。アプリ設定を確認してください。
+              <button type="button" onClick={onOpenSettings} disabled={busy}>
+                アプリ設定を開く
               </button>
             </div>
           )}
@@ -603,7 +788,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               placeholder="読みたい物語の雰囲気、好きな関係性、避けたい展開など"
-              disabled={sending || committing || currentProviderMissingKey}
+              disabled={busy || modelUnavailable}
             />
             {isStreaming ? (
               <button type="button" className="danger" onClick={abortStreaming}>
@@ -613,7 +798,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
               <button
                 type="submit"
                 className="primary"
-                disabled={sending || committing || hasUnsavedDraftEdits || !message.trim() || currentProviderMissingKey}
+                disabled={busy || hasUnsavedDraftEdits || !message.trim() || modelUnavailable}
               >
                 {sending ? <GeneratingLabel text="相談中..." /> : '送る'}
               </button>
@@ -933,11 +1118,112 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           {previewText && (
             <section className="setup-preview">
               <h3>試し書き</h3>
-              <p>{previewText}</p>
+              <LightMarkdown text={previewText} />
             </section>
           )}
         </aside>
       </main>
+      {commitPlan && (
+        <div className="setup-modal-backdrop">
+          <section
+            className="setup-commit-review"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="setup-commit-title"
+          >
+            <header>
+              <h2 id="setup-commit-title">作品にする内容を確認</h2>
+              <p>タイトルと人物を確認してください。作成後も作品設定から変更できます。</p>
+            </header>
+            {commitError && <div className="error-toast" role="alert">{commitError}</div>}
+            <label>
+              作品タイトル
+              <input
+                autoFocus
+                value={commitPlan.project.title}
+                onChange={(event) =>
+                  setCommitPlan((current) => current ? {
+                    ...current,
+                    project: { ...current.project, title: event.target.value },
+                  } : current)
+                }
+                maxLength={100}
+              />
+            </label>
+            <label>
+              作品の核
+              <textarea
+                value={commitPlan.coreConcept ?? ''}
+                onChange={(event) =>
+                  setCommitPlan((current) => current ? { ...current, coreConcept: event.target.value } : current)
+                }
+                rows={3}
+              />
+            </label>
+            <div>
+              <h3>人物</h3>
+              {commitPlan.characters.length === 0 ? (
+                <p className="setup-draft-placeholder">人物はまだ設定されていません。</p>
+              ) : (
+                <ul className="setup-commit-edit-list">
+                  {commitPlan.characters.map((character, index) => (
+                    <li className="setup-commit-edit-row" key={character.characterId}>
+                      <input
+                        aria-label={`人物${index + 1}の名前`}
+                        value={character.name}
+                        placeholder={`人物${index + 1}の名前`}
+                        onChange={(event) =>
+                          setCommitPlan((current) => current ? {
+                            ...current,
+                            characters: current.characters.map((item, itemIndex) =>
+                              itemIndex === index ? { ...item, name: event.target.value } : item
+                            ),
+                          } : current)
+                        }
+                      />
+                      <select
+                        aria-label={`人物${index + 1}の役割`}
+                        value={character.role}
+                        onChange={(event) =>
+                          setCommitPlan((current) => current ? {
+                            ...current,
+                            characters: current.characters.map((item, itemIndex) =>
+                              itemIndex === index
+                                ? { ...item, role: event.target.value as CharacterRole }
+                                : item
+                            ),
+                          } : current)
+                        }
+                      >
+                        {Object.entries(ROLE_LABELS).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="setup-commit-row-actions">
+              <button
+                type="button"
+                onClick={closeCommitReview}
+                disabled={committing}
+              >
+                相談に戻る
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={confirmCommit}
+                disabled={committing || !commitPlan.project.title.trim()}
+              >
+                {committing ? <GeneratingLabel text="作品を保存中..." /> : 'この内容で作品を作る'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 
@@ -1967,7 +2253,7 @@ async function syncFreshSessionModel(session: SetupSession): Promise<{ session: 
     const detail = err instanceof Error ? err.message : '不明なエラー';
     return {
       session,
-      error: `技術設定のモデルをこの相談に反映できませんでした: ${detail}`,
+      error: `アプリ設定のモデルをこの相談に反映できませんでした: ${detail}`,
     };
   }
 }
@@ -1990,6 +2276,29 @@ async function findRestorableSetupSession(): Promise<SetupSession | null> {
 
 function cloneDraft(draft: SetupDraft): SetupDraft {
   return JSON.parse(JSON.stringify(draft)) as SetupDraft;
+}
+
+function hasMeaningfulSetupContent(session: SetupSession): boolean {
+  const draft = session.draft;
+  return Boolean(
+    session.messages.some((entry) => entry.role === 'user' && entry.content.trim()) ||
+      draft.coreConcept.trim() ||
+      draft.confirmed.some((item) => item.status === 'active' && item.text.trim()) ||
+      draft.candidates.some(
+        (item) => item.status === 'active' && (item.title.trim() || item.summary.trim())
+      ) ||
+      draft.undecided.some((item) => item.status === 'active' && item.text.trim()) ||
+      draft.characters.some(
+        (item) =>
+          item.status === 'active' &&
+          (item.name.trim() || item.label.trim() || item.description.trim())
+      ) ||
+      draft.relationshipSeeds.some((item) => item.trim()) ||
+      draft.world.some((item) => item.trim()) ||
+      draft.tone.some((item) => item.trim()) ||
+      draft.ng.some((item) => item.trim()) ||
+      draft.openingSeeds.some((item) => item.trim())
+  );
 }
 
 function archiveById<T extends { id: string; status: 'active' | 'archived'; updatedAt: string }>(

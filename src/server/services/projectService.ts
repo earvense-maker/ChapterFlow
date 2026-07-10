@@ -250,6 +250,17 @@ export class ProjectValidationError extends Error {
 function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput {
   const normalized: ProjectUpdateInput = { ...updates };
 
+  if ('title' in updates && updates.title !== undefined) {
+    if (
+      typeof updates.title !== 'string' ||
+      !updates.title.trim() ||
+      updates.title.trim().length > 100
+    ) {
+      throw new ProjectValidationError('title must be a non-empty string of at most 100 characters');
+    }
+    normalized.title = updates.title.trim();
+  }
+
   if ('outputLength' in updates && updates.outputLength !== undefined) {
     if (
       typeof updates.outputLength !== 'number' ||

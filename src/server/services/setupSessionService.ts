@@ -814,6 +814,15 @@ export async function createSetupCommitPlan(
 ): Promise<SetupCommitPlanResponse> {
   return withSessionLock(sessionId, async () => {
     const session = await requireActiveSession(sessionId);
+    if (!hasMeaningfulSetupContent(session)) {
+      throw new SetupServiceError(
+        '作品の種がまだありません。相談するか、作品の種メモを入力してください。',
+        'setup_content_empty',
+        false,
+        400,
+        session
+      );
+    }
     const presetIdsByCategory = await readPresetIdsByCategory();
     const styleSample = await resolveAutoStyleSample(session);
     const { systemInstructions, userPrompt } = buildSetupCommitPrompt({
@@ -870,6 +879,29 @@ export async function createSetupCommitPlan(
   });
 }
 
+function hasMeaningfulSetupContent(session: SetupSession): boolean {
+  const draft = session.draft;
+  return Boolean(
+    session.messages.some((message) => message.role === 'user' && message.content.trim()) ||
+      draft.coreConcept.trim() ||
+      draft.confirmed.some((item) => item.status === 'active' && item.text.trim()) ||
+      draft.candidates.some(
+        (item) => item.status === 'active' && (item.title.trim() || item.summary.trim())
+      ) ||
+      draft.undecided.some((item) => item.status === 'active' && item.text.trim()) ||
+      draft.characters.some(
+        (item) =>
+          item.status === 'active' &&
+          (item.name.trim() || item.label.trim() || item.description.trim())
+      ) ||
+      draft.relationshipSeeds.some((item) => item.trim()) ||
+      draft.world.some((item) => item.trim()) ||
+      draft.tone.some((item) => item.trim()) ||
+      draft.ng.some((item) => item.trim()) ||
+      draft.openingSeeds.some((item) => item.trim())
+  );
+}
+
 async function resolveAutoStyleSample(session: SetupSession): Promise<string> {
   const latestPreview = session.previews?.at(-1)?.text.trim();
   if (latestPreview) return latestPreview.slice(0, 1000);
@@ -892,6 +924,24 @@ export async function commitSetupSession(
       return { projectId: existingSession.committedProjectId, session: existingSession };
     }
     const session = ensureActiveSession(existingSession);
+    if (!hasMeaningfulSetupContent(session)) {
+      throw new SetupServiceError(
+        '作品の種がまだありません。相談するか、作品の種メモを入力してください。',
+        'setup_content_empty',
+        false,
+        400,
+        session
+      );
+    }
+    if (!session.commitPlan) {
+      throw new SetupServiceError(
+        '作品にする内容を先に確認してください。',
+        'setup_plan_missing',
+        false,
+        400,
+        session
+      );
+    }
     assertValidRevision(body?.revision);
     assertRevision(session, body.revision);
 

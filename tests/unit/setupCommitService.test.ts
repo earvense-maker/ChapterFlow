@@ -129,6 +129,24 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.worldText).toContain('江戸時代風の町');
   });
 
+  it('builds an editable provisional title from the core concept when conversion omits it', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: {
+        genre: ['modern-drama'],
+        style: ['natural-dialogue'],
+        pov: ['third-person-close'],
+        pacing: ['standard'],
+        density: ['balanced'],
+        relationshipPacing: ['standard'],
+      },
+      raw: {},
+    });
+
+    expect(normalized.projectInput.title).toBe('仮題：気弱な絵師と強気な岡っ引きの事件もの');
+  });
+
   it('merges draft ng and tone into memories even when LLM returns none', () => {
     const setupSession = session();
     setupSession.draft.ng = ['流血表現', '残酷な死'];

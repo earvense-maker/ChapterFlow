@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import DataDirSettingsSection from './DataDirSettingsSection';
 import type {
   ModelProviderInfo,
   NgExpression,
   NgExpressionSource,
   Project,
-  SystemVersionInfo,
 } from '@shared/types';
 
 interface Props {
@@ -15,7 +13,7 @@ interface Props {
   onProjectUpdated: (project: Project) => void;
   onError: (msg: string | null) => void;
   onFlashMessage: (msg: string) => void;
-  onDataDirBusyChange?: (busy: boolean) => void;
+  onOpenAppSettings: (provider?: string) => void;
 }
 
 export default function TechSettingsTab({
@@ -24,14 +22,13 @@ export default function TechSettingsTab({
   onProjectUpdated,
   onError,
   onFlashMessage,
-  onDataDirBusyChange,
+  onOpenAppSettings,
 }: Props) {
   const [outputLength, setOutputLength] = useState(project.outputLength);
   const [streamingEnabled, setStreamingEnabled] = useState(project.streamingEnabled ?? false);
   const [modelName, setModelName] = useState(project.activeModelName);
   const [provider, setProvider] = useState(project.activeModelProvider);
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
-  const [apiKey, setApiKey] = useState('');
   const [frequencyPenalty, setFrequencyPenalty] = useState(
     project.samplingConfig?.frequencyPenalty ?? 0.1
   );
@@ -41,9 +38,6 @@ export default function TechSettingsTab({
   const [temperature, setTemperature] = useState(project.samplingConfig?.temperature ?? 0.7);
   const [ngExpressions, setNgExpressions] = useState<NgExpression[]>([]);
   const [newNgText, setNewNgText] = useState('');
-  const [appVersion, setAppVersion] = useState('');
-  const [systemVersion, setSystemVersion] = useState<SystemVersionInfo | null>(null);
-  const [systemVersionLoaded, setSystemVersionLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -51,7 +45,6 @@ export default function TechSettingsTab({
     async function load() {
       try {
         onError(null);
-        const versionPromise = api.getSystemVersion().catch(() => null);
         const [providerList, expressionsData] = await Promise.all([
           api.getModelProviders(),
           api.getExpressions(projectId),
@@ -59,12 +52,6 @@ export default function TechSettingsTab({
         if (cancelled) return;
         setProviders(providerList);
         setNgExpressions(expressionsData.ngExpressions);
-        const versionData = await versionPromise;
-        if (!cancelled) {
-          setSystemVersion(versionData);
-          setSystemVersionLoaded(true);
-          setAppVersion(versionData?.version ?? '');
-        }
       } catch (err) {
         if (!cancelled) onError(err instanceof Error ? err.message : '読み込みに失敗しました');
       }
@@ -112,26 +99,6 @@ export default function TechSettingsTab({
       setPresencePenalty(updatedProject.samplingConfig?.presencePenalty ?? 0);
       setTemperature(updatedProject.samplingConfig?.temperature ?? 0.7);
       onFlashMessage('サンプリング設定を保存しました');
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '保存に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleSaveApiKey() {
-    const trimmedApiKey = apiKey.trim();
-    if (!trimmedApiKey) {
-      onError('APIキーを入力してください');
-      return;
-    }
-
-    try {
-      setLoading(true);
-      onError(null);
-      await api.saveCredential(provider, trimmedApiKey);
-      onFlashMessage('APIキーを保存しました');
-      setApiKey('');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
     } finally {
@@ -204,18 +171,22 @@ export default function TechSettingsTab({
             onChange={(e) => {
               const next = e.target.value;
               setProvider(next);
-              setApiKey('');
               const defaultModel = providers.find((p) => p.name === next)?.defaultModel;
               if (defaultModel) setModelName(defaultModel);
             }}
           >
             {providers.map((p) => (
               <option key={p.name} value={p.name}>
-                {p.label}
+                {p.label}{p.hasApiKey === false ? '（キー未設定）' : ''}
               </option>
             ))}
           </select>
         </label>
+        {activeProvider?.hasApiKey === false && (
+          <div className="setup-api-key-warning">
+            {activeProvider.label} のAPIキーが未設定です。保存するまでこのモデルでは生成できません。
+          </div>
+        )}
         <label>
           モデル名
           <input
@@ -231,21 +202,12 @@ export default function TechSettingsTab({
       </section>
 
       <section className="settings-section">
-        <h2>APIキー</h2>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          {/* NOTE: API キーはプロジェクト単位ではなくグローバル保存。プロバイダー別に
-              1 つ保持し、他の作品と共有される。 */}
-          {activeProvider?.apiKeyHelp ??
-            'APIキーを保存します。作品データとは別に、プロバイダーごとに1つ保存されます（他の作品と共有）。'}
+        <h2>全作品共通の設定</h2>
+        <p className="settings-help">
+          APIキーと作品データの保存先はアプリ全体で共有されます。変更はアプリ設定から行います。
         </p>
-        <input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={activeProvider?.apiKeyPlaceholder ?? 'sk-...'}
-        />
-        <button className="primary" onClick={handleSaveApiKey} disabled={loading}>
-          APIキーを保存
+        <button type="button" onClick={() => onOpenAppSettings(provider)} disabled={loading}>
+          アプリ設定を開く
         </button>
       </section>
 
@@ -346,21 +308,6 @@ export default function TechSettingsTab({
         )}
       </section>
 
-      {appVersion && (
-        <section className="settings-section">
-          <h2>アプリ情報</h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            バージョン {appVersion}
-          </p>
-        </section>
-      )}
-
-      {systemVersionLoaded && (
-        <DataDirSettingsSection
-          systemVersion={systemVersion}
-          onBusyChange={onDataDirBusyChange}
-        />
-      )}
     </div>
   );
 }

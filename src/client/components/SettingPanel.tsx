@@ -8,20 +8,21 @@ import MemoryEditor from './MemoryEditor';
 interface Props {
   projectId: string;
   onBack: () => void;
+  onOpenAppSettings: (provider?: string) => void;
   initialTab?: Tab;
 }
 
 // NOTE: 作品ページ内から開いた場合の設定。プリセット再選択 UI は出さず、
-// 「作品設定（世界・人物・システムプロンプト）」と「技術設定（モデル・
-// サンプリング・NG 表現・APIキー）」と「記憶」の 3 タブに分ける。
+// 「作品設定（世界・人物・システムプロンプト）」と「生成設定（作品ごとのモデル・
+// サンプリング・NG 表現）」と「記憶」の 3 タブに分ける。
 type Tab = 'work' | 'tech' | 'memory';
 
-export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
+export default function SettingPanel({ projectId, onBack, onOpenAppSettings, initialTab }: Props) {
   const [project, setProject] = useState<Project | null>(null);
   const [tab, setTab] = useState<Tab>(initialTab ?? 'work');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [navigationLocked, setNavigationLocked] = useState(false);
+  const navigationLocked = false;
 
   useEffect(() => {
     let cancelled = false;
@@ -40,7 +41,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
 
   function flashMessage(text: string) {
     setMessage(text);
-    window.setTimeout(() => setMessage(null), 2000);
+    window.setTimeout(() => setMessage(null), 5000);
   }
 
   function showError(text: string | null) {
@@ -82,7 +83,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
           onClick={() => setTab('tech')}
           disabled={navigationLocked}
         >
-          ⚙ 技術設定
+          ⚙ 生成設定
         </button>
       </nav>
 
@@ -95,6 +96,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
           project={project}
           onError={showError}
           onFlashMessage={flashMessage}
+          onProjectUpdated={setProject}
         />
       )}
       {project && tab === 'tech' && (
@@ -104,7 +106,7 @@ export default function SettingPanel({ projectId, onBack, initialTab }: Props) {
           onProjectUpdated={setProject}
           onError={showError}
           onFlashMessage={flashMessage}
-          onDataDirBusyChange={setNavigationLocked}
+          onOpenAppSettings={onOpenAppSettings}
         />
       )}
       {project && tab === 'memory' && <MemoryEditor projectId={projectId} />}

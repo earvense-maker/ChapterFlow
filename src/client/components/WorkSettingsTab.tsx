@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import RefineChatPanel from './RefineChatPanel';
+import LightMarkdown from './LightMarkdown';
 import type {
   Character,
   PresetsFile,
@@ -8,6 +9,7 @@ import type {
   RefineFindingKind,
   RefineFindingTarget,
   RefineScanResult,
+  SetupSession,
   StoryState,
   StoryStateDiffRecord,
 } from '@shared/types';
@@ -17,6 +19,7 @@ interface Props {
   project: Project;
   onError: (msg: string | null) => void;
   onFlashMessage: (msg: string) => void;
+  onProjectUpdated: (project: Project) => void;
 }
 
 type PresetCategory = {
@@ -40,7 +43,13 @@ const roleLabelMap: Record<Character['role'], string> = Object.fromEntries(
 // 一方でカテゴリ側は既知キーだけ扱う。
 const styleTagCategoryOrder = ['pov', 'style', 'pacing', 'density', 'distance'] as const;
 
-export default function WorkSettingsTab({ projectId, project, onError, onFlashMessage }: Props) {
+export default function WorkSettingsTab({
+  projectId,
+  project,
+  onError,
+  onFlashMessage,
+  onProjectUpdated,
+}: Props) {
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
   const [presets, setPresets] = useState<Partial<PresetsFile>>({});
   const [worldText, setWorldText] = useState('');
@@ -48,12 +57,14 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
   const [worldExpanded, setWorldExpanded] = useState(false);
   const [worldEditing, setWorldEditing] = useState(false);
   const [projectDetails, setProjectDetails] = useState({
+    title: project.title,
     coreConcept: project.coreConcept ?? '',
     firstWishSuggestion: project.firstWishSuggestion ?? '',
     styleSample: project.styleSample ?? '',
   });
   const [projectDetailsDraft, setProjectDetailsDraft] = useState(projectDetails);
   const [projectDetailsEditing, setProjectDetailsEditing] = useState(false);
+  const [sourceSetupSession, setSourceSetupSession] = useState<SetupSession | null>(null);
 
   const [characters, setCharacters] = useState<Character[]>([]);
   const [charactersDraft, setCharactersDraft] = useState<Character[]>([]);
@@ -119,6 +130,13 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
           setRefineScan(cachedScan);
           // NOTE: キャッシュ済み結果に lastError が入っていれば、それも UI に見せる。
           if (cachedScan.lastError) setScanError(cachedScan.lastError);
+        }
+
+        const sourceSummary = (await api.listSetupSessions().catch(() => []))
+          .find((item) => item.committedProjectId === projectId);
+        if (sourceSummary && !cancelled) {
+          const sourceSession = await api.getSetupSession(sourceSummary.sessionId).catch(() => null);
+          if (!cancelled) setSourceSetupSession(sourceSession);
         }
       } catch (err) {
         if (!cancelled) onError(err instanceof Error ? err.message : '読み込みに失敗しました');
@@ -195,6 +213,7 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
       onError(null);
       const updated = await api.updateProject(projectId, projectDetailsDraft);
       const next = {
+        title: updated.title,
         coreConcept: updated.coreConcept ?? '',
         firstWishSuggestion: updated.firstWishSuggestion ?? '',
         styleSample: updated.styleSample ?? '',
@@ -202,6 +221,7 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
       setProjectDetails(next);
       setProjectDetailsDraft(next);
       setProjectDetailsEditing(false);
+      onProjectUpdated(updated);
       onFlashMessage('詳細設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -423,6 +443,10 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
           <>
             <dl className="character-summary-fields">
               <div>
+                <dt>作品タイトル</dt>
+                <dd>{projectDetails.title}</dd>
+              </div>
+              <div>
                 <dt>作品の核</dt>
                 <dd>{projectDetails.coreConcept || <span className="summary-field-missing">未記入</span>}</dd>
               </div>
@@ -455,6 +479,17 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
         )}
         {projectDetailsEditing && (
           <>
+            <label>
+              作品タイトル
+              <input
+                type="text"
+                value={projectDetailsDraft.title}
+                onChange={(e) =>
+                  setProjectDetailsDraft((current) => ({ ...current, title: e.target.value }))
+                }
+                maxLength={100}
+              />
+            </label>
             <textarea
               value={projectDetailsDraft.coreConcept}
               onChange={(e) =>
@@ -486,13 +521,35 @@ export default function WorkSettingsTab({ projectId, project, onError, onFlashMe
               <button onClick={handleCancelProjectDetails} disabled={loading}>
                 キャンセル
               </button>
-              <button className="primary" onClick={handleSaveProjectDetails} disabled={loading}>
+              <button className="primary" onClick={handleSaveProjectDetails} disabled={loading || !projectDetailsDraft.title.trim()}>
                 保存
               </button>
             </div>
           </>
         )}
       </section>
+
+      {sourceSetupSession && (
+        <section className="summary-card">
+          <header className="summary-card-header">
+            <h2>作成時の相談</h2>
+            <span className="settings-meta">{sourceSetupSession.messages.length}件</span>
+          </header>
+          <details className="summary-details setup-history-details">
+            <summary>相談内容を振り返る</summary>
+            <div className="setup-history-messages">
+              {sourceSetupSession.messages.map((entry) => (
+                <article key={entry.messageId} className={`setup-message ${entry.role}`}>
+                  <div className="setup-message-role">
+                    {entry.role === 'user' ? 'あなた' : '相談相手'}
+                  </div>
+                  <LightMarkdown text={entry.content} />
+                </article>
+              ))}
+            </div>
+          </details>
+        </section>
+      )}
 
       {/* 文体・視点 */}
       <section className="summary-card">

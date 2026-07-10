@@ -5,14 +5,16 @@ import type { ModelProviderInfo } from '@shared/types';
 
 interface Props {
   onBack: () => void;
+  initialProvider?: string;
 }
 
-export default function AppSettingsPanel({ onBack }: Props) {
+export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
   const [dataDirBusy, setDataDirBusy] = useState(false);
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
   const [provider, setProvider] = useState('');
   const [modelName, setModelName] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [appVersion, setAppVersion] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -24,25 +26,29 @@ export default function AppSettingsPanel({ onBack }: Props) {
       try {
         setLoading(true);
         setError(null);
-        const [providerList, defaultModel] = await Promise.all([
+        const [providerList, defaultModel, versionInfo] = await Promise.all([
           api.getModelProviders(),
           api.getDefaultModelSettings(),
+          api.getSystemVersion().catch(() => null),
         ]);
         if (cancelled) return;
-        const initialProvider =
-          providerList.find((item) => item.name === defaultModel.provider) ?? providerList[0];
+        const selectedProvider =
+          providerList.find((item) => item.name === initialProvider) ??
+          providerList.find((item) => item.name === defaultModel.provider) ??
+          providerList[0];
         setProviders(providerList);
-        setProvider(initialProvider?.name ?? '');
+        setProvider(selectedProvider?.name ?? '');
         setModelName(
-          initialProvider
-            ? initialProvider.name === defaultModel.provider
+          selectedProvider
+            ? selectedProvider.name === defaultModel.provider
               ? defaultModel.modelName
-              : initialProvider.defaultModel
+              : selectedProvider.defaultModel
             : ''
         );
         setApiKey('');
+        setAppVersion(versionInfo?.version ?? '');
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : '技術設定の読み込みに失敗しました');
+        if (!cancelled) setError(err instanceof Error ? err.message : 'アプリ設定の読み込みに失敗しました');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -51,7 +57,7 @@ export default function AppSettingsPanel({ onBack }: Props) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [initialProvider]);
 
   async function refreshProviders() {
     const providerList = await api.getModelProviders();
@@ -67,8 +73,7 @@ export default function AppSettingsPanel({ onBack }: Props) {
       setSaving(true);
       setError(null);
       await api.updateDefaultModelSettings({ provider, modelName: modelName.trim() });
-      setMessage('相談で使うモデル設定を保存しました。');
-      window.setTimeout(() => setMessage(null), 2000);
+      showMessage('新しい相談で使うモデルを保存しました。');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'モデル設定の保存に失敗しました');
     } finally {
@@ -76,7 +81,7 @@ export default function AppSettingsPanel({ onBack }: Props) {
     }
   }
 
-  async function saveApiKey() {
+  async function saveApiKey(useForNewConsultations: boolean) {
     const trimmed = apiKey.trim();
     if (!provider || !trimmed) {
       setError('保存するAPIキーを入力してください。');
@@ -86,15 +91,43 @@ export default function AppSettingsPanel({ onBack }: Props) {
       setSaving(true);
       setError(null);
       await api.saveCredential(provider, trimmed);
+      if (useForNewConsultations) {
+        try {
+          await api.updateDefaultModelSettings({ provider, modelName: modelName.trim() });
+        } catch (err) {
+          setApiKey('');
+          await refreshProviders().catch(() => undefined);
+          setError(
+            `APIキーは保存しましたが、相談モデルを変更できませんでした: ${
+              err instanceof Error ? err.message : 'モデル設定の保存に失敗しました'
+            }`
+          );
+          return;
+        }
+      }
       setApiKey('');
-      await refreshProviders();
-      setMessage('APIキーを保存しました。');
-      window.setTimeout(() => setMessage(null), 2000);
+      try {
+        await refreshProviders();
+      } catch {
+        setProviders((current) =>
+          current.map((item) => item.name === provider ? { ...item, hasApiKey: true } : item)
+        );
+        showMessage('APIキーは保存しましたが、表示の更新に失敗しました。次回表示時に反映されます。');
+        return;
+      }
+      showMessage(useForNewConsultations
+        ? `${activeProvider?.label ?? provider} のAPIキーを保存し、新しい相談で使うモデルに設定しました。`
+        : `${activeProvider?.label ?? provider} のAPIキーを保存しました。`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'APIキーの保存に失敗しました');
     } finally {
       setSaving(false);
     }
+  }
+
+  function showMessage(text: string) {
+    setMessage(text);
+    window.setTimeout(() => setMessage(null), 5000);
   }
 
   const activeProvider = providers.find((item) => item.name === provider);
@@ -105,7 +138,7 @@ export default function AppSettingsPanel({ onBack }: Props) {
     <div className="settings-panel">
       <header className="reader-header">
         <button onClick={onBack} disabled={busy}>← 戻る</button>
-        <h1>技術設定</h1>
+        <h1>アプリ設定</h1>
       </header>
       {error && <div className="error-toast">{error}</div>}
       {message && <div className="status-toast">{message}</div>}
@@ -113,7 +146,10 @@ export default function AppSettingsPanel({ onBack }: Props) {
         <div className="loading">読み込み中…</div>
       ) : (
         <section className="settings-section">
-          <h2>相談で使うモデル</h2>
+          <h2>新しい相談で使うモデル</h2>
+          <p className="settings-help">
+            新しく始める相談の初期モデルです。進行中の相談は、相談画面で変更できます。
+          </p>
           {!hasProviders && (
             <div className="story-state-alert stale">
               <div>
@@ -155,11 +191,14 @@ export default function AppSettingsPanel({ onBack }: Props) {
           </label>
           <div className="summary-card-actions">
             <button className="primary" type="button" onClick={saveModelSettings} disabled={busy || !hasProviders}>
-              モデル設定を保存
+              新しい相談のモデルを保存
             </button>
           </div>
 
           <h2>APIキー</h2>
+          <p className="settings-help">
+            APIキーはアプリ全体に保存され、相談とすべての作品で共有されます。
+          </p>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
             {activeProvider?.apiKeyHelp ??
               'APIキーを保存します。作品データとは別に、プロバイダーごとに1つ保存されます。'}
@@ -172,13 +211,22 @@ export default function AppSettingsPanel({ onBack }: Props) {
             disabled={busy || !hasProviders}
           />
           <div className="summary-card-actions">
-            <button className="primary" type="button" onClick={saveApiKey} disabled={busy || !hasProviders || !apiKey.trim()}>
-              APIキーを保存
+            <button type="button" onClick={() => saveApiKey(false)} disabled={busy || !hasProviders || !apiKey.trim()}>
+              APIキーだけ保存
+            </button>
+            <button className="primary" type="button" onClick={() => saveApiKey(true)} disabled={busy || !hasProviders || !apiKey.trim() || !modelName.trim()}>
+              APIキーを保存して相談で使う
             </button>
           </div>
         </section>
       )}
       <DataDirSettingsSection onBusyChange={setDataDirBusy} />
+      {appVersion && (
+        <section className="settings-section">
+          <h2>アプリ情報</h2>
+          <p className="settings-help">バージョン {appVersion}</p>
+        </section>
+      )}
     </div>
   );
 }

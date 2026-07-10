@@ -83,7 +83,12 @@ export function normalizeSetupCommitPlan(input: {
 
   const characters = normalizeCharacters(raw.characters, now, input.session);
   const projectInput: CreateProjectBody = {
-    title: asString(rawProject.title) || input.session.projectSettings.title || '無題の作品',
+    title: truncate(
+      asString(rawProject.title) ||
+      input.session.projectSettings.title ||
+      buildFallbackProjectTitle(input.session),
+      100
+    ),
     outputLength: clampOutputLength(
       asNumber(rawProject.outputLength) ?? input.session.projectSettings.outputLength
     ),
@@ -117,6 +122,23 @@ export function normalizeSetupCommitPlan(input: {
       now
     ),
   };
+}
+
+function buildFallbackProjectTitle(session: SetupSession): string {
+  const draft = session.draft;
+  const source =
+    draft.coreConcept ||
+    draft.confirmed.find((item) => item.status === 'active')?.text ||
+    draft.candidates.find((item) => item.status === 'active')?.title ||
+    draft.openingSeeds[0] ||
+    '新しい物語';
+  const normalized = source
+    .replace(/[*#_`>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const firstPhrase = normalized.split(/[。！？\n]/, 1)[0]?.trim() || '新しい物語';
+  const excerpt = firstPhrase.length > 28 ? `${firstPhrase.slice(0, 28)}…` : firstPhrase;
+  return `仮題：${excerpt}`;
 }
 
 function normalizeActivePresetIds(

@@ -89,9 +89,9 @@ export default function ProjectList({ onOpen, onNew, onSetupNew, onOpenAppSettin
       <header className="project-list-header">
         <h1>Yumeweaving</h1>
         <div className="project-list-actions">
-          <button onClick={onSetupNew}>相談して作る</button>
-          <button className="primary" onClick={onNew}>新規作品</button>
-          <button onClick={onOpenAppSettings}>技術設定</button>
+          <button className="primary" onClick={onSetupNew}>相談して作る</button>
+          <button onClick={onNew}>設定を直接入力</button>
+          <button onClick={onOpenAppSettings}>アプリ設定</button>
           <button className="danger" onClick={handleShutdown} title="サーバーとターミナルも終了">
             終了
           </button>
@@ -104,10 +104,10 @@ export default function ProjectList({ onOpen, onNew, onSetupNew, onOpenAppSettin
         <div className="loading">読み込み中…</div>
       ) : projects.length === 0 ? (
         <div className="empty">
-          <p>作品がありません。新規作品から始めてください。</p>
+          <p>まずは相談しながら物語を作るか、設定を直接入力して始めましょう。</p>
           <div className="project-list-actions center">
-            <button onClick={onSetupNew}>相談して作る</button>
-            <button className="primary" onClick={onNew}>新規作品を作る</button>
+            <button className="primary" onClick={onSetupNew}>相談して作る</button>
+            <button onClick={onNew}>設定を直接入力して作る</button>
           </div>
         </div>
       ) : (

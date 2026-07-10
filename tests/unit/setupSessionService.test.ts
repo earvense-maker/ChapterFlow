@@ -8,6 +8,20 @@ import type { MemoryImportance, SetupCommitPlan, SetupDraft } from '../../src/se
 const now = '2026-07-04T12:00:00.000Z';
 const createdSessionIds: string[] = [];
 
+async function prepareSessionForCommit(
+  session: Awaited<ReturnType<typeof setupSessionService.createSetupSession>>['session'],
+  plan: SetupCommitPlan
+) {
+  const prepared = {
+    ...session,
+    revision: session.revision + 1,
+    draft: { ...session.draft, coreConcept: 'Prepared story seed' },
+    commitPlan: { plan, createdAt: now },
+  };
+  await storage.writeSetupSession(prepared);
+  return prepared;
+}
+
 afterEach(async () => {
   await Promise.all(
     createdSessionIds.map((sessionId) =>
@@ -338,6 +352,10 @@ describe('setupSessionService', () => {
   it('creates commit plan from LLM output and saves it to session', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);
+    const prepared = await setupSessionService.updateSetupDraft(result.sessionId, {
+      draft: { ...result.session.draft, coreConcept: 'A story seed' },
+      revision: result.session.revision,
+    });
 
     const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
       text: JSON.stringify({
@@ -368,10 +386,45 @@ describe('setupSessionService', () => {
       expect(planResult.plan.project.title).toBe('LLM title');
       expect(planResult.plan.worldText).toBe('LLM world');
       expect(planResult.session.commitPlan?.plan.project.title).toBe('LLM title');
-      expect(planResult.revision).toBeGreaterThan(result.session.revision);
+      expect(planResult.revision).toBeGreaterThan(prepared.revision);
     } finally {
       generateSpy.mockRestore();
     }
+  });
+
+  it('rejects commit plan generation before any story seed exists', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    await expect(
+      setupSessionService.createSetupCommitPlan(result.sessionId)
+    ).rejects.toMatchObject({ code: 'setup_content_empty', status: 400 });
+  });
+
+  it('rejects direct commit before a story seed and reviewed plan exist', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+    const emptyPlan = { project: {}, characters: [], memories: [], storyState: {} } as unknown as SetupCommitPlan;
+
+    await expect(
+      setupSessionService.commitSetupSession(result.sessionId, {
+        plan: emptyPlan,
+        revision: result.session.revision,
+      })
+    ).rejects.toMatchObject({ code: 'setup_content_empty', status: 400 });
+
+    const seeded = {
+      ...result.session,
+      revision: result.session.revision + 1,
+      draft: { ...result.session.draft, coreConcept: 'Seed only' },
+    };
+    await storage.writeSetupSession(seeded);
+    await expect(
+      setupSessionService.commitSetupSession(result.sessionId, {
+        plan: emptyPlan,
+        revision: seeded.revision,
+      })
+    ).rejects.toMatchObject({ code: 'setup_plan_missing', status: 400 });
   });
 
   it('commits using user-edited plan and applies normalization', async () => {
@@ -397,10 +450,11 @@ describe('setupSessionService', () => {
       },
       customSystemPrompt: 'Edited system',
     };
+    const prepared = await prepareSessionForCommit(result.session, editedPlan);
 
     const commitResult = await setupSessionService.commitSetupSession(result.sessionId, {
       plan: editedPlan,
-      revision: result.session.revision,
+      revision: prepared.revision,
     });
 
     expect(commitResult.projectId).toBeTruthy();
@@ -434,10 +488,11 @@ describe('setupSessionService', () => {
       storyState: { schemaVersion: 1, currentSituation: [], characterStates: [], importantEvents: [], openThreads: [], updatedAt: now },
       customSystemPrompt: '',
     };
+    const prepared = await prepareSessionForCommit(result.session, editedPlan);
 
     const first = await setupSessionService.commitSetupSession(result.sessionId, {
       plan: editedPlan,
-      revision: result.session.revision,
+      revision: prepared.revision,
     });
     createdSessionIds.push(first.projectId);
 
@@ -581,6 +636,7 @@ describe('setupSessionService', () => {
       storyState: { schemaVersion: 1, currentSituation: [], characterStates: [], importantEvents: [], openThreads: [], updatedAt: now },
       customSystemPrompt: '',
     };
+    const prepared = await prepareSessionForCommit(result.session, editedPlan);
 
     const deleteSpy = vi.spyOn(storage, 'deleteProjectDir').mockResolvedValue(undefined);
     const writeMemoriesSpy = vi.spyOn(storage, 'writeMemories').mockRejectedValue(new Error('write failed'));
@@ -589,7 +645,7 @@ describe('setupSessionService', () => {
       await expect(
         setupSessionService.commitSetupSession(result.sessionId, {
           plan: editedPlan,
-          revision: result.session.revision,
+          revision: prepared.revision,
         })
       ).rejects.toThrow('write failed');
 
