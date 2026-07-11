@@ -196,6 +196,8 @@ describe('project settings validation', () => {
     expect(project.activeModelProvider).toBe('gemini');
     expect(project.activeModelName).toBe('gemini-1.5-flash');
     expect(project.activePresetIds.genre).toBe('romance');
+    expect(project.activePresetIds.conversation).toBe('standard');
+    expect(project.activePresetIds.intimacy).toBe('suggestive');
     const state = await storage.readState(project.projectId);
     expect(state?.storyStateRefresh).toMatchObject({
       status: 'fresh',
@@ -203,6 +205,8 @@ describe('project settings validation', () => {
     });
     expect(worldText).toBe('静かな管理都市');
     expect(characters).toHaveLength(1);
+    expect(presets?.conversationPreset).toBe('standard');
+    expect(presets?.intimacyPreset).toBe('suggestive');
     expect(presets?.customSystemPrompt).toBe('本文だけを書く');
   });
 });

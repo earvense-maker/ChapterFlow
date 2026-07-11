@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { useTheme } from '../hooks/useTheme';
 import { GeneratingLabel } from './GeneratingLabel';
@@ -23,6 +23,7 @@ interface Props {
 
 // NOTE: 文脈警告バッジを出す使用率のしきい値。0.7=70%。
 const CONTEXT_WARNING_THRESHOLD = 0.7;
+const WISH_TEXTAREA_MAX_HEIGHT = 240;
 
 export default function Reader({
   projectId,
@@ -55,12 +56,17 @@ export default function Reader({
   const [fontSize, setFontSize] = useState(18);
   const [selectedText, setSelectedText] = useState('');
   const [selectionButtonPosition, setSelectionButtonPosition] = useState<{ top: number; left: number } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const storyStatePollInFlightRef = useRef(false);
   const initialWishPrefilledRef = useRef(false);
+  // NOTE: 場面切替で戻ってきたときにスクロール位置を復元するため、
+  //       sceneId → window.scrollY をセッション中だけ覚えておく。
+  const sceneScrollPositionsRef = useRef<Map<string, number>>(new Map());
+  // NOTE: 次のレイアウト後に復元したい対象。currentScene のコミット後に読む。
+  const pendingScrollRestoreRef = useRef<string | null>(null);
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
 
   async function load() {
@@ -253,12 +259,20 @@ export default function Reader({
   }
 
   async function handleNavigateScene(direction: SceneNavigationDirection) {
+    const outgoingSceneId = currentScene?.sceneId ?? null;
+    if (outgoingSceneId) {
+      sceneScrollPositionsRef.current.set(outgoingSceneId, window.scrollY);
+    }
     try {
       setLoading(true);
       setError(null);
       setNotice(null);
       const state = await api.navigateScene(projectId, direction);
       applyReaderState(state);
+      const incomingSceneId = state.currentScene?.sceneId ?? null;
+      // NOTE: React が新しい本文をコミット・ペイントし終えるまで待ってから
+      //       復元しないと、旧DOMの高さで scrollTo がクランプされてしまう。
+      pendingScrollRestoreRef.current = incomingSceneId;
     } catch (err) {
       setError(err instanceof Error ? err.message : '場面移動に失敗しました');
     } finally {
@@ -332,6 +346,26 @@ export default function Reader({
       setLoading(false);
     }
   }
+
+  // NOTE: 新しい本文がコミットされ、DOM の高さが更新されてから
+  //       保存済みスクロール位置を復元する。useLayoutEffect にすることで
+  //       ペイント前に scrollTo が入り、ちらつきを防ぐ。
+  useLayoutEffect(() => {
+    const pending = pendingScrollRestoreRef.current;
+    if (pending === null) return;
+    pendingScrollRestoreRef.current = null;
+    const target = sceneScrollPositionsRef.current.get(pending) ?? 0;
+    window.scrollTo({ top: target, behavior: 'auto' });
+  }, [currentScene?.sceneId, text]);
+
+  // NOTE: wish textarea を内容量に合わせて縦に伸ばす。scrollHeight は
+  //       min-height を尊重するため、行数が少ないうちは CSS の min-height が効く。
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, WISH_TEXTAREA_MAX_HEIGHT)}px`;
+  }, [wish]);
 
   useEffect(() => {
     function handleSelectionChange() {
@@ -606,12 +640,23 @@ export default function Reader({
             handleGenerate('continue');
           }}
         >
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
+            rows={1}
             value={wish}
             onChange={(e) => setWish(e.target.value)}
-            placeholder="もっと不穏に、会話多めで、まだ告白しない…"
+            onKeyDown={(e) => {
+              // NOTE: Ctrl/Cmd+Enter=送信 / 素の Enter=改行。IME 変換中は無視。
+              if (
+                e.key === 'Enter' &&
+                (e.ctrlKey || e.metaKey) &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                if (!loading) handleGenerate('continue');
+              }
+            }}
+            placeholder="次のシーンへの指示（Ctrl+Enterで送信）"
             disabled={loading}
           />
           <button type="submit" className="primary" disabled={loading}>

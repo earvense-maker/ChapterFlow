@@ -139,6 +139,7 @@ function activePresetsFromPresetFile(presets: Partial<PresetsFile>): Partial<Act
   }
   if (presets.distancePreset !== undefined) activePresets.distance = presets.distancePreset;
   if (presets.constraintPreset !== undefined) activePresets.constraint = presets.constraintPreset;
+  if (presets.intimacyPreset !== undefined) activePresets.intimacy = presets.intimacyPreset;
   return activePresets;
 }
 

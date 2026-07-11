@@ -24,7 +24,7 @@ describe('modelInfoService', () => {
       'openai',
       'xai',
     ]);
-    expect(defaultModelForProvider('deepseek')).toBe('deepseek-v4-flash');
+    expect(defaultModelForProvider('deepseek')).toBe('deepseek-v4-pro');
     expect(defaultModelForProvider('xai')).toBe('grok-4.3');
   });
 

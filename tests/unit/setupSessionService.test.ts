@@ -39,6 +39,10 @@ describe('setupSessionService', () => {
     expect(result.session.status).toBe('active');
     expect(result.session.revision).toBe(1);
     expect(result.session.draft.confirmed).toEqual([]);
+    expect(result.session.projectSettings.activePresetIds).toMatchObject({
+      conversation: 'standard',
+      intimacy: 'suggestive',
+    });
   });
 
   it('lists setup sessions with the latest session first', async () => {
@@ -151,6 +155,25 @@ describe('setupSessionService', () => {
     expect(parsed.draftPatch).toEqual({ coreConcept: 'テスト' });
     expect(parsed.suggestedActions).toEqual([{ label: '次へ', message: '次の候補を見せて' }]);
     expect(parsed.conversationSummary).toBe('会話の要約');
+  });
+
+  it('keeps only supported suggested-action intents', () => {
+    const parsed = setupSessionService.parseChatResult(
+      JSON.stringify({
+        visibleReply: '次の一歩を選べます。',
+        suggestedActions: [
+          { label: '試し書き', message: '試し書きを作ってください。', intent: 'preview' },
+          { label: '作品にする', message: '作品にしてください。', intent: 'commit' },
+          { label: '相談を続ける', message: '候補を増やしてください。', intent: 'unexpected' },
+        ],
+      })
+    );
+
+    expect(parsed.suggestedActions).toEqual([
+      { label: '試し書き', message: '試し書きを作ってください。', intent: 'preview' },
+      { label: '作品にする', message: '作品にしてください。', intent: 'commit' },
+      { label: '相談を続ける', message: '候補を増やしてください。' },
+    ]);
   });
 
   it('keeps visible reply and drops patch when JSON after marker is broken', () => {

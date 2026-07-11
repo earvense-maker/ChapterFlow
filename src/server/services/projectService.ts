@@ -7,6 +7,7 @@ import {
 } from './modelInfoService.js';
 import { createEmptyStoryState } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
+import { DEFAULT_ACTIVE_PRESET_IDS } from '../types/index.js';
 import type {
   ActivePresets,
   Character,
@@ -29,15 +30,6 @@ const DEFAULT_STREAMING_ENABLED = false;
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
 
-const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
-  genre: 'modern-drama',
-  style: 'natural-dialogue',
-  pov: 'third-person-close',
-  pacing: 'standard',
-  density: 'balanced',
-  relationshipPacing: 'standard',
-};
-
 export async function createProject(body: CreateProjectBody): Promise<Project> {
   validateProjectUpdates({
     outputLength: body.outputLength,
@@ -54,7 +46,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   try {
   await storage.createProjectDir(projectId);
 
-  let activePresetIds = { ...DEFAULT_ACTIVE_PRESETS };
+  let activePresetIds: ActivePresets = { ...DEFAULT_ACTIVE_PRESET_IDS };
   let title = body.title?.trim() || '無題の作品';
   let sourceProject: Project | null = null;
   let sourcePresets: PresetsFile | null = null;
@@ -69,11 +61,15 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
       sourceCharacters = await storage.readCharacters(body.duplicateFrom);
       sourceWorld = await storage.readWorld(body.duplicateFrom);
       sourceStoryState = (await storage.readStoryState(body.duplicateFrom)) ?? sourceStoryState;
-      activePresetIds = { ...sourceProject.activePresetIds, ...(body.activePresetIds ?? {}) };
+      activePresetIds = {
+        ...DEFAULT_ACTIVE_PRESET_IDS,
+        ...sourceProject.activePresetIds,
+        ...(body.activePresetIds ?? {}),
+      };
       title = body.title?.trim() || `${sourceProject.title} のコピー`;
     }
   } else if (body.activePresetIds) {
-    activePresetIds = { ...DEFAULT_ACTIVE_PRESETS, ...body.activePresetIds };
+    activePresetIds = { ...DEFAULT_ACTIVE_PRESET_IDS, ...body.activePresetIds };
   }
 
   const provider =
@@ -145,6 +141,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     relationshipPacingPreset: activePresetIds.relationshipPacing,
     distancePreset: activePresetIds.distance,
     constraintPreset: activePresetIds.constraint,
+    intimacyPreset: activePresetIds.intimacy,
     userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
     customSystemPrompt: body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
   };
@@ -432,9 +429,10 @@ export async function updateActivePresets(projectId: string, updates: Partial<Ac
     relationshipPacingPreset: next.relationshipPacing,
     distancePreset: next.distance,
     constraintPreset: next.constraint,
+    intimacyPreset: next.intimacy,
   });
 }
 
 export function getDefaultActivePresets(): ActivePresets {
-  return { ...DEFAULT_ACTIVE_PRESETS };
+  return { ...DEFAULT_ACTIVE_PRESET_IDS };
 }
