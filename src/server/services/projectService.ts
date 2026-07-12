@@ -1,6 +1,7 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
+import * as knowledgeService from './knowledgeService.js';
 import {
   defaultModelForProvider,
   isSupportedProvider,
@@ -158,6 +159,9 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   await storage.writeMemories(projectId, []);
   await storage.writeWorld(projectId, worldText);
   await storage.writeStoryState(projectId, { ...sourceStoryState, updatedAt: now });
+  if (body.duplicateFrom && sourceProject) {
+    await knowledgeService.copyKnowledgeFromProject(body.duplicateFrom, projectId);
+  }
 
   return project;
   } catch (err) {

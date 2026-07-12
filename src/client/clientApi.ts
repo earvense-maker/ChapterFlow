@@ -11,6 +11,9 @@ import type {
   AppModelSettings,
   GenerateRequestBody,
   GenerationRecord,
+  KnowledgeContentResponse,
+  KnowledgeFile,
+  KnowledgeListItem,
   Memory,
   ModelProviderInfo,
   NgExpression,
@@ -186,6 +189,28 @@ export const api = {
     request<Memory>(`/projects/${id}/memories/${memoryId}`, { method: 'PUT', body: JSON.stringify(memory) }),
   deleteMemory: (id: string, memoryId: string) =>
     request<void>(`/projects/${id}/memories/${memoryId}`, { method: 'DELETE' }),
+
+  getKnowledge: (id: string) => request<KnowledgeListItem[]>(`/projects/${id}/knowledge`),
+  getKnowledgeContent: (id: string, knowledgeId: string) =>
+    request<KnowledgeContentResponse>(`/projects/${id}/knowledge/${knowledgeId}`),
+  createKnowledge: (id: string, body: { fileName: string; content: string }) =>
+    request<KnowledgeFile>(`/projects/${id}/knowledge`, { method: 'POST', body: JSON.stringify(body) }),
+  updateKnowledge: (
+    id: string,
+    knowledgeId: string,
+    body: Partial<{ title: string; content: string; enabled: boolean; order: number }>
+  ) =>
+    request<KnowledgeFile>(`/projects/${id}/knowledge/${knowledgeId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  reorderKnowledge: (id: string, orderedIds: string[]) =>
+    request<KnowledgeFile[]>(`/projects/${id}/knowledge-order`, {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    }),
+  deleteKnowledge: (id: string, knowledgeId: string) =>
+    request<void>(`/projects/${id}/knowledge/${knowledgeId}`, { method: 'DELETE' }),
 
   getExpressions: (id: string) => request<NgExpressionsResponse>(`/projects/${id}/expressions`),
   createExpression: (id: string, body: { text: string; source?: NgExpressionSource }) =>

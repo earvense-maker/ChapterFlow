@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { useTheme } from '../hooks/useTheme';
 import { GeneratingLabel } from './GeneratingLabel';
+import { KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import type {
   ContextUsageEstimate,
   GenerationRecord,
+  KnowledgeListItem,
   Project,
   ReaderNavigationState,
   ReaderState,
@@ -43,6 +45,7 @@ export default function Reader({
   });
   const [currentScene, setCurrentScene] = useState<SceneRecord | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsageEstimate | null>(null);
+  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeListItem[]>([]);
   const [storyStateRefresh, setStoryStateRefresh] = useState<StoryStateRefreshStatus | null>(null);
   const [storyStateBacklogCount, setStoryStateBacklogCount] = useState(0);
   const [wish, setWish] = useState('');
@@ -87,6 +90,7 @@ export default function Reader({
     setCurrentScene(state.currentScene);
     setNavigation(state.navigation);
     setContextUsage(state.contextUsage);
+    setKnowledgeItems(state.knowledgeFiles);
     setStoryStateRefresh(state.state.storyStateRefresh ?? null);
     setStoryStateBacklogCount(state.storyStateBacklogCount ?? state.state.storyStateBacklogCount ?? 0);
     if (
@@ -170,7 +174,7 @@ export default function Reader({
       setRewriteWish('');
       setRewriteSheetOpen(false);
       try {
-        applyReaderState(await api.getReaderState(projectId));
+        await load();
       } catch {
         setNotice('生成は完了しましたが、場面情報の再読み込みに失敗しました');
       }
@@ -380,6 +384,20 @@ export default function Reader({
     contextUsage && contextUsage.usageRatio >= CONTEXT_WARNING_THRESHOLD
       ? Math.round(contextUsage.usageRatio * 100)
       : null;
+  const enabledKnowledge = knowledgeItems.filter(
+    (item) => item.enabled && item.contentStatus === 'ok'
+  );
+  const enabledKnowledgeChars = enabledKnowledge.reduce((sum, item) => sum + item.charCount, 0);
+  const brokenEnabledKnowledgeCount = knowledgeItems.filter(
+    (item) => item.enabled && item.contentStatus !== 'ok'
+  ).length;
+  const knowledgeSummary =
+    enabledKnowledge.length > 0
+      ? `参考資料: ${enabledKnowledge
+          .slice(0, 2)
+          .map((item) => item.title)
+          .join('・')}${enabledKnowledge.length > 2 ? ` 他${enabledKnowledge.length - 2}件` : ''}（計${enabledKnowledgeChars.toLocaleString()}字）`
+      : '';
 
   return (
     <div className="reader">
@@ -513,6 +531,19 @@ export default function Reader({
         {contextWarn !== null && (
           <span className="reader-context-badge" title="次回生成の文脈使用率">
             ⚠ 文脈 {contextWarn}%
+          </span>
+        )}
+        {knowledgeSummary && (
+          <span
+            className={`reader-knowledge-badge ${enabledKnowledgeChars > KNOWLEDGE_WARN_CHARS ? 'warn' : ''}`}
+            title={knowledgeSummary}
+          >
+            {knowledgeSummary}
+          </span>
+        )}
+        {brokenEnabledKnowledgeCount > 0 && (
+          <span className="reader-knowledge-badge warn">
+            {brokenEnabledKnowledgeCount}件は本文がなく注入されません
           </span>
         )}
       </div>

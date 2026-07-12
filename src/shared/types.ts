@@ -6,6 +6,9 @@ export type SceneId = string;
 export type GenerationId = string;
 export type MemoryId = string;
 export type CharacterId = string;
+export type KnowledgeId = string;
+
+export const KNOWLEDGE_WARN_CHARS = 16_000;
 
 export interface ActivePresets {
   genre: string;
@@ -100,6 +103,47 @@ export interface Memory {
   sourceSceneId: SceneId | null;
   status: MemoryStatus;
   source: MemorySource;
+}
+
+export type KnowledgeExtension = 'md' | 'txt';
+export type KnowledgeContentStatus = 'ok' | 'missing' | 'empty';
+
+export interface KnowledgeFile {
+  knowledgeId: KnowledgeId;
+  title: string;
+  originalFileName: string;
+  extension: KnowledgeExtension;
+  enabled: boolean;
+  order: number;
+  charCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KnowledgeIndexFile {
+  schemaVersion: 1;
+  files: KnowledgeFile[];
+}
+
+export type KnowledgeListItem = KnowledgeFile & {
+  contentStatus: KnowledgeContentStatus;
+};
+
+export interface CreateKnowledgeBody {
+  fileName: string;
+  content: string;
+}
+
+export interface UpdateKnowledgeBody {
+  title?: string;
+  content?: string;
+  enabled?: boolean;
+  order?: number;
+}
+
+export interface KnowledgeContentResponse {
+  meta: KnowledgeFile;
+  content: string;
 }
 
 export type NgExpressionSource = 'manual' | 'report' | 'selection';
@@ -710,6 +754,7 @@ export interface ReaderState {
   currentScene: SceneRecord | null;
   currentGeneration: GenerationRecord | null;
   memories: Memory[];
+  knowledgeFiles: KnowledgeListItem[];
   navigation: ReaderNavigationState;
   contextUsage: ContextUsageEstimate | null;
   contextSummaryExcerpt: string;
@@ -734,6 +779,7 @@ export interface ContextUsageEstimate {
   usageRatio: number;
   summaryChars: number;
   recentContextChars: number;
+  knowledgeChars: number;
 }
 
 export type TokenLimitSource = 'provider' | 'catalog' | 'inferred';

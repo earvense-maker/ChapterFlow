@@ -10,6 +10,7 @@ import stateRouter from './routes/state.js';
 import generateRouter from './routes/generate.js';
 import expressionsRouter from './routes/expressions.js';
 import memoriesRouter from './routes/memories.js';
+import knowledgeRouter from './routes/knowledge.js';
 import modelsRouter from './routes/models.js';
 import setupSessionsRouter from './routes/setupSessions.js';
 import { createSystemRouter } from './routes/system.js';
@@ -63,6 +64,7 @@ export function createApp(options: CreateAppOptions): express.Express {
   app.use('/api', generateRouter);
   app.use('/api', expressionsRouter);
   app.use('/api', memoriesRouter);
+  app.use('/api', knowledgeRouter);
   app.use('/api', modelsRouter);
   app.use('/api', setupSessionsRouter);
   app.use('/api', createSystemRouter({

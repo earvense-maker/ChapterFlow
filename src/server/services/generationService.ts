@@ -4,6 +4,7 @@ import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
 import { buildPrompt } from '../prompts/promptBuilder.js';
 import * as expressionService from './expressionService.js';
+import * as knowledgeService from './knowledgeService.js';
 import {
   buildEpisodeMarkdown,
   getContextSummary,
@@ -115,7 +116,10 @@ async function generateSceneUnlocked(
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
 
-  const bannedExpressions = await expressionService.resolveBannedExpressions(projectId);
+  const [bannedExpressions, knowledgeTexts] = await Promise.all([
+    expressionService.resolveBannedExpressions(projectId),
+    knowledgeService.getEnabledKnowledgeTexts(projectId),
+  ]);
 
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,
@@ -126,6 +130,7 @@ async function generateSceneUnlocked(
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
     bannedExpressions,
+    knowledgeTexts,
     mode: options.mode,
   });
 
@@ -265,7 +270,10 @@ async function generateSceneStreamUnlocked(
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
 
-  const bannedExpressions = await expressionService.resolveBannedExpressions(projectId);
+  const [bannedExpressions, knowledgeTexts] = await Promise.all([
+    expressionService.resolveBannedExpressions(projectId),
+    knowledgeService.getEnabledKnowledgeTexts(projectId),
+  ]);
 
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,
@@ -276,6 +284,7 @@ async function generateSceneStreamUnlocked(
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
     bannedExpressions,
+    knowledgeTexts,
     mode: options.mode,
   });
 
@@ -1234,7 +1243,10 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
 
-  const memories = await storage.readMemories(projectId);
+  const [memories, knowledgeFiles] = await Promise.all([
+    storage.readMemories(projectId),
+    knowledgeService.listKnowledge(projectId),
+  ]);
 
   let currentEpisode: EpisodeRecord | null = null;
   let currentScene: SceneRecord | null = null;
@@ -1270,6 +1282,7 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
     currentScene,
     currentGeneration,
     memories,
+    knowledgeFiles,
     navigation,
     contextUsage,
     contextSummaryExcerpt: contextSummary.slice(0, 240),
@@ -1375,7 +1388,7 @@ async function buildReaderContextUsage(
   state: ProjectState,
   wish: string
 ): Promise<ContextUsageEstimate | null> {
-  const [memories, characters, worldText, presets, summaryText, recentContextText] =
+  const [memories, characters, worldText, presets, summaryText, recentContextText, knowledgeTexts] =
     await Promise.all([
       storage.readMemories(project.projectId),
       storage.readCharacters(project.projectId),
@@ -1383,6 +1396,7 @@ async function buildReaderContextUsage(
       storage.readPresets(project.projectId),
       getContextSummary(project.projectId),
       getRecentContext(project.projectId, state.currentEpisodeId, state.currentSceneId),
+      knowledgeService.getEnabledKnowledgeTexts(project.projectId),
     ]);
 
   const bannedExpressions = await expressionService.resolveBannedExpressions(project.projectId);
@@ -1396,6 +1410,7 @@ async function buildReaderContextUsage(
     worldText,
     customSystemPrompt: presets?.customSystemPrompt,
     bannedExpressions,
+    knowledgeTexts,
   });
   const [modelLimits, promptTokenCount] = await Promise.all([
     resolveModelTokenLimits(project.activeModelProvider, project.activeModelName),
@@ -1415,6 +1430,7 @@ async function buildReaderContextUsage(
     outputLength: project.outputLength,
     summaryText,
     recentContextText,
+    knowledgeText: knowledgeTexts.map((item) => item.content).join('\n\n'),
     modelLimits,
     promptTokenCount,
   });

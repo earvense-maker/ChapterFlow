@@ -7,16 +7,20 @@ import type { ReaderState } from '../../src/shared/types';
 vi.mock('../../src/client/clientApi', () => ({
   api: {
     getReaderState: vi.fn(),
+    getKnowledge: vi.fn(),
     updateState: vi.fn(),
   },
 }));
 
 const getReaderState = vi.mocked(api.getReaderState);
+const getKnowledge = vi.mocked(api.getKnowledge);
 
 describe('Reader story state polling', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     getReaderState.mockReset();
+    getKnowledge.mockReset();
+    getKnowledge.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -117,6 +121,7 @@ function readerState(status: 'pending' | 'fresh'): ReaderState {
     currentScene: null,
     currentGeneration: null,
     memories: [],
+    knowledgeFiles: [],
     navigation: {
       currentSceneOrder: null,
       totalScenes: 0,
