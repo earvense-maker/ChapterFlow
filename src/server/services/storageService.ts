@@ -15,6 +15,8 @@ import type {
   ExpressionsFile,
   GenerationRecord,
   GenerationStatus,
+  KnowledgeExtension,
+  KnowledgeIndexFile,
   Memory,
   PresetsFile,
   Project,
@@ -32,9 +34,15 @@ async function removeDataPath(filePath: string, options: Parameters<typeof fs.rm
   await withDataDirWrite(() => fs.rm(filePath, options));
 }
 
-function assertSafePathSegment(value: string, label: string): void {
+export function assertSafePathSegment(value: string, label: string): void {
   if (!SAFE_PATH_SEGMENT.test(value)) {
     throw new Error(`Invalid ${label}: ${value}`);
+  }
+}
+
+export function assertKnowledgeExtension(value: unknown): asserts value is KnowledgeExtension {
+  if (value !== 'md' && value !== 'txt') {
+    throw new Error(`Invalid knowledge extension: ${String(value)}`);
   }
 }
 
@@ -86,6 +94,24 @@ export function storyStateDiffsJsonPath(projectId: string): string {
 
 export function expressionsJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'expressions.json');
+}
+
+export function knowledgeDir(projectId: string): string {
+  return path.join(projectDir(projectId), 'knowledge');
+}
+
+export function knowledgeIndexJsonPath(projectId: string): string {
+  return path.join(knowledgeDir(projectId), 'knowledge.json');
+}
+
+export function knowledgeContentPath(
+  projectId: string,
+  knowledgeId: string,
+  extension: KnowledgeExtension
+): string {
+  assertSafePathSegment(knowledgeId, 'knowledgeId');
+  assertKnowledgeExtension(extension);
+  return path.join(knowledgeDir(projectId), `${knowledgeId}.${extension}`);
 }
 
 export function refineScanJsonPath(projectId: string): string {
@@ -249,6 +275,74 @@ export async function readExpressions(projectId: string): Promise<ExpressionsFil
 
 export async function writeExpressions(projectId: string, file: ExpressionsFile): Promise<void> {
   await safeWriteJson(expressionsJsonPath(projectId), file);
+}
+
+export async function readKnowledgeIndex(projectId: string): Promise<KnowledgeIndexFile> {
+  const data = await readJsonFile<KnowledgeIndexFile>(knowledgeIndexJsonPath(projectId));
+  return data ?? { schemaVersion: 1, files: [] };
+}
+
+export async function writeKnowledgeIndex(
+  projectId: string,
+  index: KnowledgeIndexFile
+): Promise<void> {
+  await ensureDir(knowledgeDir(projectId));
+  await safeWriteJson(knowledgeIndexJsonPath(projectId), index);
+}
+
+export async function readKnowledgeContent(
+  projectId: string,
+  knowledgeId: string,
+  extension: KnowledgeExtension
+): Promise<string> {
+  const text = await readTextFile(knowledgeContentPath(projectId, knowledgeId, extension));
+  return text ?? '';
+}
+
+export async function knowledgeContentExists(
+  projectId: string,
+  knowledgeId: string,
+  extension: KnowledgeExtension
+): Promise<boolean> {
+  try {
+    const stat = await fs.stat(knowledgeContentPath(projectId, knowledgeId, extension));
+    return stat.isFile();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+export async function writeKnowledgeContent(
+  projectId: string,
+  knowledgeId: string,
+  extension: KnowledgeExtension,
+  text: string
+): Promise<void> {
+  await ensureDir(knowledgeDir(projectId));
+  await safeWriteFile(knowledgeContentPath(projectId, knowledgeId, extension), text);
+}
+
+export async function deleteKnowledgeContent(
+  projectId: string,
+  knowledgeId: string,
+  extension: KnowledgeExtension
+): Promise<void> {
+  await removeDataPath(knowledgeContentPath(projectId, knowledgeId, extension), { force: true });
+}
+
+export async function listKnowledgeContentFiles(projectId: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(knowledgeDir(projectId), { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && /^kb-[A-Za-z0-9_-]+\.(md|txt)$/.test(entry.name))
+      .map((entry) => entry.name);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return [];
+    throw err;
+  }
 }
 
 export async function readRefineScan(projectId: string): Promise<RefineScanResult | null> {

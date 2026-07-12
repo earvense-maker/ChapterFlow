@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import { KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import RefineChatPanel from './RefineChatPanel';
 import type {
   Character,
+  KnowledgeListItem,
   PresetsFile,
   Project,
   RefineScanResult,
@@ -23,7 +25,7 @@ type PresetCategory = {
   items: Record<string, { id: string; label: string; text: string }>;
 };
 
-type DetailSettingsTab = 'basic' | 'style' | 'world' | 'characters' | 'story';
+type DetailSettingsTab = 'basic' | 'style' | 'world' | 'characters' | 'story' | 'knowledge';
 
 const roleOptions: { value: Character['role']; label: string }[] = [
   { value: 'protagonist', label: '主人公' },
@@ -81,6 +83,12 @@ export default function WorkSettingsTab({
   const [storyStateDraft, setStoryStateDraft] = useState('');
   const [storyStateEditing, setStoryStateEditing] = useState(false);
   const [storyStateDiffs, setStoryStateDiffs] = useState<StoryStateDiffRecord[]>([]);
+  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeListItem[]>([]);
+  const [knowledgeExpandedId, setKnowledgeExpandedId] = useState<string | null>(null);
+  const [knowledgeEditing, setKnowledgeEditing] = useState(false);
+  const [knowledgeTitleDraft, setKnowledgeTitleDraft] = useState('');
+  const [knowledgeContentDraft, setKnowledgeContentDraft] = useState('');
+  const [knowledgeUploading, setKnowledgeUploading] = useState(false);
 
   const [loading, setLoading] = useState(false);
 
@@ -90,13 +98,22 @@ export default function WorkSettingsTab({
     async function load() {
       try {
         onError(null);
-        const [presetsData, worldData, charsData, presetMeta, storyData, diffData] = await Promise.all([
+        const [
+          presetsData,
+          worldData,
+          charsData,
+          presetMeta,
+          storyData,
+          diffData,
+          knowledgeData,
+        ] = await Promise.all([
           api.getProjectPresets(projectId),
           api.getWorld(projectId),
           api.getCharacters(projectId),
           api.getPresets(),
           api.getStoryState(projectId),
           api.getStoryStateDiffs(projectId),
+          api.getKnowledge(projectId),
         ]);
         if (cancelled) return;
         setPresets(presetsData);
@@ -108,6 +125,7 @@ export default function WorkSettingsTab({
         setStoryState(storyData);
         setStoryStateDraft(JSON.stringify(storyData, null, 2));
         setStoryStateDiffs(diffData);
+        setKnowledgeItems(knowledgeData);
 
         const promptPreview = await api.previewSystemPrompt(
           projectId,
@@ -155,6 +173,14 @@ export default function WorkSettingsTab({
       if (!charactersEditing) setCharactersDraft(charsData);
     } catch (err) {
       onError(err instanceof Error ? err.message : '再読み込みに失敗しました');
+    }
+  }
+
+  async function refreshKnowledge() {
+    try {
+      setKnowledgeItems(await api.getKnowledge(projectId));
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料の再読み込みに失敗しました');
     }
   }
 
@@ -289,6 +315,32 @@ export default function WorkSettingsTab({
     }
   }
 
+  async function handleIntimacyChange(nextId: string) {
+    try {
+      setLoading(true);
+      onError(null);
+      const savedPresets = await api.updateProjectPresets(projectId, {
+        ...presets,
+        intimacyPreset: nextId,
+      });
+      setPresets(savedPresets);
+      onProjectUpdated({
+        ...project,
+        activePresetIds: { ...project.activePresetIds, intimacy: nextId },
+      });
+      const preview = await api.previewSystemPrompt(projectId, savedPresets, savedPresets.customSystemPrompt);
+      setSystemPrompt(preview.systemPrompt);
+      setGeneratedSystemPrompt(preview.generatedSystemPrompt);
+      setIsSystemPromptCustomized(preview.isCustomized);
+      if (!systemPromptEditing) setSystemPromptDraft(preview.systemPrompt);
+      onFlashMessage('濡れ場の描写設定を保存しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleResetSystemPrompt() {
     try {
       setPreviewLoading(true);
@@ -338,8 +390,139 @@ export default function WorkSettingsTab({
     }
   }
 
+  async function handleKnowledgeFiles(files: FileList | File[]) {
+    const selected = Array.from(files);
+    if (selected.length === 0) return;
+    try {
+      setKnowledgeUploading(true);
+      onError(null);
+      let imported = 0;
+      for (const file of selected) {
+        const content = await decodeKnowledgeFile(file);
+        await api.createKnowledge(projectId, { fileName: file.name, content });
+        imported += 1;
+      }
+      await refreshKnowledge();
+      onFlashMessage(`資料を${imported}件追加しました`);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料の追加に失敗しました');
+      await refreshKnowledge();
+    } finally {
+      setKnowledgeUploading(false);
+    }
+  }
+
+  async function handleToggleKnowledge(item: KnowledgeListItem) {
+    try {
+      setLoading(true);
+      onError(null);
+      await api.updateKnowledge(projectId, item.knowledgeId, { enabled: !item.enabled });
+      await refreshKnowledge();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料の更新に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleMoveKnowledge(index: number, delta: -1 | 1) {
+    const nextIndex = index + delta;
+    if (nextIndex < 0 || nextIndex >= knowledgeItems.length) return;
+    const next = [...knowledgeItems];
+    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    try {
+      setLoading(true);
+      onError(null);
+      await api.reorderKnowledge(projectId, next.map((item) => item.knowledgeId));
+      await refreshKnowledge();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料の並べ替えに失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleExpandKnowledge(item: KnowledgeListItem) {
+    if (knowledgeExpandedId === item.knowledgeId) {
+      setKnowledgeExpandedId(null);
+      setKnowledgeEditing(false);
+      return;
+    }
+    try {
+      setLoading(true);
+      onError(null);
+      const result = await api.getKnowledgeContent(projectId, item.knowledgeId);
+      setKnowledgeExpandedId(item.knowledgeId);
+      setKnowledgeTitleDraft(result.meta.title);
+      setKnowledgeContentDraft(result.content);
+      setKnowledgeEditing(false);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料本文の読み込みに失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSaveKnowledge(item: KnowledgeListItem) {
+    try {
+      setLoading(true);
+      onError(null);
+      await api.updateKnowledge(projectId, item.knowledgeId, {
+        title: knowledgeTitleDraft,
+        content: knowledgeContentDraft,
+      });
+      await refreshKnowledge();
+      setKnowledgeEditing(false);
+      onFlashMessage('資料を保存しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料の保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCancelKnowledgeEdit(item: KnowledgeListItem) {
+    try {
+      setLoading(true);
+      onError(null);
+      const result = await api.getKnowledgeContent(projectId, item.knowledgeId);
+      setKnowledgeTitleDraft(result.meta.title);
+      setKnowledgeContentDraft(result.content);
+      setKnowledgeEditing(false);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料本文の再読み込みに失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDeleteKnowledge(item: KnowledgeListItem) {
+    if (!window.confirm(`資料「${item.title}」を削除しますか？`)) return;
+    try {
+      setLoading(true);
+      onError(null);
+      await api.deleteKnowledge(projectId, item.knowledgeId);
+      if (knowledgeExpandedId === item.knowledgeId) {
+        setKnowledgeExpandedId(null);
+        setKnowledgeEditing(false);
+      }
+      await refreshKnowledge();
+      onFlashMessage('資料を削除しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '資料の削除に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const worldExcerpt = extractExcerpt(worldText, 120);
   const styleTags = deriveStyleTags(project.activePresetIds, categories);
+  const enabledKnowledgeChars = knowledgeItems
+    .filter((item) => item.enabled && item.contentStatus === 'ok')
+    .reduce((sum, item) => sum + item.charCount, 0);
+  const brokenEnabledKnowledgeCount = knowledgeItems.filter(
+    (item) => item.enabled && item.contentStatus !== 'ok'
+  ).length;
 
   if (!categories) return <div className="loading">読み込み中…</div>;
 
@@ -364,6 +547,7 @@ export default function WorkSettingsTab({
             {projectDetails.styleSample.trim() && <span className="settings-badge preset">見本あり</span>}
             {!worldText.trim() && <span className="settings-badge warn">世界未設定 ⚠</span>}
             <span className="settings-meta">人物 {characters.length}人</span>
+            <span className="settings-meta">資料 {knowledgeItems.length}件</span>
           </div>
         </header>
         <div className="detail-settings-tabs" role="tablist" aria-label="詳細設定">
@@ -402,6 +586,15 @@ export default function WorkSettingsTab({
             onClick={() => setDetailSettingsTab('characters')}
           >
             人物
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={detailSettingsTab === 'knowledge'}
+            className={detailSettingsTab === 'knowledge' ? 'active' : ''}
+            onClick={() => setDetailSettingsTab('knowledge')}
+          >
+            資料 {knowledgeItems.length > 0 ? knowledgeItems.length : ''}
           </button>
           <button
             type="button"
@@ -519,6 +712,38 @@ export default function WorkSettingsTab({
               <summary>システムプロンプト全文（{systemPrompt.length} 字）</summary>
               <pre className="summary-prewrap">{systemPrompt}</pre>
             </details>
+            {categories?.intimacy && (
+              <details className="summary-details">
+                <summary>
+                  {categories.intimacy.label}（
+                  {Object.values(categories.intimacy.items).find(
+                    (item) => item.id === (presets.intimacyPreset ?? project.activePresetIds.intimacy)
+                  )?.label ?? '未選択'}
+                  ）
+                </summary>
+                <p className="settings-help">
+                  性的な場面をどう扱うかを選びます。露骨さ・直接性・耽美と生々しさの度合いをまとめて指定します。
+                </p>
+                <div className="preset-options">
+                  {Object.values(categories.intimacy.items).map((item) => (
+                    <label key={item.id} className="preset-option">
+                      <input
+                        type="radio"
+                        name="intimacyPreset"
+                        value={item.id}
+                        checked={(presets.intimacyPreset ?? project.activePresetIds.intimacy) === item.id}
+                        disabled={loading}
+                        onChange={() => handleIntimacyChange(item.id)}
+                      />
+                      <span>
+                        <strong>{item.label}</strong>
+                        <span className="preset-option-detail">{item.text}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </details>
+            )}
             <div className="summary-card-actions">
               <button
                 onClick={() => {
@@ -799,6 +1024,175 @@ export default function WorkSettingsTab({
       </section>
       )}
 
+      {detailSettingsTab === 'knowledge' && (
+      <section className="summary-card detail-settings-panel-card">
+        <header className="summary-card-header">
+          <h2>資料</h2>
+          <div className="summary-card-badges">
+            <span className="settings-meta">有効 {enabledKnowledgeChars.toLocaleString()} 字</span>
+            {enabledKnowledgeChars > KNOWLEDGE_WARN_CHARS && (
+              <span className="settings-badge warn">多め ⚠</span>
+            )}
+            {brokenEnabledKnowledgeCount > 0 && (
+              <span className="settings-badge warn">本文なし {brokenEnabledKnowledgeCount}件</span>
+            )}
+          </div>
+        </header>
+
+        <div
+          className="knowledge-drop-zone"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            void handleKnowledgeFiles(e.dataTransfer.files);
+          }}
+        >
+          <label className="knowledge-file-button">
+            資料を追加
+            <input
+              type="file"
+              accept=".md,.txt"
+              multiple
+              onChange={(e) => {
+                if (e.target.files) void handleKnowledgeFiles(e.target.files);
+                e.currentTarget.value = '';
+              }}
+              disabled={knowledgeUploading || loading}
+            />
+          </label>
+          <span className="settings-meta">md / txt をここにドロップできます</span>
+        </div>
+
+        {enabledKnowledgeChars > KNOWLEDGE_WARN_CHARS && (
+          <p className="knowledge-warning">
+            資料が多く、モデルによってはコンテキストを圧迫します。注入は止めません。
+          </p>
+        )}
+
+        {knowledgeItems.length === 0 ? (
+          <p className="summary-empty">資料はまだありません。用語集や年表などを追加すると、以後の生成で毎回参照されます。</p>
+        ) : (
+          <ul className="knowledge-list">
+            {knowledgeItems.map((item, index) => {
+              const expanded = knowledgeExpandedId === item.knowledgeId;
+              return (
+                <li key={item.knowledgeId} className="knowledge-item">
+                  <div className="knowledge-row">
+                    <button
+                      type="button"
+                      className="knowledge-title-button"
+                      onClick={() => handleExpandKnowledge(item)}
+                    >
+                      <strong>{item.title}</strong>
+                      <span className="settings-meta">
+                        {item.charCount.toLocaleString()} 字 / .{item.extension}
+                      </span>
+                    </button>
+                    <div className="knowledge-row-actions">
+                      {item.contentStatus !== 'ok' && (
+                        <span className="settings-badge warn">
+                          {item.contentStatus === 'missing' ? '本文なし' : '空'}
+                        </span>
+                      )}
+                      {item.charCount > 5000 && <span className="settings-badge warn">5千字超</span>}
+                      <label className="knowledge-toggle">
+                        <input
+                          type="checkbox"
+                          checked={item.enabled}
+                          onChange={() => handleToggleKnowledge(item)}
+                          disabled={loading}
+                        />
+                        有効
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => handleMoveKnowledge(index, -1)}
+                        disabled={loading || index === 0}
+                        aria-label={`${item.title}を上へ`}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleMoveKnowledge(index, 1)}
+                        disabled={loading || index === knowledgeItems.length - 1}
+                        aria-label={`${item.title}を下へ`}
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => handleDeleteKnowledge(item)}
+                        disabled={loading}
+                      >
+                        削除
+                      </button>
+                    </div>
+                  </div>
+
+                  {expanded && (
+                    <div className="knowledge-editor">
+                      {!knowledgeEditing ? (
+                        <>
+                          <pre className="summary-prewrap">
+                            {knowledgeContentDraft || '（本文が空です）'}
+                          </pre>
+                          <div className="summary-card-actions">
+                            <button
+                              type="button"
+                              onClick={() => setKnowledgeEditing(true)}
+                              disabled={loading}
+                            >
+                              編集
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <label>
+                            タイトル
+                            <input
+                              type="text"
+                              value={knowledgeTitleDraft}
+                              maxLength={100}
+                              onChange={(e) => setKnowledgeTitleDraft(e.target.value)}
+                            />
+                          </label>
+                          <textarea
+                            value={knowledgeContentDraft}
+                            onChange={(e) => setKnowledgeContentDraft(e.target.value)}
+                            rows={14}
+                          />
+                          <div className="summary-card-actions">
+                            <button
+                              type="button"
+                              onClick={() => handleCancelKnowledgeEdit(item)}
+                              disabled={loading}
+                            >
+                              キャンセル
+                            </button>
+                            <button
+                              type="button"
+                              className="primary"
+                              onClick={() => handleSaveKnowledge(item)}
+                              disabled={loading || !knowledgeTitleDraft.trim()}
+                            >
+                              保存
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+      )}
+
       {detailSettingsTab === 'story' && (
       <section className="summary-card detail-settings-panel-card">
         <header className="summary-card-header">
@@ -915,6 +1309,26 @@ export default function WorkSettingsTab({
 
     </div>
   );
+}
+
+async function decodeKnowledgeFile(file: File): Promise<string> {
+  const lower = file.name.toLowerCase();
+  if (!lower.endsWith('.md') && !lower.endsWith('.txt')) {
+    throw new Error(`${file.name}: md / txt のみ追加できます`);
+  }
+  const buffer = await file.arrayBuffer();
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    const decoded = new TextDecoder('shift_jis').decode(buffer);
+    const chars = [...decoded];
+    const replacementCount = chars.filter((char) => char === '\uFFFD').length;
+    const ratio = chars.length === 0 ? 0 : replacementCount / chars.length;
+    if (ratio > 0.005) {
+      throw new Error(`${file.name}: 文字コードを判定できませんでした`);
+    }
+    return decoded;
+  }
 }
 
 // NOTE: world 冒頭を要約代わりに使う。段落境界と maxChars で切り詰める。

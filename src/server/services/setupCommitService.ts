@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import { PRESETS_PATH } from '../config.js';
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { DEFAULT_ACTIVE_PRESET_IDS } from '../types/index.js';
 import type {
   ActivePresets,
   Character,
@@ -21,15 +22,6 @@ import type {
 } from '../types/index.js';
 import type { PresetIdsByCategory } from './setupPromptBuilder.js';
 import { normalizeComparableText } from './setupDraftPatchService.js';
-
-const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
-  genre: 'modern-drama',
-  style: 'natural-dialogue',
-  pov: 'third-person-close',
-  pacing: 'standard',
-  density: 'balanced',
-  relationshipPacing: 'standard',
-};
 
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
@@ -72,7 +64,7 @@ export function normalizeSetupCommitPlan(input: {
   const raw = isRecord(input.raw) ? input.raw : {};
   const rawProject = isRecord(raw.project) ? raw.project : {};
   const fallbackPresets: Partial<ActivePresets> = {
-    ...DEFAULT_ACTIVE_PRESETS,
+    ...DEFAULT_ACTIVE_PRESET_IDS,
     ...input.session.projectSettings.activePresetIds,
   };
   const activePresetIds = normalizeActivePresetIds(
@@ -80,6 +72,10 @@ export function normalizeSetupCommitPlan(input: {
     fallbackPresets,
     input.presetIdsByCategory
   );
+  const firstWishSuggestion =
+    raw.firstWishSuggestion === undefined
+      ? input.session.draft.openingSeeds[0] || ''
+      : asString(raw.firstWishSuggestion);
 
   const characters = normalizeCharacters(raw.characters, now, input.session);
   const projectInput: CreateProjectBody = {
@@ -97,10 +93,7 @@ export function normalizeSetupCommitPlan(input: {
     activeModelName: input.session.model.modelName,
     activePresetIds,
     coreConcept: truncate(asString(raw.coreConcept) || input.session.draft.coreConcept, 300),
-    firstWishSuggestion: truncate(
-      asString(raw.firstWishSuggestion) || input.session.draft.openingSeeds[0] || '',
-      300
-    ),
+    firstWishSuggestion: truncate(firstWishSuggestion, 300),
     styleSample: truncate(asString(raw.styleSample), 1000),
     worldText: asString(raw.worldText) || buildFallbackWorldText(input.session),
     characters,
@@ -157,6 +150,7 @@ function normalizeActivePresetIds(
     'conversation',
     'relationshipPacing',
     'constraint',
+    'intimacy',
   ];
 
   for (const key of keys) {
@@ -171,7 +165,7 @@ function normalizeActivePresetIds(
   }
 
   return {
-    ...DEFAULT_ACTIVE_PRESETS,
+    ...DEFAULT_ACTIVE_PRESET_IDS,
     ...result,
   };
 }

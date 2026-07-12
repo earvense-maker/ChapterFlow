@@ -9,6 +9,7 @@ export interface ContextUsageEstimateInput {
   outputLength: number;
   summaryText: string;
   recentContextText: string;
+  knowledgeText?: string;
   modelLimits?: {
     contextWindowTokens: number;
     inputTokenLimit?: number;
@@ -33,6 +34,7 @@ export interface ContextUsageEstimate {
   usageRatio: number;
   summaryChars: number;
   recentContextChars: number;
+  knowledgeChars: number;
 }
 
 export function estimateContextUsage(input: ContextUsageEstimateInput): ContextUsageEstimate {
@@ -67,6 +69,7 @@ export function estimateContextUsage(input: ContextUsageEstimateInput): ContextU
     ),
     summaryChars: input.summaryText.length,
     recentContextChars: input.recentContextText.length,
+    knowledgeChars: input.knowledgeText?.length ?? 0,
   };
 }
 

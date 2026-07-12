@@ -1,45 +1,42 @@
-import { act, render, screen } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Reader from '../../src/client/components/Reader';
 import { api } from '../../src/client/clientApi';
-import type { ReaderState } from '../../src/shared/types';
+import type { GenerationRecord, ReaderState } from '../../src/shared/types';
 
 vi.mock('../../src/client/clientApi', () => ({
   api: {
+    generate: vi.fn(),
     getReaderState: vi.fn(),
     getKnowledge: vi.fn(),
     updateState: vi.fn(),
   },
 }));
 
+const generate = vi.mocked(api.generate);
 const getReaderState = vi.mocked(api.getReaderState);
 const getKnowledge = vi.mocked(api.getKnowledge);
 
-describe('Reader story state polling', () => {
+describe('Reader interactions', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    generate.mockReset();
     getReaderState.mockReset();
     getKnowledge.mockReset();
     getKnowledge.mockResolvedValue([]);
   });
 
   afterEach(() => {
-    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it('keeps polling pending story state refresh without overlapping requests', async () => {
-    const pendingState = readerState('pending');
-    const freshState = readerState('fresh');
-    const slowReload = deferred<ReaderState>();
+  it('submits an empty wish with Ctrl+Enter just like the generate button', async () => {
+    getReaderState.mockResolvedValue(readerState());
+    generate.mockResolvedValue(generationRecord());
 
-    getReaderState
-      .mockResolvedValueOnce(pendingState)
-      .mockReturnValueOnce(slowReload.promise)
-      .mockResolvedValueOnce(freshState);
-
-    render(
+    const { container } = render(
       <Reader
-        projectId="proj-reader-poll"
+        projectId="proj-reader-interaction"
         onBack={vi.fn()}
         onOpenWorkSettings={vi.fn()}
         onOpenTechSettings={vi.fn()}
@@ -47,45 +44,27 @@ describe('Reader story state polling', () => {
       />
     );
 
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(screen.getByText('物語の状態を更新中です')).toBeInTheDocument();
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    const textarea = container.querySelector('.wish-input textarea');
+    expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
 
-    await act(async () => {
-      vi.advanceTimersByTime(2000);
-    });
-    expect(getReaderState).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(textarea!, { key: 'Enter', ctrlKey: true });
 
-    await act(async () => {
-      vi.advanceTimersByTime(2000);
-    });
-    expect(getReaderState).toHaveBeenCalledTimes(2);
-
-    await act(async () => {
-      slowReload.resolve(pendingState);
-      await slowReload.promise;
-    });
-
-    await act(async () => {
-      vi.advanceTimersByTime(2000);
-      await Promise.resolve();
-    });
-    expect(getReaderState).toHaveBeenCalledTimes(3);
-
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(screen.queryByText('物語の状態を更新中です')).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(generate).toHaveBeenCalledWith('proj-reader-interaction', {
+        wish: '',
+        mode: 'continue',
+      })
+    );
   });
 });
 
-function readerState(status: 'pending' | 'fresh'): ReaderState {
+function readerState(): ReaderState {
   return {
     project: {
       schemaVersion: 1,
-      projectId: 'proj-reader-poll',
-      title: 'Reader Poll Test',
+      projectId: 'proj-reader-interaction',
+      title: 'Reader Interaction Test',
       createdAt: '2026-07-04T12:00:00.000Z',
       updatedAt: '2026-07-04T12:00:00.000Z',
       activeModelProvider: 'openai',
@@ -108,8 +87,8 @@ function readerState(status: 'pending' | 'fresh'): ReaderState {
       lastAcceptedGenerationId: null,
       pendingMemoryCandidateIds: [],
       storyStateRefresh: {
-        status,
-        generationId: 'gen-reader-poll',
+        status: 'fresh',
+        generationId: null,
         updatedAt: '2026-07-04T12:00:00.000Z',
       },
       uiState: {
@@ -133,13 +112,24 @@ function readerState(status: 'pending' | 'fresh'): ReaderState {
   };
 }
 
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
+function generationRecord(): GenerationRecord {
+  return {
+    generationId: 'gen-reader-interaction',
+    episodeId: 'episode-reader-interaction',
+    sceneId: 'scene-reader-interaction',
+    request: { wish: '', outputLength: 3000, previousContextText: '' },
+    responseText: 'Generated text',
+    usedPresets: {
+      genre: 'modern-drama',
+      style: 'natural-dialogue',
+      pov: 'third-person-close',
+      pacing: 'standard',
+      density: 'balanced',
+    },
+    usedModel: { provider: 'openai', modelName: 'gpt-test' },
+    referencedMemoryIds: [],
+    status: 'draft',
+    createdAt: '2026-07-04T12:01:00.000Z',
+    parentGenerationId: null,
+  };
 }

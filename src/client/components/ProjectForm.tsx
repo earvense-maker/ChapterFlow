@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import { DEFAULT_ACTIVE_PRESET_IDS } from '@shared/defaults';
 import type { Character, ModelProviderInfo } from '@shared/types';
 
 interface Props {
@@ -12,15 +13,7 @@ type PresetCategory = {
   items: Record<string, { id: string; label: string; text: string }>;
 };
 
-const defaultPresetSelection: Record<string, string> = {
-  genre: 'modern-drama',
-  style: 'natural-dialogue',
-  pov: 'third-person-close',
-  pacing: 'standard',
-  density: 'balanced',
-  conversation: 'standard',
-  relationshipPacing: 'standard',
-};
+const defaultPresetSelection: Record<string, string> = { ...DEFAULT_ACTIVE_PRESET_IDS };
 
 const roleOptions: { value: Character['role']; label: string }[] = [
   { value: 'protagonist', label: '主人公' },
@@ -91,6 +84,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
         relationshipPacing: selection.relationshipPacing,
         distance: selection.distance,
         constraint: selection.constraint,
+        intimacy: selection.intimacy,
       };
       if (apiKey.trim()) {
         await api.saveCredential(provider, apiKey.trim());

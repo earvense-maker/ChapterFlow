@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import * as projectService from '../../src/server/services/projectService';
+import * as knowledgeService from '../../src/server/services/knowledgeService';
 import * as storage from '../../src/server/services/storageService';
 
 const createdProjectIds: string[] = [];
@@ -130,6 +131,55 @@ describe('project settings validation', () => {
     });
   });
 
+  it('copies knowledge files when duplicating a project', async () => {
+    const source = await createTrackedProject();
+    const knowledge = await knowledgeService.createKnowledge(source.projectId, {
+      fileName: '用語集.md',
+      content: '固有名詞A',
+    });
+
+    const duplicate = await projectService.createProject({
+      duplicateFrom: source.projectId,
+      title: 'Copied Knowledge',
+    });
+    createdProjectIds.push(duplicate.projectId);
+
+    const copiedList = await knowledgeService.listKnowledge(duplicate.projectId);
+    const copiedContent = await knowledgeService.getKnowledgeContent(
+      duplicate.projectId,
+      knowledge.knowledgeId
+    );
+
+    expect(copiedList).toMatchObject([
+      { knowledgeId: knowledge.knowledgeId, title: '用語集', contentStatus: 'ok' },
+    ]);
+    expect(copiedContent.content).toBe('固有名詞A');
+  });
+
+  it('does not copy broken knowledge index entries without content', async () => {
+    const source = await createTrackedProject();
+    const missing = await knowledgeService.createKnowledge(source.projectId, {
+      fileName: 'missing.md',
+      content: 'deleted',
+    });
+    const kept = await knowledgeService.createKnowledge(source.projectId, {
+      fileName: 'kept.md',
+      content: '残す資料',
+    });
+    await storage.deleteKnowledgeContent(source.projectId, missing.knowledgeId, missing.extension);
+
+    const duplicate = await projectService.createProject({
+      duplicateFrom: source.projectId,
+      title: 'Copied Partial Knowledge',
+    });
+    createdProjectIds.push(duplicate.projectId);
+
+    const copiedList = await knowledgeService.listKnowledge(duplicate.projectId);
+    expect(copiedList).toMatchObject([
+      { knowledgeId: kept.knowledgeId, title: 'kept', contentStatus: 'ok', order: 0 },
+    ]);
+  });
+
   it('rejects invalid samplingConfig values', async () => {
     const project = await createTrackedProject();
 
@@ -196,6 +246,8 @@ describe('project settings validation', () => {
     expect(project.activeModelProvider).toBe('gemini');
     expect(project.activeModelName).toBe('gemini-1.5-flash');
     expect(project.activePresetIds.genre).toBe('romance');
+    expect(project.activePresetIds.conversation).toBe('standard');
+    expect(project.activePresetIds.intimacy).toBe('suggestive');
     const state = await storage.readState(project.projectId);
     expect(state?.storyStateRefresh).toMatchObject({
       status: 'fresh',
@@ -203,6 +255,8 @@ describe('project settings validation', () => {
     });
     expect(worldText).toBe('静かな管理都市');
     expect(characters).toHaveLength(1);
+    expect(presets?.conversationPreset).toBe('standard');
+    expect(presets?.intimacyPreset).toBe('suggestive');
     expect(presets?.customSystemPrompt).toBe('本文だけを書く');
   });
 });

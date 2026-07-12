@@ -32,7 +32,7 @@ const PROVIDERS: ModelProviderInfo[] = [
   {
     name: 'deepseek',
     label: 'DeepSeek',
-    defaultModel: 'deepseek-v4-flash',
+    defaultModel: 'deepseek-v4-pro',
     apiKeyPlaceholder: 'sk-...',
     apiKeyHelp: 'DeepSeek APIキーを保存します。OpenAI互換APIとして利用します。',
   },

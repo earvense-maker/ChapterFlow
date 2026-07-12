@@ -4,6 +4,16 @@ import { createEmptySetupDraft } from '../../src/server/services/setupDraftPatch
 import type { SetupSession } from '../../src/server/types/index';
 
 const now = '2026-07-04T12:00:00.000Z';
+const defaultPresetIdsByCategory = {
+  genre: ['modern-drama'],
+  style: ['natural-dialogue'],
+  pov: ['third-person-close'],
+  pacing: ['standard'],
+  density: ['balanced'],
+  conversation: ['standard'],
+  relationshipPacing: ['standard'],
+  intimacy: ['suggestive'],
+};
 
 function session(): SetupSession {
   return {
@@ -145,6 +155,58 @@ describe('setupCommitService', () => {
     });
 
     expect(normalized.projectInput.title).toBe('仮題：気弱な絵師と強気な岡っ引きの事件もの');
+  });
+
+  it('does not fall back to opening seeds when the edited first wish is empty', () => {
+    const setupSession = session();
+    setupSession.draft.openingSeeds = ['Start from the rainy library.'];
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: { title: 'Empty first wish' },
+        firstWishSuggestion: '',
+      },
+    });
+
+    expect(normalized.projectInput.firstWishSuggestion).toBeUndefined();
+  });
+
+  it('falls back to the first opening seed only when first wish is omitted', () => {
+    const setupSession = session();
+    setupSession.draft.openingSeeds = ['Start from the rainy library.'];
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: { title: 'Missing first wish' },
+      },
+    });
+
+    expect(normalized.projectInput.firstWishSuggestion).toBe('Start from the rainy library.');
+  });
+
+  it('fills shared preset defaults when an older setup session has no active presets', () => {
+    const setupSession = session();
+    setupSession.projectSettings.activePresetIds = {};
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: { title: 'Default presets' },
+      },
+    });
+
+    expect(normalized.projectInput.activePresetIds).toMatchObject({
+      conversation: 'standard',
+      intimacy: 'suggestive',
+    });
   });
 
   it('merges draft ng and tone into memories even when LLM returns none', () => {

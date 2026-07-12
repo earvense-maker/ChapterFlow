@@ -303,6 +303,19 @@ legend {
   margin: 0;
 }
 
+.preset-option > span {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.preset-option-detail {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .form-actions {
   display: flex;
   justify-content: flex-end;
@@ -492,6 +505,10 @@ legend {
   text-align: center;
 }
 
+.setup-welcome-message {
+  max-width: 520px;
+}
+
 .setup-suggestions {
   display: flex;
   gap: 0.5rem;
@@ -500,6 +517,11 @@ legend {
 
 .setup-suggestions button {
   font-size: 0.9rem;
+}
+
+.setup-suggestions--starter {
+  align-self: start;
+  max-width: 520px;
 }
 
 .setup-input {
@@ -538,6 +560,29 @@ legend {
   background: rgba(184, 150, 89, 0.13);
   color: var(--text);
   font-size: 0.84rem;
+}
+
+.setup-draft-updates {
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(107, 142, 159, 0.55);
+  border-radius: var(--radius);
+  background: rgba(107, 142, 159, 0.12);
+  font-size: 0.84rem;
+}
+
+.setup-draft-updates strong {
+  display: block;
+}
+
+.setup-draft-updates ul {
+  margin: 0.35rem 0;
+  padding-left: 1.2rem;
+}
+
+.setup-draft-updates p {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
 }
 
 .setup-draft-section {
@@ -603,6 +648,25 @@ legend {
   background: var(--sticky-bg-soft);
 }
 
+.setup-draft-section.is-recently-updated {
+  box-shadow: inset 3px 0 0 rgba(184, 150, 89, 0.9);
+}
+
+.setup-draft-edit-row.is-recently-updated {
+  border-color: rgba(184, 150, 89, 0.85);
+  background: rgba(184, 150, 89, 0.12);
+}
+
+.setup-draft-update-badge {
+  justify-self: start;
+  padding: 0.12rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(184, 150, 89, 0.2);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
 .setup-draft-textarea {
   min-height: 76px;
   font-size: 0.92rem;
@@ -665,6 +729,46 @@ legend {
   border: 1px solid rgba(107, 142, 159, 0.55);
   border-radius: var(--radius);
   background: rgba(107, 142, 159, 0.12);
+}
+
+.setup-preview-adjustments {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(107, 142, 159, 0.36);
+}
+
+.setup-preview-adjustment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.setup-preview-adjustment-chips button,
+.setup-preview-adjustment-form button {
+  min-height: 2rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.setup-preview-adjustment-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.setup-preview-adjustment-form label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.setup-preview-adjustment-note {
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 .setup-commit-edit-list {
@@ -821,10 +925,20 @@ legend {
   margin: 0 auto;
   display: flex;
   gap: 0.5rem;
+  align-items: flex-end;
 }
 
-.wish-input input {
+.wish-input input,
+.wish-input textarea {
   flex: 1;
+}
+
+.wish-input textarea {
+  resize: none;
+  overflow-y: auto;
+  min-height: 2.4rem;
+  line-height: 1.5;
+  font: inherit;
 }
 
 .wish-input button,
@@ -1201,6 +1315,32 @@ button:disabled:has(.generating-label) {
 }
 
 [data-theme='dark'] .reader-context-badge {
+  color: #e0b667;
+}
+
+.reader-knowledge-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(100%, 32rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  background: rgba(107, 142, 159, 0.14);
+  color: var(--text);
+  border: 1px solid rgba(107, 142, 159, 0.36);
+}
+
+.reader-knowledge-badge.warn {
+  background: rgba(220, 170, 70, 0.2);
+  color: #a97300;
+  border-color: rgba(220, 170, 70, 0.5);
+}
+
+[data-theme='dark'] .reader-knowledge-badge.warn {
   color: #e0b667;
 }
 
@@ -1698,6 +1838,114 @@ button:disabled:has(.generating-label) {
   font-size: 0.85rem;
 }
 
+.knowledge-drop-zone {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+}
+
+.knowledge-file-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.4rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.knowledge-file-button input {
+  display: none;
+}
+
+.knowledge-warning {
+  margin: 0 0 0.75rem;
+  color: #a97300;
+  font-size: 0.85rem;
+}
+
+[data-theme='dark'] .knowledge-warning {
+  color: #e0b667;
+}
+
+.knowledge-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.knowledge-item {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.knowledge-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.knowledge-title-button {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.knowledge-title-button:hover {
+  background: transparent;
+  color: var(--accent);
+}
+
+.knowledge-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.knowledge-row-actions button {
+  min-height: 2rem;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.82rem;
+}
+
+.knowledge-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.knowledge-editor {
+  margin-top: 0.65rem;
+}
+
+.knowledge-editor label {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
 .refine-scan-button {
   padding: 0.35rem 0.85rem;
   font-size: 0.85rem;
@@ -2187,6 +2435,10 @@ button:disabled:has(.generating-label) {
     grid-template-columns: 1fr;
   }
 
+  .setup-preview-adjustment-form {
+    grid-template-columns: 1fr;
+  }
+
   .setup-model-controls {
     grid-template-columns: 1fr;
   }
@@ -2280,7 +2532,8 @@ button:disabled:has(.generating-label) {
     align-items: stretch;
   }
 
-  .wish-input input {
+  .wish-input input,
+  .wish-input textarea {
     flex: 1 1 auto;
     min-width: 0;
   }
