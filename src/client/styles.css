@@ -821,10 +821,20 @@ legend {
   margin: 0 auto;
   display: flex;
   gap: 0.5rem;
+  align-items: flex-end;
 }
 
-.wish-input input {
+.wish-input input,
+.wish-input textarea {
   flex: 1;
+}
+
+.wish-input textarea {
+  resize: none;
+  overflow-y: auto;
+  min-height: 2.4rem;
+  line-height: 1.5;
+  font: inherit;
 }
 
 .wish-input button,
@@ -2414,7 +2424,8 @@ button:disabled:has(.generating-label) {
     align-items: stretch;
   }
 
-  .wish-input input {
+  .wish-input input,
+  .wish-input textarea {
     flex: 1 1 auto;
     min-width: 0;
   }

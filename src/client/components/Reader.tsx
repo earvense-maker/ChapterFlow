@@ -26,6 +26,8 @@ interface Props {
 // NOTE: 文脈警告バッジを出す使用率のしきい値。0.7=70%。
 const CONTEXT_WARNING_THRESHOLD = 0.7;
 
+const WISH_TEXTAREA_MAX_HEIGHT = 240;
+
 export default function Reader({
   projectId,
   onBack,
@@ -58,7 +60,7 @@ export default function Reader({
   const [fontSize, setFontSize] = useState(18);
   const [selectedText, setSelectedText] = useState('');
   const [selectionButtonPosition, setSelectionButtonPosition] = useState<{ top: number; left: number } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -102,6 +104,14 @@ export default function Reader({
       setWish((current) => (current.trim() ? current : state.project.firstWishSuggestion!.trim()));
     }
   }
+
+  // NOTE: wish textarea を内容量に合わせて縦に伸ばす。少ない行数では CSS の min-height を使う。
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, WISH_TEXTAREA_MAX_HEIGHT)}px`;
+  }, [wish]);
 
   useEffect(() => {
     initialWishPrefilledRef.current = false;
@@ -637,12 +647,23 @@ export default function Reader({
             handleGenerate('continue');
           }}
         >
-          <input
+          <textarea
             ref={inputRef}
-            type="text"
+            rows={1}
             value={wish}
             onChange={(e) => setWish(e.target.value)}
-            placeholder="もっと不穏に、会話多めで、まだ告白しない…"
+            onKeyDown={(e) => {
+              // NOTE: Ctrl/Cmd+Enter=送信 / 素の Enter=改行。IME 変換中は無視。
+              if (
+                e.key === 'Enter' &&
+                (e.ctrlKey || e.metaKey) &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                if (!loading) handleGenerate('continue');
+              }
+            }}
+            placeholder="次のシーンへの指示（Ctrl+Enterで送信）"
             disabled={loading}
           />
           <button type="submit" className="primary" disabled={loading}>
