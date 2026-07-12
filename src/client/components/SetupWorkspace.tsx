@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { GeneratingLabel } from './GeneratingLabel';
 import LightMarkdown from './LightMarkdown';
+import { DEFAULT_ACTIVE_PRESET_IDS } from '@shared/defaults';
 import type {
   CharacterRole,
   ModelProviderInfo,
@@ -23,6 +24,15 @@ interface Props {
 }
 
 type StringDraftSection = 'relationshipSeeds' | 'world' | 'tone' | 'ng' | 'openingSeeds';
+type DraftItemSection = 'confirmed' | 'candidates' | 'undecided' | 'characters';
+type DraftChangeKind = 'added' | 'updated' | 'archived';
+type DraftChanges = Record<string, DraftChangeKind>;
+
+interface DraftChangeSummary {
+  key: string;
+  kind: DraftChangeKind;
+  text: string;
+}
 
 interface PendingDescriptor {
   id: string;
@@ -33,14 +43,7 @@ const SETUP_SESSION_STORAGE_KEY = 'yumeweaving:lastSetupSessionId';
 const DEFAULT_PROJECT_SETTINGS = {
   outputLength: 3000,
   streamingEnabled: false,
-  activePresetIds: {
-    genre: 'modern-drama',
-    style: 'natural-dialogue',
-    pov: 'third-person-close',
-    pacing: 'standard',
-    density: 'balanced',
-    relationshipPacing: 'standard',
-  },
+  activePresetIds: { ...DEFAULT_ACTIVE_PRESET_IDS },
 };
 
 const ROLE_LABELS: Record<CharacterRole, string> = {
@@ -50,11 +53,38 @@ const ROLE_LABELS: Record<CharacterRole, string> = {
   other: 'その他',
 };
 
+const DRAFT_STRING_SECTION_LABELS = {
+  relationshipSeeds: '関係性',
+  world: '世界観',
+  tone: '好み・文体',
+  ng: 'NG',
+  openingSeeds: '冒頭候補',
+} satisfies Record<StringDraftSection, string>;
+
+const COLD_START_ACTIONS: SetupSuggestedAction[] = [
+  {
+    label: '好きな作品の雰囲気から',
+    message: '好きな作品の雰囲気から考えたいです。私に合いそうな雰囲気をいくつか提案してください。',
+  },
+  {
+    label: '関係性から決めたい',
+    message: '関係性から決めたいです。読みたくなる二人の関係性をいくつか提案してください。',
+  },
+  {
+    label: 'おまかせで候補を出して',
+    message: 'おまかせで候補を出して。読みたくなる物語の方向を3つくらい提案してください。',
+  },
+];
+
+const PREVIEW_STYLE_HINTS = ['もっと軽く', 'しっとり', '会話多め'];
+
 export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: Props) {
   const [session, setSession] = useState<SetupSession | null>(null);
   const [message, setMessage] = useState('');
   const [suggestedActions, setSuggestedActions] = useState<SetupSuggestedAction[]>([]);
   const [previewText, setPreviewText] = useState('');
+  const [previewStyleHint, setPreviewStyleHint] = useState('');
+  const [draftChangeSummary, setDraftChangeSummary] = useState<DraftChangeSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -191,6 +221,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           if (ignore) return;
           setSession(synced.session);
           setDirtyDraftEditKeys(new Set());
+          clearDraftChanges();
           rememberSetupSession(synced.session.sessionId);
           setSuggestedActions([]);
           if (synced.error) setError(synced.error);
@@ -201,6 +232,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         if (ignore) return;
         setSession(result.session);
         setDirtyDraftEditKeys(new Set());
+        clearDraftChanges();
         rememberSetupSession(result.sessionId);
         setSuggestedActions(result.suggestedActions);
       } catch (err) {
@@ -260,6 +292,13 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   const modelUnavailable = modelAvailabilityPending || currentProviderUnavailable || currentProviderMissingKey;
   const busy = sending || savingDraft || previewing || committing || creatingNew || Boolean(commitPlan);
   const hasUnsavedDraftEdits = dirtyDraftEditKeys.size > 0;
+  const isColdStart = Boolean(session && session.messages.length === 0 && !hasMeaningfulContent);
+  const visibleSuggestedActions = isColdStart ? COLD_START_ACTIONS : suggestedActions;
+  const draftChanges = useMemo<DraftChanges>(
+    () => Object.fromEntries(draftChangeSummary.map(({ key, kind }) => [key, kind])),
+    [draftChangeSummary]
+  );
+  const hasDraftChanges = draftChangeSummary.length > 0;
 
   const markDraftDirty = useCallback((key: string, dirty: boolean) => {
     setDirtyDraftEditKeys((current) => {
@@ -274,6 +313,23 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     });
   }, []);
 
+  function clearDraftChanges() {
+    setDraftChangeSummary([]);
+  }
+
+  function applySessionWithDraftChanges(
+    previousSession: SetupSession,
+    nextSession: SetupSession,
+    options: { preserveSummaryOnRevisionOnly?: boolean } = {}
+  ) {
+    setSession(nextSession);
+    const changes = collectDraftChanges(previousSession.draft, nextSession.draft);
+    const revisionChanged = nextSession.revision !== previousSession.revision;
+    if (changes.length > 0 || (revisionChanged && !options.preserveSummaryOnRevisionOnly)) {
+      setDraftChangeSummary(changes);
+    }
+  }
+
   async function startNewSession() {
     if (
       (session?.messages.length || hasUnsavedDraftEdits) &&
@@ -283,6 +339,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       setCreatingNew(true);
       setError(null);
       setPreviewText('');
+      setPreviewStyleHint('');
       setCommitPlan(null);
       setCommitRevision(null);
       if (session?.status === 'active') {
@@ -291,6 +348,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       const result = await createDefaultSetupSession(providers);
       setSession(result.session);
       setDirtyDraftEditKeys(new Set());
+      clearDraftChanges();
       setPendingConfirmed([]);
       setPendingUndecided([]);
       setPendingCandidates([]);
@@ -340,7 +398,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
             setStreamingMessage((current) => current + delta);
           },
           onResult: (response) => {
-            setSession(response.session);
+            applySessionWithDraftChanges(session, response.session);
             setDirtyDraftEditKeys(new Set());
             rememberSetupSession(response.session.sessionId);
             setSuggestedActions(response.suggestedActions);
@@ -380,7 +438,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 message: trimmed,
                 revision: session.revision,
               });
-        setSession(result.session);
+        applySessionWithDraftChanges(session, result.session);
         setDirtyDraftEditKeys(new Set());
         rememberSetupSession(result.session.sessionId);
         setSuggestedActions(result.suggestedActions);
@@ -389,7 +447,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         setStreamingMessage('');
       } catch (fallbackErr) {
         setError(fallbackErr instanceof Error ? fallbackErr.message : '送信に失敗しました');
-        const latest = await reloadLatestSession(session.sessionId);
+        const latest = await reloadLatestSession(session.sessionId, true);
         const lastMessage = latest?.messages[latest.messages.length - 1];
         setShowRetry(lastMessage?.role === 'user');
         setStreamingMessage('');
@@ -421,14 +479,14 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       setError(null);
       setPreviewText('');
       const result = await api.retrySetupMessage(session.sessionId, {});
-      setSession(result.session);
+      applySessionWithDraftChanges(session, result.session);
       setDirtyDraftEditKeys(new Set());
       rememberSetupSession(result.session.sessionId);
       setSuggestedActions(result.suggestedActions);
       setShowRetry(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '再試行に失敗しました');
-      const latest = await reloadLatestSession(session.sessionId);
+      const latest = await reloadLatestSession(session.sessionId, true);
       const lastMessage = latest?.messages[latest.messages.length - 1];
       setShowRetry(lastMessage?.role === 'user');
     } finally {
@@ -436,8 +494,8 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     }
   }
 
-  async function handlePreview() {
-    if (!session || previewing) return;
+  async function handlePreview(styleHint = '') {
+    if (!session || previewing || modelUnavailable) return;
     if (hasUnsavedDraftEdits) {
       setError('メモに未保存の変更があります。保存してから試し書きしてください。');
       return;
@@ -445,8 +503,8 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     try {
       setPreviewing(true);
       setError(null);
-      const result = await api.previewSetup(session.sessionId);
-      setSession(result.session);
+      const result = await api.previewSetup(session.sessionId, styleHint.trim() || undefined);
+      applySessionWithDraftChanges(session, result.session, { preserveSummaryOnRevisionOnly: true });
       rememberSetupSession(result.session.sessionId);
       setPreviewText(result.previewText);
     } catch (err) {
@@ -481,6 +539,27 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       setCommitting(false);
       setCommitStage(null);
     }
+  }
+
+  async function runSuggestedAction(action: SetupSuggestedAction) {
+    if (action.intent === 'preview') {
+      await handlePreview();
+      return;
+    }
+    if (action.intent === 'commit') {
+      await handleCommit();
+      return;
+    }
+    await send(action.message);
+  }
+
+  function suggestedActionDisabled(action: SetupSuggestedAction): boolean {
+    return (
+      busy ||
+      hasUnsavedDraftEdits ||
+      modelUnavailable ||
+      (action.intent === 'commit' && !hasMeaningfulContent)
+    );
   }
 
   async function confirmCommit() {
@@ -537,20 +616,29 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         revision: session.revision,
       });
       setSession(result.session);
+      clearDraftChanges();
       rememberSetupSession(result.session.sessionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : '相談モデルを変更できませんでした');
-      await reloadLatestSession(session.sessionId);
+      await reloadLatestSession(session.sessionId, true);
     } finally {
       setSavingDraft(false);
     }
   }
 
-  async function reloadLatestSession(sessionId: string): Promise<SetupSession | null> {
+  async function reloadLatestSession(
+    sessionId: string,
+    preserveDraftChangesIfUnchanged = false
+  ): Promise<SetupSession | null> {
     try {
       const latest = await api.getSetupSession(sessionId);
       if (latest.status === 'active') {
-        setSession(latest);
+        if (preserveDraftChangesIfUnchanged && session?.sessionId === latest.sessionId) {
+          applySessionWithDraftChanges(session, latest, { preserveSummaryOnRevisionOnly: true });
+        } else {
+          setSession(latest);
+          clearDraftChanges();
+        }
         setDirtyDraftEditKeys(new Set());
         rememberSetupSession(latest.sessionId);
         return latest;
@@ -582,12 +670,13 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         manualEditPaths,
       });
       setSession(result.session);
+      clearDraftChanges();
       rememberSetupSession(result.session.sessionId);
       setSuggestedActions([]);
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'メモの保存に失敗しました');
-      await reloadLatestSession(session.sessionId);
+      await reloadLatestSession(session.sessionId, true);
       return false;
     } finally {
       setSavingDraft(false);
@@ -606,10 +695,11 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         revision: session.revision,
       });
       setSession(result.session);
+      clearDraftChanges();
       rememberSetupSession(result.session.sessionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : '固定状態の更新に失敗しました');
-      await reloadLatestSession(session.sessionId);
+      await reloadLatestSession(session.sessionId, true);
     } finally {
       setSavingDraft(false);
     }
@@ -636,7 +726,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           <button type="button" onClick={onOpenSettings} disabled={busy}>
             アプリ設定
           </button>
-          <button type="button" onClick={handlePreview} disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable}>
+          <button type="button" onClick={() => void handlePreview()} disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable}>
             {previewing ? <GeneratingLabel text="試し書き中..." /> : '試し書き'}
           </button>
           <button
@@ -717,7 +807,12 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       <main className="setup-main" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
           <section className="setup-chat" aria-label="相談チャット">
           <div className="setup-messages">
-            {session && session.messages.length > 0 ? (
+            {isColdStart ? (
+              <article className="setup-message assistant setup-welcome-message">
+                <div className="setup-message-role">相談相手</div>
+                <p>どんな物語を読みたいですか？ 好きな雰囲気や関係性だけでも大丈夫です。一緒に見つけましょう。</p>
+              </article>
+            ) : session && session.messages.length > 0 ? (
               session.messages.map((entry) => (
                 <article key={entry.messageId} className={`setup-message ${entry.role}`}>
                   <div className="setup-message-role">
@@ -728,7 +823,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
               ))
             ) : (
               <div className="setup-empty-chat">
-                <p>例: 強気なヒロインと弱気な主人公。江戸時代風で、暗すぎない話が読みたい。</p>
+                <p>メモをもとに、読みたい物語の続きを相談できます。</p>
               </div>
             )}
             {(isStreaming || streamingMessage) && (
@@ -739,14 +834,17 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
             )}
           </div>
 
-          {suggestedActions.length > 0 && (
-            <div className="setup-suggestions">
-              {suggestedActions.map((action) => (
+          {visibleSuggestedActions.length > 0 && (
+            <div
+              className={`setup-suggestions${isColdStart ? ' setup-suggestions--starter' : ''}`}
+              aria-label={isColdStart ? '相談の始め方' : '次にできること'}
+            >
+              {visibleSuggestedActions.map((action) => (
                 <button
-                  key={`${action.label}-${action.message}`}
+                  key={`${action.intent ?? 'message'}-${action.label}-${action.message}`}
                   type="button"
-                  onClick={() => send(action.message)}
-                  disabled={busy || hasUnsavedDraftEdits}
+                  onClick={() => void runSuggestedAction(action)}
+                  disabled={suggestedActionDisabled(action)}
                 >
                   {action.label}
                 </button>
@@ -813,6 +911,18 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
               メモに未保存の変更があります。保存してから相談・試し書き・作品化できます。
             </div>
           )}
+          {hasDraftChanges && (
+            <div className="setup-draft-updates" role="status">
+              <strong>このターンのメモ更新</strong>
+              <ul>
+                {draftChangeSummary.slice(0, 6).map((change) => (
+                  <li key={change.key}>{change.text}</li>
+                ))}
+              </ul>
+              {draftChangeSummary.length > 6 && <p>ほか{draftChangeSummary.length - 6}件</p>}
+              <p>追加・更新された項目はメモ内でも強調表示しています。</p>
+            </div>
+          )}
           {draft ? (
             <>
               <CoreConceptEditor
@@ -820,6 +930,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 value={draft.coreConcept}
                 disabled={busy}
                 locked={pathLocked('draft.coreConcept')}
+                changeKind={draftChanges.coreConcept}
                 onDirtyChange={markDraftDirty}
                 onSave={(value) =>
                   saveDraft((nextDraft) => {
@@ -833,6 +944,8 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 title="決まってきたこと"
                 items={draft.confirmed.filter((item) => item.status === 'active')}
                 disabled={busy}
+                changes={draftChanges}
+                changeSection="confirmed"
                 onDirtyChange={markDraftDirty}
                 isLocked={(item) => pathLocked(item.id, item.locked)}
                 onSave={(item, value) =>
@@ -877,6 +990,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 items={draft.candidates.filter((candidate) => candidate.status === 'active')}
                 disabled={busy}
                 hasUnsavedDraftEdits={hasUnsavedDraftEdits}
+                changes={draftChanges}
                 onDirtyChange={markDraftDirty}
                 isLocked={(candidate) => pathLocked(candidate.id, candidate.locked)}
                 onSave={(candidate, values) =>
@@ -929,6 +1043,8 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 title="未確定"
                 items={draft.undecided.filter((item) => item.status === 'active')}
                 disabled={busy}
+                changes={draftChanges}
+                changeSection="undecided"
                 onDirtyChange={markDraftDirty}
                 isLocked={(item) => pathLocked(item.id, item.locked)}
                 onSave={(item, value) =>
@@ -972,6 +1088,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
               <DraftCharacterList
                 draft={draft}
                 disabled={busy}
+                changes={draftChanges}
                 onDirtyChange={markDraftDirty}
                 isLocked={(character) => pathLocked(character.id, character.locked)}
                 onSave={(character, values) =>
@@ -1012,10 +1129,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 }}
               />
               <DraftStringList
-                title="世界観"
                 section="world"
                 items={draft.world}
                 disabled={busy}
+                changes={draftChanges}
                 locked={pathLocked('draft.world')}
                 onDirtyChange={markDraftDirty}
                 onSave={(index, value) => saveStringItem('world', index, value)}
@@ -1032,10 +1149,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 }}
               />
               <DraftStringList
-                title="関係性"
                 section="relationshipSeeds"
                 items={draft.relationshipSeeds}
                 disabled={busy}
+                changes={draftChanges}
                 locked={pathLocked('draft.relationshipSeeds')}
                 onDirtyChange={markDraftDirty}
                 onSave={(index, value) => saveStringItem('relationshipSeeds', index, value)}
@@ -1052,10 +1169,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 }}
               />
               <DraftStringList
-                title="好み・文体"
                 section="tone"
                 items={draft.tone}
                 disabled={busy}
+                changes={draftChanges}
                 locked={pathLocked('draft.tone')}
                 onDirtyChange={markDraftDirty}
                 onSave={(index, value) => saveStringItem('tone', index, value)}
@@ -1072,10 +1189,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 }}
               />
               <DraftStringList
-                title="NG"
                 section="ng"
                 items={draft.ng}
                 disabled={busy}
+                changes={draftChanges}
                 locked={pathLocked('draft.ng')}
                 onDirtyChange={markDraftDirty}
                 onSave={(index, value) => saveStringItem('ng', index, value)}
@@ -1092,10 +1209,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 }}
               />
               <DraftStringList
-                title="冒頭候補"
                 section="openingSeeds"
                 items={draft.openingSeeds}
                 disabled={busy}
+                changes={draftChanges}
                 locked={pathLocked('draft.openingSeeds')}
                 onDirtyChange={markDraftDirty}
                 onSave={(index, value) => saveStringItem('openingSeeds', index, value)}
@@ -1119,6 +1236,46 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
             <section className="setup-preview">
               <h3>試し書き</h3>
               <LightMarkdown text={previewText} />
+              <div className="setup-preview-adjustments">
+                <p>もう少し好みに寄せる</p>
+                <div className="setup-preview-adjustment-chips">
+                  {PREVIEW_STYLE_HINTS.map((styleHint) => (
+                    <button
+                      key={styleHint}
+                      type="button"
+                      onClick={() => void handlePreview(styleHint)}
+                      disabled={busy || hasUnsavedDraftEdits || modelUnavailable}
+                    >
+                      {styleHint}
+                    </button>
+                  ))}
+                </div>
+                <form
+                  className="setup-preview-adjustment-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handlePreview(previewStyleHint);
+                  }}
+                >
+                  <label>
+                    自由に指定
+                    <input
+                      aria-label="試し書きの調整"
+                      value={previewStyleHint}
+                      onChange={(event) => setPreviewStyleHint(event.target.value)}
+                      placeholder="例: 地の文を短めに"
+                      disabled={busy || modelUnavailable}
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={busy || hasUnsavedDraftEdits || modelUnavailable || !previewStyleHint.trim()}
+                  >
+                    この希望で再生成
+                  </button>
+                </form>
+                <p className="setup-preview-adjustment-note">調整内容は好み・文体にも反映されます。</p>
+              </div>
             </section>
           )}
         </aside>
@@ -1133,7 +1290,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           >
             <header>
               <h2 id="setup-commit-title">作品にする内容を確認</h2>
-              <p>タイトルと人物を確認してください。作成後も作品設定から変更できます。</p>
+              <p>タイトル、作品の核、人物、第1話の入り方を確認してください。作成後も作品設定から変更できます。</p>
             </header>
             {commitError && <div className="error-toast" role="alert">{commitError}</div>}
             <label>
@@ -1159,6 +1316,20 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 }
                 rows={3}
               />
+            </label>
+            <label>
+              第1話冒頭への希望
+              <textarea
+                value={commitPlan.firstWishSuggestion ?? ''}
+                onChange={(event) =>
+                  setCommitPlan((current) => current
+                    ? { ...current, firstWishSuggestion: event.target.value }
+                    : current)
+                }
+                rows={3}
+                maxLength={300}
+              />
+              <span className="settings-help">作品化後、Readerの第1話への希望として入ります。</span>
             </label>
             <div>
               <h3>人物</h3>
@@ -1242,11 +1413,16 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
   }
 }
 
+function DraftChangeBadge({ kind }: { kind: DraftChangeKind }) {
+  return <span className="setup-draft-update-badge">{draftChangeKindLabel(kind)}</span>;
+}
+
 function CoreConceptEditor({
   dirtyKey,
   value,
   disabled,
   locked,
+  changeKind,
   onDirtyChange,
   onSave,
   onToggleLock,
@@ -1255,6 +1431,7 @@ function CoreConceptEditor({
   value: string;
   disabled: boolean;
   locked: boolean;
+  changeKind?: DraftChangeKind;
   onDirtyChange: (key: string, dirty: boolean) => void;
   onSave: (value: string) => void;
   onToggleLock: () => void;
@@ -1273,12 +1450,15 @@ function CoreConceptEditor({
   }, [changed, dirtyKey, onDirtyChange]);
 
   return (
-    <section className="setup-draft-section">
+    <section className={`setup-draft-section${changeKind ? ' is-recently-updated' : ''}`}>
       <div className="setup-draft-section-header">
         <h3>作品の核</h3>
-        <button type="button" onClick={onToggleLock} disabled={disabled}>
-          {locked ? '固定解除' : '固定'}
-        </button>
+        <div className="setup-draft-section-actions">
+          {changeKind && <DraftChangeBadge kind={changeKind} />}
+          <button type="button" onClick={onToggleLock} disabled={disabled}>
+            {locked ? '固定解除' : '固定'}
+          </button>
+        </div>
       </div>
       <textarea
         className="setup-draft-textarea"
@@ -1300,6 +1480,8 @@ function DraftTextList<T extends SetupDraftTextItem | SetupDraftUndecided>({
   title,
   items,
   disabled,
+  changes,
+  changeSection,
   onDirtyChange,
   isLocked,
   onSave,
@@ -1315,6 +1497,8 @@ function DraftTextList<T extends SetupDraftTextItem | SetupDraftUndecided>({
   title: string;
   items: T[];
   disabled: boolean;
+  changes: DraftChanges;
+  changeSection: 'confirmed' | 'undecided';
   onDirtyChange: (key: string, dirty: boolean) => void;
   isLocked: (item: T) => boolean;
   onSave: (item: T, value: string) => void;
@@ -1347,6 +1531,7 @@ function DraftTextList<T extends SetupDraftTextItem | SetupDraftUndecided>({
               item={item}
               disabled={disabled}
               locked={isLocked(item)}
+              changeKind={changes[draftItemChangeKey(changeSection, item.id)]}
               onDirtyChange={onDirtyChange}
               onSave={onSave}
               onArchive={onArchive}
@@ -1376,6 +1561,7 @@ function EditableTextRow<T extends SetupDraftTextItem | SetupDraftUndecided>({
   item,
   disabled,
   locked,
+  changeKind,
   onDirtyChange,
   onSave,
   onArchive,
@@ -1387,6 +1573,7 @@ function EditableTextRow<T extends SetupDraftTextItem | SetupDraftUndecided>({
   item: T;
   disabled: boolean;
   locked: boolean;
+  changeKind?: DraftChangeKind;
   onDirtyChange: (key: string, dirty: boolean) => void;
   onSave: (item: T, value: string) => void;
   onArchive: (item: T) => void;
@@ -1408,7 +1595,8 @@ function EditableTextRow<T extends SetupDraftTextItem | SetupDraftUndecided>({
   }, [changed, dirtyKey, onDirtyChange]);
 
   return (
-    <li className="setup-draft-edit-row">
+    <li className={`setup-draft-edit-row${changeKind ? ' is-recently-updated' : ''}`}>
+      {changeKind && <DraftChangeBadge kind={changeKind} />}
       <textarea
         className="setup-draft-textarea compact"
         value={value}
@@ -1523,6 +1711,7 @@ function DraftCandidateList({
   items,
   disabled,
   hasUnsavedDraftEdits,
+  changes,
   onDirtyChange,
   isLocked,
   onSave,
@@ -1541,6 +1730,7 @@ function DraftCandidateList({
   items: SetupDraftCandidate[];
   disabled: boolean;
   hasUnsavedDraftEdits: boolean;
+  changes: DraftChanges;
   onDirtyChange: (key: string, dirty: boolean) => void;
   isLocked: (item: SetupDraftCandidate) => boolean;
   onSave: (item: SetupDraftCandidate, values: { title: string; summary: string }) => void;
@@ -1590,6 +1780,7 @@ function DraftCandidateList({
               disabled={disabled}
               locked={isLocked(candidate)}
               selected={selectedIds.has(candidate.id)}
+              changeKind={changes[draftItemChangeKey('candidates', candidate.id)]}
               onDirtyChange={onDirtyChange}
               onSave={onSave}
               onArchive={onArchive}
@@ -1622,6 +1813,7 @@ function EditableCandidateRow({
   disabled,
   locked,
   selected,
+  changeKind,
   onDirtyChange,
   onSave,
   onArchive,
@@ -1636,6 +1828,7 @@ function EditableCandidateRow({
   disabled: boolean;
   locked: boolean;
   selected: boolean;
+  changeKind?: DraftChangeKind;
   onDirtyChange: (key: string, dirty: boolean) => void;
   onSave: (item: SetupDraftCandidate, values: { title: string; summary: string }) => void;
   onArchive: (item: SetupDraftCandidate) => void;
@@ -1661,7 +1854,8 @@ function EditableCandidateRow({
   }, [changed, dirtyKey, onDirtyChange]);
 
   return (
-    <li className="setup-draft-edit-row">
+    <li className={`setup-draft-edit-row${changeKind ? ' is-recently-updated' : ''}`}>
+      {changeKind && <DraftChangeBadge kind={changeKind} />}
       <label className="setup-draft-candidate-select">
         <input
           type="checkbox"
@@ -1770,6 +1964,7 @@ function PendingCandidateRow({
 function DraftCharacterList({
   draft,
   disabled,
+  changes,
   onDirtyChange,
   isLocked,
   onSave,
@@ -1782,6 +1977,7 @@ function DraftCharacterList({
 }: {
   draft: SetupDraft;
   disabled: boolean;
+  changes: DraftChanges;
   onDirtyChange: (key: string, dirty: boolean) => void;
   isLocked: (item: SetupDraftCharacter) => boolean;
   onSave: (
@@ -1836,6 +2032,7 @@ function DraftCharacterList({
               character={character}
               disabled={disabled}
               locked={isLocked(character)}
+              changeKind={changes[draftItemChangeKey('characters', character.id)]}
               onDirtyChange={onDirtyChange}
               onSave={onSave}
               onArchive={onArchive}
@@ -1863,6 +2060,7 @@ function EditableCharacterRow({
   character,
   disabled,
   locked,
+  changeKind,
   onDirtyChange,
   onSave,
   onArchive,
@@ -1872,6 +2070,7 @@ function EditableCharacterRow({
   character: SetupDraftCharacter;
   disabled: boolean;
   locked: boolean;
+  changeKind?: DraftChangeKind;
   onDirtyChange: (key: string, dirty: boolean) => void;
   onSave: (
     item: SetupDraftCharacter,
@@ -1925,7 +2124,8 @@ function EditableCharacterRow({
   }, [changed, dirtyKey, onDirtyChange]);
 
   return (
-    <li className="setup-draft-edit-row">
+    <li className={`setup-draft-edit-row${changeKind ? ' is-recently-updated' : ''}`}>
+      {changeKind && <DraftChangeBadge kind={changeKind} />}
       <div className="setup-draft-character-grid">
         <select value={role} onChange={(e) => setRole(e.target.value as CharacterRole)} disabled={disabled}>
           {Object.entries(ROLE_LABELS).map(([value, label]) => (
@@ -2092,10 +2292,10 @@ function PendingCharacterRow({
 }
 
 function DraftStringList({
-  title,
   section,
   items,
   disabled,
+  changes,
   locked,
   onDirtyChange,
   onSave,
@@ -2106,10 +2306,10 @@ function DraftStringList({
   onCancelPending,
   onSavePending,
 }: {
-  title: string;
   section: StringDraftSection;
   items: string[];
   disabled: boolean;
+  changes: DraftChanges;
   locked: boolean;
   onDirtyChange: (key: string, dirty: boolean) => void;
   onSave: (index: number, value: string) => void;
@@ -2120,6 +2320,7 @@ function DraftStringList({
   onCancelPending: (id: string) => void;
   onSavePending: (id: string, value: string) => void;
 }) {
+  const title = DRAFT_STRING_SECTION_LABELS[section];
   const isEmpty = items.length === 0 && pendingRows.length === 0;
   return (
     <section className="setup-draft-section">
@@ -2144,6 +2345,7 @@ function DraftStringList({
               dirtyKey={`${section}-${index}`}
               value={item}
               disabled={disabled}
+              changeKind={changes[draftStringChangeKey(section, index)]}
               onDirtyChange={onDirtyChange}
               onSave={(value) => onSave(index, value)}
               onRemove={() => onRemove(index)}
@@ -2169,6 +2371,7 @@ function EditableStringRow({
   dirtyKey,
   value,
   disabled,
+  changeKind,
   onDirtyChange,
   onSave,
   onRemove,
@@ -2176,6 +2379,7 @@ function EditableStringRow({
   dirtyKey: string;
   value: string;
   disabled: boolean;
+  changeKind?: DraftChangeKind;
   onDirtyChange: (key: string, dirty: boolean) => void;
   onSave: (value: string) => void;
   onRemove: () => void;
@@ -2194,7 +2398,8 @@ function EditableStringRow({
   }, [changed, dirtyKey, onDirtyChange]);
 
   return (
-    <li className="setup-draft-edit-row">
+    <li className={`setup-draft-edit-row${changeKind ? ' is-recently-updated' : ''}`}>
+      {changeKind && <DraftChangeBadge kind={changeKind} />}
       <textarea
         className="setup-draft-textarea compact"
         value={draftValue}
@@ -2211,6 +2416,300 @@ function EditableStringRow({
       </div>
     </li>
   );
+}
+
+export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): DraftChangeSummary[] {
+  const summary: DraftChangeSummary[] = [];
+
+  if (previous.coreConcept.trim() !== next.coreConcept.trim()) {
+    recordDraftChange(summary, 'coreConcept', previous.coreConcept.trim() ? 'updated' : 'added', '作品の核');
+  }
+
+  collectItemChanges(
+    summary,
+    'confirmed',
+    previous.confirmed,
+    next.confirmed,
+    (item) => JSON.stringify([item.text, item.reason ?? '', item.status]),
+    (item) => `決まってきたこと「${shortenDraftChangeText(item.text)}」`
+  );
+  collectItemChanges(
+    summary,
+    'candidates',
+    previous.candidates,
+    next.candidates,
+    (item) => JSON.stringify([item.title, item.summary, item.status]),
+    (item) => `候補「${shortenDraftChangeText(item.title || item.summary)}」`
+  );
+  collectItemChanges(
+    summary,
+    'undecided',
+    previous.undecided,
+    next.undecided,
+    (item) => JSON.stringify([item.text, item.reason ?? '', item.status]),
+    (item) => `未確定「${shortenDraftChangeText(item.text)}」`
+  );
+  collectItemChanges(
+    summary,
+    'characters',
+    previous.characters,
+    next.characters,
+    (item) =>
+      JSON.stringify([
+        item.role,
+        item.name,
+        item.label,
+        item.description,
+        item.speechStyle ?? '',
+        item.relationshipNotes ?? '',
+        item.want ?? '',
+        item.fear ?? '',
+        item.secret ?? '',
+        item.status,
+      ]),
+    (item) => `人物「${shortenDraftChangeText(item.label || item.name || ROLE_LABELS[item.role])}」`
+  );
+
+  for (const section of Object.keys(DRAFT_STRING_SECTION_LABELS) as StringDraftSection[]) {
+    collectStringChanges(summary, section, previous[section], next[section]);
+  }
+
+  return summary;
+}
+
+function collectItemChanges<T extends { id: string; status: string }>(
+  summary: DraftChangeSummary[],
+  section: DraftItemSection,
+  previous: T[],
+  next: T[],
+  signature: (item: T) => string,
+  label: (item: T) => string
+) {
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  const nextById = new Map(next.map((item) => [item.id, item]));
+
+  for (const item of previous) {
+    const nextItem = nextById.get(item.id);
+    if (item.status === 'active' && (!nextItem || nextItem.status !== 'active')) {
+      recordDraftChange(summary, draftItemChangeKey(section, item.id), 'archived', label(item));
+    }
+  }
+
+  for (const item of next) {
+    const previousItem = previousById.get(item.id);
+    if (!previousItem && item.status === 'active') {
+      recordDraftChange(summary, draftItemChangeKey(section, item.id), 'added', label(item));
+    } else if (previousItem?.status === 'active' && item.status !== 'active') {
+      continue;
+    } else if (previousItem && item.status === 'active' && signature(previousItem) !== signature(item)) {
+      recordDraftChange(summary, draftItemChangeKey(section, item.id), 'updated', label(item));
+    }
+  }
+}
+
+function collectStringChanges(
+  summary: DraftChangeSummary[],
+  section: StringDraftSection,
+  previousValues: string[],
+  nextValues: string[]
+) {
+  const matchingPairs = findLongestCommonStringPairs(previousValues, nextValues);
+  const movedPairs = collectMovedStringPairs(previousValues, nextValues, matchingPairs);
+  const movedPreviousIndexes = new Set(movedPairs.map(([previousIndex]) => previousIndex));
+  const movedNextIndexes = new Set(movedPairs.map(([, nextIndex]) => nextIndex));
+  const sectionLabel = DRAFT_STRING_SECTION_LABELS[section];
+
+  for (const [, nextIndex] of movedPairs.sort((a, b) => a[1] - b[1])) {
+    const nextValue = nextValues[nextIndex];
+    recordDraftChange(
+      summary,
+      draftStringChangeKey(section, nextIndex),
+      'updated',
+      `${sectionLabel}「${shortenDraftChangeText(nextValue)}」`,
+      `${sectionLabel}「${shortenDraftChangeText(nextValue)}」の順番を変更`
+    );
+  }
+
+  let previousStart = 0;
+  let nextStart = 0;
+
+  for (let pairIndex = 0; pairIndex <= matchingPairs.length; pairIndex += 1) {
+    const [previousEnd, nextEnd] =
+      matchingPairs[pairIndex] ?? [previousValues.length, nextValues.length];
+    collectStringChangeSegment(
+      summary,
+      section,
+      previousValues,
+      nextValues,
+      previousStart,
+      previousEnd,
+      nextStart,
+      nextEnd,
+      movedPreviousIndexes,
+      movedNextIndexes
+    );
+    previousStart = previousEnd + 1;
+    nextStart = nextEnd + 1;
+  }
+}
+
+function collectStringChangeSegment(
+  summary: DraftChangeSummary[],
+  section: StringDraftSection,
+  previousValues: string[],
+  nextValues: string[],
+  previousStart: number,
+  previousEnd: number,
+  nextStart: number,
+  nextEnd: number,
+  movedPreviousIndexes: ReadonlySet<number>,
+  movedNextIndexes: ReadonlySet<number>
+) {
+  const sectionLabel = DRAFT_STRING_SECTION_LABELS[section];
+  const previousSegmentIndexes = rangeIndexes(previousStart, previousEnd).filter(
+    (index) => !movedPreviousIndexes.has(index)
+  );
+  const nextSegmentIndexes = rangeIndexes(nextStart, nextEnd).filter((index) => !movedNextIndexes.has(index));
+  const replacementCount = Math.min(previousSegmentIndexes.length, nextSegmentIndexes.length);
+
+  for (let offset = 0; offset < replacementCount; offset += 1) {
+    const previousIndex = previousSegmentIndexes[offset];
+    const nextIndex = nextSegmentIndexes[offset];
+    const previousValue = previousValues[previousIndex];
+    const nextValue = nextValues[nextIndex];
+    if (normalizeDraftString(previousValue) === normalizeDraftString(nextValue)) continue;
+    recordDraftChange(
+      summary,
+      draftStringChangeKey(section, nextIndex),
+      'updated',
+      `${sectionLabel}「${shortenDraftChangeText(nextValue)}」`,
+      `${sectionLabel}「${shortenDraftChangeText(previousValue)}」を「${shortenDraftChangeText(nextValue)}」に更新`
+    );
+  }
+
+  for (let offset = replacementCount; offset < nextSegmentIndexes.length; offset += 1) {
+    const nextIndex = nextSegmentIndexes[offset];
+    recordDraftChange(
+      summary,
+      draftStringChangeKey(section, nextIndex),
+      'added',
+      `${sectionLabel}「${shortenDraftChangeText(nextValues[nextIndex])}」`
+    );
+  }
+
+  for (let offset = replacementCount; offset < previousSegmentIndexes.length; offset += 1) {
+    const previousIndex = previousSegmentIndexes[offset];
+    recordDraftChange(
+      summary,
+      draftStringRemovedChangeKey(section, previousIndex),
+      'archived',
+      `${sectionLabel}「${shortenDraftChangeText(previousValues[previousIndex])}」`
+    );
+  }
+}
+
+function collectMovedStringPairs(
+  previousValues: string[],
+  nextValues: string[],
+  matchingPairs: Array<[number, number]>
+): Array<[number, number]> {
+  const matchedPreviousIndexes = new Set(matchingPairs.map(([previousIndex]) => previousIndex));
+  const matchedNextIndexes = new Set(matchingPairs.map(([, nextIndex]) => nextIndex));
+  const unmatchedNextByText = new Map<string, number[]>();
+
+  for (let nextIndex = 0; nextIndex < nextValues.length; nextIndex += 1) {
+    if (matchedNextIndexes.has(nextIndex)) continue;
+    const normalized = normalizeDraftString(nextValues[nextIndex]);
+    if (!normalized) continue;
+    const indexes = unmatchedNextByText.get(normalized) ?? [];
+    indexes.push(nextIndex);
+    unmatchedNextByText.set(normalized, indexes);
+  }
+
+  const movedPairs: Array<[number, number]> = [];
+  for (let previousIndex = 0; previousIndex < previousValues.length; previousIndex += 1) {
+    if (matchedPreviousIndexes.has(previousIndex)) continue;
+    const normalized = normalizeDraftString(previousValues[previousIndex]);
+    if (!normalized) continue;
+    const nextIndexes = unmatchedNextByText.get(normalized);
+    const nextIndex = nextIndexes?.shift();
+    if (nextIndex === undefined || nextIndex === previousIndex) continue;
+    movedPairs.push([previousIndex, nextIndex]);
+  }
+  return movedPairs;
+}
+
+function findLongestCommonStringPairs(previousValues: string[], nextValues: string[]): Array<[number, number]> {
+  const lengths = Array.from(
+    { length: previousValues.length + 1 },
+    () => Array<number>(nextValues.length + 1).fill(0)
+  );
+
+  for (let previousIndex = previousValues.length - 1; previousIndex >= 0; previousIndex -= 1) {
+    for (let nextIndex = nextValues.length - 1; nextIndex >= 0; nextIndex -= 1) {
+      lengths[previousIndex][nextIndex] =
+        normalizeDraftString(previousValues[previousIndex]) === normalizeDraftString(nextValues[nextIndex])
+          ? lengths[previousIndex + 1][nextIndex + 1] + 1
+          : Math.max(lengths[previousIndex + 1][nextIndex], lengths[previousIndex][nextIndex + 1]);
+    }
+  }
+
+  const pairs: Array<[number, number]> = [];
+  let previousIndex = 0;
+  let nextIndex = 0;
+  while (previousIndex < previousValues.length && nextIndex < nextValues.length) {
+    if (normalizeDraftString(previousValues[previousIndex]) === normalizeDraftString(nextValues[nextIndex])) {
+      pairs.push([previousIndex, nextIndex]);
+      previousIndex += 1;
+      nextIndex += 1;
+    } else if (lengths[previousIndex + 1][nextIndex] >= lengths[previousIndex][nextIndex + 1]) {
+      previousIndex += 1;
+    } else {
+      nextIndex += 1;
+    }
+  }
+  return pairs;
+}
+
+function rangeIndexes(start: number, end: number): number[] {
+  return Array.from({ length: end - start }, (_, offset) => start + offset);
+}
+
+function recordDraftChange(
+  summary: DraftChangeSummary[],
+  key: string,
+  kind: DraftChangeKind,
+  label: string,
+  text = `${label}を${draftChangeKindLabel(kind)}`
+) {
+  summary.push({ key, kind, text });
+}
+
+function draftChangeKindLabel(kind: DraftChangeKind): string {
+  if (kind === 'added') return '追加';
+  if (kind === 'archived') return '削除';
+  return '更新';
+}
+
+function draftItemChangeKey(section: DraftItemSection, id: string): string {
+  return `${section}:${id}`;
+}
+
+function draftStringChangeKey(section: StringDraftSection, index: number): string {
+  return `${section}:${index}`;
+}
+
+function draftStringRemovedChangeKey(section: StringDraftSection, index: number): string {
+  return `${section}:removed:${index}`;
+}
+
+function normalizeDraftString(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function shortenDraftChangeText(value: string, maxLength = 36): string {
+  const trimmed = value.trim() || '内容なし';
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
 }
 
 async function createDefaultSetupSession(knownProviders?: ModelProviderInfo[]) {

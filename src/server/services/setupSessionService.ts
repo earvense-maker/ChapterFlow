@@ -25,9 +25,9 @@ import {
   normalizeSetupCommitPlan,
   readPresetIdsByCategory,
 } from './setupCommitService.js';
+import { DEFAULT_ACTIVE_PRESET_IDS } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
-  ActivePresets,
   AdapterGenerateResult,
   CommitSetupBody,
   CreateSetupSessionBody,
@@ -70,15 +70,6 @@ const UNREADABLE_CHAT_ACTIONS: SetupSuggestedAction[] = [
     message: '直前の相談内容をもう一度整理してください。',
   },
 ];
-
-const DEFAULT_ACTIVE_PRESETS: ActivePresets = {
-  genre: 'modern-drama',
-  style: 'natural-dialogue',
-  pov: 'third-person-close',
-  pacing: 'standard',
-  density: 'balanced',
-  relationshipPacing: 'standard',
-};
 
 const adapterMap: Record<string, ModelAdapter> = {
   openai: new OpenAIAdapter(),
@@ -124,7 +115,7 @@ export async function createSetupSession(
       outputLength: normalizeOutputLength(body.projectSettings?.outputLength),
       streamingEnabled: body.projectSettings?.streamingEnabled ?? false,
       activePresetIds: {
-        ...DEFAULT_ACTIVE_PRESETS,
+        ...DEFAULT_ACTIVE_PRESET_IDS,
         ...(body.projectSettings?.activePresetIds ?? {}),
       },
     },
@@ -1257,10 +1248,15 @@ function normalizeSuggestedActions(value: unknown): SetupSuggestedAction[] {
       if (!isRecord(item)) return null;
       const label = asString(item.label);
       const message = asString(item.message);
-      return label && message ? { label, message } : null;
+      const intent = normalizeSuggestedActionIntent(item.intent);
+      return label && message ? { label, message, ...(intent ? { intent } : {}) } : null;
     })
     .filter((item): item is SetupSuggestedAction => item !== null)
     .slice(0, 4);
+}
+
+function normalizeSuggestedActionIntent(value: unknown): SetupSuggestedAction['intent'] {
+  return value === 'preview' || value === 'commit' ? value : undefined;
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {

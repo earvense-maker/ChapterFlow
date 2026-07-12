@@ -18,6 +18,14 @@ export function buildSetupChatPrompt(input: {
       'あなたは小説設定の相談相手です。',
       'ユーザーは執筆者というより、読みたい物語を探している読者です。',
       '質問攻めにせず、候補を出しながら一緒に方向を探してください。',
+      '方向性がまだ定まらないときは、違いが分かる2〜3案をA/B/Cで短く提示してください。',
+      '各案は、雰囲気・関係性・火種の違いが一目で分かるように、短く具体的に書いてください。',
+      '候補を出したら、「気に入った要素は混ぜても大丈夫」と必ず伝えてください。',
+      '人物はプロフィールの羅列にせず、何に揺れるか・何を望むか・何を恐れるか・何を隠しているかを中心に提案してください。',
+      '物語の方向が見えてきたら、事件・秘密・約束・再会・誤解など、物語を動かす火種を1〜3個提案してください。',
+      'ユーザーが好みを示したら、採用した要素とまだ決めない要素を短く確認し、次に考える話題を一つだけ提案してください。',
+      '核・人物・火種がそろってきたら、現状を短く整理し、「試し書きで温度を見る」と「このまま作品にする」の次の一歩を提案してください。',
+      'その段階では suggestedActions にも、「試し書きで温度を見る」には intent:"preview"、「このまま作品にする」には intent:"commit" を付けた日本語の選択肢を入れてください。通常の会話を続ける選択肢では intent を省略してください。',
       '決まったこと、候補、未確定を必ず区別してください。',
       'locked項目や手動編集された項目は変更しないでください。',
       '未確定の可能性を確定済みの物語事実として扱わないでください。',
@@ -65,7 +73,11 @@ export function buildSetupChatPrompt(input: {
               archiveIds: ['不要になった候補ID'],
             },
             suggestedActions: [
-              { label: '短いボタンラベル', message: 'クリック時に送るユーザーメッセージ' },
+              {
+                label: '試し書きで温度を見る',
+                message: '現在の内容で試し書きを作ってください。',
+                intent: 'preview',
+              },
             ],
             conversationSummary:
               'メッセージ数が12を超えている場合、これまでの流れを800字以内で更新。12件以下なら省略可。',
@@ -213,8 +225,6 @@ export function buildSetupCommitPrompt(input: {
 
 function summarizeSessionForPrompt(session: SetupSession): unknown {
   return {
-    sessionId: session.sessionId,
-    revision: session.revision,
     projectSettings: session.projectSettings,
     recentMessages: session.messages.slice(-12),
     draft: activeDraftForPrompt(session.draft),

@@ -303,6 +303,19 @@ legend {
   margin: 0;
 }
 
+.preset-option > span {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.preset-option-detail {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .form-actions {
   display: flex;
   justify-content: flex-end;
@@ -492,6 +505,10 @@ legend {
   text-align: center;
 }
 
+.setup-welcome-message {
+  max-width: 520px;
+}
+
 .setup-suggestions {
   display: flex;
   gap: 0.5rem;
@@ -500,6 +517,11 @@ legend {
 
 .setup-suggestions button {
   font-size: 0.9rem;
+}
+
+.setup-suggestions--starter {
+  align-self: start;
+  max-width: 520px;
 }
 
 .setup-input {
@@ -538,6 +560,29 @@ legend {
   background: rgba(184, 150, 89, 0.13);
   color: var(--text);
   font-size: 0.84rem;
+}
+
+.setup-draft-updates {
+  margin-bottom: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(107, 142, 159, 0.55);
+  border-radius: var(--radius);
+  background: rgba(107, 142, 159, 0.12);
+  font-size: 0.84rem;
+}
+
+.setup-draft-updates strong {
+  display: block;
+}
+
+.setup-draft-updates ul {
+  margin: 0.35rem 0;
+  padding-left: 1.2rem;
+}
+
+.setup-draft-updates p {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
 }
 
 .setup-draft-section {
@@ -603,6 +648,25 @@ legend {
   background: var(--sticky-bg-soft);
 }
 
+.setup-draft-section.is-recently-updated {
+  box-shadow: inset 3px 0 0 rgba(184, 150, 89, 0.9);
+}
+
+.setup-draft-edit-row.is-recently-updated {
+  border-color: rgba(184, 150, 89, 0.85);
+  background: rgba(184, 150, 89, 0.12);
+}
+
+.setup-draft-update-badge {
+  justify-self: start;
+  padding: 0.12rem 0.42rem;
+  border-radius: 999px;
+  background: rgba(184, 150, 89, 0.2);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
 .setup-draft-textarea {
   min-height: 76px;
   font-size: 0.92rem;
@@ -665,6 +729,46 @@ legend {
   border: 1px solid rgba(107, 142, 159, 0.55);
   border-radius: var(--radius);
   background: rgba(107, 142, 159, 0.12);
+}
+
+.setup-preview-adjustments {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(107, 142, 159, 0.36);
+}
+
+.setup-preview-adjustment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.setup-preview-adjustment-chips button,
+.setup-preview-adjustment-form button {
+  min-height: 2rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+.setup-preview-adjustment-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
+}
+
+.setup-preview-adjustment-form label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.setup-preview-adjustment-note {
+  color: var(--text-muted);
+  font-size: 0.78rem;
 }
 
 .setup-commit-edit-list {
@@ -2328,6 +2432,10 @@ button:disabled:has(.generating-label) {
   }
 
   .setup-input {
+    grid-template-columns: 1fr;
+  }
+
+  .setup-preview-adjustment-form {
     grid-template-columns: 1fr;
   }
 

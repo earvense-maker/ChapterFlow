@@ -315,6 +315,32 @@ export default function WorkSettingsTab({
     }
   }
 
+  async function handleIntimacyChange(nextId: string) {
+    try {
+      setLoading(true);
+      onError(null);
+      const savedPresets = await api.updateProjectPresets(projectId, {
+        ...presets,
+        intimacyPreset: nextId,
+      });
+      setPresets(savedPresets);
+      onProjectUpdated({
+        ...project,
+        activePresetIds: { ...project.activePresetIds, intimacy: nextId },
+      });
+      const preview = await api.previewSystemPrompt(projectId, savedPresets, savedPresets.customSystemPrompt);
+      setSystemPrompt(preview.systemPrompt);
+      setGeneratedSystemPrompt(preview.generatedSystemPrompt);
+      setIsSystemPromptCustomized(preview.isCustomized);
+      if (!systemPromptEditing) setSystemPromptDraft(preview.systemPrompt);
+      onFlashMessage('濡れ場の描写設定を保存しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function handleResetSystemPrompt() {
     try {
       setPreviewLoading(true);
@@ -686,6 +712,38 @@ export default function WorkSettingsTab({
               <summary>システムプロンプト全文（{systemPrompt.length} 字）</summary>
               <pre className="summary-prewrap">{systemPrompt}</pre>
             </details>
+            {categories?.intimacy && (
+              <details className="summary-details">
+                <summary>
+                  {categories.intimacy.label}（
+                  {Object.values(categories.intimacy.items).find(
+                    (item) => item.id === (presets.intimacyPreset ?? project.activePresetIds.intimacy)
+                  )?.label ?? '未選択'}
+                  ）
+                </summary>
+                <p className="settings-help">
+                  性的な場面をどう扱うかを選びます。露骨さ・直接性・耽美と生々しさの度合いをまとめて指定します。
+                </p>
+                <div className="preset-options">
+                  {Object.values(categories.intimacy.items).map((item) => (
+                    <label key={item.id} className="preset-option">
+                      <input
+                        type="radio"
+                        name="intimacyPreset"
+                        value={item.id}
+                        checked={(presets.intimacyPreset ?? project.activePresetIds.intimacy) === item.id}
+                        disabled={loading}
+                        onChange={() => handleIntimacyChange(item.id)}
+                      />
+                      <span>
+                        <strong>{item.label}</strong>
+                        <span className="preset-option-detail">{item.text}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </details>
+            )}
             <div className="summary-card-actions">
               <button
                 onClick={() => {

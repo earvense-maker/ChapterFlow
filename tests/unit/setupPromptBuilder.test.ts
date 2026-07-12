@@ -174,4 +174,19 @@ describe('setupPromptBuilder', () => {
     expect(chat.userPrompt).toContain('===DRAFT_PATCH===');
     expect(chat.userPrompt).toContain('"conversationSummary"');
   });
+
+  it('guides the consultation while omitting internal session identifiers from the prompt', () => {
+    const session = baseSession();
+    const chat = buildSetupChatPrompt({ session, userMessage: '相談を始めたい' });
+
+    expect(chat.systemInstructions).toContain('A/B/C');
+    expect(chat.systemInstructions).toContain('気に入った要素は混ぜても大丈夫');
+    expect(chat.systemInstructions).toContain('何に揺れるか');
+    expect(chat.systemInstructions).toContain('物語を動かす火種');
+    expect(chat.systemInstructions).toContain('suggestedActions');
+    expect(chat.systemInstructions).toContain('intent:"preview"');
+    expect(chat.userPrompt).toContain('"intent": "preview"');
+    expect(chat.userPrompt).not.toContain(session.sessionId);
+    expect(chat.userPrompt).not.toContain('"revision": 1');
+  });
 });

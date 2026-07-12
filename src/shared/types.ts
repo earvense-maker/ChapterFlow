@@ -20,6 +20,7 @@ export interface ActivePresets {
   conversation?: string;
   relationshipPacing?: string;
   constraint?: string;
+  intimacy?: string;
 }
 
 export interface SamplingConfig {
@@ -379,9 +380,13 @@ export interface SetupSessionSummary {
   committedProjectId?: ProjectId;
 }
 
+export type SetupSuggestedActionIntent = 'preview' | 'commit';
+
 export interface SetupSuggestedAction {
   label: string;
   message: string;
+  /** Omit for a normal chat follow-up; set only for a direct workspace action. */
+  intent?: SetupSuggestedActionIntent;
 }
 
 export interface SetupDraftPatch {
@@ -648,6 +653,7 @@ export interface PresetsFile {
   relationshipPacingPreset?: string;
   distancePreset?: string;
   constraintPreset?: string;
+  intimacyPreset?: string;
   userCustomPromptParts: string[];
   customSystemPrompt?: string;
 }
