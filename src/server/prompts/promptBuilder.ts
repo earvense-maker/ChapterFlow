@@ -58,7 +58,7 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
 
   if (project.coreConcept?.trim()) {
     parts.push(
-      `【この作品の核】\n${project.coreConcept.trim()}\nこの核から外れた作風・テーマの展開を書かないこと。`
+      `【この作品の核】\n${project.coreConcept.trim()}\nこの核が全編の羅針盤である。展開・作風はこの核を体現するように書く。`
     );
   }
 
@@ -109,6 +109,20 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     );
   }
 
+  // 出力形式（機械的条件と安全規則）
+  parts.push(renderOutputConditions(project, mode, viewpointCharacter));
+
+  const bannedSection = renderBannedExpressions(bannedExpressions);
+  if (bannedSection) {
+    parts.push(bannedSection);
+  }
+
+  if (project.styleSample?.trim()) {
+    parts.push(
+      `【文体見本】\n以下は文体・リズム・描写の密度の見本である。内容・人物・出来事は本編と無関係であり、参照しないこと。書き方だけを参考にすること。\n文体・リズム・描写密度について文体設定と食い違う場合は見本を優先する。ただし、人称・視点人物・【出力形式】の指定は上書きしない。\n\n${project.styleSample.trim().slice(0, 1000)}`
+    );
+  }
+
   // 直前の文脈（rewrite モードでは現在シーンを除外し、別セクションで明示する）
   const recentContext = await getRecentContext(
     project.projectId,
@@ -141,26 +155,28 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     }
   }
 
-  // 今回の希望
-  parts.push(`【今回の希望】\n${resolveWishLine(wish, mode)}`);
-
-  if (project.styleSample?.trim()) {
-    parts.push(
-      `【文体見本】\n以下は文体・リズム・描写の密度の見本である。内容・人物・出来事は本編と無関係であり、参照しないこと。書き方だけを参考にすること。\n\n${project.styleSample.trim().slice(0, 600)}`
-    );
-  }
-
-  // 出力条件
-  parts.push(renderOutputConditions(project, wish, mode, viewpointCharacter));
-
-  const bannedSection = renderBannedExpressions(bannedExpressions);
-  if (bannedSection) {
-    parts.push(bannedSection);
-  }
+  // 今回の希望（末尾。優先順位と裁量段落を付加）
+  parts.push(renderWishSection(wish, mode));
 
   const userPrompt = parts.filter(Boolean).join('\n\n---\n\n');
 
   return { systemInstructions, userPrompt };
+}
+
+function renderWishSection(wish: string, mode: 'continue' | 'regenerate' | 'variate'): string {
+  const rewriteExemption =
+    mode === 'continue'
+      ? ''
+      : '\nただし今回は書き直し・別案であり、上記の書き直し・別案の対象本文は時系列位置と事実の参考にとどめ、その表現・構成・言い回しを維持する義務はない。';
+
+  const priorityAndFreedom = `
+
+守るべき優先順位は、①作品の核・既出事実との整合、および NG 表現の回避、②今回の希望、③文体・雰囲気、④目安文字数、の順である。
+既出事実の情報源どうしが食い違う場合は、採用済み本文 ＞ 現在状態・重要イベントなどの派生データ ＞ 作品設定・参考資料、の順に信頼する。${rewriteExemption}
+判断に迷う場合は上位を優先し、今回の希望が既存事実の変更を明示している場合はその変更を優先する。
+設定と事実メモは舞台であり、演出はあなたに委ねられている。場面の切り取り方、構成、文章表現は、この舞台の上で自由に選んでよい。最も重要な仕事は、読者を物語に引き込む生きた文章を書くことである。`;
+
+  return `【今回の希望】\n${resolveWishLine(wish, mode)}${priorityAndFreedom}`;
 }
 
 function renderCharacters(characters: Character[]): string {
@@ -281,14 +297,14 @@ function renderCurrentState(
   const authorUndecided = (storyState.authorUndecided ?? []).filter((item) => item.status === 'active');
   if (authorUndecided.length > 0) {
     sections.push(
-      `【まだ確定させないこと】\n以下は作者がまだ決めていない事項である。作中で真相・答え・正体を確定させず、曖昧さを保ったまま書くこと。\n${authorUndecided
+      `【まだ確定させないこと】\n以下は作者がまだ決めていない事項である。作中で真相・答え・正体を確定させず、曖昧さを保ったまま書くこと。\nここに列挙されていない事柄は、既存事実と矛盾しない範囲で、場面に必要な小さな具体（記憶・生活の細部など）を補ってよい。\n${authorUndecided
         .map((item) => `- ${item.text}${item.reason ? `（${item.reason}）` : ''}`)
         .join('\n')}`
     );
   }
 
   if (sections.length === 0) return '';
-  return `【現在状態スナップショット】\n${sections.join('\n\n')}`;
+  return `【現在状態スナップショット】\n以下は物語の現在地を示す事実メモである。本文はこれらの事実、物語内時間、これまでの本文と矛盾しないように書く。\n\n${sections.join('\n\n')}`;
 }
 
 function renderImportantPast(
@@ -430,7 +446,7 @@ function renderCharacterKnowledgeState(
   }
 
   if (rows.length === 0) return '';
-  return `【人物の情報状態】\n${rows.join('\n')}`;
+  return `【人物の情報状態】\n「まだ知らない」とされた事実は、その人物の台詞・内心・行動の根拠・その人物視点の地の文に出さない。\n\n${rows.join('\n')}`;
 }
 
 function dedupeText(values: string[]): string[] {
@@ -505,38 +521,22 @@ function resolveWishLine(wish: string, mode: 'continue' | 'regenerate' | 'variat
 
 function renderOutputConditions(
   project: Project,
-  wish: string,
   mode: 'continue' | 'regenerate' | 'variate',
   viewpointCharacter: Character | null
 ): string {
   const outputRange = getApproximateOutputRange(project.outputLength);
-  const presetText = Object.entries(project.activePresetIds)
-    .filter(([, v]) => v)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join(', ');
+  const viewpointLine = viewpointCharacter
+    ? `視点人物: ${viewpointCharacter.name}。この場面は${viewpointCharacter.name}の視点で書く。`
+    : '視点人物: 今回の希望に指定があればその人物、指定が無ければ直近本文の視点を維持する。';
   const rewriteHint =
     mode === 'continue'
       ? ''
-      : `\n- 今回は${mode === 'variate' ? '別案' : '書き直し'}のため、直近本文の続きを書かず、直前の場面と同じ位置の内容を別の書き方で描くこと。`;
-  const viewpointHint = viewpointCharacter
-    ? `\n- 視点人物: ${viewpointCharacter.name}。この場面は${viewpointCharacter.name}の視点で書く。`
-    : '';
+      : `\n- 今回は${mode === 'variate' ? '別案' : '書き直し'}のため、直近本文の続きを書かず、直前の場面と同じ位置の内容を別の書き方で描く。`;
 
-  return `【出力条件】
-- 出力は日本語の小説本文のみ。Markdownファイルに保存される本文として書く。
-- 目安文字数: 約${outputRange.target}字（${outputRange.lower}〜${outputRange.upper}字程度）。
-- 指定字数ぴったりで急に止めず、文または段落の切りがよいところで自然に終えること。
-- 上限に届きそうな場合は、途中で切るより少し短くても自然な区切りを優先すること。
-- 選択された設定: ${presetText || '指定なし'}
-- 今回の希望: ${resolveWishLine(wish, mode)}
-- 現在状態スナップショットと重要な過去イベントに反する展開を書かないこと。
-- 【人物の情報状態】で「まだ知らない」とされた事実を、その人物の台詞・内心・行動の根拠・その人物視点の地の文に使わないこと。
-- 不明な過去を勝手に確定しないこと。
-- 物語内時間と矛盾する時間経過・時間帯を書かないこと。時間を進める場合は本文中で自然に示すこと。
-- 地の文は視点人物の認識範囲で書くこと。視点人物が【人物の情報状態】で「まだ知らない」とされた事実を地の文で開示しないこと。
-- 視点人物以外の内心は、外から観察できる言動として描き、断定で書かないこと。
-- 視点人物は、今回の希望に指定があればその人物、指定が無ければ直近本文の視点を維持すること。${viewpointHint}
-- 矛盾しそうな場合は、直近本文と現在状態を優先すること。
-- プロンプトや設定の説明は含めないこと。
-- 勝手に物語を完結させないこと。${rewriteHint}`;
+  return `【出力形式】
+- 出力は日本語の小説本文のみ。前置き・後書き・設定の説明は書かない。
+- 物語はユーザーの希望なしに完結させない。
+- 目安文字数: 約${outputRange.target}字（${outputRange.lower}〜${outputRange.upper}字程度）。字数を合わせるために急停止せず、文や段落の切りがよいところで自然に終える。上限に届きそうな場合は少し短くても自然な区切りを優先する。
+- 物語内時間と矛盾する時間経過・時間帯を書かない。時間を進める場合は本文中で自然に示す。
+- ${viewpointLine} 地の文は視点人物の認識範囲で書き、視点人物以外の内心は断定せず、外から観察できる言動として描く。${rewriteHint}`;
 }

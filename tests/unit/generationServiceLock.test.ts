@@ -77,11 +77,11 @@ describe('generationService project write lock', () => {
 
     expect(record.responseText).toBe('STREAM_FALLBACK_TEXT');
     expect(chunks).toEqual(['STREAM_FALLBACK_TEXT']);
-    expect(record.request.previousContextText).not.toContain('【出力条件】');
+    expect(record.request.previousContextText).not.toContain('【出力形式】');
     expect(record.request.previousContextFilePath).toContain(`${record.generationId}.prompt.txt`);
     await expect(
       storage.readGenerationPromptSnapshot(project.projectId, record.generationId)
-    ).resolves.toContain('【出力条件】');
+    ).resolves.toContain('【出力形式】');
   });
 
   it('does not hold the project write lock while background story state refresh waits on the model', async () => {

@@ -60,9 +60,12 @@ describe('buildPrompt', () => {
       characters: [],
       worldText: '',
     });
+    expect(systemInstructions).toContain('経験豊かな小説家');
     expect(systemInstructions).toContain('ユーザー専用の連載小説');
     expect(systemInstructions).toContain('テキストファイルに保存される小説本文そのもの');
-    expect(systemInstructions).toContain('本文のみを出力');
+    expect(systemInstructions).toContain('本文だけを出力');
+    expect(systemInstructions).toContain('「今回の希望」と「出力形式」');
+    expect(systemInstructions).toContain('【文体見本】');
     expect(systemInstructions).toContain('【選択された設定】');
     expect(systemInstructions).toContain('静謐で控えめな文体');
   });
@@ -80,7 +83,45 @@ describe('buildPrompt', () => {
     expect(systemInstructions).toBe('カスタムのシステム指示');
   });
 
-  it('includes wish and output conditions', async () => {
+  // NOTE: customSystemPrompt は system 側を完全置換するため、baseInstruction が消える。
+  // 日本語・本文のみ・非完結・視点規則は userPrompt 側の【出力形式】に残ることが命綱。
+  // セットアップ由来の断片型と UI 編集由来の全文型の両方でこの命綱が効くことを固定する。
+  it.each([
+    {
+      label: 'setup fragment-style custom prompt',
+      custom: 'キャラは絵文字を使わず、地の文は静かめに書く。',
+    },
+    {
+      label: 'UI full-replacement custom prompt',
+      custom:
+        'あなたは指導的な語り手。以下のガイドラインで書け。\n' +
+        '- 三人称寄り添い視点で進める。\n- テンポは早め。\n- 説明過多を避ける。',
+    },
+  ])(
+    'keeps safety rules in userPrompt even with $label',
+    async ({ custom }) => {
+      const { systemInstructions, userPrompt } = await buildPrompt({
+        project: makeProject(),
+        state: makeState(),
+        wish: '続き',
+        memories: [],
+        characters: [],
+        worldText: '',
+        customSystemPrompt: custom,
+      });
+      // system は完全置換される
+      expect(systemInstructions).toBe(custom);
+      expect(systemInstructions).not.toContain('経験豊かな小説家');
+      // userPrompt に安全規則と視点規則が残っている
+      expect(userPrompt).toContain('出力は日本語の小説本文のみ');
+      expect(userPrompt).toContain('前置き・後書き・設定の説明は書かない');
+      expect(userPrompt).toContain('物語はユーザーの希望なしに完結させない');
+      expect(userPrompt).toContain('地の文は視点人物の認識範囲で書き');
+      expect(userPrompt).toContain('視点人物以外の内心は断定せず');
+    }
+  );
+
+  it('includes wish and output form', async () => {
     const { userPrompt } = await buildPrompt({
       project: makeProject(),
       state: makeState(),
@@ -89,9 +130,184 @@ describe('buildPrompt', () => {
       characters: [],
       worldText: '',
     });
+    expect(userPrompt).toContain('【出力形式】');
     expect(userPrompt).toContain('もっと不穏に');
     expect(userPrompt).toContain('目安文字数: 約3000字（2600〜3400字程度）');
     expect(userPrompt).toContain('切りがよいところで自然に終える');
+    expect(userPrompt).toContain('出力は日本語の小説本文のみ');
+    expect(userPrompt).toContain('物語はユーザーの希望なしに完結させない');
+    expect(userPrompt).toContain('視点人物以外の内心は断定せず');
+    expect(userPrompt).toContain('守るべき優先順位');
+    expect(userPrompt).toContain('採用済み本文 ＞ 現在状態');
+    expect(userPrompt).toContain('演出はあなたに委ねられている');
+    expect(userPrompt).not.toContain('【出力条件】');
+    expect(userPrompt).not.toContain('選択された設定:');
+  });
+
+  it('appends rewrite exemption only for regenerate/variate modes', async () => {
+    const base = {
+      project: makeProject(),
+      state: makeState(),
+      wish: '別の切り取り方で',
+      memories: [],
+      characters: [],
+      worldText: '',
+    };
+    const cont = await buildPrompt({ ...base, mode: 'continue' });
+    const regen = await buildPrompt({ ...base, mode: 'regenerate' });
+    const vary = await buildPrompt({ ...base, mode: 'variate' });
+    expect(cont.userPrompt).not.toContain('その表現・構成・言い回しを維持する義務はない');
+    expect(regen.userPrompt).toContain('その表現・構成・言い回しを維持する義務はない');
+    expect(vary.userPrompt).toContain('その表現・構成・言い回しを維持する義務はない');
+  });
+
+  // NOTE: 直近本文と対象場面本文が別セクションで一度だけ、かつ順序が
+  // 「直近 → 対象場面 → 今回の希望」であることを実データで固定する。
+  // 実装が壊れて対象本文が二重掲載されたり順序が入れ替わったりしないよう防ぐ。
+  it('places rewrite target scene between recent context and wish, without duplication', async () => {
+    const project = makeProject(promptStateProjectId);
+    const episodeId = 'ep-rewrite';
+    const prevSceneId = 'scene-prev';
+    const currentSceneId = 'scene-current';
+    const prevGenId = 'gen-prev';
+    const currentGenId = 'gen-current';
+    const prevText = 'PREV_ACCEPTED_TEXT_SENTINEL';
+    const currentText = 'CURRENT_ACCEPTED_TEXT_SENTINEL';
+
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Rewrite episode',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId: prevSceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: prevGenId,
+          draftGenerationIds: [],
+        },
+        {
+          sceneId: currentSceneId,
+          episodeId,
+          order: 2,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: currentGenId,
+          draftGenerationIds: [],
+        },
+      ],
+    };
+    const baseGeneration = {
+      sceneId: prevSceneId,
+      episodeId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'openai' as const, modelName: 'gpt-4o-mini' },
+      referencedMemoryIds: [],
+      status: 'accepted' as const,
+      createdAt: '2026-07-02T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const prevGeneration: GenerationRecord = {
+      ...baseGeneration,
+      generationId: prevGenId,
+      responseText: prevText,
+    };
+    const currentGeneration: GenerationRecord = {
+      ...baseGeneration,
+      generationId: currentGenId,
+      sceneId: currentSceneId,
+      responseText: currentText,
+    };
+    const state: ProjectState = {
+      ...makeState(),
+      currentEpisodeId: episodeId,
+      currentSceneId,
+    };
+
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeEpisodeRecord(promptStateProjectId, episode);
+    await storage.appendGenerationLog(promptStateProjectId, prevGeneration);
+    await storage.appendGenerationLog(promptStateProjectId, currentGeneration);
+
+    const buildFor = (mode: 'continue' | 'regenerate' | 'variate') =>
+      buildPrompt({
+        project,
+        state,
+        wish: 'この場面を別の切り取り方で',
+        memories: [],
+        characters: [],
+        worldText: '',
+        mode,
+      });
+
+    const cont = await buildFor('continue');
+    // continue では対象場面セクションは出ず、現在シーンは直近本文に含まれる
+    expect(cont.userPrompt).not.toContain('となる場面');
+    expect(cont.userPrompt).toContain(currentText);
+    expect(cont.userPrompt).toContain(prevText);
+
+    for (const mode of ['regenerate', 'variate'] as const) {
+      const { userPrompt } = await buildFor(mode);
+      // 現在シーン本文はプロンプト全体で「対象場面」セクションに一度だけ出る
+      const currentOccurrences = userPrompt.split(currentText).length - 1;
+      expect(currentOccurrences).toBe(1);
+      // 前シーンは直近本文セクションに含まれる（重複しない）
+      const prevOccurrences = userPrompt.split(prevText).length - 1;
+      expect(prevOccurrences).toBe(1);
+
+      const recentIdx = userPrompt.indexOf('【これまでの作品本文（直近／今回書き直す場面より前まで）】');
+      const targetIdx = userPrompt.search(/【今回(?:書き直しの|別案を作る)対象となる場面】/);
+      const wishIdx = userPrompt.indexOf('【今回の希望】');
+      expect(recentIdx).toBeGreaterThan(-1);
+      expect(targetIdx).toBeGreaterThan(-1);
+      expect(wishIdx).toBeGreaterThan(-1);
+      // 順序: 直近 → 対象場面 → 今回の希望
+      expect(recentIdx).toBeLessThan(targetIdx);
+      expect(targetIdx).toBeLessThan(wishIdx);
+      // 対象場面セクション内に現在シーン本文がある
+      expect(userPrompt.indexOf(currentText)).toBeGreaterThan(targetIdx);
+      expect(userPrompt.indexOf(currentText)).toBeLessThan(wishIdx);
+      // 直近本文セクション内に前シーン本文があり、対象場面より前に位置する
+      expect(userPrompt.indexOf(prevText)).toBeGreaterThan(recentIdx);
+      expect(userPrompt.indexOf(prevText)).toBeLessThan(targetIdx);
+    }
+  });
+
+  it('keeps viewpoint and internal-monologue rules even without character state', async () => {
+    const { userPrompt } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '',
+      memories: [],
+      characters: [],
+      worldText: '',
+    });
+    expect(userPrompt).toContain('地の文は視点人物の認識範囲で書き');
+    expect(userPrompt).toContain('視点人物以外の内心は断定せず');
+  });
+
+  it('includes style sample section with priority note and up to 1000 chars', async () => {
+    const longSample = 'あ'.repeat(1200);
+    const project = { ...makeProject(), styleSample: longSample };
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: '',
+      memories: [],
+      characters: [],
+      worldText: '',
+    });
+    expect(userPrompt).toContain('【文体見本】');
+    expect(userPrompt).toContain('見本を優先する');
+    expect(userPrompt).toContain('人称・視点人物・【出力形式】の指定は上書きしない');
+    const styleBody = userPrompt.match(/あ+/g)?.reduce((max, s) => (s.length > max ? s.length : max), 0);
+    expect(styleBody).toBe(1000);
   });
 
   it('includes high story facts and medium preference memories', async () => {
@@ -281,7 +497,8 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('Legacy-only knowledge survives migration.');
   });
 
-  it('adds banned expressions section after output conditions', async () => {
+  it('adds banned expressions section between output form and story text', async () => {
+    const banned = Array.from({ length: 12 }, (_, i) => `NG表現${i + 1}`);
     const { userPrompt } = await buildPrompt({
       project: makeProject(),
       state: makeState(),
@@ -289,14 +506,18 @@ describe('buildPrompt', () => {
       memories: [],
       characters: [],
       worldText: '',
-      bannedExpressions: ['息を呑んだ', '胸の奥が'],
+      bannedExpressions: banned,
     });
-    const outputIndex = userPrompt.indexOf('【出力条件】');
+    const outputIndex = userPrompt.indexOf('【出力形式】');
     const bannedIndex = userPrompt.indexOf('【表現上の注意】');
+    const wishIndex = userPrompt.indexOf('【今回の希望】');
+    expect(outputIndex).toBeGreaterThanOrEqual(0);
     expect(bannedIndex).toBeGreaterThan(outputIndex);
-    expect(userPrompt).toContain('息を呑んだ');
-    expect(userPrompt).toContain('胸の奥が');
-    expect(userPrompt).toContain('「息を呑んだ」');
+    expect(bannedIndex).toBeLessThan(wishIndex);
+    // NG 表現は上限（12件）分がすべて残る（黙って削らない）
+    for (const text of banned) {
+      expect(userPrompt).toContain(`「${text}」`);
+    }
   });
 
   it('omits banned expressions section when list is empty', async () => {
@@ -448,9 +669,9 @@ describe('buildPrompt', () => {
       '【重要な過去イベント】',
       '【好み・NG】',
       '【これまでの要約】',
+      '【出力形式】',
       '【これまでの作品本文（直近）】',
       '【今回の希望】',
-      '【出力条件】',
     ].map((marker) => userPrompt.indexOf(marker));
 
     expect(order.every((index) => index >= 0)).toBe(true);
@@ -459,6 +680,7 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('Manual high-priority fact.');
     expect(userPrompt).toContain('Prefer quiet tension.');
     expect(userPrompt).toContain('RECENT_ACCEPTED_TEXT');
-    expect(userPrompt).toContain('現在状態スナップショットと重要な過去イベントに反する展開を書かないこと');
+    expect(userPrompt).toContain('物語の現在地を示す事実メモ');
+    expect(userPrompt).toContain('採用済み本文 ＞ 現在状態');
   });
 });
