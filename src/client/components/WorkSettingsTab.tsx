@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import { KNOWLEDGE_WARN_CHARS } from '@shared/types';
+import {
+  KNOWLEDGE_WARN_CHARS,
+  SYSTEM_PROMPT_PRESET_NAME_MAX_CHARS,
+} from '@shared/types';
 import RefineChatPanel from './RefineChatPanel';
 import type {
   Character,
@@ -11,6 +14,7 @@ import type {
   StoryState,
   StoryStateDiffRecord,
   StyleSamplePreset,
+  SystemPromptPreset,
 } from '@shared/types';
 
 interface Props {
@@ -81,6 +85,11 @@ export default function WorkSettingsTab({
   const [isSystemPromptCustomized, setIsSystemPromptCustomized] = useState(false);
   const [systemPromptEditing, setSystemPromptEditing] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [systemPromptPresets, setSystemPromptPresets] = useState<SystemPromptPreset[]>([]);
+  const [selectedSystemPromptPresetId, setSelectedSystemPromptPresetId] = useState('');
+  const [systemPromptPresetNameDraft, setSystemPromptPresetNameDraft] = useState('');
+  const [systemPromptPresetLoading, setSystemPromptPresetLoading] = useState(false);
+  const [systemPromptPresetLoadError, setSystemPromptPresetLoadError] = useState<string | null>(null);
 
   const [refineScan, setRefineScan] = useState<RefineScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -159,6 +168,21 @@ export default function WorkSettingsTab({
           if (!cancelled) setStyleSamplePresets(samples);
         } catch {
           if (!cancelled) setStyleSamplePresets([]);
+        }
+
+        try {
+          const promptPresets = await api.getSystemPromptPresets();
+          if (!cancelled) {
+            setSystemPromptPresets(promptPresets);
+            setSystemPromptPresetLoadError(null);
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setSystemPromptPresets([]);
+            setSystemPromptPresetLoadError(
+              err instanceof Error ? err.message : 'プリセット一覧の読み込みに失敗しました'
+            );
+          }
         }
 
       } catch (err) {
@@ -349,6 +373,101 @@ export default function WorkSettingsTab({
     setSystemPromptEditing(false);
   }
 
+  function handleLoadSystemPromptPreset() {
+    const preset = systemPromptPresets.find((item) => item.id === selectedSystemPromptPresetId);
+    if (!preset) return;
+    if (
+      systemPromptDraft !== systemPrompt &&
+      systemPromptDraft !== preset.prompt &&
+      !window.confirm('未保存の編集内容を、選択したプリセットで置き換えますか？')
+    ) {
+      return;
+    }
+    setSystemPromptDraft(preset.prompt);
+    setSystemPromptPresetNameDraft(preset.name);
+    onFlashMessage(`プリセット「${preset.name}」を読み込みました。作品へ反映するには保存してください`);
+  }
+
+  async function handleReloadSystemPromptPresets() {
+    try {
+      setSystemPromptPresetLoading(true);
+      onError(null);
+      setSystemPromptPresets(await api.getSystemPromptPresets());
+      setSystemPromptPresetLoadError(null);
+      setSelectedSystemPromptPresetId('');
+      setSystemPromptPresetNameDraft('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'プリセット一覧の読み込みに失敗しました';
+      setSystemPromptPresetLoadError(message);
+      onError(message);
+    } finally {
+      setSystemPromptPresetLoading(false);
+    }
+  }
+
+  async function handleSaveSystemPromptPreset() {
+    const name = systemPromptPresetNameDraft.trim();
+    if (!name || !systemPromptDraft.trim()) return;
+
+    const existing = systemPromptPresets.find(
+      (item) => item.name.toLocaleLowerCase('ja-JP') === name.toLocaleLowerCase('ja-JP')
+    );
+    if (existing && !window.confirm(`プリセット「${existing.name}」を現在の内容で上書きしますか？`)) {
+      return;
+    }
+
+    try {
+      setSystemPromptPresetLoading(true);
+      onError(null);
+      const saved = existing
+        ? await api.updateSystemPromptPreset(existing.id, {
+            name,
+            prompt: systemPromptDraft,
+            expectedUpdatedAt: existing.updatedAt,
+          })
+        : await api.createSystemPromptPreset({ name, prompt: systemPromptDraft });
+      setSystemPromptPresets((items) => [saved, ...items.filter((item) => item.id !== saved.id)]);
+      setSelectedSystemPromptPresetId(saved.id);
+      setSystemPromptPresetNameDraft(saved.name);
+      onFlashMessage(`プリセット「${saved.name}」を保存しました`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'プリセットの保存に失敗しました';
+      onError(message);
+      // NOTE: 409競合を含む失敗後は、別画面での更新を反映して次の操作を安全にする。
+      try {
+        setSystemPromptPresets(await api.getSystemPromptPresets());
+        setSelectedSystemPromptPresetId('');
+        setSystemPromptPresetNameDraft('');
+        setSystemPromptPresetLoadError(null);
+      } catch (reloadErr) {
+        setSystemPromptPresetLoadError(
+          reloadErr instanceof Error ? reloadErr.message : 'プリセット一覧の再読み込みに失敗しました'
+        );
+      }
+    } finally {
+      setSystemPromptPresetLoading(false);
+    }
+  }
+
+  async function handleDeleteSystemPromptPreset() {
+    const preset = systemPromptPresets.find((item) => item.id === selectedSystemPromptPresetId);
+    if (!preset || !window.confirm(`プリセット「${preset.name}」を削除しますか？`)) return;
+
+    try {
+      setSystemPromptPresetLoading(true);
+      onError(null);
+      await api.deleteSystemPromptPreset(preset.id);
+      setSystemPromptPresets((items) => items.filter((item) => item.id !== preset.id));
+      setSelectedSystemPromptPresetId('');
+      setSystemPromptPresetNameDraft('');
+      onFlashMessage(`プリセット「${preset.name}」を削除しました`);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'プリセットの削除に失敗しました');
+    } finally {
+      setSystemPromptPresetLoading(false);
+    }
+  }
+
   async function handleScanRefine() {
     try {
       setScanning(true);
@@ -400,7 +519,6 @@ export default function WorkSettingsTab({
       const preview = await api.previewSystemPrompt(projectId, presets, null);
       setGeneratedSystemPrompt(preview.generatedSystemPrompt);
       setSystemPromptDraft(preview.generatedSystemPrompt);
-      setIsSystemPromptCustomized(false);
     } catch (err) {
       onError(err instanceof Error ? err.message : 'プロンプトの更新に失敗しました');
     } finally {
@@ -588,6 +706,8 @@ export default function WorkSettingsTab({
 
   const worldExcerpt = extractExcerpt(worldText, 120);
   const styleTags = deriveStyleTags(project.activePresetIds, categories);
+  const isSystemPromptDraftCustomized =
+    systemPromptDraft.trim() !== generatedSystemPrompt.trim();
   const enabledKnowledgeChars = knowledgeItems
     .filter((item) => item.enabled && item.contentStatus === 'ok')
     .reduce((sum, item) => sum + item.charCount, 0);
@@ -810,11 +930,97 @@ export default function WorkSettingsTab({
         )}
         {systemPromptEditing && (
           <>
+            <div className="system-prompt-preset-library">
+              <p className="settings-help">
+                システムプロンプトを全作品共通のプリセットとして保存・読み込みできます。読み込み後は、下の「保存」で作品に反映してください。
+              </p>
+              {systemPromptPresetLoadError && (
+                <div className="system-prompt-preset-error">
+                  <span>プリセット一覧を読み込めませんでした。</span>
+                  <button
+                    type="button"
+                    onClick={handleReloadSystemPromptPresets}
+                    disabled={systemPromptPresetLoading}
+                  >
+                    再試行
+                  </button>
+                </div>
+              )}
+              <div className="system-prompt-preset-row">
+                <select
+                  aria-label="システムプロンプトのプリセット"
+                  value={selectedSystemPromptPresetId}
+                  disabled={loading || systemPromptPresetLoading || Boolean(systemPromptPresetLoadError)}
+                  onChange={(event) => {
+                    const id = event.target.value;
+                    const preset = systemPromptPresets.find((item) => item.id === id);
+                    setSelectedSystemPromptPresetId(id);
+                    setSystemPromptPresetNameDraft(preset?.name ?? '');
+                  }}
+                >
+                  <option value="">保存済みプリセットを選択</option>
+                  {systemPromptPresets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleLoadSystemPromptPreset}
+                  disabled={
+                    loading ||
+                    systemPromptPresetLoading ||
+                    Boolean(systemPromptPresetLoadError) ||
+                    !selectedSystemPromptPresetId
+                  }
+                >
+                  読み込む
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={handleDeleteSystemPromptPreset}
+                  disabled={
+                    loading ||
+                    systemPromptPresetLoading ||
+                    Boolean(systemPromptPresetLoadError) ||
+                    !selectedSystemPromptPresetId
+                  }
+                >
+                  削除
+                </button>
+              </div>
+              <div className="system-prompt-preset-row">
+                <input
+                  type="text"
+                  aria-label="保存するプリセット名"
+                  placeholder="プリセット名"
+                  maxLength={SYSTEM_PROMPT_PRESET_NAME_MAX_CHARS}
+                  value={systemPromptPresetNameDraft}
+                  disabled={loading || systemPromptPresetLoading || Boolean(systemPromptPresetLoadError)}
+                  onChange={(event) => setSystemPromptPresetNameDraft(event.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveSystemPromptPreset}
+                  disabled={
+                    loading ||
+                    systemPromptPresetLoading ||
+                    Boolean(systemPromptPresetLoadError) ||
+                    !systemPromptPresetNameDraft.trim() ||
+                    !systemPromptDraft.trim()
+                  }
+                >
+                  現在の内容をプリセット保存
+                </button>
+              </div>
+            </div>
             <div className="prompt-toolbar">
               <span className="prompt-status">
                 {previewLoading
                   ? '更新中…'
-                  : isSystemPromptCustomized
+                  : isSystemPromptDraftCustomized
                     ? '手入力を使用中'
                     : 'プリセットから生成'}
               </span>

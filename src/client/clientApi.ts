@@ -56,6 +56,7 @@ import type {
   SetupSessionSummary,
   SystemVersionInfo,
   SystemPromptPreview,
+  SystemPromptPreset,
   UpdateSetupDraftBody,
   UpdateProjectBody,
 } from '@shared/types';
@@ -152,6 +153,23 @@ export const api = {
   getPresets: () => request<unknown>('/presets'),
   getStyleSamples: () =>
     request<{ items: StyleSamplePreset[] }>('/style-samples').then((res) => res.items),
+  getSystemPromptPresets: () =>
+    request<{ items: SystemPromptPreset[] }>('/system-prompt-presets').then((res) => res.items),
+  createSystemPromptPreset: (body: { name: string; prompt: string }) =>
+    request<SystemPromptPreset>('/system-prompt-presets', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  updateSystemPromptPreset: (
+    id: string,
+    body: { name: string; prompt: string; expectedUpdatedAt: string }
+  ) =>
+    request<SystemPromptPreset>(`/system-prompt-presets/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteSystemPromptPreset: (id: string) =>
+    request<void>(`/system-prompt-presets/${id}`, { method: 'DELETE' }),
   getProjectPresets: (id: string) => request<PresetsFile>(`/projects/${id}/presets`),
   updateProjectPresets: (id: string, presets: Partial<PresetsFile>) =>
     request<PresetsFile>(`/projects/${id}/presets`, { method: 'PUT', body: JSON.stringify(presets) }),

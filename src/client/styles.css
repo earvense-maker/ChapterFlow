@@ -2395,6 +2395,42 @@ button:disabled:has(.generating-label) {
   flex-wrap: wrap;
 }
 
+.system-prompt-preset-library {
+  display: grid;
+  gap: 0.65rem;
+  margin-bottom: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(107, 142, 159, 0.06);
+}
+
+.system-prompt-preset-library .settings-help {
+  margin: 0;
+}
+
+.system-prompt-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.system-prompt-preset-row select,
+.system-prompt-preset-row input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.system-prompt-preset-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
 .prompt-status {
   color: var(--text-muted);
   font-size: 0.85rem;

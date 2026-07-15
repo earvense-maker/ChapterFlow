@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type NextFunction, type Response } from 'express';
 import { promises as fs } from 'node:fs';
 import { PRESETS_PATH } from '../config.js';
 import * as storage from '../services/storageService.js';
@@ -6,6 +6,15 @@ import * as projectService from '../services/projectService.js';
 import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import { loadStyleSamples } from '../prompts/styleSamplePresets.js';
+import {
+  createSystemPromptPreset,
+  deleteSystemPromptPreset,
+  listSystemPromptPresets,
+  SystemPromptPresetConflictError,
+  SystemPromptPresetNotFoundError,
+  SystemPromptPresetValidationError,
+  updateSystemPromptPreset,
+} from '../services/systemPromptPresetService.js';
 import type { ActivePresets, Character, CharacterRole, PresetsFile } from '../types/index.js';
 
 const router = Router();
@@ -25,6 +34,49 @@ router.get('/style-samples', async (_req, res, next) => {
     res.json({ items });
   } catch (err) {
     next(err);
+  }
+});
+
+router.get('/system-prompt-presets', async (_req, res, next) => {
+  try {
+    res.json({ items: await listSystemPromptPresets() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/system-prompt-presets', async (req, res, next) => {
+  try {
+    const preset = await createSystemPromptPreset({
+      name: req.body?.name,
+      prompt: req.body?.prompt,
+    });
+    res.status(201).json(preset);
+  } catch (err) {
+    handleSystemPromptPresetError(err, res, next);
+  }
+});
+
+router.put('/system-prompt-presets/:id', async (req, res, next) => {
+  try {
+    res.json(
+      await updateSystemPromptPreset(req.params.id, {
+        name: req.body?.name,
+        prompt: req.body?.prompt,
+        expectedUpdatedAt: req.body?.expectedUpdatedAt,
+      })
+    );
+  } catch (err) {
+    handleSystemPromptPresetError(err, res, next);
+  }
+});
+
+router.delete('/system-prompt-presets/:id', async (req, res, next) => {
+  try {
+    await deleteSystemPromptPreset(req.params.id);
+    res.status(204).end();
+  } catch (err) {
+    handleSystemPromptPresetError(err, res, next);
   }
 });
 
@@ -137,6 +189,26 @@ router.put('/projects/:id/world', async (req, res, next) => {
 });
 
 export default router;
+
+function handleSystemPromptPresetError(
+  err: unknown,
+  res: Response,
+  next: NextFunction
+): void {
+  if (err instanceof SystemPromptPresetValidationError) {
+    res.status(400).json({ error: err.message });
+    return;
+  }
+  if (err instanceof SystemPromptPresetNotFoundError) {
+    res.status(404).json({ error: err.message });
+    return;
+  }
+  if (err instanceof SystemPromptPresetConflictError) {
+    res.status(409).json({ error: err.message });
+    return;
+  }
+  next(err);
+}
 
 function activePresetsFromPresetFile(presets: Partial<PresetsFile>): Partial<ActivePresets> {
   const activePresets: Partial<ActivePresets> = {};

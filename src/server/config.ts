@@ -12,5 +12,6 @@ export const DATA_DIR = process.env.YUMEWEAVING_DATA_DIR
 export const PROJECTS_DIR = path.resolve(DATA_DIR, 'projects');
 export const SETUP_SESSIONS_DIR = path.resolve(DATA_DIR, 'setup-sessions');
 export const CONFIG_DIR = path.resolve(DATA_DIR, 'config');
+export const SYSTEM_PROMPT_PRESETS_PATH = path.resolve(CONFIG_DIR, 'system-prompt-presets.json');
 export const PRESETS_PATH = path.resolve(PROJECT_ROOT, 'presets', 'default-presets.json');
 export const STYLE_SAMPLES_PATH = path.resolve(PROJECT_ROOT, 'presets', 'style-samples.json');
