@@ -15,6 +15,7 @@ import modelsRouter from './routes/models.js';
 import setupSessionsRouter from './routes/setupSessions.js';
 import { createSystemRouter } from './routes/system.js';
 import refineRouter from './routes/refine.js';
+import roleplayRouter from './routes/roleplay.js';
 import {
   createLanAuthMiddleware,
   isLanAuthRequiredForHost,
@@ -72,6 +73,7 @@ export function createApp(options: CreateAppOptions): express.Express {
     onRestartRequest: options.onRestartRequest,
   }));
   app.use('/api', refineRouter);
+  app.use('/api', roleplayRouter);
 
   app.use(
     (

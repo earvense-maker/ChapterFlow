@@ -61,6 +61,30 @@ describe('setupSessionService', () => {
     });
   });
 
+  it('normalizes undefined purpose to novel and rejects invalid purpose', async () => {
+    // NOTE: 後方互換: purpose 未指定は 'novel'
+    const noPurpose = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(noPurpose.sessionId);
+    expect(noPurpose.session.purpose).toBe('novel');
+
+    // NOTE: purpose='roleplay' が保存され、summary でも正規化された値が返る
+    const roleplay = await setupSessionService.createSetupSession({ purpose: 'roleplay' });
+    createdSessionIds.push(roleplay.sessionId);
+    expect(roleplay.session.purpose).toBe('roleplay');
+
+    const summaries = await setupSessionService.listSetupSessions();
+    const roleplaySummary = summaries.find((s) => s.sessionId === roleplay.sessionId);
+    expect(roleplaySummary?.purpose).toBe('roleplay');
+    const novelSummary = summaries.find((s) => s.sessionId === noPurpose.sessionId);
+    expect(novelSummary?.purpose).toBe('novel');
+
+    // NOTE: 不正な purpose は 400
+    await expect(
+      // @ts-expect-error 意図的に不正値を渡してエラー系を確認
+      setupSessionService.createSetupSession({ purpose: 'other' })
+    ).rejects.toMatchObject({ code: 'invalid_purpose', status: 400 });
+  });
+
   it('rejects stale draft revisions', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);

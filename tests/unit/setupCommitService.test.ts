@@ -401,6 +401,76 @@ describe('setupCommitService', () => {
     expect(normalized.storyState.openThreads[0].importance).toBe('medium');
   });
 
+  it('forces projectType and scenarioSeeds for roleplay purpose regardless of model output', () => {
+    const roleplaySession: SetupSession = {
+      ...session(),
+      purpose: 'roleplay',
+      draft: {
+        ...createEmptySetupDraft(),
+        coreConcept: '幼馴染との放課後',
+        scenarioSeeds: ['放課後の教室で二人きり', '駅前の書店で偶然会う'],
+      },
+    };
+    const normalized = normalizeSetupCommitData({
+      session: roleplaySession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        // NOTE: モデルが projectType='novel' と誤って返しても roleplay に強制する。
+        project: { title: '幼馴染', projectType: 'novel' },
+        // NOTE: firstWishSuggestion は roleplay では出力側で捨てる。
+        firstWishSuggestion: '第1話冒頭の希望',
+        // NOTE: storyFact は roleplay では除外される。
+        memories: [
+          { type: 'preference', content: '穏やか', importance: 'high' },
+          { type: 'storyFact', content: '本編用の事実', importance: 'high' },
+          { type: 'negative', content: 'これはNG', importance: 'high' },
+        ],
+        characters: [
+          {
+            role: 'protagonist',
+            name: 'アリス',
+            description: '幼馴染',
+            greeting: 'あ、来てくれたんだ。',
+            dialogueExamples: ['……ここ、隣あいてるよ。', 'また明日、ね。'],
+          },
+        ],
+        scenarioSeeds: ['放課後の教室で二人きり'],
+      },
+    });
+
+    expect(normalized.projectInput.projectType).toBe('roleplay');
+    expect(normalized.projectInput.scenarioSeeds).toEqual(['放課後の教室で二人きり']);
+    expect(normalized.projectInput.firstWishSuggestion).toBeUndefined();
+    // memories は preference / negative のみ
+    expect(normalized.memories.every((m) => m.type === 'preference' || m.type === 'negative')).toBe(true);
+    // characters に greeting / dialogueExamples が保持される
+    expect(normalized.projectInput.characters?.[0].greeting).toBe('あ、来てくれたんだ。');
+    expect(normalized.projectInput.characters?.[0].dialogueExamples).toEqual([
+      '……ここ、隣あいてるよ。',
+      'また明日、ね。',
+    ]);
+  });
+
+  it('falls back to draft.scenarioSeeds for roleplay purpose when LLM omits them', () => {
+    const roleplaySession: SetupSession = {
+      ...session(),
+      purpose: 'roleplay',
+      draft: {
+        ...createEmptySetupDraft(),
+        coreConcept: '幼馴染',
+        scenarioSeeds: ['ドラフトの舞台1', 'ドラフトの舞台2'],
+      },
+    };
+    const normalized = normalizeSetupCommitData({
+      session: roleplaySession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: { project: { title: 'x' } },
+    });
+    expect(normalized.projectInput.scenarioSeeds).toEqual(['ドラフトの舞台1', 'ドラフトの舞台2']);
+  });
+
   it('drops story event visibility IDs that do not match committed characters', () => {
     const normalized = normalizeSetupCommitData({
       session: session(),

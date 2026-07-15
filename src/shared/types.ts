@@ -31,6 +31,10 @@ export interface SamplingConfig {
   temperature?: number;
 }
 
+// NOTE: ロールプレイモード用。'novel' は連載小説、'roleplay' はキャラ会話。undefined は
+// 後方互換で 'novel' 扱い。API 境界では必ず正規化して返す。
+export type ProjectType = 'novel' | 'roleplay';
+
 export interface Project {
   schemaVersion: number;
   projectId: ProjectId;
@@ -46,6 +50,13 @@ export interface Project {
   streamingEnabled: boolean;
   activePresetIds: ActivePresets;
   samplingConfig?: SamplingConfig;
+  // NOTE: 種別。保存データでは optional のまま後方互換、API では 'novel' に正規化。
+  projectType?: ProjectType;
+  // NOTE: ロールプレイ会話開始時に提示するシナリオ候補（会話の舞台）。最大10件。
+  scenarioSeeds?: string[];
+  // NOTE: ロールプレイ 1 応答の目安字数（プロンプトの outputLength に流し、hard cap も
+  // ここから派生）。未指定なら DEFAULT_ROLEPLAY_OUTPUT_CHARS を使う。range 100〜500。
+  roleplayOutputChars?: number;
 }
 
 export interface ProjectState {
@@ -84,6 +95,10 @@ export interface Character {
   want?: string;
   fear?: string;
   currentState?: string;
+  // NOTE: ロールプレイモード用。会話開始時にキャラが最初に発するメッセージ。
+  greeting?: string;
+  // NOTE: ロールプレイモード用。口調の few-shot 例。1件=1発話、上限は projectService の正規化で丸める。
+  dialogueExamples?: string[];
 }
 
 export type MemoryType = 'storyFact' | 'preference' | 'negative';
@@ -250,6 +265,9 @@ export type SetupSessionStatus = 'active' | 'committed' | 'abandoned';
 export type SetupMessageRole = 'user' | 'assistant';
 export type SetupDraftItemStatus = 'active' | 'archived';
 export type SetupDraftItemSource = 'user' | 'llm' | 'manual';
+// NOTE: 'novel' は連載小説の設定づくり、'roleplay' はロールプレイ会話向けの
+// キャラ設定づくり。保存データでは optional、API 境界では 'novel' に正規化。
+export type SetupPurpose = 'novel' | 'roleplay';
 
 export interface SetupModelSelection {
   provider: string;
@@ -314,6 +332,9 @@ export interface SetupDraftCharacter {
   want?: string;
   fear?: string;
   secret?: string;
+  // NOTE: ロールプレイ用途で相談中に組み立てる開幕メッセージと会話例。
+  greeting?: string;
+  dialogueExamples?: string[];
   lockedFields?: string[];
   source: SetupDraftItemSource;
   status: SetupDraftItemStatus;
@@ -333,6 +354,8 @@ export interface SetupDraft {
   tone: string[];
   ng: string[];
   openingSeeds: string[];
+  // NOTE: ロールプレイ用途の会話舞台候補。novel 用途では常に空配列。
+  scenarioSeeds: string[];
 }
 
 export interface SetupLock {
@@ -356,6 +379,8 @@ export interface SetupSession {
   committedProjectId?: ProjectId;
   status: SetupSessionStatus;
   revision: number;
+  // NOTE: 相談の用途。undefined は後方互換で 'novel'。サービス境界では必ず normalize する。
+  purpose?: SetupPurpose;
   model: SetupModelSelection;
   projectSettings: SetupProjectSettings;
   messages: SetupMessage[];
@@ -378,6 +403,8 @@ export interface SetupSessionSummary {
   messageCount: number;
   draftExcerpt: string;
   committedProjectId?: ProjectId;
+  // NOTE: サマリーでは undefined を返さず 'novel' に正規化して渡す。
+  purpose: SetupPurpose;
 }
 
 export type SetupSuggestedActionIntent = 'preview' | 'commit';
@@ -401,6 +428,8 @@ export interface SetupDraftPatch {
   toneAdd?: string[];
   ngAdd?: string[];
   openingSeedsAdd?: string[];
+  // NOTE: ロールプレイ用途。会話の舞台候補を追加する。
+  scenarioSeedsAdd?: string[];
   archiveIds?: string[];
 }
 
@@ -408,6 +437,8 @@ export interface CreateSetupSessionBody {
   initialMessage?: string;
   projectSettings?: Partial<SetupProjectSettings>;
   model?: Partial<SetupModelSelection>;
+  // NOTE: 用途。省略時は 'novel' として扱う。'novel' / 'roleplay' 以外は 400。
+  purpose?: SetupPurpose;
 }
 
 export interface SendSetupMessageBody {
@@ -487,8 +518,11 @@ export interface SetupCommitPlan {
     title: string;
     outputLength: number;
     activePresetIds: Partial<ActivePresets>;
+    // NOTE: roleplay 用途では 'roleplay' を必ず設定。novel 用途/後方互換は 'novel'。
+    projectType?: ProjectType;
   };
   coreConcept?: string;
+  // NOTE: roleplay 用途では常に未設定。novel 用途のみ表示・保存する。
   firstWishSuggestion?: string;
   styleSample?: string;
   worldText: string;
@@ -496,6 +530,8 @@ export interface SetupCommitPlan {
   memories: Memory[];
   storyState: StoryState;
   customSystemPrompt: string;
+  // NOTE: ロールプレイ用途の会話舞台候補。novel 用途では常に空配列。
+  scenarioSeeds?: string[];
 }
 
 export interface SetupCommitPlanResponse {
@@ -658,6 +694,13 @@ export interface PresetsFile {
   customSystemPrompt?: string;
 }
 
+export interface StyleSamplePreset {
+  id: string;
+  label: string;
+  description: string;
+  text: string;
+}
+
 export interface SystemPromptPreview {
   systemPrompt: string;
   generatedSystemPrompt: string;
@@ -672,6 +715,8 @@ export interface ProjectSummary {
   lastOpenedAt: string;
   activePresetIds: ActivePresets;
   lastExcerpt: string;
+  // NOTE: サマリーでは undefined を返さず 'novel' に正規化。UI 一覧のバッジ・遷移振分けに使う。
+  projectType: ProjectType;
 }
 
 export interface GenerateRequestBody {
@@ -694,6 +739,11 @@ export interface CreateProjectBody {
   worldText?: string;
   characters?: Character[];
   customSystemPrompt?: string;
+  // NOTE: ロールプレイ型プロジェクトを作る時のみ指定。UpdateProjectBody には含めない
+  // （種別の後変更は不可、相互昇格は Phase 2 の課題）。
+  projectType?: ProjectType;
+  scenarioSeeds?: string[];
+  roleplayOutputChars?: number;
 }
 
 export interface UpdateProjectBody {
@@ -707,6 +757,10 @@ export interface UpdateProjectBody {
   activeModelName?: string;
   activePresetIds?: Partial<ActivePresets>;
   samplingConfig?: Partial<SamplingConfig>;
+  // NOTE: projectType は不変（後変更は Phase 2 の課題）。scenarioSeeds は
+  // ロールプレイ型プロジェクトで会話開始時のチップを追加編集するために更新可能。
+  scenarioSeeds?: string[];
+  roleplayOutputChars?: number;
 }
 
 export type RuntimeKind = 'electron' | 'server';
@@ -916,4 +970,102 @@ export interface RefineChatResponse {
 export interface RefineApplyResponse {
   session: RefineSession;
   patch: RefinePatch;
+}
+
+// ===== ロールプレイモード =====
+//
+// 会話ランタイム。相談モードで作った roleplay 型プロジェクトを開くと、この
+// セッション単位で会話が保存される。設計書 3.1 のデータ整合性方針:
+//  - 保存済みセッションが正、ストリーミング中の暫定表示はコミット点に達するまで
+//    未保存として扱う。
+//  - 全変更操作は sessionId 単位の in-memory mutex + revision 検査を通す。
+//  - contextSnapshot は作成時のペルソナ・世界観をスナップショットし、後日の
+//    キャラ編集で既存会話が変質しないようにする。
+
+export type RoleplaySessionId = string;
+export type RoleplayMessageRole = 'user' | 'character';
+export type RoleplaySessionStatus = 'active' | 'archived';
+
+export interface RoleplayMessage {
+  messageId: string;
+  role: RoleplayMessageRole;
+  content: string;
+  createdAt: string;
+}
+
+// NOTE: 会話開始時に固定するペルソナ・世界観のスナップショット。プロンプト構築の
+// system 部の材料。secrets を含むためAPIレスポンスには含めず、RoleplaySessionView
+// で除外する。
+export interface RoleplayContextSnapshot {
+  character: Character;
+  otherCharacters: Array<Pick<Character, 'characterId' | 'name' | 'description'>>;
+  worldDigest: string;
+  customSystemPrompt: string;
+  capturedAt: string;
+}
+
+export interface RoleplaySession {
+  schemaVersion: 1;
+  sessionId: RoleplaySessionId;
+  projectId: ProjectId;
+  characterId: CharacterId;
+  scenario?: string;
+  contextSnapshot: RoleplayContextSnapshot;
+  status: RoleplaySessionStatus;
+  messages: RoleplayMessage[];
+  conversationSummary?: string;
+  // NOTE: 要約カーソル。この messageId までが conversationSummary に畳まれている。
+  summaryThroughMessageId?: string;
+  // NOTE: 派生データ更新の時刻。会話の updatedAt とは分離し、要約完了で
+  // 一覧順やユーザー向け revision を進めない。
+  summaryUpdatedAt?: string;
+  model: { provider: string; modelName: string };
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// NOTE: APIレスポンス用。contextSnapshot を除外して secrets を漏らさない。
+// characterName はサーバー側で snapshot から取り出して付与する。
+export type RoleplaySessionView = Omit<RoleplaySession, 'contextSnapshot'> & {
+  characterName: string;
+};
+
+export interface RoleplaySessionSummary {
+  sessionId: RoleplaySessionId;
+  characterId: CharacterId;
+  characterName: string;
+  scenario?: string;
+  status: RoleplaySessionStatus;
+  messageCount: number;
+  lastExcerpt: string;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRoleplaySessionBody {
+  characterId: string;
+  scenario?: string;
+}
+
+export interface SendRoleplayMessageBody {
+  message: string;
+  revision: number;
+}
+
+export interface RegenerateRoleplayBody {
+  revision: number;
+}
+
+export interface ArchiveRoleplaySessionBody {
+  revision: number;
+}
+
+export interface RoleplaySessionResponse {
+  session: RoleplaySessionView;
+}
+
+export interface RoleplaySessionListResponse {
+  sessions: RoleplaySessionSummary[];
 }

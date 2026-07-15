@@ -10,6 +10,7 @@ import type {
   RefineScanResult,
   StoryState,
   StoryStateDiffRecord,
+  StyleSamplePreset,
 } from '@shared/types';
 
 interface Props {
@@ -59,11 +60,16 @@ export default function WorkSettingsTab({
   const [projectDetails, setProjectDetails] = useState({
     title: project.title,
     coreConcept: project.coreConcept ?? '',
-    styleSample: project.styleSample ?? '',
   });
   const [projectDetailsDraft, setProjectDetailsDraft] = useState(projectDetails);
   const [projectDetailsEditing, setProjectDetailsEditing] = useState(false);
   const [detailSettingsTab, setDetailSettingsTab] = useState<DetailSettingsTab>('basic');
+
+  const [styleSample, setStyleSample] = useState(project.styleSample ?? '');
+  const [styleSampleDraft, setStyleSampleDraft] = useState(project.styleSample ?? '');
+  const [styleSampleEditing, setStyleSampleEditing] = useState(false);
+  const [styleSamplePresets, setStyleSamplePresets] = useState<StyleSamplePreset[]>([]);
+  const [selectedStyleSamplePresetId, setSelectedStyleSamplePresetId] = useState('');
 
   const [characters, setCharacters] = useState<Character[]>([]);
   const [charactersDraft, setCharactersDraft] = useState<Character[]>([]);
@@ -145,6 +151,14 @@ export default function WorkSettingsTab({
           setRefineScan(cachedScan);
           // NOTE: キャッシュ済み結果に lastError が入っていれば、それも UI に見せる。
           if (cachedScan.lastError) setScanError(cachedScan.lastError);
+        }
+
+        // NOTE: 見本ギャラリー。取得失敗時は空配列のまま（select 非表示にする）。
+        try {
+          const samples = await api.getStyleSamples();
+          if (!cancelled) setStyleSamplePresets(samples);
+        } catch {
+          if (!cancelled) setStyleSamplePresets([]);
         }
 
       } catch (err) {
@@ -232,7 +246,6 @@ export default function WorkSettingsTab({
       const next = {
         title: updated.title,
         coreConcept: updated.coreConcept ?? '',
-        styleSample: updated.styleSample ?? '',
       };
       setProjectDetails(next);
       setProjectDetailsDraft(next);
@@ -249,6 +262,41 @@ export default function WorkSettingsTab({
   function handleCancelProjectDetails() {
     setProjectDetailsDraft(projectDetails);
     setProjectDetailsEditing(false);
+  }
+
+  async function handleSaveStyleSample() {
+    try {
+      setLoading(true);
+      onError(null);
+      const updated = await api.updateProject(projectId, { styleSample: styleSampleDraft });
+      const next = updated.styleSample ?? '';
+      setStyleSample(next);
+      setStyleSampleDraft(next);
+      setStyleSampleEditing(false);
+      setSelectedStyleSamplePresetId('');
+      onProjectUpdated(updated);
+      onFlashMessage('文体見本を保存しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '保存に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleCancelStyleSample() {
+    setStyleSampleDraft(styleSample);
+    setStyleSampleEditing(false);
+    setSelectedStyleSamplePresetId('');
+  }
+
+  function handleApplyStyleSamplePreset() {
+    const preset = styleSamplePresets.find((p) => p.id === selectedStyleSamplePresetId);
+    if (!preset) return;
+    const hasContent = styleSampleDraft.trim().length > 0;
+    if (hasContent && !window.confirm('現在の見本を選んだ見本で置き換えます。よろしいですか？')) {
+      return;
+    }
+    setStyleSampleDraft(preset.text);
   }
 
   function updateCharacterDraft(index: number, patch: Partial<Character>) {
@@ -544,7 +592,7 @@ export default function WorkSettingsTab({
           <h2>詳細設定</h2>
           <div className="summary-card-badges">
             {projectDetails.coreConcept.trim() && <span className="settings-badge preset">核あり</span>}
-            {projectDetails.styleSample.trim() && <span className="settings-badge preset">見本あり</span>}
+            {styleSample.trim() && <span className="settings-badge preset">見本あり</span>}
             {!worldText.trim() && <span className="settings-badge warn">世界未設定 ⚠</span>}
             <span className="settings-meta">人物 {characters.length}人</span>
             <span className="settings-meta">資料 {knowledgeItems.length}件</span>
@@ -619,16 +667,6 @@ export default function WorkSettingsTab({
                 <dt>作品の核</dt>
                 <dd>{projectDetails.coreConcept || <span className="summary-field-missing">未記入</span>}</dd>
               </div>
-              <div>
-                <dt>文体見本</dt>
-                <dd>
-                  {projectDetails.styleSample ? (
-                    <span className="summary-prewrap-inline">{extractExcerpt(projectDetails.styleSample, 180)}</span>
-                  ) : (
-                    <span className="summary-field-missing">未記入</span>
-                  )}
-                </dd>
-              </div>
             </dl>
             <div className="summary-card-actions">
               <button
@@ -662,14 +700,6 @@ export default function WorkSettingsTab({
               }
               placeholder="作品の核"
               rows={3}
-            />
-            <textarea
-              value={projectDetailsDraft.styleSample}
-              onChange={(e) =>
-                setProjectDetailsDraft((current) => ({ ...current, styleSample: e.target.value }))
-              }
-              placeholder="文体見本"
-              rows={8}
             />
             <div className="summary-card-actions">
               <button onClick={handleCancelProjectDetails} disabled={loading}>
@@ -780,6 +810,99 @@ export default function WorkSettingsTab({
                 キャンセル
               </button>
               <button className="primary" onClick={handleSaveSystemPrompt} disabled={loading}>
+                保存
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+      )}
+
+      {detailSettingsTab === 'style' && (
+      <section className="summary-card detail-settings-panel-card">
+        <header className="summary-card-header">
+          <h2>文体見本</h2>
+          <div className="summary-card-badges">
+            {styleSample.trim() ? (
+              <span className="settings-badge preset">見本あり</span>
+            ) : (
+              <span className="settings-meta">未設定</span>
+            )}
+          </div>
+        </header>
+        <p className="settings-help">
+          文体・リズム・描写密度のサンプル本文です。生成時は本文の一部として参照され、文体プリセットより見本の質感が優先されます（人称・視点は上書きされません）。
+        </p>
+        {!styleSampleEditing && (
+          <>
+            {styleSample.trim() ? (
+              <p className="summary-excerpt">{extractExcerpt(styleSample, 260)}</p>
+            ) : (
+              <p className="summary-empty">見本は未設定です。ギャラリーから選ぶか、直接入力できます。</p>
+            )}
+            <div className="summary-card-actions">
+              <button
+                onClick={() => {
+                  setStyleSampleDraft(styleSample);
+                  setSelectedStyleSamplePresetId('');
+                  setStyleSampleEditing(true);
+                }}
+              >
+                編集
+              </button>
+            </div>
+          </>
+        )}
+        {styleSampleEditing && (
+          <>
+            {styleSamplePresets.length > 0 && (
+              <div className="style-sample-gallery">
+                <label>
+                  見本ギャラリーから選ぶ
+                  <select
+                    value={selectedStyleSamplePresetId}
+                    onChange={(e) => setSelectedStyleSamplePresetId(e.target.value)}
+                    disabled={loading}
+                  >
+                    <option value="">（選択してください）</option>
+                    {styleSamplePresets.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedStyleSamplePresetId && (() => {
+                  const preset = styleSamplePresets.find((p) => p.id === selectedStyleSamplePresetId);
+                  if (!preset) return null;
+                  return (
+                    <div className="style-sample-preview">
+                      <p className="settings-help">{preset.description}</p>
+                      <pre className="summary-prewrap">{preset.text}</pre>
+                      <button
+                        type="button"
+                        onClick={handleApplyStyleSamplePreset}
+                        disabled={loading}
+                      >
+                        この見本を下書きに反映
+                      </button>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+            <textarea
+              value={styleSampleDraft}
+              onChange={(e) => setStyleSampleDraft(e.target.value)}
+              placeholder="文体見本（1000字まで）"
+              rows={10}
+              maxLength={1000}
+            />
+            <div className="summary-card-actions">
+              <button onClick={handleCancelStyleSample} disabled={loading}>
+                キャンセル
+              </button>
+              <button className="primary" onClick={handleSaveStyleSample} disabled={loading}>
                 保存
               </button>
             </div>
@@ -1003,6 +1126,28 @@ export default function WorkSettingsTab({
                     value={c.secrets || ''}
                     onChange={(e) => updateCharacterDraft(i, { secrets: e.target.value })}
                     placeholder="秘密"
+                  />
+                  {/* NOTE: ロールプレイモード用フィールド。novel でも保存可能で、
+                      用途変更（Phase 2 の相互昇格）に備えて情報を残す。 */}
+                  <textarea
+                    value={c.greeting || ''}
+                    onChange={(e) => updateCharacterDraft(i, { greeting: e.target.value })}
+                    placeholder="ロールプレイ用：会話開始時の挨拶（1〜3文、最大500字）"
+                    maxLength={500}
+                  />
+                  <textarea
+                    value={(c.dialogueExamples ?? []).join('\n')}
+                    onChange={(e) =>
+                      updateCharacterDraft(i, {
+                        dialogueExamples: e.target.value
+                          .split('\n')
+                          .map((line) => line.trim())
+                          .filter((line) => line.length > 0)
+                          .slice(0, 5),
+                      })
+                    }
+                    placeholder="ロールプレイ用：口調のセリフ例（1行1件、最大5件、各200字）"
+                    rows={3}
                   />
                   <button className="danger" onClick={() => removeCharacterDraft(i)}>
                     削除

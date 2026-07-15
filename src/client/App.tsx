@@ -5,12 +5,16 @@ import Reader from './components/Reader';
 import SettingPanel from './components/SettingPanel';
 import SetupWorkspace from './components/SetupWorkspace';
 import AppSettingsPanel from './components/AppSettingsPanel';
+import RoleplayWorkspace from './components/RoleplayWorkspace';
+import { api } from './clientApi';
+import type { ProjectType, SetupPurpose } from '@shared/types';
 
 type View =
   | 'list'
   | 'new'
   | 'setup'
   | 'read'
+  | 'roleplay'
   | 'app-settings'
   | 'settings-work'
   | 'settings-tech'
@@ -21,15 +25,44 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [appSettingsBackView, setAppSettingsBackView] = useState<View>('list');
   const [appSettingsInitialProvider, setAppSettingsInitialProvider] = useState<string | undefined>();
+  // NOTE: 相談セッションの用途。setup 画面遷移・設定往復・再読込で同じ値を渡す。
+  const [setupPurpose, setSetupPurpose] = useState<SetupPurpose>('novel');
+  // NOTE: 設定画面から戻る先を「Reader / RoleplayWorkspace」で分けるための保持。
+  const [projectMainView, setProjectMainView] = useState<'read' | 'roleplay'>('read');
 
-  const handleOpenProject = (projectId: string) => {
+  const openProjectByType = (projectId: string, projectType: ProjectType) => {
     setActiveProjectId(projectId);
-    setView('read');
+    if (projectType === 'roleplay') {
+      setProjectMainView('roleplay');
+      setView('roleplay');
+    } else {
+      setProjectMainView('read');
+      setView('read');
+    }
   };
 
-  const handleCreateProject = (projectId: string) => {
-    setActiveProjectId(projectId);
-    setView('read');
+  const handleOpenProject = async (projectId: string, projectType?: ProjectType) => {
+    if (projectType) {
+      openProjectByType(projectId, projectType);
+      return;
+    }
+    // NOTE: サマリーから projectType が渡らなかった場合は API で確認してから遷移する。
+    try {
+      const project = await api.getProject(projectId);
+      openProjectByType(projectId, project.projectType ?? 'novel');
+    } catch {
+      openProjectByType(projectId, 'novel');
+    }
+  };
+
+  const handleCreateProject = async (projectId: string) => {
+    // NOTE: setup コミットから戻ってきたときは projectType を再確認して振り分ける。
+    try {
+      const project = await api.getProject(projectId);
+      openProjectByType(projectId, project.projectType ?? 'novel');
+    } catch {
+      openProjectByType(projectId, 'novel');
+    }
   };
 
   const handleBackToList = () => {
@@ -37,8 +70,6 @@ export default function App() {
     setView('list');
   };
 
-  // NOTE: 記憶は SettingPanel の1タブに統合済み。旧 memories ビューは廃止し、
-  // メニューから「作品設定」「生成設定」「記憶」へ直接遷移する。
   const settingsInitialTab =
     view === 'settings-work' ? 'work' :
     view === 'settings-tech' ? 'tech' :
@@ -60,13 +91,21 @@ export default function App() {
         <ProjectList
           onOpen={handleOpenProject}
           onNew={() => setView('new')}
-          onSetupNew={() => setView('setup')}
+          onSetupNew={() => {
+            setSetupPurpose('novel');
+            setView('setup');
+          }}
+          onSetupRoleplay={() => {
+            setSetupPurpose('roleplay');
+            setView('setup');
+          }}
           onOpenAppSettings={() => openAppSettings('list')}
         />
       )}
       {view === 'new' && <ProjectForm onCreated={handleCreateProject} onCancel={handleBackToList} />}
       {view === 'setup' && (
         <SetupWorkspace
+          purpose={setupPurpose}
           onCreated={handleCreateProject}
           onCancel={handleBackToList}
           onOpenSettings={() => openAppSettings('setup')}
@@ -81,6 +120,14 @@ export default function App() {
           onOpenMemories={() => openSettings('settings-memory')}
         />
       )}
+      {view === 'roleplay' && activeProjectId && (
+        <RoleplayWorkspace
+          projectId={activeProjectId}
+          onBack={handleBackToList}
+          onOpenWorkSettings={() => openSettings('settings-work')}
+          onOpenTechSettings={() => openSettings('settings-tech')}
+        />
+      )}
       {view === 'app-settings' && (
         <AppSettingsPanel
           initialProvider={appSettingsInitialProvider}
@@ -91,7 +138,7 @@ export default function App() {
         activeProjectId && (
           <SettingPanel
             projectId={activeProjectId}
-            onBack={() => setView('read')}
+            onBack={() => setView(projectMainView)}
             onOpenAppSettings={(provider) => openAppSettings('settings-tech', provider)}
             initialTab={settingsInitialTab}
           />

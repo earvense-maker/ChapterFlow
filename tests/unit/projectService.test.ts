@@ -259,4 +259,42 @@ describe('project settings validation', () => {
     expect(presets?.intimacyPreset).toBe('suggestive');
     expect(presets?.customSystemPrompt).toBe('本文だけを書く');
   });
+
+  it('clamps roleplayOutputChars into the 100–500 range', async () => {
+    const project = await projectService.createProject({
+      title: 'Roleplay clamp',
+      projectType: 'roleplay',
+      roleplayOutputChars: 5, // 100 未満は 100 に丸め
+    });
+    createdProjectIds.push(project.projectId);
+    expect(project.roleplayOutputChars).toBe(100);
+
+    const bumped = await projectService.updateProject(project.projectId, {
+      roleplayOutputChars: 9999, // 500 超は 500 に丸め
+    });
+    expect(bumped.roleplayOutputChars).toBe(500);
+
+    // 未指定でもデフォルト（250）が保存される（新規作成時）
+    const withDefault = await projectService.createProject({
+      title: 'Default roleplay chars',
+      projectType: 'roleplay',
+    });
+    createdProjectIds.push(withDefault.projectId);
+    expect(withDefault.roleplayOutputChars).toBe(250);
+  });
+
+  it('rejects non-numeric roleplayOutputChars on update', async () => {
+    const project = await projectService.createProject({
+      title: 'Roleplay reject',
+      projectType: 'roleplay',
+    });
+    createdProjectIds.push(project.projectId);
+
+    await expect(
+      projectService.updateProject(project.projectId, {
+        // @ts-expect-error 意図的に不正値を渡してエラー系を確認
+        roleplayOutputChars: 'abc',
+      })
+    ).rejects.toThrow(projectService.ProjectValidationError);
+  });
 });

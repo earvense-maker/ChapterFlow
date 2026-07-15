@@ -5,6 +5,7 @@ import * as storage from '../services/storageService.js';
 import * as projectService from '../services/projectService.js';
 import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import { loadStyleSamples } from '../prompts/styleSamplePresets.js';
 import type { ActivePresets, Character, CharacterRole, PresetsFile } from '../types/index.js';
 
 const router = Router();
@@ -13,6 +14,15 @@ router.get('/presets', async (_req, res, next) => {
   try {
     const text = await fs.readFile(PRESETS_PATH, 'utf-8');
     res.json(JSON.parse(text));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/style-samples', async (_req, res, next) => {
+  try {
+    const items = await loadStyleSamples();
+    res.json({ items });
   } catch (err) {
     next(err);
   }
@@ -91,10 +101,12 @@ router.put('/projects/:id/characters', async (req, res, next) => {
       return res.status(400).json({ error: 'Invalid characters payload' });
     }
 
+    // NOTE: 全書き込み境界で共通正規化を通し、greeting/dialogueExamples の上限を保証する。
+    const normalized = projectService.normalizeCharactersForStorage(characters);
     await withProjectWriteLock(req.params.id, () =>
-      storage.writeCharacters(req.params.id, characters)
+      storage.writeCharacters(req.params.id, normalized)
     );
-    res.json(characters);
+    res.json(normalized);
   } catch (err) {
     next(err);
   }
@@ -164,7 +176,9 @@ function isCharacterInput(value: unknown): value is Character {
     optionalString(value.secrets) &&
     optionalString(value.want) &&
     optionalString(value.fear) &&
-    optionalString(value.currentState)
+    optionalString(value.currentState) &&
+    optionalString(value.greeting) &&
+    optionalStringArray(value.dialogueExamples)
   );
 }
 

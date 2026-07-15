@@ -2,7 +2,11 @@ import { promises as fs } from 'node:fs';
 import { PRESETS_PATH } from '../config.js';
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
-import { DEFAULT_ACTIVE_PRESET_IDS } from '../types/index.js';
+import {
+  DEFAULT_ACTIVE_PRESET_IDS,
+  normalizeSetupPurpose,
+  ROLEPLAY_LIMITS,
+} from '../types/index.js';
 import type {
   ActivePresets,
   Character,
@@ -11,6 +15,7 @@ import type {
   Memory,
   MemoryImportance,
   MemoryType,
+  ProjectType,
   SetupSession,
   StoryAuthorUndecidedRecord,
   StoryCharacterState,
@@ -63,6 +68,7 @@ export function normalizeSetupCommitPlan(input: {
   const now = input.now ?? nowIso();
   const raw = isRecord(input.raw) ? input.raw : {};
   const rawProject = isRecord(raw.project) ? raw.project : {};
+  const purpose = normalizeSetupPurpose(input.session.purpose);
   const fallbackPresets: Partial<ActivePresets> = {
     ...DEFAULT_ACTIVE_PRESET_IDS,
     ...input.session.projectSettings.activePresetIds,
@@ -72,12 +78,26 @@ export function normalizeSetupCommitPlan(input: {
     fallbackPresets,
     input.presetIdsByCategory
   );
+  // NOTE: roleplay 用途では firstWishSuggestion を出力側で扱わない（設計書 2.2）。
   const firstWishSuggestion =
-    raw.firstWishSuggestion === undefined
-      ? input.session.draft.openingSeeds[0] || ''
-      : asString(raw.firstWishSuggestion);
+    purpose === 'roleplay'
+      ? ''
+      : raw.firstWishSuggestion === undefined
+        ? input.session.draft.openingSeeds[0] || ''
+        : asString(raw.firstWishSuggestion);
 
   const characters = normalizeCharacters(raw.characters, now, input.session);
+  // NOTE: projectType はモデル出力を信用せず、session.purpose を優先させる（設計書 2.2）。
+  const projectType: ProjectType = purpose === 'roleplay' ? 'roleplay' : 'novel';
+  const scenarioSeeds =
+    purpose === 'roleplay'
+      ? normalizeScenarioSeedList(
+          Array.isArray(raw.scenarioSeeds) && raw.scenarioSeeds.length > 0
+            ? raw.scenarioSeeds
+            : input.session.draft.scenarioSeeds ?? []
+        )
+      : [];
+
   const projectInput: CreateProjectBody = {
     title: truncate(
       asString(rawProject.title) ||
@@ -98,10 +118,12 @@ export function normalizeSetupCommitPlan(input: {
     worldText: asString(raw.worldText) || buildFallbackWorldText(input.session),
     characters,
     customSystemPrompt: asString(raw.customSystemPrompt),
+    projectType,
+    scenarioSeeds,
   };
 
   const memories = mergeDraftPreferenceMemories(
-    normalizeMemories(raw.memories, now),
+    normalizeMemories(raw.memories, now, purpose),
     input.session.draft,
     now
   );
@@ -115,6 +137,19 @@ export function normalizeSetupCommitPlan(input: {
       now
     ),
   };
+}
+
+function normalizeScenarioSeedList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const text = item.trim();
+    if (!text) continue;
+    result.push(text.slice(0, ROLEPLAY_LIMITS.scenarioSeedChars));
+    if (result.length >= ROLEPLAY_LIMITS.scenarioSeedsCount) break;
+  }
+  return result;
 }
 
 function buildFallbackProjectTitle(session: SetupSession): string {
@@ -185,6 +220,9 @@ function normalizeCharacter(value: unknown, now: string): Character | null {
   const role = normalizeRole(value.role) ?? 'supporting';
   if (!description && !name) return null;
 
+  const dialogueExamples = normalizeDialogueExamplesForCharacter(value.dialogueExamples);
+  const greeting = truncate(asString(value.greeting), ROLEPLAY_LIMITS.greetingChars);
+
   return {
     characterId: normalizeId(value.characterId, 'char'),
     name,
@@ -197,7 +235,22 @@ function normalizeCharacter(value: unknown, now: string): Character | null {
     want: asString(value.want) || undefined,
     fear: asString(value.fear) || undefined,
     currentState: asString(value.currentState) || undefined,
+    greeting,
+    dialogueExamples: dialogueExamples.length > 0 ? dialogueExamples : undefined,
   };
+}
+
+function normalizeDialogueExamplesForCharacter(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const text = item.trim();
+    if (!text) continue;
+    result.push(text.slice(0, ROLEPLAY_LIMITS.dialogueExampleChars));
+    if (result.length >= ROLEPLAY_LIMITS.dialogueExamplesCount) break;
+  }
+  return result;
 }
 
 function normalizeDraftCharacters(session: SetupSession, now: string): Character[] {
@@ -224,11 +277,15 @@ function normalizeDraftCharacters(session: SetupSession, now: string): Character
     .slice(0, 12);
 }
 
-function normalizeMemories(value: unknown, now: string): Memory[] {
-  return asArray(value)
+function normalizeMemories(value: unknown, now: string, purpose: 'novel' | 'roleplay' = 'novel'): Memory[] {
+  const normalized = asArray(value)
     .map((item) => normalizeMemory(item, now))
-    .filter((item): item is Memory => item !== null)
-    .slice(0, 24);
+    .filter((item): item is Memory => item !== null);
+  // NOTE: roleplay 用途は preference / negative のみ許可（設計書 2.2）。
+  const filtered = purpose === 'roleplay'
+    ? normalized.filter((m) => m.type === 'preference' || m.type === 'negative')
+    : normalized;
+  return filtered.slice(0, 24);
 }
 
 function mergeDraftPreferenceMemories(memories: Memory[], draft: SetupSession['draft'], now: string): Memory[] {

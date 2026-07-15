@@ -23,6 +23,7 @@ import type {
   ProjectState,
   RefineScanResult,
   RefineSession,
+  RoleplaySession,
   SetupSession,
   StoryState,
   StoryStateDiffRecord,
@@ -116,6 +117,15 @@ export function knowledgeContentPath(
 
 export function refineScanJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'refineScan.json');
+}
+
+export function roleplaySessionsDir(projectId: string): string {
+  return path.join(projectDir(projectId), 'roleplay', 'sessions');
+}
+
+export function roleplaySessionJsonPath(projectId: string, sessionId: string): string {
+  assertSafePathSegment(sessionId, 'sessionId');
+  return path.join(roleplaySessionsDir(projectId), `${sessionId}.json`);
 }
 
 export function refineSessionJsonPath(projectId: string): string {
@@ -512,6 +522,44 @@ export async function writeGenerationPromptSnapshot(
     await ensureDir(generationsDir(projectId));
     await safeWriteFile(generationPromptPath(projectId, generationId), text);
   });
+}
+
+export async function readRoleplaySession(
+  projectId: string,
+  sessionId: string
+): Promise<RoleplaySession | null> {
+  return readJsonFile<RoleplaySession>(roleplaySessionJsonPath(projectId, sessionId));
+}
+
+export async function writeRoleplaySession(session: RoleplaySession): Promise<void> {
+  await ensureDir(roleplaySessionsDir(session.projectId));
+  await safeWriteJson(roleplaySessionJsonPath(session.projectId, session.sessionId), session);
+}
+
+export async function listRoleplaySessionIds(projectId: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(roleplaySessionsDir(projectId), { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => entry.name.slice(0, -'.json'.length))
+      .filter((sessionId) => SAFE_PATH_SEGMENT.test(sessionId));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+export async function roleplaySessionExists(
+  projectId: string,
+  sessionId: string
+): Promise<boolean> {
+  try {
+    const stat = await fs.stat(roleplaySessionJsonPath(projectId, sessionId));
+    return stat.isFile();
+  } catch {
+    return false;
+  }
 }
 
 export async function projectExists(projectId: string): Promise<boolean> {

@@ -8,7 +8,13 @@ import {
 } from './modelInfoService.js';
 import { createEmptyStoryState } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
-import { DEFAULT_ACTIVE_PRESET_IDS } from '../types/index.js';
+import {
+  DEFAULT_ACTIVE_PRESET_IDS,
+  DEFAULT_PROJECT_TYPE,
+  DEFAULT_ROLEPLAY_OUTPUT_CHARS,
+  ROLEPLAY_LIMITS,
+  normalizeProjectType,
+} from '../types/index.js';
 import type {
   ActivePresets,
   Character,
@@ -17,6 +23,7 @@ import type {
   Project,
   ProjectState,
   ProjectSummary,
+  ProjectType,
   SamplingConfig,
   UpdateProjectBody,
 } from '../types/index.js';
@@ -30,6 +37,96 @@ const DEFAULT_MODEL_NAME = defaultModelForProvider(DEFAULT_MODEL_PROVIDER);
 const DEFAULT_STREAMING_ENABLED = false;
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
+
+// NOTE: 全書き込み境界（createProject/updateProject/refine 適用/setup コミット/複製/
+// characters PUT）で共通に呼び、greeting・dialogueExamples の上限を保証する。
+// 元 Character の非破壊コピーで、余分なプロパティは通過させない。
+export function normalizeCharacterForStorage(character: Character): Character {
+  const greeting = trimToMax(character.greeting, ROLEPLAY_LIMITS.greetingChars);
+  const dialogueExamples = normalizeDialogueExamples(character.dialogueExamples);
+  const next: Character = {
+    characterId: character.characterId,
+    name: character.name,
+    role: character.role,
+    description: character.description,
+  };
+  if (character.aliases !== undefined) next.aliases = character.aliases;
+  if (character.speechStyle !== undefined) next.speechStyle = character.speechStyle;
+  if (character.relationshipNotes !== undefined) {
+    next.relationshipNotes = character.relationshipNotes;
+  }
+  if (character.secrets !== undefined) next.secrets = character.secrets;
+  if (character.want !== undefined) next.want = character.want;
+  if (character.fear !== undefined) next.fear = character.fear;
+  if (character.currentState !== undefined) next.currentState = character.currentState;
+  if (greeting !== undefined) next.greeting = greeting;
+  if (dialogueExamples.length > 0) next.dialogueExamples = dialogueExamples;
+  return next;
+}
+
+export function normalizeCharactersForStorage(characters: Character[]): Character[] {
+  return characters.map(normalizeCharacterForStorage);
+}
+
+function normalizeDialogueExamples(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const text = item.trim();
+    if (!text) continue;
+    result.push(text.slice(0, ROLEPLAY_LIMITS.dialogueExampleChars));
+    if (result.length >= ROLEPLAY_LIMITS.dialogueExamplesCount) break;
+  }
+  return result;
+}
+
+function normalizeScenarioSeeds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const text = item.trim();
+    if (!text) continue;
+    result.push(text.slice(0, ROLEPLAY_LIMITS.scenarioSeedChars));
+    if (result.length >= ROLEPLAY_LIMITS.scenarioSeedsCount) break;
+  }
+  return result;
+}
+
+// NOTE: プロジェクト側の roleplay 用フィールド（projectType / scenarioSeeds /
+// roleplayOutputChars）を、保存前に一括で正規化する。projectType はモデル出力を
+// 信用せず、呼び出し側の intent（roleplay ならその値）を優先させる。
+export function normalizeRoleplayProjectFields(input: {
+  projectType?: unknown;
+  scenarioSeeds?: unknown;
+  roleplayOutputChars?: unknown;
+}): { projectType: ProjectType; scenarioSeeds: string[]; roleplayOutputChars: number } {
+  return {
+    projectType: normalizeProjectType(input.projectType),
+    scenarioSeeds: normalizeScenarioSeeds(input.scenarioSeeds),
+    roleplayOutputChars: normalizeRoleplayOutputChars(input.roleplayOutputChars),
+  };
+}
+
+// NOTE: 100〜500 の範囲に丸め、未指定なら DEFAULT_ROLEPLAY_OUTPUT_CHARS を返す。
+export function normalizeRoleplayOutputChars(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_ROLEPLAY_OUTPUT_CHARS;
+  }
+  const rounded = Math.round(value);
+  return Math.max(
+    ROLEPLAY_LIMITS.outputCharsMin,
+    Math.min(ROLEPLAY_LIMITS.outputCharsMax, rounded)
+  );
+}
+
+function trimToMax(value: string | undefined, max: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  if (!text) return undefined;
+  return text.length > max ? text.slice(0, max) : text;
+}
 
 export async function createProject(body: CreateProjectBody): Promise<Project> {
   validateProjectUpdates({
@@ -86,6 +183,12 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     samplingConfig: body.samplingConfig ?? sourceProject?.samplingConfig,
   });
 
+  const roleplayFields = normalizeRoleplayProjectFields({
+    projectType: body.projectType ?? sourceProject?.projectType,
+    scenarioSeeds: body.scenarioSeeds ?? sourceProject?.scenarioSeeds,
+    roleplayOutputChars: body.roleplayOutputChars ?? sourceProject?.roleplayOutputChars,
+  });
+
   const now = nowIso();
   const project: Project = {
     schemaVersion: 1,
@@ -111,6 +214,9 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
         normalizedSettings.samplingConfig?.presencePenalty ?? DEFAULT_PRESENCE_PENALTY,
       temperature: normalizedSettings.samplingConfig?.temperature ?? DEFAULT_TEMPERATURE,
     },
+    projectType: roleplayFields.projectType,
+    scenarioSeeds: roleplayFields.scenarioSeeds,
+    roleplayOutputChars: roleplayFields.roleplayOutputChars,
   };
 
   const state: ProjectState = {
@@ -146,7 +252,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
     customSystemPrompt: body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
   };
-  const characters = body.characters ?? sourceCharacters;
+  const characters = normalizeCharactersForStorage(body.characters ?? sourceCharacters);
   const worldText = body.worldText ?? sourceWorld;
 
   await storage.writeProject(project);
@@ -157,6 +263,9 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   await storage.writeWorld(projectId, worldText);
   await storage.writeStoryState(projectId, { ...sourceStoryState, updatedAt: now });
   if (body.duplicateFrom && sourceProject) {
+    // NOTE: 複製元の knowledge はコピーするが、roleplay/sessions は複製元だけに残す
+    // （設計書 2.4）。ここでは何もしない。将来 sessions のコピーが必要になったら
+    // 明示的なオプトインで扱う。
     await knowledgeService.copyKnowledgeFromProject(body.duplicateFrom, projectId);
   }
 
@@ -185,7 +294,11 @@ async function copySettings(sourceId: string, destId: string): Promise<void> {
 }
 
 export async function getProject(projectId: string): Promise<Project | null> {
-  return storage.readProject(projectId);
+  const project = await storage.readProject(projectId);
+  if (!project) return null;
+  // NOTE: API 境界で projectType を必ず正規化して返す。UI 側の遷移振り分けが
+  // undefined を扱わなくて済む。
+  return { ...project, projectType: normalizeProjectType(project.projectType) };
 }
 
 type ProjectUpdateInput = Omit<Partial<Project>, 'activePresetIds' | 'samplingConfig'> & {
@@ -199,6 +312,11 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
 
   const normalizedUpdates = validateProjectUpdates(updates);
   const { activePresetIds, samplingConfig, ...rest } = normalizedUpdates;
+
+  // NOTE: projectType の後変更は禁止（設計書 2.1）。updates に含まれていても
+  // 既存の値で上書きする。scenarioSeeds は編集可能で、validateProjectUpdates で
+  // 上限が適用されている。
+  if ('projectType' in rest) delete (rest as Record<string, unknown>).projectType;
 
   const updated: Project = {
     ...project,
@@ -222,6 +340,7 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
         }
       : project.samplingConfig,
     projectId,
+    projectType: normalizeProjectType(project.projectType),
     updatedAt: nowIso(),
   };
 
@@ -341,6 +460,24 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
     normalized.styleSample = normalizeOptionalText(updates.styleSample, 1000);
   }
 
+  if ('scenarioSeeds' in updates) {
+    if (updates.scenarioSeeds !== undefined && !Array.isArray(updates.scenarioSeeds)) {
+      throw new ProjectValidationError('scenarioSeeds must be an array of strings');
+    }
+    normalized.scenarioSeeds = normalizeScenarioSeeds(updates.scenarioSeeds);
+  }
+
+  if ('roleplayOutputChars' in updates) {
+    if (
+      updates.roleplayOutputChars !== undefined &&
+      (typeof updates.roleplayOutputChars !== 'number' ||
+        !Number.isFinite(updates.roleplayOutputChars))
+    ) {
+      throw new ProjectValidationError('roleplayOutputChars must be a finite number');
+    }
+    normalized.roleplayOutputChars = normalizeRoleplayOutputChars(updates.roleplayOutputChars);
+  }
+
   return normalized;
 }
 
@@ -396,6 +533,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
       lastOpenedAt: state.lastOpenedAt,
       activePresetIds: project.activePresetIds,
       lastExcerpt: await buildLastExcerpt(id, state.currentEpisodeId),
+      projectType: normalizeProjectType(project.projectType),
     });
   }
 

@@ -24,6 +24,10 @@ const LIMITS = {
   tone: 12,
   ng: 20,
   openingSeeds: 10,
+  // NOTE: ロールプレイ用途の会話舞台候補。Project.scenarioSeeds への昇格側の
+  // 上限（10）と揃える。相談中の候補として温存するため、setup 側では少し
+  // 多めに持つ余地があるが、初期は同数にしておく。
+  scenarioSeeds: 10,
 };
 
 export function createEmptySetupDraft(): SetupDraft {
@@ -38,6 +42,7 @@ export function createEmptySetupDraft(): SetupDraft {
     tone: [],
     ng: [],
     openingSeeds: [],
+    scenarioSeeds: [],
   };
 }
 
@@ -80,6 +85,7 @@ export function normalizeSetupDraft(value: unknown, fallbackNow = nowIso()): Set
     tone: normalizeStringList(value.tone, LIMITS.tone),
     ng: normalizeStringList(value.ng, LIMITS.ng),
     openingSeeds: normalizeStringList(value.openingSeeds, LIMITS.openingSeeds),
+    scenarioSeeds: normalizeStringList(value.scenarioSeeds, LIMITS.scenarioSeeds),
   };
 }
 
@@ -127,6 +133,7 @@ export function applySetupDraftPatch(input: {
   addStringItems(next.tone, patch.toneAdd, LIMITS.tone, input.locks, 'draft.tone');
   addStringItems(next.ng, patch.ngAdd, LIMITS.ng, input.locks, 'draft.ng');
   addStringItems(next.openingSeeds, patch.openingSeedsAdd, LIMITS.openingSeeds, input.locks, 'draft.openingSeeds');
+  addStringItems(next.scenarioSeeds, patch.scenarioSeedsAdd, LIMITS.scenarioSeeds, input.locks, 'draft.scenarioSeeds');
   archiveIds(next, patch.archiveIds, input.locks, now);
 
   next.candidates = trimCandidates(next.candidates);
@@ -275,6 +282,24 @@ function updateCharacters(
       current.secret = secret;
       changed = true;
     }
+    const greeting = asString(update.greeting);
+    if (greeting && !lockedFields.has('greeting') && current.greeting !== greeting) {
+      current.greeting = greeting;
+      changed = true;
+    }
+    if (
+      Array.isArray(update.dialogueExamples) &&
+      !lockedFields.has('dialogueExamples')
+    ) {
+      const next = normalizeStringList(update.dialogueExamples, 5);
+      const changedExamples =
+        next.length !== (current.dialogueExamples?.length ?? 0) ||
+        next.some((item, i) => item !== current.dialogueExamples?.[i]);
+      if (changedExamples) {
+        current.dialogueExamples = next;
+        changed = true;
+      }
+    }
     if (changed) {
       current.updatedAt = now;
     }
@@ -405,6 +430,10 @@ function normalizeCharacter(
     want: asString(value.want) || undefined,
     fear: asString(value.fear) || undefined,
     secret: asString(value.secret) || undefined,
+    // NOTE: ロールプレイ用途の追加フィールド。novel 用途では未使用でも保存し、
+    // 用途変更（Phase 2 で相互昇格）に備えて情報を残す。
+    greeting: asString(value.greeting) || undefined,
+    dialogueExamples: normalizeStringList(value.dialogueExamples, 5),
     lockedFields: normalizeStringList(value.lockedFields, 12),
     source: normalizeSource(value.source, fallbackSource),
     status: normalizeStatus(value.status),

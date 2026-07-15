@@ -25,7 +25,11 @@ import {
   normalizeSetupCommitPlan,
   readPresetIdsByCategory,
 } from './setupCommitService.js';
-import { DEFAULT_ACTIVE_PRESET_IDS } from '../types/index.js';
+import {
+  DEFAULT_ACTIVE_PRESET_IDS,
+  normalizeSetupPurpose,
+} from '../types/index.js';
+import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
   AdapterGenerateResult,
@@ -99,12 +103,23 @@ export async function createSetupSession(
 ): Promise<SetupSessionResponse> {
   const now = nowIso();
   const provider = normalizeProvider(body.model?.provider);
+  // NOTE: 'novel' | 'roleplay' 以外は 400。undefined は 'novel' 扱い。
+  if (body.purpose !== undefined && body.purpose !== 'novel' && body.purpose !== 'roleplay') {
+    throw new SetupServiceError(
+      "purpose は 'novel' か 'roleplay' である必要があります。",
+      'invalid_purpose',
+      false,
+      400
+    );
+  }
+  const purpose: SetupPurpose = normalizeSetupPurpose(body.purpose);
   const session: SetupSession = {
     schemaVersion: 1,
     sessionId: generateTimestampId('setup'),
     projectId: null,
     status: 'active',
     revision: 1,
+    purpose,
     model: {
       provider,
       modelName:
@@ -693,6 +708,8 @@ function toSetupSessionSummary(session: SetupSession): SetupSessionSummary {
     messageCount: session.messages.length,
     draftExcerpt: buildDraftExcerpt(session),
     committedProjectId: session.committedProjectId,
+    // NOTE: サマリーAPI では常に正規化済みの purpose を返し、UI 側は undefined を扱わない。
+    purpose: normalizeSetupPurpose(session.purpose),
   };
 }
 
@@ -891,7 +908,8 @@ function hasMeaningfulSetupContent(session: SetupSession): boolean {
       draft.world.some((item) => item.trim()) ||
       draft.tone.some((item) => item.trim()) ||
       draft.ng.some((item) => item.trim()) ||
-      draft.openingSeeds.some((item) => item.trim())
+      draft.openingSeeds.some((item) => item.trim()) ||
+      (draft.scenarioSeeds ?? []).some((item) => item.trim())
   );
 }
 
@@ -996,6 +1014,15 @@ async function readSetupSessionOrThrow(sessionId: string): Promise<SetupSession>
 function normalizeStoredSession(session: SetupSession): SetupSession {
   return {
     ...session,
+    // NOTE: 保存ファイルは purpose 無しのまま許容し、境界で 'novel' に正規化する。
+    purpose: normalizeSetupPurpose(session.purpose),
+    // NOTE: 既存の draft ファイルは scenarioSeeds が無い場合があるので空配列に埋める。
+    draft: {
+      ...session.draft,
+      scenarioSeeds: Array.isArray(session.draft?.scenarioSeeds)
+        ? session.draft.scenarioSeeds
+        : [],
+    },
     previews: session.previews ?? [],
     conversationSummary: session.conversationSummary ?? '',
     commitPlan: session.commitPlan ?? null,
@@ -1004,20 +1031,26 @@ function normalizeStoredSession(session: SetupSession): SetupSession {
 
 function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPlan {
   const { projectInput } = normalized;
+  // NOTE: normalizeSetupCommitPlan が session.purpose から強制的にセット済み。
+  const projectType = projectInput.projectType === 'roleplay' ? 'roleplay' : 'novel';
   return {
     project: {
       title: projectInput.title ?? '無題の作品',
       outputLength: projectInput.outputLength ?? 3000,
       activePresetIds: projectInput.activePresetIds ?? {},
+      projectType,
     },
     coreConcept: projectInput.coreConcept ?? '',
-    firstWishSuggestion: projectInput.firstWishSuggestion ?? '',
+    // NOTE: roleplay 用途では firstWishSuggestion を UI・保存対象から外す。
+    firstWishSuggestion:
+      projectType === 'roleplay' ? '' : projectInput.firstWishSuggestion ?? '',
     styleSample: projectInput.styleSample ?? '',
     worldText: projectInput.worldText ?? '',
     characters: projectInput.characters ?? [],
     memories: normalized.memories,
     storyState: normalized.storyState,
     customSystemPrompt: projectInput.customSystemPrompt ?? '',
+    scenarioSeeds: projectInput.scenarioSeeds ?? [],
   };
 }
 

@@ -1,6 +1,7 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
+import { normalizeCharactersForStorage } from './projectService.js';
 import { withProjectWriteLock } from './generationService.js';
 import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
 import { GeminiAdapter } from '../adapters/geminiAdapter.js';
@@ -365,7 +366,10 @@ async function applyRefinePatchUnlocked(
     await storage.writeWorld(projectId, nextWorld);
   }
   if (nextCharacters !== characters) {
-    await storage.writeCharacters(projectId, nextCharacters);
+    // NOTE: 全書き込み境界で共通正規化を通す（review §5.4）。ここを迂回すると
+    // roleplay 型プロジェクトで greeting/dialogueExamples の上限が保証されず、
+    // 設計書 2.1 の「同じ正規化を通す」不変条件が壊れる。
+    await storage.writeCharacters(projectId, normalizeCharactersForStorage(nextCharacters));
   }
 
   const nowStr = nowIso();

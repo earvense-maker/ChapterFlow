@@ -1,9 +1,11 @@
 import type {
+  ArchiveRoleplaySessionBody,
   Character,
   CommitSetupBody,
   ContextCompressionResult,
   CreateMemoryBody,
   CreateProjectBody,
+  CreateRoleplaySessionBody,
   DataDirApplyResponse,
   DataDirInfo,
   DataDirPreview,
@@ -28,9 +30,15 @@ import type {
   RefineChatResponse,
   RefineScanResult,
   RefineSession,
+  RegenerateRoleplayBody,
+  RoleplaySessionListResponse,
+  RoleplaySessionResponse,
+  RoleplaySessionView,
   SceneNavigationDirection,
+  SendRoleplayMessageBody,
   StoryState,
   StoryStateDiffRecord,
+  StyleSamplePreset,
   CreateSetupSessionBody,
   PatchSetupSettingsBody,
   PatchSetupSettingsResponse,
@@ -142,6 +150,8 @@ export const api = {
     }),
 
   getPresets: () => request<unknown>('/presets'),
+  getStyleSamples: () =>
+    request<{ items: StyleSamplePreset[] }>('/style-samples').then((res) => res.items),
   getProjectPresets: (id: string) => request<PresetsFile>(`/projects/${id}/presets`),
   updateProjectPresets: (id: string, presets: Partial<PresetsFile>) =>
     request<PresetsFile>(`/projects/${id}/presets`, { method: 'PUT', body: JSON.stringify(presets) }),
@@ -271,7 +281,177 @@ export const api = {
   getReaderState: (id: string) => request<ReaderState>(`/projects/${id}/reader-state`),
   updateState: (id: string, state: Partial<ProjectState>) =>
     request<ProjectState>(`/projects/${id}/state`, { method: 'PUT', body: JSON.stringify(state) }),
+
+  // ===== ロールプレイモード =====
+  createRoleplaySession: (projectId: string, body: CreateRoleplaySessionBody) =>
+    request<RoleplaySessionResponse>(`/projects/${projectId}/roleplay/sessions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  listRoleplaySessions: (projectId: string) =>
+    request<RoleplaySessionListResponse>(`/projects/${projectId}/roleplay/sessions`),
+  getRoleplaySession: (projectId: string, sessionId: string) =>
+    request<RoleplaySessionResponse>(`/projects/${projectId}/roleplay/sessions/${sessionId}`),
+  archiveRoleplaySession: (
+    projectId: string,
+    sessionId: string,
+    body: ArchiveRoleplaySessionBody
+  ) =>
+    request<RoleplaySessionResponse>(`/projects/${projectId}/roleplay/sessions/${sessionId}`, {
+      method: 'DELETE',
+      body: JSON.stringify(body),
+    }),
+  sendRoleplayMessageStream: (
+    projectId: string,
+    sessionId: string,
+    body: SendRoleplayMessageBody,
+    handlers: RoleplayStreamHandlers,
+    abortSignal?: AbortSignal
+  ) =>
+    roleplayStream(
+      `/projects/${projectId}/roleplay/sessions/${sessionId}/messages-stream`,
+      body,
+      handlers,
+      abortSignal
+    ),
+  regenerateRoleplayStream: (
+    projectId: string,
+    sessionId: string,
+    body: RegenerateRoleplayBody,
+    handlers: RoleplayStreamHandlers,
+    abortSignal?: AbortSignal
+  ) =>
+    roleplayStream(
+      `/projects/${projectId}/roleplay/sessions/${sessionId}/regenerate-stream`,
+      body,
+      handlers,
+      abortSignal
+    ),
 };
+
+export interface RoleplayStreamHandlers {
+  onChunk: (text: string) => void;
+  onDone: (session: RoleplaySessionView) => void;
+  onError: (error: {
+    error: string;
+    code?: string;
+    retryable?: boolean;
+    revision?: number;
+  }) => void;
+}
+
+async function roleplayStream(
+  path: string,
+  body: unknown,
+  handlers: RoleplayStreamHandlers,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abortSignal,
+    });
+  } catch (err) {
+    // NOTE: 接続失敗・AbortError も含めて onError で拾う（review §5.4）。
+    // これを onError にフックしないと、呼び元 UI の isStreaming フラグが立ちっぱなしになる。
+    const aborted = (err as { name?: string })?.name === 'AbortError';
+    handlers.onError({
+      error: aborted
+        ? '応答の受信を中断しました。'
+        : err instanceof Error
+          ? err.message
+          : '応答の受信に失敗しました。',
+      code: aborted ? 'aborted' : 'network_error',
+      retryable: !aborted,
+    });
+    return;
+  }
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    handlers.onError({
+      error: errorBody.error || `Request failed: ${res.status}`,
+      code: errorBody.code,
+      retryable: errorBody.retryable,
+      revision: errorBody.revision,
+    });
+    return;
+  }
+  if (!res.body) {
+    handlers.onError({ error: 'ストリーミング応答を読み取れませんでした', retryable: false });
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  // NOTE: サーバーが done/error のいずれかを送ったかを追跡する。
+  // どちらも来ずに EOF した場合は「異常終了」として onError を呼ぶ（review §5.4）。
+  let sawTerminal = false;
+
+  const handleEvent = (event: string, data: string) => {
+    if (event === 'chunk') {
+      const payload = JSON.parse(data) as { text?: string };
+      if (payload.text) handlers.onChunk(payload.text);
+    } else if (event === 'done') {
+      sawTerminal = true;
+      const payload = JSON.parse(data) as { session?: RoleplaySessionView };
+      if (payload.session) handlers.onDone(payload.session);
+    } else if (event === 'error') {
+      sawTerminal = true;
+      const payload = JSON.parse(data) as {
+        error?: string;
+        code?: string;
+        retryable?: boolean;
+        revision?: number;
+      };
+      handlers.onError({
+        error: payload.error ?? 'ロールプレイ応答に失敗しました',
+        code: payload.code,
+        retryable: payload.retryable,
+        revision: payload.revision,
+      });
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = drainStreamEvents(buffer, handleEvent);
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      drainStreamEvents(`${buffer}\n\n`, handleEvent);
+    }
+  } catch (err) {
+    // NOTE: reader.read() 中の abort・通信断・decode エラー。ここも必ず onError へ流す。
+    const aborted = (err as { name?: string })?.name === 'AbortError';
+    handlers.onError({
+      error: aborted
+        ? '応答の受信を中断しました。'
+        : err instanceof Error
+          ? err.message
+          : '応答の読み取りに失敗しました。',
+      code: aborted ? 'aborted' : 'stream_read_failed',
+      retryable: !aborted,
+    });
+    return;
+  }
+
+  if (!sawTerminal) {
+    // NOTE: サーバーがヘッダーだけ送って接続を切った・プロセス落ちなど、done/error
+    // どちらも受信しない EOF。UI が isStreaming のまま固まらないよう明示エラーで通知。
+    handlers.onError({
+      error: '応答が完了せずに切断されました。しばらくしてから再試行してください。',
+      code: 'stream_ended_unexpectedly',
+      retryable: true,
+    });
+  }
+}
 
 export interface SetupMessageStreamHandlers {
   onDelta: (text: string) => void;

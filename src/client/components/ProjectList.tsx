@@ -1,15 +1,22 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import type { ProjectSummary } from '@shared/types';
+import type { ProjectSummary, ProjectType } from '@shared/types';
 
 interface Props {
-  onOpen: (projectId: string) => void;
+  onOpen: (projectId: string, projectType: ProjectType) => void;
   onNew: () => void;
   onSetupNew: () => void;
+  onSetupRoleplay: () => void;
   onOpenAppSettings: () => void;
 }
 
-export default function ProjectList({ onOpen, onNew, onSetupNew, onOpenAppSettings }: Props) {
+export default function ProjectList({
+  onOpen,
+  onNew,
+  onSetupNew,
+  onSetupRoleplay,
+  onOpenAppSettings,
+}: Props) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +97,9 @@ export default function ProjectList({ onOpen, onNew, onSetupNew, onOpenAppSettin
         <h1>Yumeweaving</h1>
         <div className="project-list-actions">
           <button className="primary" onClick={onSetupNew}>相談して作る</button>
+          <button className="primary" onClick={onSetupRoleplay}>
+            キャラと話す作品を作る
+          </button>
           <button onClick={onNew}>設定を直接入力</button>
           <button onClick={onOpenAppSettings}>アプリ設定</button>
           <button className="danger" onClick={handleShutdown} title="サーバーとターミナルも終了">
@@ -107,15 +117,41 @@ export default function ProjectList({ onOpen, onNew, onSetupNew, onOpenAppSettin
           <p>まずは相談しながら物語を作るか、設定を直接入力して始めましょう。</p>
           <div className="project-list-actions center">
             <button className="primary" onClick={onSetupNew}>相談して作る</button>
+            <button className="primary" onClick={onSetupRoleplay}>
+              キャラと話す作品を作る
+            </button>
             <button onClick={onNew}>設定を直接入力して作る</button>
           </div>
         </div>
       ) : (
         <ul className="project-cards">
           {projects.map((p) => (
-            <li key={p.projectId} className="project-card" onClick={() => onOpen(p.projectId)}>
+            <li
+              key={p.projectId}
+              className="project-card"
+              onClick={() => onOpen(p.projectId, p.projectType)}
+            >
               <div className="project-card-main">
-                <h2>{p.title}</h2>
+                <h2>
+                  {p.title}
+                  {p.projectType === 'roleplay' && (
+                    <span
+                      className="project-type-badge project-type-badge--roleplay"
+                      title="ロールプレイ型プロジェクト"
+                      style={{
+                        marginLeft: '0.5rem',
+                        padding: '0.1rem 0.5rem',
+                        fontSize: '0.7rem',
+                        borderRadius: '999px',
+                        background: 'var(--accent-soft, #d9e6ff)',
+                        color: 'var(--accent-strong, #2952a3)',
+                        fontWeight: 500,
+                      }}
+                    >
+                      ロールプレイ
+                    </span>
+                  )}
+                </h2>
                 <p className="excerpt">{p.lastExcerpt || 'まだ本文がありません'}</p>
                 <p className="meta">
                   最終更新: {new Date(p.updatedAt).toLocaleString('ja-JP')}

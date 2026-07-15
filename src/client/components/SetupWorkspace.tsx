@@ -18,12 +18,19 @@ import type {
 } from '@shared/types';
 
 interface Props {
+  purpose?: 'novel' | 'roleplay';
   onCreated: (projectId: string) => void;
   onCancel: () => void;
   onOpenSettings: () => void;
 }
 
-type StringDraftSection = 'relationshipSeeds' | 'world' | 'tone' | 'ng' | 'openingSeeds';
+type StringDraftSection =
+  | 'relationshipSeeds'
+  | 'world'
+  | 'tone'
+  | 'ng'
+  | 'openingSeeds'
+  | 'scenarioSeeds';
 type DraftItemSection = 'confirmed' | 'candidates' | 'undecided' | 'characters';
 type DraftChangeKind = 'added' | 'updated' | 'archived';
 type DraftChanges = Record<string, DraftChangeKind>;
@@ -38,7 +45,14 @@ interface PendingDescriptor {
   id: string;
 }
 
-const SETUP_SESSION_STORAGE_KEY = 'yumeweaving:lastSetupSessionId';
+const SETUP_SESSION_STORAGE_KEY_BASE = 'yumeweaving:lastSetupSessionId';
+// NOTE: purpose 別に localStorage キーを分ける。roleplay 入口から novel の未commit
+// セッションを誤復元しないための境界（設計書 1.5）。
+function setupSessionStorageKey(purpose: 'novel' | 'roleplay'): string {
+  return purpose === 'roleplay'
+    ? `${SETUP_SESSION_STORAGE_KEY_BASE}:roleplay`
+    : `${SETUP_SESSION_STORAGE_KEY_BASE}:novel`;
+}
 
 const DEFAULT_PROJECT_SETTINGS = {
   outputLength: 3000,
@@ -59,6 +73,7 @@ const DRAFT_STRING_SECTION_LABELS = {
   tone: '好み・文体',
   ng: 'NG',
   openingSeeds: '冒頭候補',
+  scenarioSeeds: 'シナリオ（会話の舞台）',
 } satisfies Record<StringDraftSection, string>;
 
 const COLD_START_ACTIONS: SetupSuggestedAction[] = [
@@ -78,7 +93,7 @@ const COLD_START_ACTIONS: SetupSuggestedAction[] = [
 
 const PREVIEW_STYLE_HINTS = ['もっと軽く', 'しっとり', '会話多め'];
 
-export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: Props) {
+export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel, onOpenSettings }: Props) {
   const [session, setSession] = useState<SetupSession | null>(null);
   const [message, setMessage] = useState('');
   const [suggestedActions, setSuggestedActions] = useState<SetupSuggestedAction[]>([]);
@@ -113,6 +128,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     tone: [],
     ng: [],
     openingSeeds: [],
+    scenarioSeeds: [],
   });
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
@@ -213,7 +229,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       try {
         setLoading(true);
         setError(null);
-        const restored = await findRestorableSetupSession();
+        const restored = await findRestorableSetupSession(purpose);
         if (ignore) return;
 
         if (restored) {
@@ -222,18 +238,18 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           setSession(synced.session);
           setDirtyDraftEditKeys(new Set());
           clearDraftChanges();
-          rememberSetupSession(synced.session.sessionId);
+          rememberSetupSession(synced.session.sessionId, purpose);
           setSuggestedActions([]);
           if (synced.error) setError(synced.error);
           return;
         }
 
-        const result = await createDefaultSetupSession();
+        const result = await createDefaultSetupSession(undefined, purpose);
         if (ignore) return;
         setSession(result.session);
         setDirtyDraftEditKeys(new Set());
         clearDraftChanges();
-        rememberSetupSession(result.sessionId);
+        rememberSetupSession(result.sessionId, purpose);
         setSuggestedActions(result.suggestedActions);
       } catch (err) {
         if (!ignore) setError(err instanceof Error ? err.message : '相談セッションの作成に失敗しました');
@@ -345,7 +361,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       if (session?.status === 'active') {
         await api.abandonSetupSession(session.sessionId).catch(() => undefined);
       }
-      const result = await createDefaultSetupSession(providers);
+      const result = await createDefaultSetupSession(providers, purpose);
       setSession(result.session);
       setDirtyDraftEditKeys(new Set());
       clearDraftChanges();
@@ -359,9 +375,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         tone: [],
         ng: [],
         openingSeeds: [],
+        scenarioSeeds: [],
       });
       setSelectedCandidateIds(new Set());
-      rememberSetupSession(result.sessionId);
+      rememberSetupSession(result.sessionId, purpose);
       setSuggestedActions(result.suggestedActions);
       setMessage('');
     } catch (err) {
@@ -400,7 +417,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           onResult: (response) => {
             applySessionWithDraftChanges(session, response.session);
             setDirtyDraftEditKeys(new Set());
-            rememberSetupSession(response.session.sessionId);
+            rememberSetupSession(response.session.sessionId, purpose);
             setSuggestedActions(response.suggestedActions);
             setMessage('');
             setStreamingMessage('');
@@ -440,7 +457,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
               });
         applySessionWithDraftChanges(session, result.session);
         setDirtyDraftEditKeys(new Set());
-        rememberSetupSession(result.session.sessionId);
+        rememberSetupSession(result.session.sessionId, purpose);
         setSuggestedActions(result.suggestedActions);
         setMessage('');
         setShowRetry(false);
@@ -481,7 +498,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       const result = await api.retrySetupMessage(session.sessionId, {});
       applySessionWithDraftChanges(session, result.session);
       setDirtyDraftEditKeys(new Set());
-      rememberSetupSession(result.session.sessionId);
+      rememberSetupSession(result.session.sessionId, purpose);
       setSuggestedActions(result.suggestedActions);
       setShowRetry(false);
     } catch (err) {
@@ -505,7 +522,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       setError(null);
       const result = await api.previewSetup(session.sessionId, styleHint.trim() || undefined);
       applySessionWithDraftChanges(session, result.session, { preserveSummaryOnRevisionOnly: true });
-      rememberSetupSession(result.session.sessionId);
+      rememberSetupSession(result.session.sessionId, purpose);
       setPreviewText(result.previewText);
     } catch (err) {
       setError(err instanceof Error ? err.message : '試し書きに失敗しました');
@@ -579,7 +596,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
         revision: commitRevision,
       });
       setSession(commitResult.session);
-      forgetSetupSession(commitResult.session.sessionId);
+      forgetSetupSession(commitResult.session.sessionId, purpose);
       onCreated(commitResult.projectId);
     } catch (err) {
       const detail = err instanceof Error ? err.message : '作品化に失敗しました';
@@ -617,7 +634,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       });
       setSession(result.session);
       clearDraftChanges();
-      rememberSetupSession(result.session.sessionId);
+      rememberSetupSession(result.session.sessionId, purpose);
     } catch (err) {
       setError(err instanceof Error ? err.message : '相談モデルを変更できませんでした');
       await reloadLatestSession(session.sessionId, true);
@@ -640,10 +657,10 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
           clearDraftChanges();
         }
         setDirtyDraftEditKeys(new Set());
-        rememberSetupSession(latest.sessionId);
+        rememberSetupSession(latest.sessionId, purpose);
         return latest;
       } else {
-        forgetSetupSession(sessionId);
+        forgetSetupSession(sessionId, purpose);
         return null;
       }
     } catch {
@@ -671,7 +688,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       });
       setSession(result.session);
       clearDraftChanges();
-      rememberSetupSession(result.session.sessionId);
+      rememberSetupSession(result.session.sessionId, purpose);
       setSuggestedActions([]);
       return true;
     } catch (err) {
@@ -696,7 +713,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
       });
       setSession(result.session);
       clearDraftChanges();
-      rememberSetupSession(result.session.sessionId);
+      rememberSetupSession(result.session.sessionId, purpose);
     } catch (err) {
       setError(err instanceof Error ? err.message : '固定状態の更新に失敗しました');
       await reloadLatestSession(session.sessionId, true);
@@ -715,8 +732,30 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
     <div className="setup-workspace">
       <header className="setup-header" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
         <div>
-          <h1>相談して作る</h1>
-          <p>読みたい物語の種を、そのまま話してください。</p>
+          <h1>
+            {purpose === 'roleplay' ? 'キャラと話す作品を作る' : '相談して作る'}
+            {purpose === 'roleplay' && (
+              <span
+                style={{
+                  marginLeft: '0.6rem',
+                  padding: '0.15rem 0.6rem',
+                  fontSize: '0.7rem',
+                  borderRadius: '999px',
+                  background: 'var(--accent)',
+                  color: 'var(--surface)',
+                  verticalAlign: 'middle',
+                  fontWeight: 500,
+                }}
+              >
+                ロールプレイ
+              </span>
+            )}
+          </h1>
+          <p>
+            {purpose === 'roleplay'
+              ? '会話したいキャラクターの姿を話してください。3〜5往復で会話を始められる状態を目指します。'
+              : '読みたい物語の種を、そのまま話してください。'}
+          </p>
         </div>
         <div className="setup-header-actions">
           <button type="button" onClick={onCancel} disabled={busy}>戻る</button>
@@ -1089,6 +1128,7 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                 draft={draft}
                 disabled={busy}
                 changes={draftChanges}
+                purpose={purpose}
                 onDirtyChange={markDraftDirty}
                 isLocked={(character) => pathLocked(character.id, character.locked)}
                 onSave={(character, values) =>
@@ -1101,6 +1141,16 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                     target.description = values.description.trim();
                     target.speechStyle = values.speechStyle.trim() || undefined;
                     target.relationshipNotes = values.relationshipNotes.trim() || undefined;
+                    // NOTE: roleplay 用途のみ更新。novel では onSave の values に
+                    // greeting/dialogueExamples が含まれない（undefined）ため
+                    // 既存値をそのまま保持する。
+                    if (values.greeting !== undefined) {
+                      target.greeting = values.greeting.trim() || undefined;
+                    }
+                    if (values.dialogueExamples !== undefined) {
+                      target.dialogueExamples =
+                        values.dialogueExamples.length > 0 ? values.dialogueExamples : undefined;
+                    }
                     target.source = 'manual';
                     target.updatedAt = new Date().toISOString();
                   }, [character.id])
@@ -1121,6 +1171,14 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                       description: values.description.trim(),
                       speechStyle: values.speechStyle.trim() || undefined,
                       relationshipNotes: values.relationshipNotes.trim() || undefined,
+                      greeting:
+                        values.greeting !== undefined && values.greeting.trim()
+                          ? values.greeting.trim()
+                          : undefined,
+                      dialogueExamples:
+                        values.dialogueExamples && values.dialogueExamples.length > 0
+                          ? values.dialogueExamples
+                          : undefined,
                       source: 'manual',
                       status: 'active',
                     } as SetupDraftCharacter);
@@ -1208,26 +1266,57 @@ export default function SetupWorkspace({ onCreated, onCancel, onOpenSettings }: 
                   if (ok) removePendingString('ng', id);
                 }}
               />
-              <DraftStringList
-                section="openingSeeds"
-                items={draft.openingSeeds}
-                disabled={busy}
-                changes={draftChanges}
-                locked={pathLocked('draft.openingSeeds')}
-                onDirtyChange={markDraftDirty}
-                onSave={(index, value) => saveStringItem('openingSeeds', index, value)}
-                onRemove={(index) => removeStringItem('openingSeeds', index)}
-                onToggleLock={() => toggleLock('draft.openingSeeds', !pathLocked('draft.openingSeeds'))}
-                onAdd={() => addPendingString('openingSeeds')}
-                pendingRows={pendingStrings.openingSeeds}
-                onCancelPending={(id) => removePendingString('openingSeeds', id)}
-                onSavePending={async (id, value) => {
-                  const ok = await saveDraft((nextDraft) => {
-                    nextDraft.openingSeeds.push(value.trim());
-                  });
-                  if (ok) removePendingString('openingSeeds', id);
-                }}
-              />
+              {/* NOTE: openingSeeds は novel 用途の「第1話冒頭候補」。roleplay では
+                    使わないため非表示にする（設計 1.5 の用途別UI）。 */}
+              {purpose === 'novel' && (
+                <DraftStringList
+                  section="openingSeeds"
+                  items={draft.openingSeeds}
+                  disabled={busy}
+                  changes={draftChanges}
+                  locked={pathLocked('draft.openingSeeds')}
+                  onDirtyChange={markDraftDirty}
+                  onSave={(index, value) => saveStringItem('openingSeeds', index, value)}
+                  onRemove={(index) => removeStringItem('openingSeeds', index)}
+                  onToggleLock={() => toggleLock('draft.openingSeeds', !pathLocked('draft.openingSeeds'))}
+                  onAdd={() => addPendingString('openingSeeds')}
+                  pendingRows={pendingStrings.openingSeeds}
+                  onCancelPending={(id) => removePendingString('openingSeeds', id)}
+                  onSavePending={async (id, value) => {
+                    const ok = await saveDraft((nextDraft) => {
+                      nextDraft.openingSeeds.push(value.trim());
+                    });
+                    if (ok) removePendingString('openingSeeds', id);
+                  }}
+                />
+              )}
+              {/* NOTE: roleplay 用途では会話舞台候補（scenarioSeeds）を編集できる。
+                    novel では常に空配列なので非表示。 */}
+              {purpose === 'roleplay' && (
+                <DraftStringList
+                  section="scenarioSeeds"
+                  items={draft.scenarioSeeds ?? []}
+                  disabled={busy}
+                  changes={draftChanges}
+                  locked={pathLocked('draft.scenarioSeeds')}
+                  onDirtyChange={markDraftDirty}
+                  onSave={(index, value) => saveStringItem('scenarioSeeds', index, value)}
+                  onRemove={(index) => removeStringItem('scenarioSeeds', index)}
+                  onToggleLock={() =>
+                    toggleLock('draft.scenarioSeeds', !pathLocked('draft.scenarioSeeds'))
+                  }
+                  onAdd={() => addPendingString('scenarioSeeds')}
+                  pendingRows={pendingStrings.scenarioSeeds}
+                  onCancelPending={(id) => removePendingString('scenarioSeeds', id)}
+                  onSavePending={async (id, value) => {
+                    const ok = await saveDraft((nextDraft) => {
+                      if (!nextDraft.scenarioSeeds) nextDraft.scenarioSeeds = [];
+                      nextDraft.scenarioSeeds.push(value.trim());
+                    });
+                    if (ok) removePendingString('scenarioSeeds', id);
+                  }}
+                />
+              )}
             </>
           ) : (
             <p className="placeholder">まだメモはありません。</p>
@@ -1961,10 +2050,25 @@ function PendingCandidateRow({
   );
 }
 
+// NOTE: character 編集 UI で受け付ける値の共通形。greeting/dialogueExamples は
+// roleplay 用途でだけ入力欄が出るが、型は常に optional で共通化する。呼び出し側は
+// 値が undefined の場合は既存値をそのまま維持する（未編集扱い）判定を行う。
+interface EditableCharacterValues {
+  role: CharacterRole;
+  name: string;
+  label: string;
+  description: string;
+  speechStyle: string;
+  relationshipNotes: string;
+  greeting?: string;
+  dialogueExamples?: string[];
+}
+
 function DraftCharacterList({
   draft,
   disabled,
   changes,
+  purpose,
   onDirtyChange,
   isLocked,
   onSave,
@@ -1978,35 +2082,16 @@ function DraftCharacterList({
   draft: SetupDraft;
   disabled: boolean;
   changes: DraftChanges;
+  purpose: 'novel' | 'roleplay';
   onDirtyChange: (key: string, dirty: boolean) => void;
   isLocked: (item: SetupDraftCharacter) => boolean;
-  onSave: (
-    item: SetupDraftCharacter,
-    values: {
-      role: CharacterRole;
-      name: string;
-      label: string;
-      description: string;
-      speechStyle: string;
-      relationshipNotes: string;
-    }
-  ) => void;
+  onSave: (item: SetupDraftCharacter, values: EditableCharacterValues) => void;
   onArchive: (item: SetupDraftCharacter) => void;
   onToggleLock: (item: SetupDraftCharacter) => void;
   onAdd: () => void;
   pendingRows: PendingDescriptor[];
   onCancelPending: (id: string) => void;
-  onSavePending: (
-    id: string,
-    values: {
-      role: CharacterRole;
-      name: string;
-      label: string;
-      description: string;
-      speechStyle: string;
-      relationshipNotes: string;
-    }
-  ) => void;
+  onSavePending: (id: string, values: EditableCharacterValues) => void;
 }) {
   const characters = useMemo(
     () => draft.characters.filter((character) => character.status === 'active'),
@@ -2033,6 +2118,7 @@ function DraftCharacterList({
               disabled={disabled}
               locked={isLocked(character)}
               changeKind={changes[draftItemChangeKey('characters', character.id)]}
+              purpose={purpose}
               onDirtyChange={onDirtyChange}
               onSave={onSave}
               onArchive={onArchive}
@@ -2044,6 +2130,7 @@ function DraftCharacterList({
               key={pending.id}
               dirtyKey={`pending-character-${pending.id}`}
               disabled={disabled}
+              purpose={purpose}
               onDirtyChange={onDirtyChange}
               onSave={(values) => onSavePending(pending.id, values)}
               onCancel={() => onCancelPending(pending.id)}
@@ -2061,6 +2148,7 @@ function EditableCharacterRow({
   disabled,
   locked,
   changeKind,
+  purpose,
   onDirtyChange,
   onSave,
   onArchive,
@@ -2071,6 +2159,7 @@ function EditableCharacterRow({
   disabled: boolean;
   locked: boolean;
   changeKind?: DraftChangeKind;
+  purpose: 'novel' | 'roleplay';
   onDirtyChange: (key: string, dirty: boolean) => void;
   onSave: (
     item: SetupDraftCharacter,
@@ -2081,6 +2170,8 @@ function EditableCharacterRow({
       description: string;
       speechStyle: string;
       relationshipNotes: string;
+      greeting?: string;
+      dialogueExamples?: string[];
     }
   ) => void;
   onArchive: (item: SetupDraftCharacter) => void;
@@ -2092,6 +2183,12 @@ function EditableCharacterRow({
   const [description, setDescription] = useState(character.description);
   const [speechStyle, setSpeechStyle] = useState(character.speechStyle ?? '');
   const [relationshipNotes, setRelationshipNotes] = useState(character.relationshipNotes ?? '');
+  // NOTE: dialogueExamples は行区切りテキストとして編集 → 保存時に配列へ戻す。
+  // greeting は roleplay 用途のみで意味を持つが state は常時保持し UI だけ切替。
+  const [greeting, setGreeting] = useState(character.greeting ?? '');
+  const [dialogueExamplesText, setDialogueExamplesText] = useState(
+    (character.dialogueExamples ?? []).join('\n')
+  );
 
   useEffect(() => {
     setRole(character.role);
@@ -2100,6 +2197,8 @@ function EditableCharacterRow({
     setDescription(character.description);
     setSpeechStyle(character.speechStyle ?? '');
     setRelationshipNotes(character.relationshipNotes ?? '');
+    setGreeting(character.greeting ?? '');
+    setDialogueExamplesText((character.dialogueExamples ?? []).join('\n'));
   }, [
     character.id,
     character.role,
@@ -2108,7 +2207,23 @@ function EditableCharacterRow({
     character.description,
     character.speechStyle,
     character.relationshipNotes,
+    character.greeting,
+    character.dialogueExamples,
   ]);
+
+  const dialogueExamplesArray = useMemo(
+    () =>
+      dialogueExamplesText
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .slice(0, 5),
+    [dialogueExamplesText]
+  );
+  const existingDialogueExamples = character.dialogueExamples ?? [];
+  const dialogueExamplesChanged =
+    dialogueExamplesArray.length !== existingDialogueExamples.length ||
+    dialogueExamplesArray.some((item, i) => item !== existingDialogueExamples[i]);
 
   const changed =
     role !== character.role ||
@@ -2116,7 +2231,9 @@ function EditableCharacterRow({
     label.trim() !== character.label.trim() ||
     description.trim() !== character.description.trim() ||
     speechStyle.trim() !== (character.speechStyle ?? '').trim() ||
-    relationshipNotes.trim() !== (character.relationshipNotes ?? '').trim();
+    relationshipNotes.trim() !== (character.relationshipNotes ?? '').trim() ||
+    (purpose === 'roleplay' &&
+      (greeting.trim() !== (character.greeting ?? '').trim() || dialogueExamplesChanged));
 
   useEffect(() => {
     onDirtyChange(dirtyKey, changed);
@@ -2170,10 +2287,42 @@ function EditableCharacterRow({
         placeholder="関係性"
         disabled={disabled}
       />
+      {purpose === 'roleplay' && (
+        <>
+          <textarea
+            className="setup-draft-textarea compact"
+            value={greeting}
+            onChange={(e) => setGreeting(e.target.value)}
+            placeholder="会話開始時の挨拶（1〜3文、最大500字）"
+            maxLength={500}
+            disabled={disabled}
+          />
+          <textarea
+            className="setup-draft-textarea compact"
+            value={dialogueExamplesText}
+            onChange={(e) => setDialogueExamplesText(e.target.value)}
+            placeholder="口調のセリフ例（1行1件、最大5件、各200字）"
+            rows={3}
+            disabled={disabled}
+          />
+        </>
+      )}
       <div className="setup-draft-row-actions">
         <button
           type="button"
-          onClick={() => onSave(character, { role, name, label, description, speechStyle, relationshipNotes })}
+          onClick={() =>
+            onSave(character, {
+              role,
+              name,
+              label,
+              description,
+              speechStyle,
+              relationshipNotes,
+              ...(purpose === 'roleplay'
+                ? { greeting, dialogueExamples: dialogueExamplesArray }
+                : {}),
+            })
+          }
           disabled={disabled || !changed || (!label.trim() && !name.trim() && !description.trim())}
         >
           保存
@@ -2192,21 +2341,16 @@ function EditableCharacterRow({
 function PendingCharacterRow({
   dirtyKey,
   disabled,
+  purpose,
   onDirtyChange,
   onSave,
   onCancel,
 }: {
   dirtyKey: string;
   disabled: boolean;
+  purpose: 'novel' | 'roleplay';
   onDirtyChange: (key: string, dirty: boolean) => void;
-  onSave: (values: {
-    role: CharacterRole;
-    name: string;
-    label: string;
-    description: string;
-    speechStyle: string;
-    relationshipNotes: string;
-  }) => void;
+  onSave: (values: EditableCharacterValues) => void;
   onCancel: () => void;
 }) {
   const [role, setRole] = useState<CharacterRole>('supporting');
@@ -2215,6 +2359,8 @@ function PendingCharacterRow({
   const [description, setDescription] = useState('');
   const [speechStyle, setSpeechStyle] = useState('');
   const [relationshipNotes, setRelationshipNotes] = useState('');
+  const [greeting, setGreeting] = useState('');
+  const [dialogueExamplesText, setDialogueExamplesText] = useState('');
 
   const changed =
     role !== 'supporting' ||
@@ -2222,7 +2368,9 @@ function PendingCharacterRow({
     label.trim() !== '' ||
     description.trim() !== '' ||
     speechStyle.trim() !== '' ||
-    relationshipNotes.trim() !== '';
+    relationshipNotes.trim() !== '' ||
+    (purpose === 'roleplay' &&
+      (greeting.trim() !== '' || dialogueExamplesText.trim() !== ''));
 
   useEffect(() => {
     onDirtyChange(dirtyKey, changed);
@@ -2275,10 +2423,47 @@ function PendingCharacterRow({
         placeholder="関係性"
         disabled={disabled}
       />
+      {purpose === 'roleplay' && (
+        <>
+          <textarea
+            className="setup-draft-textarea compact"
+            value={greeting}
+            onChange={(e) => setGreeting(e.target.value)}
+            placeholder="会話開始時の挨拶（1〜3文、最大500字）"
+            maxLength={500}
+            disabled={disabled}
+          />
+          <textarea
+            className="setup-draft-textarea compact"
+            value={dialogueExamplesText}
+            onChange={(e) => setDialogueExamplesText(e.target.value)}
+            placeholder="口調のセリフ例（1行1件、最大5件、各200字）"
+            rows={3}
+            disabled={disabled}
+          />
+        </>
+      )}
       <div className="setup-draft-row-actions">
         <button
           type="button"
-          onClick={() => onSave({ role, name, label, description, speechStyle, relationshipNotes })}
+          onClick={() => {
+            const dialogueExamplesArray = dialogueExamplesText
+              .split('\n')
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0)
+              .slice(0, 5);
+            onSave({
+              role,
+              name,
+              label,
+              description,
+              speechStyle,
+              relationshipNotes,
+              ...(purpose === 'roleplay'
+                ? { greeting, dialogueExamples: dialogueExamplesArray }
+                : {}),
+            });
+          }}
           disabled={disabled || (!label.trim() && !name.trim() && !description.trim())}
         >
           保存
@@ -2471,7 +2656,9 @@ export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): Dra
   );
 
   for (const section of Object.keys(DRAFT_STRING_SECTION_LABELS) as StringDraftSection[]) {
-    collectStringChanges(summary, section, previous[section], next[section]);
+    // NOTE: 古いテスト・保存データが scenarioSeeds を持たない場合の後方互換。
+    // previous/next のいずれかが undefined でも空配列として扱う。
+    collectStringChanges(summary, section, previous[section] ?? [], next[section] ?? []);
   }
 
   return summary;
@@ -2712,7 +2899,10 @@ function shortenDraftChangeText(value: string, maxLength = 36): string {
   return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
 }
 
-async function createDefaultSetupSession(knownProviders?: ModelProviderInfo[]) {
+async function createDefaultSetupSession(
+  knownProviders?: ModelProviderInfo[],
+  purpose: 'novel' | 'roleplay' = 'novel'
+) {
   const providers =
     knownProviders && knownProviders.length > 0
       ? knownProviders
@@ -2730,6 +2920,7 @@ async function createDefaultSetupSession(knownProviders?: ModelProviderInfo[]) {
     model: defaultProvider
       ? { provider: defaultProvider.name, modelName: modelName ?? defaultProvider.defaultModel }
       : undefined,
+    purpose,
   });
 }
 
@@ -2757,16 +2948,27 @@ async function syncFreshSessionModel(session: SetupSession): Promise<{ session: 
   }
 }
 
-async function findRestorableSetupSession(): Promise<SetupSession | null> {
-  const storedId = readStoredSetupSessionId();
+async function findRestorableSetupSession(
+  purpose: 'novel' | 'roleplay' = 'novel'
+): Promise<SetupSession | null> {
+  const storedId = readStoredSetupSessionId(purpose);
   if (storedId) {
     const stored = await api.getSetupSession(storedId).catch(() => null);
-    if (stored?.status === 'active') return stored;
-    forgetSetupSession(storedId);
+    if (
+      stored?.status === 'active' &&
+      (stored.purpose ?? 'novel') === purpose
+    ) {
+      return stored;
+    }
+    forgetSetupSession(storedId, purpose);
   }
 
   const summaries = await api.listSetupSessions().catch(() => []);
-  const latestActive = summaries.find((summary) => summary.status === 'active');
+  // NOTE: サマリーの purpose は必ずサーバーで正規化されている。同じ purpose の
+  // active セッションだけを復元候補にする（設計書 1.5）。
+  const latestActive = summaries.find(
+    (summary) => summary.status === 'active' && summary.purpose === purpose
+  );
   if (!latestActive) return null;
 
   const session = await api.getSetupSession(latestActive.sessionId).catch(() => null);
@@ -2796,7 +2998,8 @@ function hasMeaningfulSetupContent(session: SetupSession): boolean {
       draft.world.some((item) => item.trim()) ||
       draft.tone.some((item) => item.trim()) ||
       draft.ng.some((item) => item.trim()) ||
-      draft.openingSeeds.some((item) => item.trim())
+      draft.openingSeeds.some((item) => item.trim()) ||
+      (draft.scenarioSeeds ?? []).some((item) => item.trim())
   );
 }
 
@@ -2814,27 +3017,28 @@ function directLocks(locks: SetupLock[], path: string): SetupLock[] {
   return locks.filter((lock) => lock.path === path);
 }
 
-function readStoredSetupSessionId(): string | null {
+function readStoredSetupSessionId(purpose: 'novel' | 'roleplay' = 'novel'): string | null {
   try {
-    return window.localStorage.getItem(SETUP_SESSION_STORAGE_KEY);
+    return window.localStorage.getItem(setupSessionStorageKey(purpose));
   } catch {
     return null;
   }
 }
 
-function rememberSetupSession(sessionId: string): void {
+function rememberSetupSession(sessionId: string, purpose: 'novel' | 'roleplay' = 'novel'): void {
   try {
-    window.localStorage.setItem(SETUP_SESSION_STORAGE_KEY, sessionId);
+    window.localStorage.setItem(setupSessionStorageKey(purpose), sessionId);
   } catch {
     // localStorageが使えない環境では、サーバ側の一覧復帰に任せる
   }
 }
 
-function forgetSetupSession(sessionId?: string): void {
+function forgetSetupSession(sessionId?: string, purpose: 'novel' | 'roleplay' = 'novel'): void {
   try {
-    const current = window.localStorage.getItem(SETUP_SESSION_STORAGE_KEY);
+    const key = setupSessionStorageKey(purpose);
+    const current = window.localStorage.getItem(key);
     if (!sessionId || current === sessionId) {
-      window.localStorage.removeItem(SETUP_SESSION_STORAGE_KEY);
+      window.localStorage.removeItem(key);
     }
   } catch {
     // localStorageが使えない環境では何もしない
