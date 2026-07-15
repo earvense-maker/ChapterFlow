@@ -1580,6 +1580,68 @@ button:disabled:has(.generating-label) {
   flex-wrap: wrap;
 }
 
+/* NOTE: カード右上に置く共通の編集ボタン。primary の塗り(=保存)と区別するため、
+   輪郭+アクセント色の細身ピル。ホバーで薄い塗りに変わる二段階目の目立たせ方。 */
+.summary-card-edit {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.summary-card-edit:hover:not(:disabled) {
+  background: rgba(107, 142, 159, 0.14);
+  border-color: var(--accent);
+}
+.summary-card-edit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 基本タブ用の擬似ヘッダー。カードヘッダーがタブ一覧と兼用のため、
+   タブパネル側にもタイトル+編集ボタンを持たせる。 */
+.detail-settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+.detail-settings-panel-header h3 {
+  font-size: 0.95rem;
+  font-family: var(--font-body);
+  font-weight: normal;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* JSON生編集モードの警告バナー。目立つ黄色系で「危険操作」を訴える。 */
+.warning-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.75rem 0.95rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid rgba(217, 158, 42, 0.55);
+  background: rgba(217, 158, 42, 0.12);
+  border-radius: var(--radius);
+  color: var(--text);
+}
+.warning-banner strong {
+  font-size: 0.95rem;
+}
+.warning-banner p {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 .detail-settings-card {
   margin-bottom: 0.6rem;
 }

@@ -297,6 +297,10 @@ export default function WorkSettingsTab({
       return;
     }
     setStyleSampleDraft(preset.text);
+    // NOTE: 反映後は select を初期状態へ戻し、フラッシュで採用済みを明示する。
+    // 同じ見本を続けて2回押しても効かなかったように見えるのを防ぐ意図もある。
+    setSelectedStyleSamplePresetId('');
+    onFlashMessage(`「${preset.label}」を下書きに反映しました。忘れず保存してください。`);
   }
 
   function updateCharacterDraft(index: number, patch: Partial<Character>) {
@@ -406,9 +410,28 @@ export default function WorkSettingsTab({
 
   async function handleSaveStoryState() {
     try {
-      setLoading(true);
       onError(null);
-      const parsed = JSON.parse(storyStateDraft) as StoryState;
+      let parsed: StoryState;
+      try {
+        parsed = JSON.parse(storyStateDraft) as StoryState;
+      } catch (parseErr) {
+        onError(parseErr instanceof Error ? `JSON構文エラー: ${parseErr.message}` : 'JSON構文エラー');
+        return;
+      }
+      // NOTE: JSON生編集の事故予防。主要配列が減っていたら明示 confirm。
+      // 増加や維持は素通し、減少幅と種別を並べて表示する。
+      const reduction = storyState ? summarizeStoryStateReduction(storyState, parsed) : [];
+      if (reduction.length > 0) {
+        const message = [
+          '以下の項目が減っています。保存すると復元は差分履歴からのみ可能です。',
+          '',
+          ...reduction.map((line) => `・${line}`),
+          '',
+          '本当に保存しますか？',
+        ].join('\n');
+        if (!window.confirm(message)) return;
+      }
+      setLoading(true);
       const saved = await api.updateStoryState(projectId, parsed);
       setStoryState(saved);
       setStoryStateDraft(JSON.stringify(saved, null, 2));
@@ -656,6 +679,17 @@ export default function WorkSettingsTab({
         </div>
         {detailSettingsTab === 'basic' && (
           <div className="detail-settings-panel" role="tabpanel">
+            <div className="detail-settings-panel-header">
+              <h3>基本情報</h3>
+              {!projectDetailsEditing && (
+                <CardEditButton
+                  onClick={() => {
+                    setProjectDetailsDraft(projectDetails);
+                    setProjectDetailsEditing(true);
+                  }}
+                />
+              )}
+            </div>
         {!projectDetailsEditing && (
           <>
             <dl className="character-summary-fields">
@@ -668,16 +702,6 @@ export default function WorkSettingsTab({
                 <dd>{projectDetails.coreConcept || <span className="summary-field-missing">未記入</span>}</dd>
               </div>
             </dl>
-            <div className="summary-card-actions">
-              <button
-                onClick={() => {
-                  setProjectDetailsDraft(projectDetails);
-                  setProjectDetailsEditing(true);
-                }}
-              >
-                編集
-              </button>
-            </div>
           </>
         )}
         {projectDetailsEditing && (
@@ -726,6 +750,14 @@ export default function WorkSettingsTab({
               <span className="settings-badge preset">プリセット由来</span>
             )}
           </div>
+          {!systemPromptEditing && (
+            <CardEditButton
+              onClick={() => {
+                setSystemPromptDraft(systemPrompt);
+                setSystemPromptEditing(true);
+              }}
+            />
+          )}
         </header>
         {!systemPromptEditing && (
           <>
@@ -774,16 +806,6 @@ export default function WorkSettingsTab({
                 </div>
               </details>
             )}
-            <div className="summary-card-actions">
-              <button
-                onClick={() => {
-                  setSystemPromptDraft(systemPrompt);
-                  setSystemPromptEditing(true);
-                }}
-              >
-                編集
-              </button>
-            </div>
           </>
         )}
         {systemPromptEditing && (
@@ -829,6 +851,15 @@ export default function WorkSettingsTab({
               <span className="settings-meta">未設定</span>
             )}
           </div>
+          {!styleSampleEditing && (
+            <CardEditButton
+              onClick={() => {
+                setStyleSampleDraft(styleSample);
+                setSelectedStyleSamplePresetId('');
+                setStyleSampleEditing(true);
+              }}
+            />
+          )}
         </header>
         <p className="settings-help">
           文体・リズム・描写密度のサンプル本文です。生成時は本文の一部として参照され、文体プリセットより見本の質感が優先されます（人称・視点は上書きされません）。
@@ -840,17 +871,6 @@ export default function WorkSettingsTab({
             ) : (
               <p className="summary-empty">見本は未設定です。ギャラリーから選ぶか、直接入力できます。</p>
             )}
-            <div className="summary-card-actions">
-              <button
-                onClick={() => {
-                  setStyleSampleDraft(styleSample);
-                  setSelectedStyleSamplePresetId('');
-                  setStyleSampleEditing(true);
-                }}
-              >
-                編集
-              </button>
-            </div>
           </>
         )}
         {styleSampleEditing && (
@@ -881,10 +901,11 @@ export default function WorkSettingsTab({
                       <pre className="summary-prewrap">{preset.text}</pre>
                       <button
                         type="button"
+                        className="primary"
                         onClick={handleApplyStyleSamplePreset}
                         disabled={loading}
                       >
-                        この見本を下書きに反映
+                        この見本を採用
                       </button>
                     </div>
                   );
@@ -921,6 +942,14 @@ export default function WorkSettingsTab({
               <span className="settings-meta">{worldText.length} 字</span>
             )}
           </div>
+          {!worldEditing && (
+            <CardEditButton
+              onClick={() => {
+                setWorldDraft(worldText);
+                setWorldEditing(true);
+              }}
+            />
+          )}
         </header>
         {!worldEditing && (
           <>
@@ -951,16 +980,6 @@ export default function WorkSettingsTab({
                 折りたたむ ▲
               </button>
             )}
-            <div className="summary-card-actions">
-              <button
-                onClick={() => {
-                  setWorldDraft(worldText);
-                  setWorldEditing(true);
-                }}
-              >
-                編集
-              </button>
-            </div>
           </>
         )}
         {worldEditing && (
@@ -991,6 +1010,14 @@ export default function WorkSettingsTab({
           <div className="summary-card-badges">
             {characters.length === 0 && <span className="settings-badge warn">未設定 ⚠</span>}
           </div>
+          {!charactersEditing && (
+            <CardEditButton
+              onClick={() => {
+                setCharactersDraft(characters);
+                setCharactersEditing(true);
+              }}
+            />
+          )}
         </header>
         {!charactersEditing && (
           <>
@@ -1054,16 +1081,6 @@ export default function WorkSettingsTab({
                 })}
               </ul>
             )}
-            <div className="summary-card-actions">
-              <button
-                onClick={() => {
-                  setCharactersDraft(characters);
-                  setCharactersEditing(true);
-                }}
-              >
-                編集
-              </button>
-            </div>
           </>
         )}
         {charactersEditing && (
@@ -1350,6 +1367,15 @@ export default function WorkSettingsTab({
             )}
             {storyState && <span className="settings-meta">{storyState.updatedAt.slice(0, 10)}</span>}
           </div>
+          {storyState && !storyStateEditing && (
+            <CardEditButton
+              onClick={() => {
+                setStoryStateDraft(JSON.stringify(storyState, null, 2));
+                setStoryStateEditing(true);
+              }}
+              label="JSON編集"
+            />
+          )}
         </header>
         {storyState && !storyStateEditing && (
           <>
@@ -1379,20 +1405,17 @@ export default function WorkSettingsTab({
               <summary>状態JSON</summary>
               <pre className="summary-prewrap">{JSON.stringify(storyState, null, 2)}</pre>
             </details>
-            <div className="summary-card-actions">
-              <button
-                onClick={() => {
-                  setStoryStateDraft(JSON.stringify(storyState, null, 2));
-                  setStoryStateEditing(true);
-                }}
-              >
-                編集
-              </button>
-            </div>
           </>
         )}
         {storyStateEditing && (
           <>
+            <div className="warning-banner" role="alert">
+              <strong>⚠ JSON生編集モード</strong>
+              <p>
+                これは物語状態の生データを直接編集する画面です。構造を壊すと保存できず、
+                項目を消すと差分履歴からしか復元できません。編集は必要最小限にしてください。
+              </p>
+            </div>
             <textarea
               value={storyStateDraft}
               onChange={(e) => setStoryStateDraft(e.target.value)}
@@ -1474,6 +1497,44 @@ async function decodeKnowledgeFile(file: File): Promise<string> {
     }
     return decoded;
   }
+}
+
+// NOTE: 各カードのヘッダー右上に置く「編集」ボタン。summary-card-badges の隣に並ぶ。
+// カード末尾の目立たない編集ボタンを廃止して、視線の起点であるヘッダーに集約する。
+function CardEditButton({
+  onClick,
+  disabled,
+  label = '編集',
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button type="button" className="summary-card-edit" onClick={onClick} disabled={disabled}>
+      ✎ {label}
+    </button>
+  );
+}
+
+// NOTE: 物語状態の主要な active 配列について、before → after で「減った件数」を
+// ラベル付きで列挙する。increase / no-change は返さない。JSON 生編集時の事故予防
+// ダイアログで、何が失われるかをユーザーに具体的に見せるために使う。
+function summarizeStoryStateReduction(before: StoryState, after: StoryState): string[] {
+  const activeCount = <T extends { status?: string }>(items: T[] | undefined): number =>
+    (items ?? []).filter((item) => (item.status ?? 'active') !== 'archived').length;
+
+  const rows: Array<{ label: string; before: number; after: number }> = [
+    { label: '現在の状況', before: (before.currentSituation ?? []).length, after: (after.currentSituation ?? []).length },
+    { label: '重要イベント', before: activeCount(before.importantEvents), after: activeCount(after.importantEvents) },
+    { label: '未解決の糸', before: activeCount(before.openThreads), after: activeCount(after.openThreads) },
+    { label: '未確定事項', before: activeCount(before.authorUndecided), after: activeCount(after.authorUndecided) },
+    { label: 'キャラ状態', before: (before.characterStates ?? []).length, after: (after.characterStates ?? []).length },
+  ];
+
+  return rows
+    .filter((row) => row.after < row.before)
+    .map((row) => `${row.label}: ${row.before}件 → ${row.after}件（-${row.before - row.after}件）`);
 }
 
 // NOTE: world 冒頭を要約代わりに使う。段落境界と maxChars で切り詰める。
