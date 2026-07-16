@@ -19,10 +19,10 @@
   "main": "dist/electron/main.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
+    "dev": "node scripts/dev-preflight.mjs && concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
     "dev:client": "vite",
     "dev:server": "node scripts/dev-server.mjs",
-    "open:app": "node open-app-window.js http://localhost:5173",
+    "open:app": "node open-app-window.js",
     "open:app:prod": "node open-app-window.js http://localhost:3001",
     "build": "tsc -p tsconfig.server.json && vite build",
     "build:electron": "npm run build && tsc -p tsconfig.electron.json",

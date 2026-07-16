@@ -25,6 +25,9 @@ export default defineConfig({
   },
   server: {
     port: devPort,
+    // NOTE: 指定ポートが使用中でも黙って別ポートへ逃げない。逃げると open:app が
+    // 古いインスタンス（別のデータディレクトリのことも）を開いてしまう。
+    strictPort: true,
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${apiPort}`,

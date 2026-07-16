@@ -1,8 +1,13 @@
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 
+// NOTE: 既定URLは vite.config.ts と同じ VITE_DEV_PORT を参照する。5173固定だと、
+// ポートをずらして起動した際に別インスタンスのウィンドウを開いてしまう。
 const url =
-  process.argv[2] || process.env.CHAPTERFLOW_URL || process.env.YUMEWEAVING_URL || 'http://localhost:5173';
+  process.argv[2] ||
+  process.env.CHAPTERFLOW_URL ||
+  process.env.YUMEWEAVING_URL ||
+  `http://localhost:${process.env.VITE_DEV_PORT ?? 5173}`;
 const timeoutMs = Number(
   process.env.CHAPTERFLOW_OPEN_TIMEOUT_MS ?? process.env.YUMEWEAVING_OPEN_TIMEOUT_MS ?? 30_000
 );
