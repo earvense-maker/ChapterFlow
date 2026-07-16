@@ -1,10 +1,12 @@
-const CACHE_NAME = 'yumeweaving-pwa-v2';
+const CACHE_NAME = 'chapterflow-pwa-v4';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
+  '/icons/icon-maskable-192.png',
+  '/icons/icon-maskable-512.png',
 ];
 
 self.addEventListener('install', (event) => {

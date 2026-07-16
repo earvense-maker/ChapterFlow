@@ -54,6 +54,7 @@ export default function Reader({
   const [rewriteSheetOpen, setRewriteSheetOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [isGeneratingStream, setIsGeneratingStream] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(18);
@@ -63,6 +64,8 @@ export default function Reader({
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const projectIdRef = useRef(projectId);
   const storyStatePollInFlightRef = useRef(false);
   const initialWishPrefilledRef = useRef(false);
   // NOTE: 場面切替で戻ってきたときにスクロール位置を復元するため、
@@ -71,6 +74,7 @@ export default function Reader({
   // NOTE: 次のレイアウト後に復元したい対象。currentScene のコミット後に読む。
   const pendingScrollRestoreRef = useRef<string | null>(null);
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
+  projectIdRef.current = projectId;
 
   async function load() {
     try {
@@ -123,6 +127,13 @@ export default function Reader({
   }, [projectId]);
 
   useEffect(() => {
+    setLoading(false);
+    setIsGeneratingStream(false);
+    generationAbortRef.current = null;
+    return () => generationAbortRef.current?.abort();
+  }, [projectId]);
+
+  useEffect(() => {
     if (storyStateRefresh?.status !== 'pending') return;
     const timer = window.setInterval(() => {
       if (storyStatePollInFlightRef.current) return;
@@ -161,26 +172,39 @@ export default function Reader({
     // 途中経過で text を上書きするが、エラー時の部分テキストはサーバーに保存されて
     // いないため、表示に残すと「見えているのに採用できない本文」になる。
     const previous = { text, generationId, status };
+    const generationProjectId = projectId;
+    let abortController: AbortController | null = null;
     try {
       setLoading(true);
       setError(null);
       setNotice(null);
       scrollReaderToTop();
       const shouldStream = project?.streamingEnabled ?? false;
+      if (shouldStream) {
+        abortController = new AbortController();
+        generationAbortRef.current = abortController;
+        setIsGeneratingStream(true);
+      }
       setGenerationId(null);
       setStatus(null);
 
       const record = shouldStream
-        ? await api.generateStream(projectId, { wish: requestWish, mode }, (() => {
-            let streamedText = '';
-            setText('');
-            return (chunk: string) => {
-              streamedText += chunk;
-              setText(streamedText);
-            };
-          })())
+        ? await api.generateStream(
+            projectId,
+            { wish: requestWish, mode },
+            (() => {
+              let streamedText = '';
+              setText('');
+              return (chunk: string) => {
+                streamedText += chunk;
+                setText(streamedText);
+              };
+            })(),
+            abortController?.signal
+          )
         : await api.generate(projectId, { wish: requestWish, mode });
 
+      if (projectIdRef.current !== generationProjectId) return;
       setText(record.responseText);
       setGenerationId(record.generationId);
       setStatus(record.status);
@@ -194,6 +218,7 @@ export default function Reader({
       }
       inputRef.current?.focus();
     } catch (err) {
+      if (projectIdRef.current !== generationProjectId) return;
       // 未保存の部分テキストを消して生成前の表示へ戻し、指示を入力欄に復元して
       // そのまま再生成できるようにする。
       setText(previous.text);
@@ -204,10 +229,24 @@ export default function Reader({
       } else {
         setRewriteWish(requestWish);
       }
-      setError(err instanceof Error ? err.message : '生成に失敗しました');
+      if (abortController?.signal.aborted) {
+        setNotice('生成を停止しました');
+      } else {
+        setError(err instanceof Error ? err.message : '生成に失敗しました');
+      }
     } finally {
-      setLoading(false);
+      if (generationAbortRef.current === abortController) {
+        generationAbortRef.current = null;
+      }
+      if (projectIdRef.current === generationProjectId) {
+        setIsGeneratingStream(false);
+        setLoading(false);
+      }
     }
+  }
+
+  function handleStopGeneration() {
+    generationAbortRef.current?.abort();
   }
 
   function scrollReaderToTop() {
@@ -392,7 +431,7 @@ export default function Reader({
   }, []);
 
   async function handleShutdown() {
-    if (!window.confirm('Yumeweaving を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
+    if (!window.confirm('ChapterFlow を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
     try {
       await api.shutdown();
     } catch {
@@ -592,7 +631,11 @@ export default function Reader({
 
       <main className="reader-body">
         {error && <div className="error-toast">{error}</div>}
-        {notice && <div className="status-toast">{notice}</div>}
+        {notice && (
+          <div className="status-toast" role="status" aria-live="polite">
+            {notice}
+          </div>
+        )}
         {(storyStateIsStale || storyStateIsPending) && (
           <div className={`story-state-alert ${storyStateIsStale ? 'stale' : 'pending'}`}>
             <div>
@@ -698,9 +741,15 @@ export default function Reader({
             placeholder="次のシーンへの指示（Ctrl+Enterで送信）"
             disabled={loading}
           />
-          <button type="submit" className="primary" disabled={loading}>
-            {loading ? <GeneratingLabel /> : '生成'}
-          </button>
+          {isGeneratingStream ? (
+            <button type="button" className="danger" onClick={handleStopGeneration}>
+              生成を停止
+            </button>
+          ) : (
+            <button type="submit" className="primary" disabled={loading}>
+              {loading ? <GeneratingLabel /> : '生成'}
+            </button>
+          )}
         </form>
       </footer>
 
@@ -738,9 +787,15 @@ export default function Reader({
                 >
                   閉じる
                 </button>
-                <button type="submit" className="primary" disabled={loading}>
-                  {loading ? <GeneratingLabel /> : 'この指示で書き直す'}
-                </button>
+                {isGeneratingStream ? (
+                  <button type="button" className="danger" onClick={handleStopGeneration}>
+                    生成を停止
+                  </button>
+                ) : (
+                  <button type="submit" className="primary" disabled={loading}>
+                    {loading ? <GeneratingLabel /> : 'この指示で書き直す'}
+                  </button>
+                )}
               </div>
             </form>
           </div>

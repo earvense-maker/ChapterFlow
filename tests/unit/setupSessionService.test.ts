@@ -633,6 +633,21 @@ describe('setupSessionService', () => {
     expect(patched.session.model).toEqual({ provider: 'xai', modelName: 'grok-4.3' });
   });
 
+  it('uses Gemma 4 31B free as the default OpenRouter consultation model', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const patched = await setupSessionService.patchSetupSettings(result.sessionId, {
+      model: { provider: 'openrouter' },
+      revision: result.session.revision,
+    });
+
+    expect(patched.session.model).toEqual({
+      provider: 'openrouter',
+      modelName: 'google/gemma-4-31b-it:free',
+    });
+  });
+
   it('patches model settings with explicit model name', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);

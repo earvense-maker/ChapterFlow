@@ -1,5 +1,4 @@
 import { loadCredentials } from './credentialService.js';
-import { applyGeminiSystemPreamble } from '../prompts/geminiSystemPreamble.js';
 import type {
   ModelProviderInfo,
   TokenCountSource,
@@ -50,6 +49,14 @@ const PROVIDERS: ModelProviderInfo[] = [
     apiKeyPlaceholder: 'xai-...',
     apiKeyHelp:
       'xAI APIキーを保存します。既定は長文・コスト重視の grok-4.3、最高性能を優先する場合は grok-4.5 を指定できます。',
+  },
+  {
+    name: 'openrouter',
+    label: 'OpenRouter',
+    defaultModel: 'google/gemma-4-31b-it:free',
+    apiKeyPlaceholder: 'sk-or-v1-...',
+    apiKeyHelp:
+      'OpenRouter APIキーを保存します。既定は無料の google/gemma-4-31b-it:free です。無料モデルは提供終了・混雑の可能性があるため、利用できない場合はモデル名を変更してください。作品内容はOpenRouterと選択先のモデル事業者へ送信されます。OpenRouter側のPrivacy設定も確認してください（通常20回/分・50回/日）。',
   },
 ];
 
@@ -183,9 +190,12 @@ export async function countPromptTokens(
       },
     };
 
-    body.generateContentRequest.systemInstruction = {
-      parts: [{ text: applyGeminiSystemPreamble(systemInstructions) }],
-    };
+    const trimmedSystemInstructions = systemInstructions.trim();
+    if (trimmedSystemInstructions) {
+      body.generateContentRequest.systemInstruction = {
+        parts: [{ text: trimmedSystemInstructions }],
+      };
+    }
 
     const res = await fetch(
       `${GEMINI_API_BASE}/models/${normalizedModel}:countTokens`,

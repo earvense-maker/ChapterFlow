@@ -6,8 +6,10 @@ const devPort = Number(process.env.VITE_DEV_PORT ?? 5173);
 // NOTE: 以前は process.env.PORT を参照していたが、Vite を起動する側（preview
 // harness など）が PORT を Vite 自身のポートとして設定するケースがあり、
 // その場合 proxy target が Vite 自身に向いてループ 500 になっていた。専用の
-// YUMEWEAVING_API_PORT に切り替えて衝突を回避する。
-const apiPort = Number(process.env.YUMEWEAVING_API_PORT ?? 3001);
+// CHAPTERFLOW_API_PORT に切り替えて衝突を回避する。旧名は互換用。
+const apiPort = Number(
+  process.env.CHAPTERFLOW_API_PORT ?? process.env.YUMEWEAVING_API_PORT ?? 3001
+);
 
 export default defineConfig({
   plugins: [react()],

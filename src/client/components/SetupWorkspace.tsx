@@ -45,13 +45,20 @@ interface PendingDescriptor {
   id: string;
 }
 
-const SETUP_SESSION_STORAGE_KEY_BASE = 'yumeweaving:lastSetupSessionId';
+const SETUP_SESSION_STORAGE_KEY_BASE = 'chapterflow:lastSetupSessionId';
+const LEGACY_SETUP_SESSION_STORAGE_KEY_BASE = 'yumeweaving:lastSetupSessionId';
 // NOTE: purpose 別に localStorage キーを分ける。roleplay 入口から novel の未commit
 // セッションを誤復元しないための境界（設計書 1.5）。
 function setupSessionStorageKey(purpose: 'novel' | 'roleplay'): string {
   return purpose === 'roleplay'
     ? `${SETUP_SESSION_STORAGE_KEY_BASE}:roleplay`
     : `${SETUP_SESSION_STORAGE_KEY_BASE}:novel`;
+}
+
+function legacySetupSessionStorageKey(purpose: 'novel' | 'roleplay'): string {
+  return purpose === 'roleplay'
+    ? `${LEGACY_SETUP_SESSION_STORAGE_KEY_BASE}:roleplay`
+    : `${LEGACY_SETUP_SESSION_STORAGE_KEY_BASE}:novel`;
 }
 
 const DEFAULT_PROJECT_SETTINGS = {
@@ -3019,7 +3026,16 @@ function directLocks(locks: SetupLock[], path: string): SetupLock[] {
 
 function readStoredSetupSessionId(purpose: 'novel' | 'roleplay' = 'novel'): string | null {
   try {
-    return window.localStorage.getItem(setupSessionStorageKey(purpose));
+    const key = setupSessionStorageKey(purpose);
+    const current = window.localStorage.getItem(key);
+    if (current) return current;
+    const legacyKey = legacySetupSessionStorageKey(purpose);
+    const legacy = window.localStorage.getItem(legacyKey);
+    if (legacy) {
+      window.localStorage.setItem(key, legacy);
+      window.localStorage.removeItem(legacyKey);
+    }
+    return legacy;
   } catch {
     return null;
   }
@@ -3035,10 +3051,11 @@ function rememberSetupSession(sessionId: string, purpose: 'novel' | 'roleplay' =
 
 function forgetSetupSession(sessionId?: string, purpose: 'novel' | 'roleplay' = 'novel'): void {
   try {
-    const key = setupSessionStorageKey(purpose);
-    const current = window.localStorage.getItem(key);
-    if (!sessionId || current === sessionId) {
-      window.localStorage.removeItem(key);
+    for (const key of [setupSessionStorageKey(purpose), legacySetupSessionStorageKey(purpose)]) {
+      const current = window.localStorage.getItem(key);
+      if (!sessionId || current === sessionId) {
+        window.localStorage.removeItem(key);
+      }
     }
   } catch {
     // localStorageが使えない環境では何もしない

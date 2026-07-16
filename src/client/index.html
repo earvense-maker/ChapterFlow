@@ -4,18 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#1a1a1a" />
-    <meta name="application-name" content="Yumeweaving" />
+    <meta name="application-name" content="ChapterFlow" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="Yumeweaving" />
+    <meta name="apple-mobile-web-app-title" content="ChapterFlow" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
-    <title>Yumeweaving</title>
+    <link rel="apple-touch-icon" href="/icons/icon-maskable-192.png" />
+    <title>ChapterFlow — API-Powered Narrative Studio</title>
     <script>
       // NOTE: React 起動前にテーマを適用して、初回描画時のちらつき(FOUC)を防ぐ。
       (function () {
         try {
-          var stored = localStorage.getItem('yumeweaving:theme');
+          var stored = localStorage.getItem('chapterflow:theme') || localStorage.getItem('yumeweaving:theme');
           var osLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
           var theme = stored === 'light' || stored === 'dark' ? stored : (osLight ? 'light' : 'dark');
           document.documentElement.setAttribute('data-theme', theme);

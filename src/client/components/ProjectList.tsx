@@ -75,7 +75,7 @@ export default function ProjectList({
   }
 
   async function handleShutdown() {
-    if (!window.confirm('Yumeweaving を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
+    if (!window.confirm('ChapterFlow を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
     try {
       await api.shutdown();
     } catch {
@@ -94,7 +94,10 @@ export default function ProjectList({
   return (
     <div className="project-list">
       <header className="project-list-header">
-        <h1>Yumeweaving</h1>
+        <div>
+          <h1>ChapterFlow</h1>
+          <p className="product-tagline">API-Powered Narrative Studio</p>
+        </div>
         <div className="project-list-actions">
           <button className="primary" onClick={onSetupNew}>相談して作る</button>
           <button className="primary" onClick={onSetupRoleplay}>

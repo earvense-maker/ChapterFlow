@@ -7,6 +7,7 @@ import type { GenerationRecord, ReaderState } from '../../src/shared/types';
 vi.mock('../../src/client/clientApi', () => ({
   api: {
     generate: vi.fn(),
+    generateStream: vi.fn(),
     getReaderState: vi.fn(),
     getKnowledge: vi.fn(),
     updateState: vi.fn(),
@@ -14,6 +15,7 @@ vi.mock('../../src/client/clientApi', () => ({
 }));
 
 const generate = vi.mocked(api.generate);
+const generateStream = vi.mocked(api.generateStream);
 const getReaderState = vi.mocked(api.getReaderState);
 const getKnowledge = vi.mocked(api.getKnowledge);
 
@@ -21,6 +23,7 @@ describe('Reader interactions', () => {
   beforeEach(() => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     generate.mockReset();
+    generateStream.mockReset();
     getReaderState.mockReset();
     getKnowledge.mockReset();
     getKnowledge.mockResolvedValue([]);
@@ -57,9 +60,42 @@ describe('Reader interactions', () => {
       })
     );
   });
+
+  it('stops a streaming generation without showing an error', async () => {
+    getReaderState.mockResolvedValue(readerState({ streamingEnabled: true }));
+    let generationSignal: AbortSignal | undefined;
+    generateStream.mockImplementation((_id, _body, onChunk, signal) => {
+      generationSignal = signal;
+      onChunk('途中までの生成文');
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+      });
+    });
+
+    const { findByRole, queryByText } = render(
+      <Reader
+        projectId="proj-reader-interaction"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+        onOpenMemories={vi.fn()}
+      />
+    );
+
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    fireEvent.click(await findByRole('button', { name: '生成' }));
+
+    const stopButton = await findByRole('button', { name: '生成を停止' });
+    fireEvent.click(stopButton);
+
+    await waitFor(() => expect(queryByText('生成を停止しました')).not.toBeNull());
+    expect(generationSignal?.aborted).toBe(true);
+    expect(queryByText('途中までの生成文')).toBeNull();
+    expect(await findByRole('button', { name: '生成' })).toBeEnabled();
+  });
 });
 
-function readerState(): ReaderState {
+function readerState(overrides: Partial<ReaderState['project']> = {}): ReaderState {
   return {
     project: {
       schemaVersion: 1,
@@ -71,6 +107,7 @@ function readerState(): ReaderState {
       activeModelName: 'gpt-test',
       outputLength: 3000,
       streamingEnabled: false,
+      ...overrides,
       activePresetIds: {
         genre: 'modern-drama',
         style: 'natural-dialogue',

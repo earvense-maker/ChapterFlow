@@ -661,7 +661,7 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
         yield {
           type: 'error',
           error: {
-            error: '安全フィルタで応答がブロックされました。',
+            error: mapFinishReasonError(finishReason, debugInfo),
             code: 'content_filter',
             retryable: false,
             revision: expectedRevisionForCommit,
@@ -673,12 +673,13 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
 
     const finalText = aggregate.trim();
     if (!finalText) {
+      const safetyBlocked = isSafetyBlockedDiagnostic(debugInfo);
       yield {
         type: 'error',
         error: {
-          error: 'モデルからの応答が空でした。',
-          code: 'empty_response',
-          retryable: true,
+          error: mapFinishReasonError(safetyBlocked ? 'content_filter' : 'stop', debugInfo),
+          code: safetyBlocked ? 'content_filter' : 'empty_response',
+          retryable: !safetyBlocked,
           revision: expectedRevisionForCommit,
         },
       };
@@ -917,14 +918,34 @@ async function commitTurn(input: {
 }
 
 function mapFinishReasonError(reason: FinishReason, debugInfo?: string): string {
+  const diagnostic = formatDiagnosticSuffix(debugInfo);
   switch (reason) {
     case 'timeout':
       return '応答生成がタイムアウトしました。再試行してください。';
     case 'error':
-      return `応答生成が失敗しました${debugInfo ? `（${debugInfo}）` : ''}。`;
+      return `応答生成が失敗しました。${diagnostic}`;
+    case 'content_filter':
+      return `安全フィルタで応答がブロックされました。${diagnostic}`;
+    case 'stop':
+      return `モデルからの応答が空でした。${diagnostic}`;
     default:
       return '応答生成が失敗しました。';
   }
+}
+
+function formatDiagnosticSuffix(debugInfo?: string): string {
+  if (!debugInfo) return '';
+  const collapsed = debugInfo.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '';
+  const safe = collapsed.length > 500 ? `${collapsed.slice(0, 500)}...` : collapsed;
+  return ` 診断: ${safe}`;
+}
+
+function isSafetyBlockedDiagnostic(debugInfo?: string): boolean {
+  return Boolean(
+    debugInfo &&
+      (/promptBlockReason=/.test(debugInfo) || /candidateSafety=\S*\(blocked\)/.test(debugInfo))
+  );
 }
 
 // ===== 要約カーソルとプロンプトメッセージ選択 =====

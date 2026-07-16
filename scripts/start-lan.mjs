@@ -13,6 +13,7 @@ if (!existsSync(distEntry)) {
   process.exit(1);
 }
 
-process.env.YUMEWEAVING_HOST = process.env.YUMEWEAVING_HOST ?? '0.0.0.0';
+process.env.CHAPTERFLOW_HOST =
+  process.env.CHAPTERFLOW_HOST ?? process.env.YUMEWEAVING_HOST ?? '0.0.0.0';
 
 await import(pathToFileURL(distEntry).href);

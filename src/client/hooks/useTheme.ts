@@ -4,11 +4,12 @@ import { useEffect, useState } from 'react';
 export type ThemeChoice = 'auto' | 'light' | 'dark';
 export type ResolvedTheme = 'light' | 'dark';
 
-const STORAGE_KEY = 'yumeweaving:theme';
+const STORAGE_KEY = 'chapterflow:theme';
+const LEGACY_STORAGE_KEY = 'yumeweaving:theme';
 
 function readStoredChoice(): ThemeChoice {
   if (typeof window === 'undefined') return 'auto';
-  const v = window.localStorage.getItem(STORAGE_KEY);
+  const v = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY);
   return v === 'light' || v === 'dark' ? v : 'auto';
 }
 
@@ -35,6 +36,7 @@ export function useTheme() {
     } else {
       window.localStorage.setItem(STORAGE_KEY, choice);
     }
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
   }, [choice]);
 
   // auto の間は OS 設定変更を監視

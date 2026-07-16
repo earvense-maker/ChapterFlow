@@ -1,8 +1,5 @@
 import { Router } from 'express';
-import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
-import { GeminiAdapter } from '../adapters/geminiAdapter.js';
-import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
-import { XAIAdapter } from '../adapters/xaiAdapter.js';
+import { adapterList as adapters } from '../adapters/index.js';
 import * as credentialService from '../services/credentialService.js';
 import { readAppSettings, updateAppSettings } from '../services/appSettingsService.js';
 import {
@@ -13,8 +10,6 @@ import {
 import type { AppModelSettings, ModelConfig } from '../types/index.js';
 
 const router = Router();
-
-const adapters = [new OpenAIAdapter(), new GeminiAdapter(), new DeepSeekAdapter(), new XAIAdapter()];
 
 router.get('/models/providers', async (_req, res, next) => {
   try {

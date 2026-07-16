@@ -5,9 +5,10 @@ import {
   startServer,
 } from './server.js';
 import { isLanAuthRequiredForHost } from './services/lanAuthService.js';
+import { readEnvWithLegacyFallback } from './utils/env.js';
 
 const PORT = Number(process.env.PORT ?? 3001);
-const HOST = process.env.YUMEWEAVING_HOST || '127.0.0.1';
+const HOST = readEnvWithLegacyFallback('CHAPTERFLOW_HOST', 'YUMEWEAVING_HOST') ?? '127.0.0.1';
 const lanAuthRequired = isLanAuthRequiredForHost(HOST);
 
 async function main() {
@@ -15,13 +16,13 @@ async function main() {
     port: PORT,
     host: HOST,
     onRuntimeError: (err) => {
-      console.error('Yumeweaving server failed:', err);
+      console.error('ChapterFlow server failed:', err);
       process.exit(1);
     },
   });
 
-  console.log(`Yumeweaving server listening on http://${HOST}:${server.port}`);
-  console.log(`Yumeweaving data directory: ${DATA_DIR}`);
+  console.log(`ChapterFlow server listening on http://${HOST}:${server.port}`);
+  console.log(`ChapterFlow data directory: ${DATA_DIR}`);
   if (lanAuthRequired) {
     const lan = listReachableUrls(HOST, server.port);
     if (lan.length > 0) {
@@ -39,8 +40,8 @@ async function main() {
 
 main().catch((err) => {
   if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
-    console.error(`Yumeweaving could not start because port ${PORT} is already in use.`);
-    console.error('既に Yumeweaving が起動していないか確認してください。');
+    console.error(`ChapterFlow could not start because port ${PORT} is already in use.`);
+    console.error('既に ChapterFlow が起動していないか確認してください。');
     console.error('PowerShell で確認する例:');
     console.error(`  Get-NetTCPConnection -LocalPort ${PORT}`);
     console.error('停止する例:');

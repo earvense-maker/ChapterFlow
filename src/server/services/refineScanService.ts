@@ -1,11 +1,8 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
-import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
-import { GeminiAdapter } from '../adapters/geminiAdapter.js';
-import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
-import { XAIAdapter } from '../adapters/xaiAdapter.js';
-import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
+import { adapterMap } from '../adapters/index.js';
+import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import type {
@@ -29,12 +26,6 @@ const SUGGESTED_FIX_MAX_CHARS = 320;
 
 const KIND_SET = new Set<RefineFindingKind>(['contradiction', 'undefined', 'suggestion']);
 
-const adapterMap: Record<string, ModelAdapter> = {
-  openai: new OpenAIAdapter(),
-  gemini: new GeminiAdapter(),
-  deepseek: new DeepSeekAdapter(),
-  xai: new XAIAdapter(),
-};
 
 export class RefineScanError extends Error {
   code: string;

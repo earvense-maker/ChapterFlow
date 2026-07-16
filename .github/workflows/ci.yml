@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+# NOTE: 同一ブランチへの連続pushでは古いランを打ち切り、Windowsランナー時間を節約する。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build Electron sources
+        run: npm run build:electron
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium
+
+      - name: Run end-to-end tests
+        run: npm run test:e2e

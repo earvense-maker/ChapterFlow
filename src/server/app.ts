@@ -21,6 +21,7 @@ import {
   isLanAuthRequiredForHost,
 } from './services/lanAuthService.js';
 import { DataDirLockedError } from './services/dataDirLock.js';
+import { readEnvWithLegacyFallback } from './utils/env.js';
 
 export interface CreateAppOptions {
   host: string;
@@ -33,7 +34,10 @@ export interface CreateAppOptions {
 
 export function createApp(options: CreateAppOptions): express.Express {
   const app = express();
-  const configuredCorsOrigins = process.env.YUMEWEAVING_ALLOWED_ORIGINS
+  const configuredCorsOrigins = readEnvWithLegacyFallback(
+    'CHAPTERFLOW_ALLOWED_ORIGINS',
+    'YUMEWEAVING_ALLOWED_ORIGINS'
+  )
     ?.split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);

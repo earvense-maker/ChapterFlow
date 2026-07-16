@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: セキュリティ上の問題を非公開で報告
+    url: https://github.com/earvense-maker/ChapterFlow/security/advisories/new
+    about: APIキー漏えいなど、第三者に悪用される可能性がある問題はこちらから報告してください。

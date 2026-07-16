@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startServer, type RunningServer } from '../../src/server/server';
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
@@ -6,16 +6,27 @@ import { withDataDirLock } from '../../src/server/services/dataDirLock';
 
 const servers: RunningServer[] = [];
 const createdProjectIds: string[] = [];
-const originalAllowedOrigins = process.env.YUMEWEAVING_ALLOWED_ORIGINS;
+const originalAllowedOrigins = process.env.CHAPTERFLOW_ALLOWED_ORIGINS;
+const originalLegacyAllowedOrigins = process.env.YUMEWEAVING_ALLOWED_ORIGINS;
+
+beforeEach(() => {
+  delete process.env.CHAPTERFLOW_ALLOWED_ORIGINS;
+  delete process.env.YUMEWEAVING_ALLOWED_ORIGINS;
+});
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(createdProjectIds.splice(0).map((projectId) => storage.deleteProjectDir(projectId)));
   vi.restoreAllMocks();
   if (originalAllowedOrigins === undefined) {
+    delete process.env.CHAPTERFLOW_ALLOWED_ORIGINS;
+  } else {
+    process.env.CHAPTERFLOW_ALLOWED_ORIGINS = originalAllowedOrigins;
+  }
+  if (originalLegacyAllowedOrigins === undefined) {
     delete process.env.YUMEWEAVING_ALLOWED_ORIGINS;
   } else {
-    process.env.YUMEWEAVING_ALLOWED_ORIGINS = originalAllowedOrigins;
+    process.env.YUMEWEAVING_ALLOWED_ORIGINS = originalLegacyAllowedOrigins;
   }
 });
 
@@ -61,7 +72,7 @@ describe('startServer', () => {
   });
 
   it('honors explicitly configured CORS origins', async () => {
-    process.env.YUMEWEAVING_ALLOWED_ORIGINS = 'http://allowed.example';
+    process.env.CHAPTERFLOW_ALLOWED_ORIGINS = 'http://allowed.example';
     const server = await track(startServer({ host: '127.0.0.1', port: 0 }));
 
     const allowedRes = await fetch(`http://127.0.0.1:${server.port}/api/system/version`, {

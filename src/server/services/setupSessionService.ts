@@ -1,8 +1,5 @@
-import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
-import { GeminiAdapter } from '../adapters/geminiAdapter.js';
-import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
-import { XAIAdapter } from '../adapters/xaiAdapter.js';
-import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
+import { adapterMap } from '../adapters/index.js';
+import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { defaultModelForProvider, isSupportedProvider } from './modelInfoService.js';
 import { reloadCredentials } from './credentialService.js';
 import { generateTimestampId } from '../utils/id.js';
@@ -75,12 +72,6 @@ const UNREADABLE_CHAT_ACTIONS: SetupSuggestedAction[] = [
   },
 ];
 
-const adapterMap: Record<string, ModelAdapter> = {
-  openai: new OpenAIAdapter(),
-  gemini: new GeminiAdapter(),
-  deepseek: new DeepSeekAdapter(),
-  xai: new XAIAdapter(),
-};
 
 const sessionMutexes = new Map<string, Promise<void>>();
 
@@ -1351,11 +1342,20 @@ function mapErrorMessage(code: string, detail?: string): string {
     case 'invalid_api_key':
       base = 'APIキーが無効です。設定を確認してください。';
       break;
+    case 'payment_required':
+      base = 'APIキーのクレジットが不足しています。プロバイダー側の残高や利用上限を確認してください。';
+      break;
+    case 'permission_denied':
+      base = 'APIキーにこのモデルを利用する権限がないか、プロバイダー側で拒否されました。';
+      break;
     case 'rate_limit':
       base = 'リクエスト制限に達しました。しばらくしてから再試行してください。';
       break;
     case 'timeout':
       base = '生成がタイムアウトしました。少し待って再試行してください。';
+      break;
+    case 'service_unavailable':
+      base = 'モデルサービスを現在利用できません。少し待って再試行してください。';
       break;
     default:
       base = '相談処理に失敗しました。設定を確認して再試行してください。';

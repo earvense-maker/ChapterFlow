@@ -2,8 +2,15 @@ import { spawn } from 'node:child_process';
 
 // NOTE: Plain `npm run dev` should keep using repository fixtures. External env,
 // such as the bat files or Playwright, stays authoritative.
-if (!process.env.YUMEWEAVING_DATA_DIR?.trim()) {
-  process.env.YUMEWEAVING_DATA_DIR = 'data';
+// CHAPTERFLOW_USE_DEFAULT_DATA_DIR=1 (set by the user-facing bat launchers) skips the
+// fixture fallback so config.ts resolveDefaultDataDir picks the real Documents folder
+// — the bat must not duplicate that folder-priority logic in cmd syntax.
+if (
+  !process.env.CHAPTERFLOW_DATA_DIR?.trim() &&
+  !process.env.YUMEWEAVING_DATA_DIR?.trim() &&
+  process.env.CHAPTERFLOW_USE_DEFAULT_DATA_DIR !== '1'
+) {
+  process.env.CHAPTERFLOW_DATA_DIR = 'data';
 }
 
 const child = spawn('tsx', ['watch', 'src/server/index.ts'], {

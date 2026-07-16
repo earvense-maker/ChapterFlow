@@ -214,6 +214,18 @@ describe('project settings validation', () => {
     expect(updated.activeModelName).toBe('grok-4.3');
   });
 
+  it('accepts OpenRouter as a supported provider', async () => {
+    const project = await createTrackedProject();
+
+    const updated = await projectService.updateProject(project.projectId, {
+      activeModelProvider: 'openrouter',
+      activeModelName: ' openrouter/free ',
+    });
+
+    expect(updated.activeModelProvider).toBe('openrouter');
+    expect(updated.activeModelName).toBe('openrouter/free');
+  });
+
   it('creates a project with initial detailed settings', async () => {
     const project = await projectService.createProject({
       title: 'Detailed Start',

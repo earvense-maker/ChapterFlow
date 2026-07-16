@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { Request, RequestHandler, Response } from 'express';
 import { CONFIG_DIR } from '../config.js';
 import { ensureDir, readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
+import { readEnvWithLegacyFallback } from '../utils/env.js';
 
 export const LAN_AUTH_COOKIE = 'yw_lan_auth';
 export const LAN_AUTH_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 90;
@@ -18,10 +19,10 @@ interface LanTokenFile {
 let cachedToken: string | null = null;
 
 export async function ensureLanToken(): Promise<string> {
-  const envToken = process.env.YUMEWEAVING_LAN_TOKEN?.trim();
+  const envToken = readEnvWithLegacyFallback('CHAPTERFLOW_LAN_TOKEN', 'YUMEWEAVING_LAN_TOKEN');
   if (envToken) {
     if (!TOKEN_VALUE_PATTERN.test(envToken)) {
-      throw new Error('YUMEWEAVING_LAN_TOKEN は英数と -_ のみ使えます');
+      throw new Error('CHAPTERFLOW_LAN_TOKEN は英数と -_ のみ使えます');
     }
     cachedToken = envToken;
     return envToken;
@@ -149,7 +150,7 @@ function decodeCookieValue(value: string): string {
 }
 
 export function stripTokenFromUrl(input: string): string {
-  const parsed = new URL(input, 'http://yumeweaving.local');
+  const parsed = new URL(input, 'http://chapterflow.local');
   parsed.searchParams.delete('token');
   return `${parsed.pathname}${parsed.search}${parsed.hash}`;
 }
@@ -180,10 +181,10 @@ function sendUnauthorized(req: Request, res: Response): void {
 <html lang="ja">
   <head>
     <meta charset="utf-8">
-    <title>Yumeweaving LAN認証</title>
+    <title>ChapterFlow LAN認証</title>
   </head>
   <body>
-    <h1>Yumeweaving LAN認証が必要です</h1>
+    <h1>ChapterFlow LAN認証が必要です</h1>
     <p>PCの起動ログに表示されたトークン付きURLから開いてください。</p>
   </body>
 </html>`);

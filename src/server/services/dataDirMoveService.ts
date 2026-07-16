@@ -105,7 +105,11 @@ async function findReusableTarget(targetPath: string, oldDataDir: string): Promi
   const normalized = stripSurroundingQuotes(targetPath).trim();
   if (!normalized) return null;
   const target = path.resolve(normalized);
-  const candidates = [target, path.join(target, 'Yumeweaving')];
+  const candidates = [
+    target,
+    path.join(target, 'ChapterFlow'),
+    path.join(target, 'Yumeweaving'),
+  ];
   for (const candidate of candidates) {
     if (samePath(candidate, oldDataDir)) continue;
     if (isPathInside(candidate, oldDataDir) || isPathInside(oldDataDir, candidate)) continue;
@@ -164,7 +168,7 @@ async function resolveTargetPath(targetPath: string): Promise<{
   }
   const targetIsEmpty = targetStat ? await isDirectoryEmpty(target) : true;
   return {
-    resolvedPath: targetIsEmpty ? target : path.join(target, 'Yumeweaving'),
+    resolvedPath: targetIsEmpty ? target : path.join(target, 'ChapterFlow'),
     targetIsEmpty,
   };
 }
@@ -181,7 +185,7 @@ async function validateResolvedTarget(
   const stat = await statOrNull(resolvedPath);
   if (stat && !stat.isDirectory()) return '移動先はフォルダを指定してください';
   if (stat && !(await isDirectoryEmpty(resolvedPath))) {
-    return '移動先の Yumeweaving フォルダが空ではありません';
+    return '移動先の ChapterFlow フォルダが空ではありません';
   }
   if (!(await canWriteToTarget(resolvedPath))) return '書き込み不可';
   if (!(await hasEnoughFreeSpace(resolvedPath, estimatedSize))) {

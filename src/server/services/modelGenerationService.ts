@@ -13,10 +13,7 @@
 // 「provider の解決 → credential ロード → generate/stream → エラー正規化」まで
 // 一式が揃う。
 
-import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
-import { GeminiAdapter } from '../adapters/geminiAdapter.js';
-import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
-import { XAIAdapter } from '../adapters/xaiAdapter.js';
+import { adapterMap } from '../adapters/index.js';
 import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import type {
@@ -24,15 +21,6 @@ import type {
   AdapterGenerateResult,
   AdapterGenerateStreamEvent,
 } from '../types/index.js';
-
-// NOTE: 各サービスが個別に new していた adapter インスタンスをここに集約する。
-// ModelAdapter は状態を持たない想定なので、プロセス単一で使い回して問題ない。
-const adapterMap: Record<string, ModelAdapter> = {
-  openai: new OpenAIAdapter(),
-  gemini: new GeminiAdapter(),
-  deepseek: new DeepSeekAdapter(),
-  xai: new XAIAdapter(),
-};
 
 export class ModelClientError extends Error {
   constructor(

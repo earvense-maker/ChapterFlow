@@ -270,8 +270,12 @@ export const api = {
 
   generate: (id: string, body: { wish: string; mode: 'continue' | 'regenerate' | 'variate' }) =>
     request<GenerationRecord>(`/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
-  generateStream: (id: string, body: GenerateRequestBody, onChunk: (text: string) => void) =>
-    requestGenerationStream(id, body, onChunk),
+  generateStream: (
+    id: string,
+    body: GenerateRequestBody,
+    onChunk: (text: string) => void,
+    abortSignal?: AbortSignal
+  ) => requestGenerationStream(id, body, onChunk, abortSignal),
   sendSetupMessageStream: (
     id: string,
     body: SendSetupMessageBody,
@@ -546,12 +550,14 @@ async function sendSetupMessageStream(
 async function requestGenerationStream(
   id: string,
   body: GenerateRequestBody,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  abortSignal?: AbortSignal
 ): Promise<GenerationRecord> {
   const res = await fetch(`${API_BASE}/projects/${id}/generate-stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: abortSignal,
   });
 
   if (!res.ok) {

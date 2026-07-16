@@ -4,6 +4,7 @@ import * as generationService from '../../src/server/services/generationService'
 import * as expressionService from '../../src/server/services/expressionService';
 import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
+import { OpenRouterAdapter } from '../../src/server/adapters/openrouterAdapter';
 import { ModelAdapterError } from '../../src/server/adapters/modelAdapter';
 import type {
   AdapterGenerateStreamEvent,
@@ -105,6 +106,30 @@ describe('generationService generation', () => {
     expect(record.bannedExpressions).toContain('避けたい表現');
   });
 
+  it('records the model actually selected by the OpenRouter free router', async () => {
+    const project = await createTrackedProject();
+    await projectService.updateProject(project.projectId, {
+      activeModelProvider: 'openrouter',
+      activeModelName: 'openrouter/free',
+    });
+    vi.spyOn(OpenRouterAdapter.prototype, 'generateText').mockResolvedValue({
+      text: 'OpenRouterで生成された本文',
+      finishReason: 'stop',
+      retryable: false,
+      resolvedModelName: 'qwen/qwen3-free-test',
+    });
+
+    const record = await generationService.generateScene(project.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+
+    expect(record.usedModel).toEqual({
+      provider: 'openrouter',
+      modelName: 'qwen/qwen3-free-test',
+    });
+  });
+
   it('retries without penalties after an invalid argument error', async () => {
     const project = await createTrackedProject();
     await projectService.updateProject(project.projectId, {
@@ -182,6 +207,52 @@ describe('generationService generation', () => {
     expect(calls[1].frequencyPenalty).toBeUndefined();
     expect(chunks).toContain('再試行');
     expect(record.responseText).toBe('再試行');
+  });
+
+  it('includes Gemini diagnostics in non-streaming content filter errors', async () => {
+    const project = await createTrackedProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '',
+      finishReason: 'content_filter',
+      retryable: false,
+      debugInfo:
+        'finishReason=content_filter candidates=1 parts=none candidateSafety=HARASSMENT=HIGH(blocked)',
+    });
+
+    await expect(
+      generationService.generateScene(project.projectId, {
+        wish: '続き',
+        mode: 'continue',
+      })
+    ).rejects.toMatchObject({
+      code: 'content_filter',
+      retryable: false,
+      message: expect.stringContaining('candidateSafety=HARASSMENT=HIGH(blocked)'),
+    });
+  });
+
+  it('includes Gemini diagnostics in streaming content filter errors', async () => {
+    const project = await createTrackedProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        finishReason: 'content_filter',
+        debugInfo:
+          'finishReason=content_filter candidates=1 parts=none candidateSafety=HARASSMENT=HIGH(blocked)',
+      };
+    });
+
+    await expect(
+      generationService.generateSceneStream(
+        project.projectId,
+        { wish: '続き', mode: 'continue' },
+        () => undefined
+      )
+    ).rejects.toMatchObject({
+      code: 'content_filter',
+      retryable: false,
+      message: expect.stringContaining('candidateSafety=HARASSMENT=HIGH(blocked)'),
+    });
   });
 
   it('does not pass penalties to context compression', async () => {

@@ -53,7 +53,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
       options.onRuntimeError(err);
       return;
     }
-    console.error('Yumeweaving server runtime error:', err);
+    console.error('ChapterFlow server runtime error:', err);
   });
   const address = server.address();
   actualPort = typeof address === 'object' && address ? address.port : port;

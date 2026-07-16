@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { RunningServer } from '../server/server.js';
 import { readAppSettings, writeAppSettings } from '../server/services/appSettingsService.js';
 import { readJsonFile, safeWriteJson } from '../server/utils/safeWrite.js';
+import { resolveUserDataPath } from './userDataPath.js';
 
 interface ServerPortState {
   port: number;
@@ -29,6 +30,7 @@ let lastWindowState: WindowState | null = null;
 let closing = false;
 let regenerateShortcutsOnStartup = false;
 
+configureUserDataPathForRename();
 const gotLock = app.requestSingleInstanceLock();
 
 if (!gotLock) {
@@ -88,16 +90,19 @@ async function bootstrap(): Promise<void> {
 }
 
 async function prepareAppSettingsBeforeServer(): Promise<void> {
-  process.env.YUMEWEAVING_APP_SETTINGS_PATH = path.join(app.getPath('userData'), 'app-settings.json');
-  const hadExternalDataDir = Boolean(process.env.YUMEWEAVING_DATA_DIR);
+  process.env.CHAPTERFLOW_APP_SETTINGS_PATH = path.join(app.getPath('userData'), 'app-settings.json');
+  const externalDataDir =
+    process.env.CHAPTERFLOW_DATA_DIR?.trim() || process.env.YUMEWEAVING_DATA_DIR?.trim();
+  if (externalDataDir) process.env.CHAPTERFLOW_DATA_DIR = externalDataDir;
+  const hadExternalDataDir = Boolean(externalDataDir);
   const settings = await readAppSettings();
   if (!hadExternalDataDir && settings.dataDir) {
-    process.env.YUMEWEAVING_DATA_DIR = settings.dataDir;
-    process.env.YUMEWEAVING_DATA_DIR_SOURCE = 'app-settings';
+    process.env.CHAPTERFLOW_DATA_DIR = settings.dataDir;
+    process.env.CHAPTERFLOW_DATA_DIR_SOURCE = 'app-settings';
   } else if (hadExternalDataDir) {
-    process.env.YUMEWEAVING_DATA_DIR_SOURCE = 'external';
+    process.env.CHAPTERFLOW_DATA_DIR_SOURCE = 'external';
   } else {
-    process.env.YUMEWEAVING_DATA_DIR_SOURCE = 'default';
+    process.env.CHAPTERFLOW_DATA_DIR_SOURCE = 'default';
   }
 
   if (!hadExternalDataDir && settings.dataDir && settings.pendingCleanup) {
@@ -142,7 +147,7 @@ async function startServerWithPersistedPort(): Promise<RunningServer> {
       onShutdownRequest: () => app.quit(),
       onRestartRequest: restartApp,
       onRuntimeError: (err) => {
-        dialog.showErrorBox('Yumeweaving サーバーエラー', err.message);
+        dialog.showErrorBox('ChapterFlow サーバーエラー', err.message);
         app.quit();
       },
     });
@@ -154,7 +159,7 @@ async function startServerWithPersistedPort(): Promise<RunningServer> {
         onShutdownRequest: () => app.quit(),
         onRestartRequest: restartApp,
         onRuntimeError: (runtimeErr) => {
-          dialog.showErrorBox('Yumeweaving サーバーエラー', runtimeErr.message);
+          dialog.showErrorBox('ChapterFlow サーバーエラー', runtimeErr.message);
           app.quit();
         },
       });
@@ -407,11 +412,20 @@ function isPathInside(child: string, parent: string): boolean {
 
 function showStartupError(err: unknown): void {
   const message = isPortUnavailable(err)
-    ? '前回使っていたポートを別のアプリが使用しています。Yumeweaving を起動できませんでした。'
+    ? '前回使っていたポートを別のアプリが使用しています。ChapterFlow を起動できませんでした。'
     : err instanceof Error
       ? err.message
       : String(err);
-  dialog.showErrorBox('Yumeweaving の起動に失敗しました', message);
+  dialog.showErrorBox('ChapterFlow の起動に失敗しました', message);
+}
+
+function configureUserDataPathForRename(): void {
+  const appDataDir = app.getPath('appData');
+  const chapterFlowDir = path.join(appDataDir, 'ChapterFlow');
+  const selectedDir = resolveUserDataPath(appDataDir);
+  if (!samePath(selectedDir, chapterFlowDir)) {
+    app.setPath('userData', selectedDir);
+  }
 }
 
 function clamp(value: number, min: number, max: number): number {

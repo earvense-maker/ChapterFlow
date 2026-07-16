@@ -285,7 +285,7 @@ foreach ($item in $items) {
   $shortcut = $ws.CreateShortcut([string]$item.lnkPath)
   $shortcut.TargetPath = [string]$item.targetPath
   $shortcut.WorkingDirectory = Split-Path -Parent ([string]$item.targetPath)
-  $shortcut.Description = "Yumeweaving project: $($item.projectId)"
+  $shortcut.Description = "ChapterFlow project: $($item.projectId)"
   $shortcut.Save()
 }
 $outJson = '[]'

@@ -21,6 +21,14 @@ interface Props {
   onOpenAppSettings: (provider?: string) => void;
 }
 
+// NOTE: アダプタ側でPenaltyを送信しないプロバイダー。サーバー側の omitPenaltyFields /
+// geminiAdapter の方針と対応させる。設定は保持されるが送信されない旨をUIで明示する。
+const PENALTY_UNSUPPORTED_NOTICE: Record<string, string> = {
+  xai: 'xAIのGrok推論モデルはPenaltyを受け付けないため、この2項目は送信されません。',
+  openrouter: 'OpenRouterは選択されるモデルとの互換性を優先するため、この2項目は送信されません。',
+  gemini: 'GeminiはモデルによりPenalty指定がエラーになるため、この2項目は送信されません。',
+};
+
 export default function TechSettingsTab({
   projectId,
   project,
@@ -306,10 +314,8 @@ export default function TechSettingsTab({
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '1rem' }}>
             Penalty は語彙の反復を抑えます。上げすぎると文が不自然に。目安 0.1〜0.5。
           </p>
-          {provider === 'xai' && (
-            <p className="settings-help">
-              xAIのGrok推論モデルはPenaltyを受け付けないため、この2項目は送信されません。
-            </p>
+          {PENALTY_UNSUPPORTED_NOTICE[provider] && (
+            <p className="settings-help">{PENALTY_UNSUPPORTED_NOTICE[provider]}</p>
           )}
           <label>
             Frequency penalty（同じ語の繰り返し抑制）
@@ -320,7 +326,7 @@ export default function TechSettingsTab({
               step={0.05}
               value={frequencyPenalty}
               onChange={(e) => setFrequencyPenalty(Number(e.target.value))}
-              disabled={loading || provider === 'xai'}
+              disabled={loading || Boolean(PENALTY_UNSUPPORTED_NOTICE[provider])}
             />
             <span>{frequencyPenalty.toFixed(2)}</span>
           </label>
@@ -333,7 +339,7 @@ export default function TechSettingsTab({
               step={0.05}
               value={presencePenalty}
               onChange={(e) => setPresencePenalty(Number(e.target.value))}
-              disabled={loading || provider === 'xai'}
+              disabled={loading || Boolean(PENALTY_UNSUPPORTED_NOTICE[provider])}
             />
             <span>{presencePenalty.toFixed(2)}</span>
           </label>

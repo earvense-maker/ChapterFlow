@@ -1,5 +1,6 @@
 export async function* readServerSentEvents(
-  body: ReadableStream<Uint8Array> | null
+  body: ReadableStream<Uint8Array> | null,
+  onActivity?: () => void
 ): AsyncGenerator<string> {
   if (!body) throw new Error('Streaming response body is empty');
 
@@ -11,6 +12,9 @@ export async function* readServerSentEvents(
     const { done, value } = await reader.read();
     if (done) break;
 
+    // NOTE: OpenRouterは生成待ち中に「: OPENROUTER PROCESSING」のSSEコメントを
+    // 送る。dataイベントでなくても受信自体を無通信タイムアウトのリセットに使う。
+    if (value.byteLength > 0) onActivity?.();
     buffer += decoder.decode(value, { stream: true });
     yield* drainEventBuffer(buffer, (next) => {
       buffer = next;
