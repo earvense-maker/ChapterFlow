@@ -1,10 +1,13 @@
 @echo off
 chcp 65001 > nul
 cd /d "%~dp0"
-rem NOTE: 保存先の選択は src/server/config.ts の resolveDefaultDataDir に任せる
-rem （作品の入った Documents\ChapterFlow / 旧 Yumeweaving を自動検出し、
-rem 空の新フォルダが旧作品を隠さない）。ここでフォルダを直接選ぶと判定が二重になる。
-rem このフラグは dev-server.mjs のフィクスチャ既定（リポジトリ内 data\）だけを無効化する。
+rem NOTE: Keep this file ASCII with CRLF line endings. cmd mis-parses batch files
+rem that mix UTF-8 multibyte comments with LF-only endings (the set line below
+rem was silently skipped when this header was written in Japanese).
+rem Data-dir choice is delegated to resolveDefaultDataDir in src/server/config.ts
+rem (auto-detects Documents\ChapterFlow or legacy Documents\Yumeweaving by real
+rem works, so an empty new folder never hides old ones). Do not pick a folder here.
+rem This flag only disables the repo-fixture default (data\) in scripts/dev-server.mjs.
 set "CHAPTERFLOW_USE_DEFAULT_DATA_DIR=1"
 call npm run dev
 if errorlevel 1 (

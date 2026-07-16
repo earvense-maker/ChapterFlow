@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 > nul
 cd /d "%~dp0"
-rem NOTE: 保存先の選択は src/server/config.ts の resolveDefaultDataDir に任せる
-rem （作品の入った Documents\ChapterFlow / 旧 Yumeweaving を自動検出）。
-rem dist のサーバーはフィクスチャ既定を持たないため、環境変数の設定は不要。
+rem NOTE: Keep this file ASCII with CRLF line endings (see start-chapterflow.bat).
+rem Data-dir choice is delegated to resolveDefaultDataDir in src/server/config.ts.
+rem The dist server has no repo-fixture default, so no env var is needed here.
 
 if not exist "dist\server\index.js" (
   echo [LAN] dist not found. Building...
