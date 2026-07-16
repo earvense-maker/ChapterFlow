@@ -271,7 +271,7 @@ export default function DataDirSettingsSection({ systemVersion, onBusyChange }: 
                 setSectionStatus({ kind: 'idle' });
               }
             }}
-            placeholder="例: D:\Yumeweaving"
+            placeholder="例: D:\ChapterFlow"
             disabled={busy || selectingFolder || !canMoveDataDir}
           />
           <button
@@ -316,7 +316,7 @@ export default function DataDirSettingsSection({ systemVersion, onBusyChange }: 
             <dt>コピー対象</dt>
             <dd>{formatBytes(preview.estimatedSize)}</dd>
             <dt>選択フォルダ</dt>
-            <dd>{preview.targetIsEmpty ? '空です' : '空ではないため Yumeweaving サブフォルダを使います'}</dd>
+            <dd>{preview.targetIsEmpty ? '空です' : '空ではないため ChapterFlow サブフォルダを使います'}</dd>
             <dt>空き容量</dt>
             <dd>{preview.hasFreeSpace ? '問題ありません' : '不足しています'}</dd>
           </dl>

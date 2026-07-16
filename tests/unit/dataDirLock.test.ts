@@ -96,7 +96,7 @@ describe('dataDirLock', () => {
   });
 
   it('protects direct safeWriteFile calls while the data directory is locked', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-safe-write-lock-'));
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-safe-write-lock-'));
     let releaseLock!: () => void;
     const lockPromise = withDataDirLock(
       () => new Promise<void>((resolve) => {

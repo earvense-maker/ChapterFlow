@@ -12,11 +12,15 @@ test('PWA manifest and service worker assets are available', async ({ page, requ
   const manifestResponse = await request.get('/manifest.webmanifest');
   expect(manifestResponse.ok()).toBe(true);
   const manifest = await manifestResponse.json();
+  expect(manifest.name).toBe('ChapterFlow — API-Powered Narrative Studio');
+  expect(manifest.short_name).toBe('ChapterFlow');
   expect(manifest.display).toBe('standalone');
   expect(manifest.icons).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ sizes: '192x192', type: 'image/png' }),
-      expect.objectContaining({ sizes: '512x512', type: 'image/png' }),
+      expect.objectContaining({ sizes: '192x192', type: 'image/png', purpose: 'any' }),
+      expect.objectContaining({ sizes: '512x512', type: 'image/png', purpose: 'any' }),
+      expect.objectContaining({ sizes: '192x192', type: 'image/png', purpose: 'maskable' }),
+      expect.objectContaining({ sizes: '512x512', type: 'image/png', purpose: 'maskable' }),
     ])
   );
 

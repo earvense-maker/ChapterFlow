@@ -196,6 +196,13 @@ legend {
   font-weight: normal;
 }
 
+.product-tagline {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+}
+
 .project-list-actions {
   display: flex;
   align-items: center;

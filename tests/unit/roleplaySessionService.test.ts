@@ -173,6 +173,108 @@ describe('roleplaySessionService', () => {
     });
   });
 
+  it('classifies an empty Gemini prompt block as a non-retryable content filter error', async () => {
+    const project = await makeRoleplayProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() => {
+      async function* gen(): AsyncGenerator<AdapterGenerateStreamEvent> {
+        yield {
+          type: 'done',
+          finishReason: 'stop',
+          debugInfo:
+            'finishReason=stop candidates=0 parts=none promptBlockReason=PROHIBITED_CONTENT',
+        };
+      }
+      return gen();
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続きを話して',
+        revision: created.revision,
+      })
+    );
+
+    expect(result.done).toBeUndefined();
+    expect(result.errors[0]).toMatchObject({
+      code: 'content_filter',
+      retryable: false,
+    });
+    expect(result.errors[0]?.error).toContain('promptBlockReason=PROHIBITED_CONTENT');
+  });
+
+  it('keeps a high but non-blocking Gemini safety rating retryable', async () => {
+    const project = await makeRoleplayProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() => {
+      async function* gen(): AsyncGenerator<AdapterGenerateStreamEvent> {
+        yield {
+          type: 'done',
+          finishReason: 'stop',
+          debugInfo:
+            'finishReason=stop candidates=1 parts=none candidateSafety=HARASSMENT=HIGH',
+        };
+      }
+      return gen();
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続きを話して',
+        revision: created.revision,
+      })
+    );
+
+    expect(result.errors[0]).toMatchObject({
+      code: 'empty_response',
+      retryable: true,
+    });
+  });
+
+  it('includes Gemini diagnostics in an explicit roleplay content filter error', async () => {
+    const project = await makeRoleplayProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() => {
+      async function* gen(): AsyncGenerator<AdapterGenerateStreamEvent> {
+        yield {
+          type: 'done',
+          finishReason: 'content_filter',
+          debugInfo:
+            'finishReason=content_filter candidates=1 parts=none candidateSafety=HARASSMENT=HIGH(blocked)',
+        };
+      }
+      return gen();
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続きを話して',
+        revision: created.revision,
+      })
+    );
+
+    expect(result.errors[0]).toMatchObject({
+      code: 'content_filter',
+      retryable: false,
+    });
+    expect(result.errors[0]?.error).toContain('candidateSafety=HARASSMENT=HIGH(blocked)');
+  });
+
   it('regenerates the last character message without incrementing user revision', async () => {
     const project = await makeRoleplayProject();
     const streamSpy = vi

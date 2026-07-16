@@ -7,7 +7,6 @@ import type {
   ModelConfig,
 } from '../types/index.js';
 import { ModelAdapter, ModelAdapterError } from './modelAdapter.js';
-import { applyGeminiSystemPreamble } from '../prompts/geminiSystemPreamble.js';
 import { estimateMaxOutputTokens } from '../utils/outputLength.js';
 import { readServerSentEvents } from '../utils/sse.js';
 
@@ -63,12 +62,11 @@ export class GeminiAdapter implements ModelAdapter {
       let finishReason: FinishReason = 'stop';
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
       let anyChunkYielded = false;
-      let lastData: GeminiGenerateContentResponse | null = null;
+      let diagnosticData: GeminiGenerateContentResponse | null = null;
 
-      for await (const eventData of readServerSentEvents(res.body)) {
-        resetTimeout();
+      for await (const eventData of readServerSentEvents(res.body, resetTimeout)) {
         const data = JSON.parse(eventData) as GeminiGenerateContentResponse;
-        lastData = data;
+        diagnosticData = mergeDiagnosticData(diagnosticData, data);
         const candidate = data.candidates?.[0];
         const text = extractVisibleText(candidate?.content?.parts);
 
@@ -86,9 +84,10 @@ export class GeminiAdapter implements ModelAdapter {
         }
       }
 
-      const debugInfo = anyChunkYielded
-        ? undefined
-        : buildEmptyResponseDebugInfo(lastData, finishReason);
+      const debugInfo =
+        !anyChunkYielded || finishReason === 'content_filter'
+          ? buildEmptyResponseDebugInfo(diagnosticData, finishReason)
+          : undefined;
       yield { type: 'done', finishReason, rawUsage, debugInfo };
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -153,7 +152,10 @@ export class GeminiAdapter implements ModelAdapter {
       const candidate = data.candidates?.[0];
       const text = extractVisibleText(candidate?.content?.parts).trim();
       const finishReason = mapFinishReason(candidate?.finishReason);
-      const debugInfo = text ? undefined : buildEmptyResponseDebugInfo(data, finishReason);
+      const debugInfo =
+        !text || finishReason === 'content_filter'
+          ? buildEmptyResponseDebugInfo(data, finishReason)
+          : undefined;
 
       return {
         text,
@@ -231,7 +233,7 @@ const CREATIVE_SAFETY_SETTINGS: Array<{ category: string; threshold: 'BLOCK_NONE
 ];
 
 function buildRequestBody(request: AdapterGenerateRequest): unknown {
-  const systemInstructions = applyGeminiSystemPreamble(request.systemInstructions);
+  const systemInstructions = request.systemInstructions.trim();
   const body: {
     contents: Array<{ role: 'user'; parts: Array<{ text: string }> }>;
     systemInstruction?: { parts: Array<{ text: string }> };
@@ -239,9 +241,7 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     generationConfig: {
       temperature: number;
       maxOutputTokens: number;
-      frequencyPenalty?: number;
-      presencePenalty?: number;
-      thinkingConfig?: { thinkingBudget: number; includeThoughts?: boolean };
+      thinkingConfig?: { thinkingLevel: 'high'; includeThoughts?: boolean };
       responseMimeType?: string;
     };
   } = {
@@ -250,13 +250,17 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     generationConfig: {
       temperature: request.temperature,
       maxOutputTokens: estimateMaxOutputTokens(request.outputLength, MAX_OUTPUT_TOKENS),
-      // NOTE: 創作の質を上げるため thinking は有効 (thinkingBudget=-1: dynamic)。
-      // ただし includeThoughts=false で応答に思考パートは含めない。
-      // Gemini が thinking で maxOutputTokens を使い切って本文0で stop する事故を
-      // 減らすため、maxOutputTokens 側を outputLength ベースで大きく確保している。
-      thinkingConfig: { thinkingBudget: -1, includeThoughts: false },
     },
   };
+
+  // NOTE: Gemini 3.xでは数値のthinkingBudgetではなくthinkingLevelを使う。
+  // 2.5系はthinkingLevel非対応なので設定を省略し、モデル既定のthinkingに任せる。
+  if (/^gemini-3(?:[.-]|$)/i.test(normalizeModelName(request.modelName))) {
+    body.generationConfig.thinkingConfig = {
+      thinkingLevel: 'high',
+      includeThoughts: false,
+    };
+  }
 
   // NOTE: 構造化 JSON 出力（Structured Output）。scan / chat のように JSON を
   // 期待する呼び出しでは前置き文やコードフェンスの混入を防げる。
@@ -264,14 +268,14 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     body.generationConfig.responseMimeType = request.responseMimeType;
   }
 
-  body.systemInstruction = { parts: [{ text: systemInstructions }] };
+  // NOTE: 機能ごとのシステム指示を先頭からそのまま送る。Gemini専用の固定文を
+  // 足すと、設定相談などフィクション以外の呼び出しにも不要な語が混ざるため付加しない。
+  if (systemInstructions) {
+    body.systemInstruction = { parts: [{ text: systemInstructions }] };
+  }
 
-  if (request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0) {
-    body.generationConfig.frequencyPenalty = request.frequencyPenalty;
-  }
-  if (request.presencePenalty !== undefined && request.presencePenalty !== 0) {
-    body.generationConfig.presencePenalty = request.presencePenalty;
-  }
+  // NOTE: Gemini 3.xではpenalty指定がINVALID_ARGUMENTになる環境があるため送らない。
+  // 設定値は他プロバイダー用に保持し、Gemini側だけ無効化する。
 
   return body;
 }
@@ -311,6 +315,44 @@ interface GeminiGenerateContentResponse {
     candidatesTokenCount?: number;
     totalTokenCount?: number;
     thoughtsTokenCount?: number;
+  };
+}
+
+function mergeDiagnosticData(
+  current: GeminiGenerateContentResponse | null,
+  next: GeminiGenerateContentResponse
+): GeminiGenerateContentResponse {
+  const currentCandidate = current?.candidates?.[0];
+  const nextCandidate = next.candidates?.[0];
+  const currentPromptFeedback = current?.promptFeedback;
+  const nextPromptFeedback = next.promptFeedback;
+  const candidate = currentCandidate || nextCandidate
+    ? {
+        content:
+          nextCandidate?.content?.parts?.length
+            ? nextCandidate.content
+            : currentCandidate?.content,
+        finishReason: nextCandidate?.finishReason ?? currentCandidate?.finishReason,
+        safetyRatings:
+          nextCandidate?.safetyRatings?.length
+            ? nextCandidate.safetyRatings
+            : currentCandidate?.safetyRatings,
+      }
+    : undefined;
+  const promptFeedback = currentPromptFeedback || nextPromptFeedback
+    ? {
+        blockReason: nextPromptFeedback?.blockReason ?? currentPromptFeedback?.blockReason,
+        safetyRatings:
+          nextPromptFeedback?.safetyRatings?.length
+            ? nextPromptFeedback.safetyRatings
+            : currentPromptFeedback?.safetyRatings,
+      }
+    : undefined;
+
+  return {
+    candidates: candidate ? [candidate] : undefined,
+    promptFeedback,
+    usageMetadata: next.usageMetadata ?? current?.usageMetadata,
   };
 }
 

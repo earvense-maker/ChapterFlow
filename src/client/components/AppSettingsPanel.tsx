@@ -199,6 +199,10 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
           <p className="settings-help">
             APIキーはアプリ全体に保存され、相談とすべての作品で共有されます。
           </p>
+          <p className="settings-help">
+            APIキーはPC内に平文で保存されます。生成や相談では、入力内容と作品情報の必要な部分を
+            選択したモデルプロバイダーへ送信します。利用量に応じて料金が発生する場合があります。
+          </p>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
             {activeProvider?.apiKeyHelp ??
               'APIキーを保存します。作品データとは別に、プロバイダーごとに1つ保存されます。'}

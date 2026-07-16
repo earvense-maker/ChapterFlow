@@ -1,10 +1,22 @@
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 
-const url = process.argv[2] || process.env.YUMEWEAVING_URL || 'http://localhost:5173';
-const timeoutMs = Number(process.env.YUMEWEAVING_OPEN_TIMEOUT_MS || 30_000);
+// NOTE: 既定URLは vite.config.ts と同じ VITE_DEV_PORT を参照する。5173固定だと、
+// ポートをずらして起動した際に別インスタンスのウィンドウを開いてしまう。
+const url =
+  process.argv[2] ||
+  process.env.CHAPTERFLOW_URL ||
+  process.env.YUMEWEAVING_URL ||
+  `http://localhost:${process.env.VITE_DEV_PORT ?? 5173}`;
+const timeoutMs = Number(
+  process.env.CHAPTERFLOW_OPEN_TIMEOUT_MS ?? process.env.YUMEWEAVING_OPEN_TIMEOUT_MS ?? 30_000
+);
 
-if (process.env.YUMEWEAVING_SKIP_OPEN === '1' || process.env.CI) {
+if (
+  process.env.CHAPTERFLOW_SKIP_OPEN === '1' ||
+  process.env.YUMEWEAVING_SKIP_OPEN === '1' ||
+  process.env.CI
+) {
   process.exit(0);
 }
 
@@ -42,7 +54,7 @@ async function waitForServer(targetUrl, timeout) {
 
 function findAppModeBrowser() {
   const candidates = [
-    process.env.YUMEWEAVING_BROWSER,
+    process.env.CHAPTERFLOW_BROWSER ?? process.env.YUMEWEAVING_BROWSER,
     pathFromEnv('LOCALAPPDATA', 'Google\\Chrome\\Application\\chrome.exe'),
     pathFromEnv('PROGRAMFILES', 'Google\\Chrome\\Application\\chrome.exe'),
     pathFromEnv('PROGRAMFILES(X86)', 'Google\\Chrome\\Application\\chrome.exe'),

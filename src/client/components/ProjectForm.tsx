@@ -277,6 +277,10 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
 
         <section className="settings-section">
           <h2>APIキー</h2>
+          <p className="settings-help">
+            APIキーはPC内に平文で保存されます。生成時は、この作品の設定・本文・入力内容の必要な部分を
+            選択したモデルプロバイダーへ送信します。利用量に応じて料金が発生する場合があります。
+          </p>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
             {currentProvider(providers, provider)?.apiKeyHelp ?? 'APIキーを保存します。作品データとは別に保存されます。'}
           </p>

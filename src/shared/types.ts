@@ -672,6 +672,8 @@ export interface AdapterGenerateResult {
   errorCode?: string;
   errorMessage?: string;
   retryable: boolean;
+  // OpenRouterのようなルーターが実際に選択したモデル。通常の直結APIでは未指定。
+  resolvedModelName?: string;
   // NOTE: 空応答時の切り分け用に、adapter 側で拾えた診断情報（候補数・パート種別・
   // blockReason・safetyRatings 要約など）を短い文字列で残す。ユーザーには
   // エラー詳細としてそのまま見せる。
@@ -825,6 +827,7 @@ export type AdapterGenerateStreamEvent =
       finishReason: FinishReason;
       rawUsage?: AdapterGenerateResult['rawUsage'];
       debugInfo?: string;
+      resolvedModelName?: string;
     };
 
 export interface ReaderState {

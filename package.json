@@ -1,20 +1,34 @@
 {
-  "name": "yumeweaving",
+  "name": "chapterflow",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
+  "description": "自分のAPIキーで連載小説とロールプレイを続けるWindows向け創作アプリ",
+  "author": "ChapterFlow contributors",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/earvense-maker/ChapterFlow.git"
+  },
+  "homepage": "https://github.com/earvense-maker/ChapterFlow#readme",
+  "bugs": {
+    "url": "https://github.com/earvense-maker/ChapterFlow/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "dist/electron/main.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
+    "dev": "node scripts/dev-preflight.mjs && concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
     "dev:client": "vite",
     "dev:server": "node scripts/dev-server.mjs",
-    "open:app": "node open-app-window.js http://localhost:5173",
+    "open:app": "node open-app-window.js",
     "open:app:prod": "node open-app-window.js http://localhost:3001",
     "build": "tsc -p tsconfig.server.json && vite build",
     "build:electron": "npm run build && tsc -p tsconfig.electron.json",
     "dev:electron": "npm run build:electron && electron dist/electron/main.js",
-    "dist:electron": "npm run build:electron && electron-builder --win",
+    "dist:electron": "npm run build:electron && electron-builder --win && npm run release:assets",
+    "release:assets": "node scripts/prepare-release-assets.mjs",
     "start": "node dist/server/index.js",
     "start:lan": "node scripts/start-lan.mjs",
     "build:start:lan": "npm run build && npm run start:lan",
@@ -25,7 +39,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "uuid": "^10.0.0"
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.45.1",
@@ -36,22 +50,21 @@
     "@types/node": "^20.14.9",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/uuid": "^10.0.0",
-    "@vitejs/plugin-react": "^4.3.1",
+    "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^8.2.2",
-    "electron": "^37.0.0",
-    "electron-builder": "^26.0.12",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
     "jsdom": "^24.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tsx": "^4.16.2",
     "typescript": "^5.5.3",
-    "vite": "^5.3.3",
-    "vitest": "^1.6.0"
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   },
   "build": {
-    "appId": "com.yumeweaving.app",
-    "productName": "Yumeweaving",
+    "appId": "com.chapterflow.app",
+    "productName": "ChapterFlow",
     "directories": {
       "output": "release/electron"
     },
@@ -62,6 +75,16 @@
       "presets/**",
       "build/icon.ico",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "docs/利用ガイド.md",
+        "to": "利用ガイド.md"
+      }
     ],
     "asar": true,
     "win": {

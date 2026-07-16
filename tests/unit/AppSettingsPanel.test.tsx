@@ -61,6 +61,8 @@ describe('AppSettingsPanel', () => {
     render(<AppSettingsPanel onBack={() => undefined} />);
 
     const providerSelect = await screen.findByLabelText('プロバイダー');
+    expect(screen.getByText(/APIキーはPC内に平文で保存されます/)).toBeVisible();
+    expect(screen.getByText(/選択したモデルプロバイダーへ送信します/)).toBeVisible();
     expect(screen.getByRole('option', { name: 'xAI（キー未設定）' })).toBeInTheDocument();
     fireEvent.change(providerSelect, { target: { value: 'deepseek' } });
     fireEvent.change(screen.getByPlaceholderText('deepseek-key'), {

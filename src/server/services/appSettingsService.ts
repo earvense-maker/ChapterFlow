@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
+import { readEnvWithLegacyFallback } from '../utils/env.js';
 import { withDataDirWrite } from './dataDirLock.js';
 
 export interface AppSettings {
@@ -13,11 +15,17 @@ export interface AppSettings {
 }
 
 export function getAppSettingsPath(): string {
-  if (process.env.YUMEWEAVING_APP_SETTINGS_PATH) {
-    return path.resolve(process.env.YUMEWEAVING_APP_SETTINGS_PATH);
+  const configuredPath = readEnvWithLegacyFallback(
+    'CHAPTERFLOW_APP_SETTINGS_PATH',
+    'YUMEWEAVING_APP_SETTINGS_PATH'
+  );
+  if (configuredPath) {
+    return path.resolve(configuredPath);
   }
   const appData = process.env.APPDATA || path.join(homedir(), 'AppData', 'Roaming');
-  return path.join(appData, 'Yumeweaving', 'app-settings.json');
+  const chapterFlowPath = path.join(appData, 'ChapterFlow', 'app-settings.json');
+  const legacyPath = path.join(appData, 'Yumeweaving', 'app-settings.json');
+  return existsSync(chapterFlowPath) || !existsSync(legacyPath) ? chapterFlowPath : legacyPath;
 }
 
 export async function readAppSettings(): Promise<AppSettings> {

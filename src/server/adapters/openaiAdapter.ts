@@ -21,6 +21,7 @@ interface OpenAIAdapterOptions {
   maxCompletionTokens?: number;
   includeStreamOptions?: boolean;
   omitPenaltyFields?: boolean;
+  extraHeaders?: Record<string, string>;
 }
 
 export class OpenAIAdapter implements ModelAdapter {
@@ -30,6 +31,7 @@ export class OpenAIAdapter implements ModelAdapter {
   private readonly maxCompletionTokens: number;
   private readonly includeStreamOptions: boolean;
   private readonly omitPenaltyFields: boolean;
+  private readonly extraHeaders: Record<string, string>;
 
   constructor(options: OpenAIAdapterOptions = {}) {
     this.providerName = options.providerName ?? PROVIDER_NAME;
@@ -38,6 +40,7 @@ export class OpenAIAdapter implements ModelAdapter {
     this.maxCompletionTokens = options.maxCompletionTokens ?? MAX_COMPLETION_TOKENS;
     this.includeStreamOptions = options.includeStreamOptions ?? true;
     this.omitPenaltyFields = options.omitPenaltyFields ?? false;
+    this.extraHeaders = options.extraHeaders ?? {};
   }
 
   async *generateTextStream(request: AdapterGenerateRequest): AsyncGenerator<AdapterGenerateStreamEvent> {
@@ -65,10 +68,7 @@ export class OpenAIAdapter implements ModelAdapter {
     try {
       const res = await fetch(`${this.apiBase}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: this.requestHeaders(apiKey),
         body: JSON.stringify({
           model: request.modelName,
           messages: [
@@ -99,18 +99,27 @@ export class OpenAIAdapter implements ModelAdapter {
         throw new ModelAdapterError(
           body.error?.message || `${this.apiLabel} API error: ${res.status}`,
           mapHttpStatus(res.status, body),
-          res.status >= 500 || res.status === 429
+          isRetryableStatus(res.status)
         );
       }
 
       let finishReason: FinishReason = 'stop';
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
+      let resolvedModelName: string | undefined;
 
-      for await (const eventData of readServerSentEvents(res.body)) {
-        resetTimeout();
+      for await (const eventData of readServerSentEvents(res.body, resetTimeout)) {
         if (eventData === '[DONE]') break;
 
         const data = JSON.parse(eventData) as OpenAIStreamChunk;
+        if (data.error) {
+          const status = normalizeErrorStatus(data.error.code);
+          throw new ModelAdapterError(
+            data.error.message || `${this.apiLabel} streaming error`,
+            mapProviderError(data.error),
+            isRetryableStatus(status)
+          );
+        }
+        if (data.model) resolvedModelName = data.model;
         const choice = data.choices?.[0];
         const text = choice?.delta?.content;
         if (text) yield { type: 'chunk', text };
@@ -124,7 +133,12 @@ export class OpenAIAdapter implements ModelAdapter {
         }
       }
 
-      yield { type: 'done', finishReason, rawUsage };
+      yield {
+        type: 'done',
+        finishReason,
+        rawUsage,
+        ...(resolvedModelName ? { resolvedModelName } : {}),
+      };
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         if (request.abortSignal?.aborted) {
@@ -161,10 +175,7 @@ export class OpenAIAdapter implements ModelAdapter {
     try {
       const res = await fetch(`${this.apiBase}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: this.requestHeaders(apiKey),
         body: JSON.stringify({
           model: request.modelName,
           messages: [
@@ -198,11 +209,12 @@ export class OpenAIAdapter implements ModelAdapter {
           finishReason: 'error',
           errorCode: mapHttpStatus(res.status, body),
           errorMessage: message,
-          retryable: res.status >= 500 || res.status === 429,
+          retryable: isRetryableStatus(res.status),
         };
       }
 
       const data = (await res.json()) as {
+        model?: string;
         choices: Array<{
           message?: { content?: string };
           finish_reason?: string;
@@ -212,7 +224,19 @@ export class OpenAIAdapter implements ModelAdapter {
           completion_tokens: number;
           total_tokens: number;
         };
+        error?: OpenAIProviderError;
       };
+
+      if (data.error) {
+        const status = normalizeErrorStatus(data.error.code);
+        return {
+          text: '',
+          finishReason: 'error',
+          errorCode: mapProviderError(data.error),
+          errorMessage: data.error.message,
+          retryable: isRetryableStatus(status),
+        };
+      }
 
       const choice = data.choices?.[0];
       const text = choice?.message?.content?.trim() || '';
@@ -229,6 +253,7 @@ export class OpenAIAdapter implements ModelAdapter {
             }
           : undefined,
         retryable: finishReason === 'error',
+        ...(data.model ? { resolvedModelName: data.model } : {}),
       };
     } catch (err) {
       clearTimeout(timeout);
@@ -256,7 +281,7 @@ export class OpenAIAdapter implements ModelAdapter {
 
     try {
       const res = await fetch(`${this.apiBase}/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: this.requestHeaders(apiKey),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -276,13 +301,28 @@ export class OpenAIAdapter implements ModelAdapter {
     }
   }
 
-  private async loadApiKey(): Promise<string | undefined> {
+  protected async loadApiKey(): Promise<string | undefined> {
     const { getCredential } = await import('../services/credentialService.js');
     return getCredential(this.providerName);
   }
+
+  protected requestHeaders(apiKey: string): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      ...this.extraHeaders,
+    };
+  }
+}
+
+interface OpenAIProviderError {
+  code?: string | number;
+  message?: string;
+  metadata?: { error_type?: string; provider_code?: string };
 }
 
 interface OpenAIStreamChunk {
+  model?: string;
   choices?: Array<{
     delta?: {
       content?: string;
@@ -294,15 +334,48 @@ interface OpenAIStreamChunk {
     completion_tokens: number;
     total_tokens: number;
   } | null;
+  error?: OpenAIProviderError;
 }
 
-function mapHttpStatus(status: number, body: { error?: { code?: string } }): string {
+export function mapHttpStatus(status: number, body: { error?: OpenAIProviderError }): string {
   if (status === 401) return 'invalid_api_key';
-  if (status === 400) return body.error?.code || 'invalid_request_error';
+  if (status === 400) return mapProviderError(body.error, 'invalid_request_error');
+  if (status === 402) return 'payment_required';
+  if (status === 403) return 'permission_denied';
+  if (status === 408) return 'timeout';
   if (status === 429) return 'rate_limit';
   if (status === 500) return 'server_error';
+  if (status === 502) return 'service_unavailable';
   if (status === 503) return 'service_unavailable';
-  return body.error?.code || 'api_error';
+  if (status === 504) return 'timeout';
+  return mapProviderError(body.error, 'api_error');
+}
+
+function mapProviderError(error?: OpenAIProviderError, fallback = 'api_error'): string {
+  const typed = error?.metadata?.error_type;
+  if (typed === 'authentication') return 'invalid_api_key';
+  if (typed === 'payment_required') return 'payment_required';
+  if (typed === 'permission_denied') return 'permission_denied';
+  if (typed === 'rate_limit_exceeded') return 'rate_limit';
+  if (typed === 'provider_overloaded' || typed === 'provider_unavailable') {
+    return 'service_unavailable';
+  }
+  if (typed === 'content_policy_violation' || typed === 'refusal') return 'content_filter';
+  if (typed === 'timeout') return 'timeout';
+  // NOTE: OpenRouterはmetadata.error_typeなしで数値のHTTPステータスをcodeに入れて
+  // 返すことがある。retryable判定(normalizeErrorStatus)と同様にステータスとして解釈する。
+  if (typeof error?.code === 'number') return mapHttpStatus(error.code, {});
+  return typeof error?.code === 'string' && error.code ? error.code : fallback;
+}
+
+function normalizeErrorStatus(code?: string | number): number {
+  if (typeof code === 'number') return code;
+  const parsed = Number(code);
+  return Number.isFinite(parsed) ? parsed : 500;
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
 }
 
 function mapFinishReason(reason?: string): FinishReason {

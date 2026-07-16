@@ -10,10 +10,7 @@ import {
   getContextSummary,
   getRecentContext,
 } from '../prompts/contextAssembler.js';
-import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
-import { GeminiAdapter } from '../adapters/geminiAdapter.js';
-import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
-import { XAIAdapter } from '../adapters/xaiAdapter.js';
+import { adapterMap } from '../adapters/index.js';
 import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import {
@@ -70,13 +67,6 @@ const TIMEOUT_MS = 120_000;
 const STORY_STATE_TIMEOUT_MS = 30_000;
 const SUMMARY_CHUNK_CHARS = 20_000;
 
-const adapterMap = {
-  openai: new OpenAIAdapter(),
-  gemini: new GeminiAdapter(),
-  deepseek: new DeepSeekAdapter(),
-  xai: new XAIAdapter(),
-};
-
 const projectWriteMutexes = new Map<string, Promise<void>>();
 
 export interface GenerateOptions {
@@ -105,7 +95,7 @@ async function generateSceneUnlocked(
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
 
-  const adapter = adapterMap[project.activeModelProvider as keyof typeof adapterMap];
+  const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
   const memories = (await storage.readMemories(projectId)).filter((m) => m.status === 'active');
@@ -156,7 +146,7 @@ async function generateSceneUnlocked(
   }
   if (result.finishReason === 'content_filter') {
     throw new GenerateError(
-      mapErrorMessage('content_filter'),
+      mapErrorMessage('content_filter', result.debugInfo),
       'content_filter',
       false
     );
@@ -200,7 +190,7 @@ async function generateSceneUnlocked(
     usedPresets: project.activePresetIds,
     usedModel: {
       provider: project.activeModelProvider,
-      modelName: project.activeModelName,
+      modelName: result.resolvedModelName ?? project.activeModelName,
     },
     referencedMemoryIds: memories.filter((m) => m.importance === 'high').map((m) => m.memoryId),
     status: 'draft',
@@ -252,7 +242,7 @@ async function generateSceneStreamUnlocked(
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
   throwIfAborted(options.abortSignal);
 
-  const adapter = adapterMap[project.activeModelProvider as keyof typeof adapterMap];
+  const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
   if (!adapter.generateTextStream) {
@@ -293,6 +283,7 @@ async function generateSceneStreamUnlocked(
   let finishReason: FinishReason = 'stop';
   let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
   let debugInfo: string | undefined;
+  let resolvedModelName: string | undefined;
 
   try {
     for await (const event of generateTextStreamWithPenaltyRetry(adapter, {
@@ -314,6 +305,7 @@ async function generateSceneStreamUnlocked(
         finishReason = event.finishReason;
         rawUsage = event.rawUsage;
         debugInfo = event.debugInfo;
+        resolvedModelName = event.resolvedModelName;
       }
     }
   } catch (err) {
@@ -327,7 +319,11 @@ async function generateSceneStreamUnlocked(
     throw new GenerateError(mapErrorMessage(finishReason), finishReason, true);
   }
   if (finishReason === 'content_filter') {
-    throw new GenerateError(mapErrorMessage('content_filter'), 'content_filter', false);
+    throw new GenerateError(
+      mapErrorMessage('content_filter', debugInfo),
+      'content_filter',
+      false
+    );
   }
   const streamedText = textParts.join('').trim();
   if (!streamedText) {
@@ -370,7 +366,7 @@ async function generateSceneStreamUnlocked(
     usedPresets: project.activePresetIds,
     usedModel: {
       provider: project.activeModelProvider,
-      modelName: project.activeModelName,
+      modelName: resolvedModelName ?? project.activeModelName,
     },
     referencedMemoryIds: memories.filter((m) => m.importance === 'high').map((m) => m.memoryId),
     status: 'draft',
@@ -861,7 +857,7 @@ async function refreshStoryStateForGeneration(
     const project = await storage.readProject(projectId);
     if (!project) throw new Error(`Project not found: ${projectId}`);
 
-    const adapter = adapterMap[project.activeModelProvider as keyof typeof adapterMap];
+    const adapter = adapterMap[project.activeModelProvider];
     if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
     const [characters, worldText] = await Promise.all([
@@ -1027,7 +1023,7 @@ async function compressProjectContextUnlocked(projectId: string): Promise<Contex
     throw new GenerateError('圧縮できる採用済み本文がまだありません。', 'no_context_to_compress', false);
   }
 
-  const adapter = adapterMap[project.activeModelProvider as keyof typeof adapterMap];
+  const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
   const episode = await storage.readEpisodeRecord(projectId, state.currentEpisodeId);
@@ -1178,14 +1174,21 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 // NOTE: adapter が空応答時に埋める debugInfo からセーフティ由来かを判定する。
-// promptFeedback.blockReason（PROHIBITED_CONTENT / SAFETY 等）や、非NEGLIGIBLE/LOW の
-// candidateSafety が入っていれば「解除できない安全フィルタ」と見なして DeepSeek 誘導
-// メッセージに振り分ける。safety_blocked は retryable=false（再試行しても同じ結果）。
+// promptFeedback.blockReason（PROHIBITED_CONTENT / SAFETY 等）か、blocked=true の
+// candidateSafety が入っていれば「解除できない安全フィルタ」と見なす。HIGH でも
+// blocked=false の評価はあり得るため、確率だけではブロック扱いにしない。
 function classifyEmptyResponse(debugInfo?: string): { code: string; retryable: boolean } {
-  if (debugInfo && /promptBlockReason=|candidateSafety=/.test(debugInfo)) {
+  if (isSafetyBlockedDiagnostic(debugInfo)) {
     return { code: 'safety_blocked', retryable: false };
   }
   return { code: 'empty_response', retryable: true };
+}
+
+function isSafetyBlockedDiagnostic(debugInfo?: string): boolean {
+  return Boolean(
+    debugInfo &&
+      (/promptBlockReason=/.test(debugInfo) || /candidateSafety=\S*\(blocked\)/.test(debugInfo))
+  );
 }
 
 function mapErrorMessage(code?: string, detail?: string): string {
@@ -1196,6 +1199,12 @@ function mapErrorMessage(code?: string, detail?: string): string {
       break;
     case 'invalid_api_key':
       base = 'APIキーが無効です。設定を確認してください。';
+      break;
+    case 'payment_required':
+      base = 'APIキーのクレジットが不足しています。プロバイダー側の残高や利用上限を確認してください。';
+      break;
+    case 'permission_denied':
+      base = 'APIキーにこのモデルを利用する権限がないか、プロバイダー側で拒否されました。';
       break;
     case 'rate_limit':
       base = 'リクエスト制限に達しました。しばらくしてから再試行してください。';

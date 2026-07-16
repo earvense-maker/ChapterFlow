@@ -16,10 +16,12 @@ import {
   verifyToken,
 } from '../../src/server/services/lanAuthService';
 
-const originalEnvToken = process.env.YUMEWEAVING_LAN_TOKEN;
+const originalEnvToken = process.env.CHAPTERFLOW_LAN_TOKEN;
+const originalLegacyEnvToken = process.env.YUMEWEAVING_LAN_TOKEN;
 
 beforeEach(() => {
   resetLanTokenCacheForTests();
+  delete process.env.CHAPTERFLOW_LAN_TOKEN;
   delete process.env.YUMEWEAVING_LAN_TOKEN;
   return fs.rm(LAN_TOKEN_PATH, { force: true });
 });
@@ -28,9 +30,14 @@ afterEach(() => {
   resetLanTokenCacheForTests();
   vi.restoreAllMocks();
   if (originalEnvToken === undefined) {
+    delete process.env.CHAPTERFLOW_LAN_TOKEN;
+  } else {
+    process.env.CHAPTERFLOW_LAN_TOKEN = originalEnvToken;
+  }
+  if (originalLegacyEnvToken === undefined) {
     delete process.env.YUMEWEAVING_LAN_TOKEN;
   } else {
-    process.env.YUMEWEAVING_LAN_TOKEN = originalEnvToken;
+    process.env.YUMEWEAVING_LAN_TOKEN = originalLegacyEnvToken;
   }
   return fs.rm(LAN_TOKEN_PATH, { force: true });
 });
@@ -43,18 +50,24 @@ describe('LAN token verification', () => {
   });
 
   it('uses the environment token when provided', async () => {
-    process.env.YUMEWEAVING_LAN_TOKEN = 'fixed-lan-token';
+    process.env.CHAPTERFLOW_LAN_TOKEN = 'fixed-lan-token';
 
     await expect(ensureLanToken()).resolves.toBe('fixed-lan-token');
     expect(verifyToken('fixed-lan-token')).toBe(true);
   });
 
   it('rejects environment tokens that cannot round-trip safely in URLs and cookies', async () => {
-    process.env.YUMEWEAVING_LAN_TOKEN = 'token with spaces';
+    process.env.CHAPTERFLOW_LAN_TOKEN = 'token with spaces';
 
     await expect(ensureLanToken()).rejects.toThrow(
-      'YUMEWEAVING_LAN_TOKEN は英数と -_ のみ使えます'
+      'CHAPTERFLOW_LAN_TOKEN は英数と -_ のみ使えます'
     );
+  });
+
+  it('accepts the legacy environment token name', async () => {
+    process.env.YUMEWEAVING_LAN_TOKEN = 'legacy-fixed-token';
+
+    await expect(ensureLanToken()).resolves.toBe('legacy-fixed-token');
   });
 
   it('repairs broken token files instead of failing startup', async () => {

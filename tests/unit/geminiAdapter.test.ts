@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
-import { GEMINI_FICTION_SAFETY_PREAMBLE } from '../../src/server/prompts/geminiSystemPreamble';
 import type { AdapterGenerateRequest } from '../../src/shared/types';
 
 vi.mock('../../src/server/services/credentialService', () => ({
@@ -47,7 +46,7 @@ describe('GeminiAdapter', () => {
     });
   });
 
-  it('includes frequencyPenalty and presencePenalty in generationConfig when set', async () => {
+  it('does not send frequencyPenalty or presencePenalty to Gemini even when set', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         candidates: [{ content: { parts: [{ text: '本文' }] }, finishReason: 'STOP' }],
@@ -62,11 +61,51 @@ describe('GeminiAdapter', () => {
     });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.generationConfig.frequencyPenalty).toBe(0.5);
-    expect(body.generationConfig.presencePenalty).toBe(0.3);
+    expect(body.generationConfig).not.toHaveProperty('frequencyPenalty');
+    expect(body.generationConfig).not.toHaveProperty('presencePenalty');
   });
 
-  it('prepends the Gemini fiction safety preamble to system instructions', async () => {
+  it('uses high thinkingLevel without thinkingBudget for Gemini 3.x', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: '本文' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({
+      ...baseRequest,
+      modelName: 'gemini-3.5-flash',
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+
+    expect(body.generationConfig.thinkingConfig).toEqual({
+      thinkingLevel: 'high',
+      includeThoughts: false,
+    });
+    expect(body.generationConfig.thinkingConfig).not.toHaveProperty('thinkingBudget');
+  });
+
+  it('omits thinkingConfig for Gemini 2.5 models', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: '本文' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({
+      ...baseRequest,
+      modelName: 'gemini-2.5-flash',
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+
+    expect(body.generationConfig).not.toHaveProperty('thinkingConfig');
+  });
+
+  it('sends the feature-specific system instructions without a Gemini preamble', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
@@ -79,10 +118,22 @@ describe('GeminiAdapter', () => {
     const body = JSON.parse(init.body as string);
     const systemText = body.systemInstruction.parts[0].text;
 
-    expect(systemText).toBe(`${GEMINI_FICTION_SAFETY_PREAMBLE}\n\nsystem`);
-    expect(systemText.indexOf(GEMINI_FICTION_SAFETY_PREAMBLE)).toBeLessThan(
-      systemText.indexOf('system')
+    expect(systemText).toBe('system');
+  });
+
+  it('omits systemInstruction when the feature has no system instructions', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      })
     );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({ ...baseRequest, systemInstructions: '   ' });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+
+    expect(body).not.toHaveProperty('systemInstruction');
   });
 
   it('does not include penalty fields when they are 0 or undefined', async () => {
@@ -119,6 +170,102 @@ describe('GeminiAdapter', () => {
     expect(result.errorCode).toBe('invalid_request_error');
   });
 
+  it('reports whether an empty response was blocked at the prompt stage', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        promptFeedback: {
+          blockReason: 'PROHIBITED_CONTENT',
+          safetyRatings: [
+            {
+              category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+              probability: 'HIGH',
+              blocked: true,
+            },
+          ],
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new GeminiAdapter().generateText(baseRequest);
+
+    expect(result.text).toBe('');
+    expect(result.debugInfo).toContain('promptBlockReason=PROHIBITED_CONTENT');
+    expect(result.debugInfo).toContain('promptSafety=SEXUALLY_EXPLICIT=HIGH(blocked)');
+  });
+
+  it('retains streaming safety diagnostics that arrive before the final event', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        {
+          promptFeedback: {
+            blockReason: 'PROHIBITED_CONTENT',
+            safetyRatings: [
+              {
+                category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+                probability: 'MEDIUM',
+                blocked: true,
+              },
+            ],
+          },
+        },
+        {
+          usageMetadata: {
+            promptTokenCount: 12,
+            candidatesTokenCount: 0,
+            totalTokenCount: 12,
+          },
+        },
+      ])
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const events = [];
+    for await (const event of new GeminiAdapter().generateTextStream(baseRequest)) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'done', finishReason: 'stop' });
+    expect(events[0].type === 'done' ? events[0].debugInfo : undefined).toContain(
+      'promptBlockReason=PROHIBITED_CONTENT'
+    );
+  });
+
+  it('keeps diagnostics when a streamed candidate is stopped by a content filter', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        {
+          candidates: [
+            {
+              content: { parts: [{ text: '途中まで' }] },
+              safetyRatings: [
+                {
+                  category: 'HARM_CATEGORY_HARASSMENT',
+                  probability: 'HIGH',
+                  blocked: true,
+                },
+              ],
+            },
+          ],
+        },
+        { candidates: [{ finishReason: 'SAFETY', safetyRatings: [] }] },
+      ])
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const events = [];
+    for await (const event of new GeminiAdapter().generateTextStream(baseRequest)) {
+      events.push(event);
+    }
+
+    expect(events[0]).toEqual({ type: 'chunk', text: '途中まで' });
+    expect(events[1]).toMatchObject({ type: 'done', finishReason: 'content_filter' });
+    expect(events[1].type === 'done' ? events[1].debugInfo : undefined).toContain(
+      'candidateSafety=HARASSMENT=HIGH(blocked)'
+    );
+  });
+
   it('validates connections with the API key header instead of a URL query', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ models: [] }));
     vi.stubGlobal('fetch', fetchMock);
@@ -145,5 +292,12 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function sseResponse(events: unknown[]): Response {
+  return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
   });
 }

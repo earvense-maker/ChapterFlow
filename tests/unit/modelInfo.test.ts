@@ -7,7 +7,10 @@ import {
 } from '../../src/server/services/modelInfoService';
 
 vi.mock('../../src/server/services/credentialService', () => ({
-  loadCredentials: vi.fn(async () => ({ gemini: 'test-gemini-key' })),
+  loadCredentials: vi.fn(async () => ({
+    gemini: 'test-gemini-key',
+    openrouter: 'test-openrouter-key',
+  })),
 }));
 
 afterEach(() => {
@@ -15,7 +18,7 @@ afterEach(() => {
 });
 
 describe('modelInfoService', () => {
-  it('lists Gemini, DeepSeek, OpenAI and xAI providers', () => {
+  it('lists all supported providers including OpenRouter', () => {
     const providers = listModelProviders();
 
     expect(providers.map((provider) => provider.name)).toEqual([
@@ -23,9 +26,11 @@ describe('modelInfoService', () => {
       'deepseek',
       'openai',
       'xai',
+      'openrouter',
     ]);
     expect(defaultModelForProvider('deepseek')).toBe('deepseek-v4-pro');
     expect(defaultModelForProvider('xai')).toBe('grok-4.3');
+    expect(defaultModelForProvider('openrouter')).toBe('google/gemma-4-31b-it:free');
   });
 
   it('uses catalog limits for current Grok models', async () => {
@@ -51,5 +56,6 @@ describe('modelInfoService', () => {
     expect(providers.find((p) => p.name === 'deepseek')?.hasApiKey).toBe(false);
     expect(providers.find((p) => p.name === 'openai')?.hasApiKey).toBe(false);
     expect(providers.find((p) => p.name === 'xai')?.hasApiKey).toBe(false);
+    expect(providers.find((p) => p.name === 'openrouter')?.hasApiKey).toBe(true);
   });
 });

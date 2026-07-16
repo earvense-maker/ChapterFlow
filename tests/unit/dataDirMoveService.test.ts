@@ -13,15 +13,15 @@ import {
 } from '../../src/server/services/dataDirMoveService';
 
 const tempDirs: string[] = [];
-const originalSettingsPath = process.env.YUMEWEAVING_APP_SETTINGS_PATH;
+const originalSettingsPath = process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
 
 afterEach(async () => {
   await Promise.all(tempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
   tempDirs.length = 0;
   if (originalSettingsPath === undefined) {
-    delete process.env.YUMEWEAVING_APP_SETTINGS_PATH;
+    delete process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
   } else {
-    process.env.YUMEWEAVING_APP_SETTINGS_PATH = originalSettingsPath;
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = originalSettingsPath;
   }
 });
 
@@ -32,22 +32,22 @@ describe('dataDirMoveService preview', () => {
     expect(preview.invalidReason).toBe('現在の場所と親子関係にある場所は指定できません');
   });
 
-  it('uses a Yumeweaving subfolder when the selected folder is not empty', async () => {
-    const target = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-preview-'));
+  it('uses a ChapterFlow subfolder when the selected folder is not empty', async () => {
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-preview-'));
     tempDirs.push(target);
     await fs.writeFile(path.join(target, 'existing.txt'), 'keep me');
 
     const preview = await previewDataDirMove(target);
 
     expect(preview.targetIsEmpty).toBe(false);
-    expect(preview.resolvedPath).toBe(path.join(target, 'Yumeweaving'));
+    expect(preview.resolvedPath).toBe(path.join(target, 'ChapterFlow'));
   });
 });
 
 describe('dataDirMoveService cleanup manifest', () => {
   it('copies files that exist only in the old directory before cleanup', async () => {
-    const oldDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-old-'));
-    const newDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-new-'));
+    const oldDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-old-'));
+    const newDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-new-'));
     tempDirs.push(oldDir, newDir);
     await fs.mkdir(path.join(oldDir, 'projects', 'proj-a'), { recursive: true });
     await fs.writeFile(path.join(oldDir, 'projects', 'proj-a', 'story-state.json'), '{"ok":true}');
@@ -67,7 +67,7 @@ describe('dataDirMoveService cleanup manifest', () => {
 
 describe('dataDirMoveService apply', () => {
   it('rejects immediately when another data write is active', async () => {
-    const target = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-busy-target-'));
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-busy-target-'));
     tempDirs.push(target);
     let releaseWrite!: () => void;
     const writePromise = withDataDirWrite(
@@ -94,12 +94,12 @@ describe('dataDirMoveService apply', () => {
     await fs.mkdir(projectDir, { recursive: true });
     await fs.writeFile(path.join(projectDir, 'project.json'), '{"projectId":"proj-data-dir-retry"}');
 
-    const target = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-apply-target-'));
-    const badSettingsPath = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-bad-settings-'));
-    const goodSettingsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yumeweaving-good-settings-'));
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-apply-target-'));
+    const badSettingsPath = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-bad-settings-'));
+    const goodSettingsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-good-settings-'));
     tempDirs.push(target, badSettingsPath, goodSettingsDir);
 
-    process.env.YUMEWEAVING_APP_SETTINGS_PATH = badSettingsPath;
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = badSettingsPath;
     await expect(applyDataDirMove(target)).rejects.toMatchObject({
       code: 'settings_write_failed',
     });
@@ -107,7 +107,7 @@ describe('dataDirMoveService apply', () => {
       fs.readFile(path.join(target, 'projects', 'proj-data-dir-retry', 'project.json'), 'utf8')
     ).resolves.toBe('{"projectId":"proj-data-dir-retry"}');
 
-    process.env.YUMEWEAVING_APP_SETTINGS_PATH = path.join(goodSettingsDir, 'app-settings.json');
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = path.join(goodSettingsDir, 'app-settings.json');
     const result = await applyDataDirMove(target);
     const settings = await readAppSettings();
 

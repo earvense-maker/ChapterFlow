@@ -1,0 +1,82 @@
+name: 不具合報告
+description: ChapterFlowの不具合や予期しない動作を報告します
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        報告ありがとうございます。APIキー、個人情報、公開したくない作品本文は記載しないでください。
+  - type: input
+    id: version
+    attributes:
+      label: ChapterFlowのバージョン
+      description: アプリ設定の「アプリ情報」に表示されるバージョンです。
+      placeholder: 0.1.0-beta.1
+    validations:
+      required: true
+  - type: dropdown
+    id: distribution
+    attributes:
+      label: 配布形式
+      options:
+        - インストーラ版
+        - ポータブル版
+        - ソースから起動
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windowsのバージョン
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: 使用していたLLM事業者
+      options:
+        - 生成機能は使用していない
+        - Gemini
+        - DeepSeek
+        - OpenAI
+        - xAI
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: 症状
+      description: 何が起きたかを簡潔に説明してください。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      placeholder: |
+        1. …を開く
+        2. …を入力する
+        3. …を押す
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した動作
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: エラー表示・補足
+      description: APIキーや作品本文を除いたエラーメッセージ、スクリーンショットなどがあれば記載してください。
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: 送信前の確認
+      options:
+        - label: APIキー、個人情報、公開したくない作品本文を含めていません
+          required: true

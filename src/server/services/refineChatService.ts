@@ -3,11 +3,8 @@ import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
 import { normalizeCharactersForStorage } from './projectService.js';
 import { withProjectWriteLock } from './generationService.js';
-import { OpenAIAdapter } from '../adapters/openaiAdapter.js';
-import { GeminiAdapter } from '../adapters/geminiAdapter.js';
-import { DeepSeekAdapter } from '../adapters/deepseekAdapter.js';
-import { XAIAdapter } from '../adapters/xaiAdapter.js';
-import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
+import { adapterMap } from '../adapters/index.js';
+import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import type {
   Character,
@@ -38,12 +35,6 @@ const CHARACTER_ROLES: readonly CharacterRole[] = [
 
 const sessionMutexes = new Map<string, Promise<void>>();
 
-const adapterMap: Record<string, ModelAdapter> = {
-  openai: new OpenAIAdapter(),
-  gemini: new GeminiAdapter(),
-  deepseek: new DeepSeekAdapter(),
-  xai: new XAIAdapter(),
-};
 
 export class RefineChatError extends Error {
   code: string;
