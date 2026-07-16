@@ -41,6 +41,17 @@ router.get('/projects/:id/refine/scan', async (req, res, next) => {
   }
 });
 
+// NOTE: scan 本体のキャッシュ形式は変えず、鮮度だけを別APIで返す。
+router.get('/projects/:id/refine/status', async (req, res, next) => {
+  try {
+    const status = await refineScanService.getRefineReviewStatus(req.params.id);
+    res.json(status);
+  } catch (err) {
+    if (handleRefineError(err, res)) return;
+    next(err);
+  }
+});
+
 router.get('/projects/:id/refine/session', async (req, res, next) => {
   try {
     const session = await refineChatService.getOrCreateRefineSession(req.params.id);

@@ -28,6 +28,7 @@ import type {
   ReaderState,
   RefineApplyResponse,
   RefineChatResponse,
+  RefineReviewStatus,
   RefineScanResult,
   RefineSession,
   RegenerateRoleplayBody,
@@ -250,6 +251,8 @@ export const api = {
     request<RefineScanResult | null>(`/projects/${id}/refine/scan`),
   scanRefine: (id: string) =>
     request<RefineScanResult>(`/projects/${id}/refine/scan`, { method: 'POST' }),
+  getRefineReviewStatus: (id: string) =>
+    request<RefineReviewStatus>(`/projects/${id}/refine/status`),
 
   getRefineSession: (id: string) => request<RefineSession>(`/projects/${id}/refine/session`),
   resetRefineSession: (id: string) =>

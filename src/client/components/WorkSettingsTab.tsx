@@ -10,6 +10,7 @@ import type {
   KnowledgeListItem,
   PresetsFile,
   Project,
+  RefineReviewStatus,
   RefineScanResult,
   StoryState,
   StoryStateDiffRecord,
@@ -92,6 +93,7 @@ export default function WorkSettingsTab({
   const [systemPromptPresetLoadError, setSystemPromptPresetLoadError] = useState<string | null>(null);
 
   const [refineScan, setRefineScan] = useState<RefineScanResult | null>(null);
+  const [refineReviewStatus, setRefineReviewStatus] = useState<RefineReviewStatus | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [storyState, setStoryState] = useState<StoryState | null>(null);
@@ -155,12 +157,16 @@ export default function WorkSettingsTab({
 
         // NOTE: 前回の scan 結果があれば表示。無ければ null のまま。
         // 起動時に scan は自動実行しない（トークン消費を明示ボタンに限定）。
-        const cachedScan = await api.getRefineScan(projectId).catch(() => null);
+        const [cachedScan, reviewStatus] = await Promise.all([
+          api.getRefineScan(projectId).catch(() => null),
+          api.getRefineReviewStatus(projectId).catch(() => null),
+        ]);
         if (!cancelled && cachedScan) {
           setRefineScan(cachedScan);
           // NOTE: キャッシュ済み結果に lastError が入っていれば、それも UI に見せる。
           if (cachedScan.lastError) setScanError(cachedScan.lastError);
         }
+        if (!cancelled) setRefineReviewStatus(reviewStatus);
 
         // NOTE: 見本ギャラリー。取得失敗時は空配列のまま（select 非表示にする）。
         try {
@@ -214,6 +220,15 @@ export default function WorkSettingsTab({
     }
   }
 
+  async function refreshRefineReviewStatus() {
+    try {
+      setRefineReviewStatus(await api.getRefineReviewStatus(projectId));
+    } catch {
+      // NOTE: status が取れなくても既存の scan 表示や設定編集は妨げない。
+      setRefineReviewStatus(null);
+    }
+  }
+
   async function refreshKnowledge() {
     try {
       setKnowledgeItems(await api.getKnowledge(projectId));
@@ -229,6 +244,7 @@ export default function WorkSettingsTab({
       await api.updateWorld(projectId, worldDraft);
       setWorldText(worldDraft);
       setWorldEditing(false);
+      void refreshRefineReviewStatus();
       onFlashMessage('世界設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -249,6 +265,7 @@ export default function WorkSettingsTab({
       await api.updateCharacters(projectId, charactersDraft);
       setCharacters(charactersDraft);
       setCharactersEditing(false);
+      void refreshRefineReviewStatus();
       onFlashMessage('人物設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -275,6 +292,7 @@ export default function WorkSettingsTab({
       setProjectDetailsDraft(next);
       setProjectDetailsEditing(false);
       onProjectUpdated(updated);
+      void refreshRefineReviewStatus();
       onFlashMessage('詳細設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -360,6 +378,7 @@ export default function WorkSettingsTab({
       setSystemPrompt(systemPromptDraft);
       setIsSystemPromptCustomized(nextIsCustom);
       setSystemPromptEditing(false);
+      void refreshRefineReviewStatus();
       onFlashMessage('システムプロンプトを保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -474,6 +493,7 @@ export default function WorkSettingsTab({
       setScanError(null);
       const result = await api.scanRefine(projectId);
       setRefineScan(result);
+      await refreshRefineReviewStatus();
       if (result.lastError) {
         setScanError(result.lastError);
       } else {
@@ -504,6 +524,7 @@ export default function WorkSettingsTab({
       setGeneratedSystemPrompt(preview.generatedSystemPrompt);
       setIsSystemPromptCustomized(preview.isCustomized);
       if (!systemPromptEditing) setSystemPromptDraft(preview.systemPrompt);
+      void refreshRefineReviewStatus();
       onFlashMessage('濡れ場の描写設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -554,6 +575,7 @@ export default function WorkSettingsTab({
       setStoryState(saved);
       setStoryStateDraft(JSON.stringify(saved, null, 2));
       setStoryStateEditing(false);
+      void refreshRefineReviewStatus();
       onFlashMessage('物語状態を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -571,6 +593,7 @@ export default function WorkSettingsTab({
       setStoryState(result.storyState);
       setStoryStateDraft(JSON.stringify(result.storyState, null, 2));
       setStoryStateDiffs(diffs);
+      void refreshRefineReviewStatus();
       onFlashMessage('自動更新を取り消しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '取り消しに失敗しました');
@@ -714,12 +737,22 @@ export default function WorkSettingsTab({
   const brokenEnabledKnowledgeCount = knowledgeItems.filter(
     (item) => item.enabled && item.contentStatus !== 'ok'
   ).length;
+  const refineNudgeMessage = refineReviewStatus?.needsReview
+    ? buildRefineNudgeMessage(refineReviewStatus)
+    : null;
+  const initialStateLabel =
+    project.projectType === 'roleplay' ? '会話開始時点の状態' : '初期状態（物語開始時点）';
 
   if (!categories) return <div className="loading">読み込み中…</div>;
 
   return (
     <div>
       {/* AI と相談して編集 */}
+      {refineNudgeMessage && (
+        <div className="refine-review-nudge" role="status">
+          {refineNudgeMessage}
+        </div>
+      )}
       <RefineChatPanel
         projectId={projectId}
         characters={characters}
@@ -727,7 +760,10 @@ export default function WorkSettingsTab({
         scanning={scanning}
         scanError={scanError}
         onScanRefine={handleScanRefine}
-        onSettingsChanged={refreshWorldAndCharacters}
+        onSettingsChanged={() => {
+          void refreshWorldAndCharacters();
+          void refreshRefineReviewStatus();
+        }}
       />
 
       <section className="summary-card detail-settings-card">
@@ -1266,7 +1302,7 @@ export default function WorkSettingsTab({
                             )}
                           </dd>
                         </div>
-                        {(c.aliases?.length || c.want || c.fear || c.secrets) && (
+                        {(c.aliases?.length || c.want || c.fear || c.secrets || c.currentState) && (
                           <div>
                             <dt>詳細</dt>
                             <dd>
@@ -1276,6 +1312,7 @@ export default function WorkSettingsTab({
                                   c.want ? `欲求: ${c.want}` : '',
                                   c.fear ? `恐れ: ${c.fear}` : '',
                                   c.secrets ? `秘密: ${c.secrets}` : '',
+                                  c.currentState ? `${initialStateLabel}: ${c.currentState}` : '',
                                 ].filter(Boolean).join('\n')}
                               </span>
                             </dd>
@@ -1350,6 +1387,14 @@ export default function WorkSettingsTab({
                     onChange={(e) => updateCharacterDraft(i, { secrets: e.target.value })}
                     placeholder="秘密"
                   />
+                  <label className="character-initial-state-field">
+                    {initialStateLabel}
+                    <textarea
+                      value={c.currentState || ''}
+                      onChange={(e) => updateCharacterDraft(i, { currentState: e.target.value })}
+                      placeholder="進行中の現在状態は「物語の状態」側で管理される"
+                    />
+                  </label>
                   {/* NOTE: ロールプレイモード用フィールド。novel でも保存可能で、
                       用途変更（Phase 2 の相互昇格）に備えて情報を残す。 */}
                   <textarea
@@ -1783,6 +1828,19 @@ function formatStoryDiffSummary(diff: StoryStateDiffRecord): string {
     diff.summary.clockChanged ? '時間更新' : '',
   ].filter(Boolean);
   return parts.join(' / ') || `自動更新 ${diff.generationId}`;
+}
+
+function buildRefineNudgeMessage(status: RefineReviewStatus): string {
+  if (status.reasons.includes('settings_changed')) {
+    return '設定が前回のレビューから変更されています。設定と物語の整合性を確認しますか？';
+  }
+  if (status.reasons.includes('story_state_edited')) {
+    return '物語の状態が手動で変更されています。設定と現状のずれを確認しますか？';
+  }
+  if (status.reasons.includes('history_truncated')) {
+    return '前回のレビュー時点の履歴が保持上限を超えています。設定と現状のずれを確認しますか？';
+  }
+  return '前回のレビューから本文が進んでいます。設定と現状のずれを確認しますか？';
 }
 
 // NOTE: 「3日前」「5分前」等の相対時刻表示。

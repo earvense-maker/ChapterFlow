@@ -189,6 +189,15 @@ describe('refineChatService sendRefineMessage', () => {
 
   it('passes responseMimeType=application/json to the adapter', async () => {
     const projectId = await createTrackedProject();
+    await storage.writeCharacters(projectId, [
+      {
+        characterId: 'char-a',
+        name: 'A',
+        role: 'protagonist',
+        description: 'x',
+        currentState: '出発直後',
+      },
+    ]);
     const spy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
       text: '{"visibleReply":"ok","patches":[]}',
       finishReason: 'stop',
@@ -198,6 +207,9 @@ describe('refineChatService sendRefineMessage', () => {
     await refineChatService.sendRefineMessage(projectId, '雑談');
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0].responseMimeType).toBe('application/json');
+    expect(spy.mock.calls[0][0].userPrompt).toContain(
+      'currentState（開始時点の初期状態）: 出発直後'
+    );
   });
 
   it('marks previous pending patches as stale on the next turn', async () => {

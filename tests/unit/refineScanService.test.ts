@@ -3,7 +3,12 @@ import * as refineScanService from '../../src/server/services/refineScanService'
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
-import type { Character } from '../../src/server/types/index';
+import type {
+  Character,
+  RefineScanResult,
+  StoryState,
+  StoryStateDiffRecord,
+} from '../../src/server/types/index';
 
 const createdProjectIds: string[] = [];
 
@@ -147,6 +152,7 @@ describe('refineScanService', () => {
     });
     await refineScanService.scanProjectSettings(projectId);
     expect(spy.mock.calls[0][0].responseMimeType).toBe('application/json');
+    expect(spy.mock.calls[0][0].systemInstructions).toContain('initialState は開始時点の状態');
   });
 
   it('rewrites unknown character ids into "other" targets', async () => {
@@ -175,7 +181,243 @@ describe('refineScanService', () => {
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].target).toEqual({ kind: 'other', label: '人物: 望月' });
   });
+
+  it('stores a review cursor only after a successful scan and preserves it on parse failure', async () => {
+    const projectId = await createTrackedProject();
+    const storyState = makeStoryState('2026-07-16T00:00:00.000Z');
+    const diff = makeDiff('diff-1', '2026-07-16T00:00:00.000Z', storyState.updatedAt);
+    await storage.writeStoryState(projectId, storyState);
+    await storage.writeStoryStateDiffs(projectId, [diff]);
+
+    mockAdapterGenerateText({
+      text: JSON.stringify({ coreConcept: '成功', findings: [] }),
+      finishReason: 'stop',
+    });
+    const successful = await refineScanService.scanProjectSettings(projectId);
+
+    expect(successful.reviewedStoryStateDiffId).toBe('diff-1');
+    expect(successful.reviewedStoryStateUpdatedAt).toBe(storyState.updatedAt);
+    expect(successful.reviewedStaticInputHash).toMatch(/^[a-f0-9]{64}$/);
+
+    mockAdapterGenerateText({ text: 'not json', finishReason: 'stop' });
+    const failed = await refineScanService.scanProjectSettings(projectId);
+
+    expect(failed.lastError).not.toBeNull();
+    expect(failed.reviewedStoryStateDiffId).toBe(successful.reviewedStoryStateDiffId);
+    expect(failed.reviewedStoryStateUpdatedAt).toBe(successful.reviewedStoryStateUpdatedAt);
+    expect(failed.reviewedStaticInputHash).toBe(successful.reviewedStaticInputHash);
+  });
+
+  it('derives nudge status from progress, legacy cache, truncated history, settings changes, and manual state edits', () => {
+    const reviewedAt = '2026-07-01T00:00:00.000Z';
+    const reviewedScan = makeScan({
+      reviewedStoryStateDiffId: 'diff-0',
+      reviewedStoryStateUpdatedAt: reviewedAt,
+      reviewedStaticInputHash: 'same',
+    });
+    const reviewedState = makeStoryState(reviewedAt);
+    const nineNewDiffs = Array.from({ length: 9 }, (_, index) =>
+      makeDiff(
+        `diff-${9 - index}`,
+        `2026-07-${String(10 - index).padStart(2, '0')}T00:00:00.000Z`,
+        reviewedAt
+      )
+    );
+
+    const belowThreshold = refineScanService.calculateRefineReviewStatus({
+      cachedScan: reviewedScan,
+      storyState: reviewedState,
+      diffs: [...nineNewDiffs, makeDiff('diff-0', reviewedAt, reviewedAt)],
+      staticInputHash: 'same',
+    });
+    expect(belowThreshold.needsReview).toBe(false);
+    expect(belowThreshold.backlogCountLowerBound).toBe(9);
+
+    const atThreshold = refineScanService.calculateRefineReviewStatus({
+      cachedScan: reviewedScan,
+      storyState: reviewedState,
+      diffs: [
+        makeDiff('diff-10', '2026-07-20T00:00:00.000Z', reviewedAt, true),
+        ...nineNewDiffs,
+        makeDiff('diff-0', reviewedAt, reviewedAt),
+      ],
+      staticInputHash: 'same',
+    });
+    expect(atThreshold.reasons).toContain('story_progressed');
+    expect(atThreshold.backlogCountLowerBound).toBe(10);
+
+    const truncated = refineScanService.calculateRefineReviewStatus({
+      cachedScan: reviewedScan,
+      storyState: makeStoryState('2026-07-20T00:00:00.000Z'),
+      diffs: [
+        makeDiff(
+          'diff-new',
+          '2026-07-20T00:00:00.000Z',
+          '2026-07-20T00:00:00.000Z',
+          false,
+          '2026-07-19T00:00:00.000Z'
+        ),
+      ],
+      staticInputHash: 'same',
+    });
+    expect(truncated.reasons).toContain('history_truncated');
+    expect(truncated.reasons).not.toContain('story_state_edited');
+    expect(truncated.backlogCountLowerBound).toBe(refineScanService.REFINE_NUDGE_DIFF_COUNT);
+
+    const changedSettings = refineScanService.calculateRefineReviewStatus({
+      cachedScan: { ...reviewedScan, reviewedStoryStateDiffId: null },
+      storyState: reviewedState,
+      diffs: [],
+      staticInputHash: 'changed',
+    });
+    expect(changedSettings.reasons).toContain('settings_changed');
+
+    const manualEdit = refineScanService.calculateRefineReviewStatus({
+      cachedScan: { ...reviewedScan, reviewedStoryStateDiffId: null },
+      storyState: makeStoryState('2026-07-02T00:00:00.000Z'),
+      diffs: [],
+      staticInputHash: 'same',
+    });
+    expect(manualEdit.reasons).toContain('story_state_edited');
+
+    const manualEditThenAutomaticUpdate = refineScanService.calculateRefineReviewStatus({
+      cachedScan: { ...reviewedScan, reviewedStoryStateDiffId: null },
+      storyState: makeStoryState('2026-07-03T00:00:00.000Z'),
+      diffs: [
+        makeDiff(
+          'diff-after-manual-edit',
+          '2026-07-03T00:00:00.000Z',
+          '2026-07-03T00:00:00.000Z',
+          false,
+          '2026-07-02T00:00:00.000Z'
+        ),
+      ],
+      staticInputHash: 'same',
+    });
+    expect(manualEditThenAutomaticUpdate.reasons).toContain('story_state_edited');
+
+    const automaticUpdateFromReviewedState = refineScanService.calculateRefineReviewStatus({
+      cachedScan: { ...reviewedScan, reviewedStoryStateDiffId: null },
+      storyState: makeStoryState('2026-07-02T00:00:00.000Z'),
+      diffs: [
+        makeDiff(
+          'diff-after-review',
+          '2026-07-02T00:00:00.000Z',
+          '2026-07-02T00:00:00.000Z',
+          false,
+          reviewedAt
+        ),
+      ],
+      staticInputHash: 'same',
+    });
+    expect(automaticUpdateFromReviewedState.reasons).not.toContain('story_state_edited');
+
+    const manualEditAfterAutomaticUpdates = refineScanService.calculateRefineReviewStatus({
+      cachedScan: { ...reviewedScan, reviewedStoryStateDiffId: null },
+      storyState: makeStoryState('2026-07-05T00:00:00.000Z'),
+      diffs: [
+        makeDiff(
+          'auto-2',
+          '2026-07-04T00:00:00.000Z',
+          '2026-07-04T00:00:00.000Z',
+          false,
+          '2026-07-03T00:00:00.000Z'
+        ),
+        makeDiff(
+          'auto-1',
+          '2026-07-03T00:00:00.000Z',
+          '2026-07-03T00:00:00.000Z',
+          false,
+          reviewedAt
+        ),
+      ],
+      staticInputHash: 'same',
+    });
+    expect(manualEditAfterAutomaticUpdates.reasons).toContain('story_state_edited');
+
+    const inconsistentAutomaticDiffs = refineScanService.calculateRefineReviewStatus({
+      cachedScan: { ...reviewedScan, reviewedStoryStateDiffId: null },
+      storyState: makeStoryState('2026-07-04T00:00:00.000Z'),
+      diffs: [
+        makeDiff(
+          'cycle-2',
+          '2026-07-04T00:00:00.000Z',
+          '2026-07-04T00:00:00.000Z',
+          false,
+          '2026-07-03T00:00:00.000Z'
+        ),
+        makeDiff(
+          'cycle-1',
+          '2026-07-03T00:00:00.000Z',
+          '2026-07-03T00:00:00.000Z',
+          false,
+          '2026-07-04T00:00:00.000Z'
+        ),
+      ],
+      staticInputHash: 'same',
+    });
+    expect(inconsistentAutomaticDiffs.reasons).toContain('story_state_edited');
+
+    const legacy = refineScanService.calculateRefineReviewStatus({
+      cachedScan: makeScan(),
+      storyState: reviewedState,
+      diffs: Array.from({ length: 10 }, (_, index) =>
+        makeDiff(`legacy-${index}`, `2026-07-${String(20 - index).padStart(2, '0')}T00:00:00.000Z`, reviewedAt)
+      ),
+      staticInputHash: 'anything',
+    });
+    expect(legacy.reasons).toContain('story_progressed');
+  });
 });
+
+function makeStoryState(updatedAt: string): StoryState {
+  return {
+    schemaVersion: 1,
+    currentSituation: [],
+    characterStates: [],
+    importantEvents: [],
+    openThreads: [],
+    updatedAt,
+  };
+}
+
+function makeDiff(
+  diffId: string,
+  appliedAt: string,
+  resultUpdatedAt: string,
+  reverted = false,
+  previousUpdatedAt?: string
+): StoryStateDiffRecord {
+  return {
+    diffId,
+    generationId: `gen-${diffId}`,
+    sceneId: `scene-${diffId}`,
+    appliedAt,
+    ...(previousUpdatedAt ? { previousUpdatedAt } : {}),
+    summary: {
+      addedEvents: [],
+      updatedEvents: [],
+      addedThreads: [],
+      resolvedThreads: [],
+      updatedCharacters: [],
+      clockChanged: false,
+    },
+    resultUpdatedAt,
+    reverted,
+  };
+}
+
+function makeScan(overrides: Partial<RefineScanResult> = {}): RefineScanResult {
+  return {
+    schemaVersion: 1,
+    generatedAt: '2026-07-01T00:00:00.000Z',
+    usedModel: { provider: 'gemini', modelName: 'test' },
+    coreConcept: '',
+    findings: [],
+    lastError: null,
+    ...overrides,
+  };
+}
 
 function mockAdapterGenerateText(result: {
   text: string;

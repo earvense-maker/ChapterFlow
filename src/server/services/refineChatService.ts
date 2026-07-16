@@ -556,6 +556,7 @@ function buildChatPrompt(input: BuildChatPromptInput): {
     '- world-replace の anchor は、必ず入力の world 本文中にちょうど 1 回だけ現れる文字列にすること。同じ文字列が複数箇所にある場合は前後の文をつなげて一意にする。',
     '- world 全文の書き換えは絶対にしない。変更したい箇所だけを anchor / replacement で示す。',
     '- character-update の characterId は必ず入力の <人物> セクションから引く。',
+    '- character の currentState は物語/会話の開始時点の状態である。進行中の状態を上書きする用途には使わない。',
     '- character-add の characterId は "char-" で始まる短い ID を新規に生成する（例: "char-yamada"）。',
     '- 変更が不要な場合は "patches": [] を返す。visibleReply だけで応答すればよい。',
     '- patches の数は 1 ターンあたり最大 6 個まで。',
@@ -604,7 +605,9 @@ function renderCharactersForPrompt(characters: Character[]): string {
       if ((c.relationshipNotes ?? '').trim())
         lines.push(`  relationshipNotes: ${c.relationshipNotes!.trim()}`);
       if ((c.secrets ?? '').trim()) lines.push(`  secrets: ${c.secrets!.trim()}`);
-      if ((c.currentState ?? '').trim()) lines.push(`  currentState: ${c.currentState!.trim()}`);
+      if ((c.currentState ?? '').trim()) {
+        lines.push(`  currentState（開始時点の初期状態）: ${c.currentState!.trim()}`);
+      }
       return lines.join('\n');
     })
     .join('\n\n');

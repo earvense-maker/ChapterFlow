@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
@@ -8,13 +9,17 @@ import { XAIAdapter } from '../adapters/xaiAdapter.js';
 import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import { readStoryStateDiffs, withStoryStateLock } from './storyStateService.js';
 import type {
   Character,
   Project,
   RefineFinding,
   RefineFindingKind,
   RefineFindingTarget,
+  RefineReviewReason,
+  RefineReviewStatus,
   RefineScanResult,
+  StoryStateDiffRecord,
   StoryState,
 } from '../types/index.js';
 
@@ -26,6 +31,7 @@ const CORE_CONCEPT_MAX_CHARS = 240;
 const MESSAGE_MAX_CHARS = 220;
 const DETAIL_MAX_CHARS = 320;
 const SUGGESTED_FIX_MAX_CHARS = 320;
+export const REFINE_NUDGE_DIFF_COUNT = 10;
 
 const KIND_SET = new Set<RefineFindingKind>(['contradiction', 'undefined', 'suggestion']);
 
@@ -35,6 +41,8 @@ const adapterMap: Record<string, ModelAdapter> = {
   deepseek: new DeepSeekAdapter(),
   xai: new XAIAdapter(),
 };
+
+const refineScanMutexes = new Map<string, Promise<void>>();
 
 export class RefineScanError extends Error {
   code: string;
@@ -59,14 +67,19 @@ export async function readCachedRefineScan(
 export async function scanProjectSettings(
   projectId: string
 ): Promise<RefineScanResult> {
+  return withRefineScanLock(projectId, () => scanProjectSettingsUnlocked(projectId));
+}
+
+async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineScanResult> {
   await reloadCredentials();
 
-  const [project, world, characters, storyState, presets] = await Promise.all([
+  const [project, world, characters, presets, previousScan, storySnapshot] = await Promise.all([
     storage.readProject(projectId),
     storage.readWorld(projectId),
     storage.readCharacters(projectId),
-    storage.readStoryState(projectId),
     storage.readPresets(projectId),
+    storage.readRefineScan(projectId),
+    readStoryStateSnapshot(projectId),
   ]);
   if (!project) {
     throw new RefineScanError('作品が見つかりません。', 'project_not_found', false, 404);
@@ -91,7 +104,13 @@ export async function scanProjectSettings(
     project,
     world,
     characters,
-    storyState,
+    storyState: storySnapshot.storyState,
+    systemPrompt: systemPromptResolution.systemPrompt,
+  });
+  const staticInputHash = createStaticInputHash({
+    project,
+    world,
+    characters,
     systemPrompt: systemPromptResolution.systemPrompt,
   });
 
@@ -163,10 +182,245 @@ export async function scanProjectSettings(
     coreConcept,
     findings,
     lastError,
+    ...(lastError
+      ? reviewMetadataFrom(previousScan)
+      : {
+          reviewedStoryStateDiffId: storySnapshot.diffs[0]?.diffId ?? null,
+          reviewedStoryStateUpdatedAt: storySnapshot.storyState?.updatedAt ?? null,
+          reviewedStaticInputHash: staticInputHash,
+        }),
   };
 
   await storage.writeRefineScan(projectId, result);
   return result;
+}
+
+export async function getRefineReviewStatus(projectId: string): Promise<RefineReviewStatus> {
+  const [project, world, characters, presets, cachedScan, storySnapshot] = await Promise.all([
+    storage.readProject(projectId),
+    storage.readWorld(projectId),
+    storage.readCharacters(projectId),
+    storage.readPresets(projectId),
+    storage.readRefineScan(projectId),
+    readStoryStateSnapshot(projectId),
+  ]);
+  if (!project) {
+    throw new RefineScanError('作品が見つかりません。', 'project_not_found', false, 404);
+  }
+
+  const systemPromptResolution = await resolveSystemPrompt(
+    project.activePresetIds,
+    presets?.customSystemPrompt ?? null
+  );
+  const staticInputHash = createStaticInputHash({
+    project,
+    world,
+    characters,
+    systemPrompt: systemPromptResolution.systemPrompt,
+  });
+
+  return calculateRefineReviewStatus({
+    cachedScan,
+    storyState: storySnapshot.storyState,
+    diffs: storySnapshot.diffs,
+    staticInputHash,
+  });
+}
+
+export function calculateRefineReviewStatus(input: {
+  cachedScan: RefineScanResult | null;
+  storyState: StoryState | null;
+  diffs: StoryStateDiffRecord[];
+  staticInputHash: string;
+}): RefineReviewStatus {
+  const diffs = sortDiffsNewestFirst(input.diffs);
+  const reasons = new Set<RefineReviewReason>();
+  const cursor = input.cachedScan?.reviewedStoryStateDiffId;
+  let backlogCountLowerBound: number;
+
+  if (cursor === undefined || cursor === null) {
+    backlogCountLowerBound = diffs.length;
+    if (backlogCountLowerBound >= REFINE_NUDGE_DIFF_COUNT) {
+      reasons.add('story_progressed');
+    }
+  } else {
+    const cursorIndex = diffs.findIndex((diff) => diff.diffId === cursor);
+    if (cursorIndex < 0) {
+      backlogCountLowerBound = REFINE_NUDGE_DIFF_COUNT;
+      reasons.add('history_truncated');
+    } else {
+      backlogCountLowerBound = cursorIndex;
+      if (backlogCountLowerBound >= REFINE_NUDGE_DIFF_COUNT) {
+        reasons.add('story_progressed');
+      }
+    }
+  }
+
+  const reviewedHash = input.cachedScan?.reviewedStaticInputHash;
+  if (typeof reviewedHash === 'string' && reviewedHash && reviewedHash !== input.staticInputHash) {
+    reasons.add('settings_changed');
+  }
+
+  if (hasStoryStateBeenEditedSinceReview(input.cachedScan, input.storyState, diffs)) {
+    reasons.add('story_state_edited');
+  }
+
+  const reasonOrder: RefineReviewReason[] = [
+    'settings_changed',
+    'story_state_edited',
+    'history_truncated',
+    'story_progressed',
+  ];
+  const orderedReasons = reasonOrder.filter((reason) => reasons.has(reason));
+
+  return {
+    backlogCountLowerBound,
+    needsReview: orderedReasons.length > 0,
+    threshold: REFINE_NUDGE_DIFF_COUNT,
+    reasons: orderedReasons,
+  };
+}
+
+async function readStoryStateSnapshot(projectId: string): Promise<{
+  storyState: StoryState | null;
+  diffs: StoryStateDiffRecord[];
+}> {
+  // NOTE: snapshot 取得だけを mutex 内で行い、遅い LLM 呼び出し中はロックしない。
+  return withStoryStateLock(projectId, async () => {
+    const [storyState, diffs] = await Promise.all([
+      storage.readStoryState(projectId),
+      readStoryStateDiffs(projectId),
+    ]);
+    return { storyState, diffs: sortDiffsNewestFirst(diffs) };
+  });
+}
+
+function createStaticInputHash(input: {
+  project: Project;
+  world: string;
+  characters: Character[];
+  systemPrompt: string;
+}): string {
+  const normalizedCharacters = input.characters
+    .map((character) => ({
+      characterId: normalizeHashText(character.characterId),
+      name: normalizeHashText(character.name),
+      aliases: (character.aliases ?? []).map(normalizeHashText).filter(Boolean).sort(),
+      role: character.role,
+      description: normalizeHashText(character.description),
+      speechStyle: normalizeHashText(character.speechStyle ?? ''),
+      relationshipNotes: normalizeHashText(character.relationshipNotes ?? ''),
+      secrets: normalizeHashText(character.secrets ?? ''),
+      initialState: normalizeHashText(character.currentState ?? ''),
+    }))
+    .sort((a, b) => a.characterId.localeCompare(b.characterId));
+  const payload = JSON.stringify({
+    title: normalizeHashText(input.project.title),
+    world: normalizeHashText(input.world),
+    systemPrompt: normalizeHashText(input.systemPrompt),
+    characters: normalizedCharacters,
+  });
+  return createHash('sha256').update(payload, 'utf8').digest('hex');
+}
+
+function normalizeHashText(value: string): string {
+  return value.replace(/\r\n?/g, '\n').trim();
+}
+
+function reviewMetadataFrom(scan: RefineScanResult | null): Pick<
+  RefineScanResult,
+  'reviewedStoryStateDiffId' | 'reviewedStoryStateUpdatedAt' | 'reviewedStaticInputHash'
+> {
+  return {
+    ...(scan?.reviewedStoryStateDiffId !== undefined
+      ? { reviewedStoryStateDiffId: scan.reviewedStoryStateDiffId }
+      : {}),
+    ...(scan?.reviewedStoryStateUpdatedAt !== undefined
+      ? { reviewedStoryStateUpdatedAt: scan.reviewedStoryStateUpdatedAt }
+      : {}),
+    ...(scan?.reviewedStaticInputHash !== undefined
+      ? { reviewedStaticInputHash: scan.reviewedStaticInputHash }
+      : {}),
+  };
+}
+
+function sortDiffsNewestFirst(diffs: StoryStateDiffRecord[]): StoryStateDiffRecord[] {
+  return [...diffs].sort((a, b) => b.appliedAt.localeCompare(a.appliedAt));
+}
+
+function hasStoryStateBeenEditedSinceReview(
+  cachedScan: RefineScanResult | null,
+  storyState: StoryState | null,
+  diffs: StoryStateDiffRecord[]
+): boolean {
+  if (cachedScan?.reviewedStoryStateUpdatedAt === undefined) return false;
+
+  const reviewedUpdatedAt = cachedScan.reviewedStoryStateUpdatedAt;
+  const activeDiffs = diffs.filter((diff) => !diff.reverted);
+  const latestActiveDiff = activeDiffs[0];
+  const currentUpdatedAt = storyState?.updatedAt ?? null;
+  const expectedUpdatedAt = latestActiveDiff?.resultUpdatedAt ?? reviewedUpdatedAt;
+
+  // NOTE: 現在値が自動更新の最新結果と一致しない場合は、従来どおり即座に検知する。
+  if (currentUpdatedAt !== expectedUpdatedAt) return true;
+  if (!latestActiveDiff || !reviewedUpdatedAt) return false;
+
+  const reviewedCursor = cachedScan.reviewedStoryStateDiffId;
+  if (
+    typeof reviewedCursor === 'string' &&
+    !diffs.some((diff) => diff.diffId === reviewedCursor)
+  ) {
+    // NOTE: 保持上限で確認済みカーソルが落ちた場合、連鎖が切れた理由を手動編集と
+    // 断定できない。history_truncated のナッジだけを出す。
+    return false;
+  }
+
+  // NOTE: 手動編集後に自動更新が続くと、現在値だけでは最新 diff と一致してしまう。
+  // previousUpdatedAt を後ろ向きにたどり、最後のレビュー時点まで連続しているかを確かめる。
+  return !hasContinuousAutomaticStateChain(activeDiffs, reviewedUpdatedAt);
+}
+
+function hasContinuousAutomaticStateChain(
+  activeDiffs: StoryStateDiffRecord[],
+  reviewedUpdatedAt: string
+): boolean {
+  let currentIndex = 0;
+
+  while (currentIndex < activeDiffs.length) {
+    const current = activeDiffs[currentIndex];
+    if (current.resultUpdatedAt === reviewedUpdatedAt) return true;
+
+    const previousUpdatedAt = current.previousUpdatedAt;
+    // L5 導入前の履歴には predecessor がない。誤検知を避けて従来の比較に委ねる。
+    if (!previousUpdatedAt) return true;
+    if (previousUpdatedAt === reviewedUpdatedAt) return true;
+
+    const previousIndex = activeDiffs.findIndex(
+      (candidate, index) => index > currentIndex && candidate.resultUpdatedAt === previousUpdatedAt
+    );
+    if (previousIndex < 0) return false;
+    currentIndex = previousIndex;
+  }
+
+  return false;
+}
+
+async function withRefineScanLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
+  const previous = refineScanMutexes.get(projectId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const next = previous.catch(() => undefined).then(() => current);
+  refineScanMutexes.set(projectId, next);
+
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (refineScanMutexes.get(projectId) === next) refineScanMutexes.delete(projectId);
+  }
 }
 
 interface BuildScanPromptInput {
@@ -207,6 +461,8 @@ function buildScanPrompt(input: BuildScanPromptInput): {
     '- contradiction: 既存設定同士が食い違っている。人物設定と world、storyState と characters など。',
     '- undefined: 生成が安定しない原因になりそうな空欄・欠落。年齢、口調、舞台の季節など。',
     '- suggestion: あった方が良い追加情報。過度な提案は避け、価値の高いものだけ。',
+    '- initialState は開始時点の状態であり、storyState の現在と食い違うこと自体は正常。矛盾として指摘しない。',
+    '- description / relationshipNotes / world が storyState の現在と食い違う場合は、物語の進行による陳腐化として contradiction で指摘し、suggestedFix に現状を反映した書き換え案を書く。',
     '',
     'ルール:',
     `- findings は最大 ${MAX_FINDINGS} 件。重要度の高い順に並べる。`,
@@ -258,7 +514,7 @@ function renderCharactersForPrompt(characters: Character[]): string {
         lines.push(`  secrets: ${c.secrets!.trim()}`);
       }
       if ((c.currentState ?? '').trim()) {
-        lines.push(`  currentState: ${c.currentState!.trim()}`);
+        lines.push(`  initialState（開始時点）: ${c.currentState!.trim()}`);
       }
       return lines.join('\n');
     })

@@ -6,6 +6,7 @@ import {
 } from '../../src/server/services/storyStateService';
 import type {
   AdapterGenerateResult,
+  Character,
   GenerationRecord,
   ModelAdapter,
   Project,
@@ -20,6 +21,57 @@ afterEach(async () => {
 });
 
 describe('mergeStoryState', () => {
+  it('uses the shared normalized matcher and leaves ambiguous aliases without a character id', () => {
+    const characters: Character[] = [
+      {
+        characterId: 'char-alice',
+        name: 'Ａｌｉｃｅ　Smith',
+        role: 'protagonist',
+        description: '',
+      },
+      {
+        characterId: 'char-a',
+        name: 'アキ',
+        role: 'supporting',
+        description: '',
+        aliases: ['共通名'],
+      },
+      {
+        characterId: 'char-mina',
+        name: 'ミナ',
+        role: 'supporting',
+        description: '',
+        aliases: ['旧　Ｍｉｎａ'],
+      },
+      {
+        characterId: 'char-b',
+        name: 'ユイ',
+        role: 'supporting',
+        description: '',
+        aliases: ['共通名'],
+      },
+    ];
+
+    const merged = mergeStoryState(
+      storyState(),
+      {
+        characterStates: [
+          { name: 'alice smith', currentState: '王都にいる' },
+          { name: '旧 Mina', currentState: '別名で照合する' },
+          { name: '共通名', currentState: '照合しない' },
+        ],
+      },
+      now,
+      characters
+    );
+
+    expect(merged.characterStates).toMatchObject([
+      { characterId: 'char-alice', name: 'Ａｌｉｃｅ　Smith', currentState: '王都にいる' },
+      { characterId: 'char-mina', name: 'ミナ', currentState: '別名で照合する' },
+      { characterId: null, name: '共通名', currentState: '照合しない' },
+    ]);
+  });
+
   it('keeps existing important events and threads when the model omits them', () => {
     const previous = storyState({
       importantEvents: [
@@ -256,6 +308,8 @@ describe('updateStoryStateFromAcceptedScene', () => {
     await expect(storage.readStoryState(projectId)).resolves.toMatchObject({
       currentSituation: ['新しい現在状況'],
     });
+    const [diff] = await storage.readStoryStateDiffs(projectId);
+    expect(diff.previousUpdatedAt).toBe(now);
   });
 });
 

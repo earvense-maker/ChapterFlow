@@ -94,6 +94,8 @@ export interface Character {
   secrets?: string;
   want?: string;
   fear?: string;
+  // NOTE: novel では物語開始時点、roleplay では会話開始時点の状態。
+  // 進行中の状態は StoryState.characterStates で管理する。
   currentState?: string;
   // NOTE: ロールプレイモード用。会話開始時にキャラが最初に発するメッセージ。
   greeting?: string;
@@ -254,6 +256,9 @@ export interface StoryStateDiffRecord {
   generationId: GenerationId;
   sceneId: SceneId;
   appliedAt: string;
+  // NOTE: 自動更新の直前に保存されていた StoryState.updatedAt。
+  // L5 の鮮度判定で、手動編集を挟んだ更新連鎖を検出するために使う。
+  previousUpdatedAt?: string;
   summary: StoryStateDiffSummary;
   beforeState?: StoryState;
   resultUpdatedAt: string;
@@ -901,6 +906,24 @@ export interface RefineScanResult {
   findings: RefineFinding[];
   // NOTE: パース失敗や部分成功時のユーザー向けメッセージ。null なら正常。
   lastError: string | null;
+  // NOTE: 最後に成功した走査が確認した状態。キャッシュ鮮度判定だけに使い、
+  // 作品のドメインデータではない。undefined は L5 導入前のキャッシュ。
+  reviewedStoryStateDiffId?: string | null;
+  reviewedStoryStateUpdatedAt?: string | null;
+  reviewedStaticInputHash?: string | null;
+}
+
+export type RefineReviewReason =
+  | 'story_progressed'
+  | 'history_truncated'
+  | 'settings_changed'
+  | 'story_state_edited';
+
+export interface RefineReviewStatus {
+  backlogCountLowerBound: number;
+  needsReview: boolean;
+  threshold: number;
+  reasons: RefineReviewReason[];
 }
 
 // NOTE: Phase 3 の作品設定チャット。setup と違い「既存の world / characters
@@ -939,6 +962,7 @@ export interface CharacterFieldPatch {
   speechStyle?: string;
   relationshipNotes?: string;
   secrets?: string;
+  // NOTE: Character.currentState と同じく、物語/会話の開始時点の状態。
   currentState?: string;
 }
 

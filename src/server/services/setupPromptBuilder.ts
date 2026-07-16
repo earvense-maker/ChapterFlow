@@ -254,6 +254,7 @@ export function buildSetupCommitPrompt(input: {
             'scenarioSeeds には会話の舞台候補（場所・時間・状況）を並べてください。プロットや事件を書かないでください。',
             'firstWishSuggestion は使いません。openingSeeds も無視してください。',
             'storyState は最小構成にしてください: currentSituation に会話開始時のキャラの状況を1〜2行、characterStates にキャラの初期状態を並べる。importantEvents / openThreads は空でよい。',
+            'worldText では、時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめ、変わらない法則・地理・文化はその見出しより前に書いてください。',
             'memories は preference / negative のみにしてください（storyFact は使わない）。',
             'customSystemPrompt にはキャラの振る舞い（一人称・絵文字禁止など）だけを短く書き、作品メモを詰め込まないでください。',
             '作品データとシステム指示を混ぜないでください。',
@@ -265,6 +266,7 @@ export function buildSetupCommitPrompt(input: {
             '小説本文は生成しないでください。',
             '作者が決めていない事項は storyState.authorUndecided に入れてください。storyState.openThreads は作中で提示済みの謎・伏線だけにしてください。',
             '人物設定はプロフィール羅列より、物語上の揺れと関係性を重視してください。',
+            'worldText では、時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめ、変わらない法則・地理・文化はその見出しより前に書いてください。',
             '作品データとシステム指示を混ぜないでください。',
             '返答はJSONオブジェクトだけにしてください。Markdownのコードフェンスは不要です。',
           ].join('\n'),
@@ -294,6 +296,7 @@ function buildCommitUserPrompt(input: {
           '- scenarioSeeds には会話の舞台候補（場所・時間・状況）を並べる。プロットや事件を書かない。',
           '- 各 character には greeting（1〜3文の挨拶）と dialogueExamples（口調のfew-shot例、各1文の台詞形式）を必ず入れる。',
           '- storyState は最小構成（currentSituation と characterStates のみ、importantEvents/openThreads は空）にする。',
+          '- worldText の時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめる。変わらない法則・地理・文化は見出しより前に書く。',
           '- customSystemPrompt にはキャラの振る舞いだけを短く書く。作品メモを詰め込まない。',
         ].join('\n')
       : [
@@ -303,6 +306,7 @@ function buildCommitUserPrompt(input: {
           '- coreConcept は、この作品が何の話でどんな読み味を約束するかを1〜2文で書く。',
           '- firstWishSuggestion は openingSeeds と相談の流れから第1話冒頭への希望を1文で書く。openingSeedsが空なら省略してよい。',
           '- customSystemPrompt には作品メモを詰め込まない。書き方や役割などシステム寄りの指示だけにする。',
+          '- worldText の時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめる。変わらない法則・地理・文化は見出しより前に書く。',
         ].join('\n');
 
   const previewLabel =

@@ -6,6 +6,10 @@ import {
 } from './contextAssembler.js';
 import { resolveSystemPrompt } from './systemPrompt.js';
 import { getApproximateOutputRange } from '../utils/outputLength.js';
+import {
+  matchStoryCharacterStates,
+  type CharacterStateMatchResult,
+} from '../utils/characterStateMatching.js';
 import type {
   Character,
   Memory,
@@ -64,15 +68,21 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
 
   // 作品設定
   const settingParts: string[] = [];
-  if (worldText.trim()) {
-    settingParts.push(`【世界設定】\n${worldText.trim()}`);
-  }
+  if (worldText.trim()) settingParts.push(renderWorldSettings(worldText));
   if (characters.length > 0) {
     settingParts.push(renderCharacters(characters));
     settingParts.push(renderRelationships(characters));
   }
   if (settingParts.length > 0) {
-    parts.push(`【作品設定】\n${settingParts.join('\n\n')}`);
+    parts.push(
+      [
+        '【作品設定】',
+        '以下は作品の基礎設定である。このうち時間とともに変化しうる記述は物語開始時点の情報として扱う。',
+        '物語の進行によって変わった事柄は、採用済み本文を最優先し、次に【現在状態スナップショット】を優先する。',
+        '',
+        settingParts.filter(Boolean).join('\n\n'),
+      ].join('\n')
+    );
   }
 
   const knowledgeSection = renderKnowledgeTexts(knowledgeTexts);
@@ -250,12 +260,110 @@ function renderRelationships(characters: Character[]): string {
   return `【関係性設定】\n${notes.join('\n')}`;
 }
 
+export type WorldSegment = { kind: 'normal' | 'initial'; content: string };
+
+function renderWorldSettings(worldText: string): string {
+  return splitWorldByConvention(worldText)
+    .map((segment) => {
+      if (segment.kind === 'normal') return `【世界設定】\n${segment.content}`;
+      return [
+        '【世界設定（開始時点の状況）】',
+        '以下は物語開始時点の状況である。進行によって変わった事柄は、採用済み本文を最優先し、次に【現在状態スナップショット】を優先する。',
+        segment.content,
+      ].join('\n');
+    })
+    .join('\n\n');
+}
+
+// NOTE: markdown 全体を解釈せず、オプトイン見出しだけを安全に分離する。
+// 構文が壊れている場合は本文を落とさず従来どおりに出す（fail-open）。
+export function splitWorldByConvention(worldText: string): WorldSegment[] {
+  const original = worldText.trim();
+  if (!original) return [];
+
+  const lines = original.replace(/\r\n?/g, '\n').split('\n');
+  const segments: WorldSegment[] = [];
+  let currentKind: WorldSegment['kind'] = 'normal';
+  let currentInitialLevel: number | null = null;
+  let fenceMarker: '`' | '~' | null = null;
+  let sawInitialHeading = false;
+  let buffer: string[] = [];
+
+  const flush = () => {
+    const content = buffer.join('\n').trim();
+    buffer = [];
+    if (!content) return;
+    const previous = segments[segments.length - 1];
+    if (previous?.kind === currentKind) {
+      previous.content = `${previous.content}\n${content}`;
+    } else {
+      segments.push({ kind: currentKind, content });
+    }
+  };
+
+  const beginInitial = (level: number) => {
+    flush();
+    currentKind = 'initial';
+    currentInitialLevel = level;
+    sawInitialHeading = true;
+  };
+
+  const beginNormal = () => {
+    flush();
+    currentKind = 'normal';
+    currentInitialLevel = null;
+  };
+
+  for (const line of lines) {
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0] as '`' | '~';
+      if (!fenceMarker) fenceMarker = marker;
+      else if (fenceMarker === marker) fenceMarker = null;
+      buffer.push(line);
+      continue;
+    }
+    if (fenceMarker) {
+      buffer.push(line);
+      continue;
+    }
+
+    const initialMatch = line.match(/^\s*(#{2,4})\s*開始時点の状況\s*$/);
+    const headingMatch = line.match(/^\s*(#{1,6})\s*(?=\S)/);
+    const headingLevel = headingMatch?.[1].length;
+
+    if (currentInitialLevel !== null && headingLevel !== undefined && headingLevel <= currentInitialLevel) {
+      beginNormal();
+    }
+
+    if (currentInitialLevel === null && initialMatch) {
+      beginInitial(initialMatch[1].length);
+      continue;
+    }
+
+    buffer.push(line);
+  }
+
+  if (fenceMarker || !sawInitialHeading) {
+    return [{ kind: 'normal', content: original }];
+  }
+
+  flush();
+  return segments;
+}
+
 function renderCurrentState(
   storyState: StoryState,
   characters: Character[],
   viewpointCharacter: Character | null
 ): string {
   const sections: string[] = [];
+  const characterMatches = matchStoryCharacterStates(characters, storyState.characterStates);
+  if (characterMatches.diagnostics.length > 0) {
+    console.warn('StoryState 人物照合に曖昧または重複があります', {
+      diagnostics: characterMatches.diagnostics,
+    });
+  }
 
   const situationLines = [
     storyState.clock ? `- 物語内時間: ${formatClock(storyState.clock)}` : '',
@@ -265,24 +373,45 @@ function renderCurrentState(
     sections.push(`【現在の状況】\n${situationLines.join('\n')}`);
   }
 
-  const characterLines = [
-    ...characters
-      .filter((c) => c.currentState?.trim())
-      .map((c) => `- ${c.name}: ${c.currentState!.trim()}`),
-    ...storyState.characterStates.map((state) => {
+  const characterLines = characters
+    .map((character) => {
+      const state = characterMatches.byCharacterId.get(character.characterId);
       const details: string[] = [];
-      if (state.currentState) details.push(state.currentState);
-      if (state.knowledge.length > 0) details.push(`知っていること: ${state.knowledge.join(' / ')}`);
-      if (state.relationships.length > 0) details.push(`関係変化: ${state.relationships.join(' / ')}`);
-      return `- ${state.name}: ${details.join('。')}`;
-    }),
-  ].filter((line) => !line.endsWith(': '));
+      if (state?.currentState.trim()) {
+        details.push(state.currentState.trim());
+      } else if (character.currentState?.trim()) {
+        details.push(`初期状態（現在状態未取得）: ${character.currentState.trim()}`);
+      }
+      if (state?.relationships.length) {
+        details.push(`関係変化: ${state.relationships.join(' / ')}`);
+      }
+      return details.length > 0
+        ? `- ${character.name || '（名前未設定）'}: ${details.join('。')}`
+        : '';
+    })
+    .filter(Boolean);
+
+  for (const state of characterMatches.unmatchedStates) {
+    const details: string[] = [];
+    if (state.currentState.trim()) details.push(state.currentState.trim());
+    if (state.relationships.length) details.push(`関係変化: ${state.relationships.join(' / ')}`);
+    if (details.length > 0) {
+      characterLines.push(
+        `- ${state.name || '（名前未設定）'}（未照合）: ${details.join('。')}`
+      );
+    }
+  }
 
   if (characterLines.length > 0) {
     sections.push(`【人物の現在状態】\n${characterLines.join('\n')}`);
   }
 
-  const knowledgeState = renderCharacterKnowledgeState(storyState, characters, viewpointCharacter);
+  const knowledgeState = renderCharacterKnowledgeState(
+    storyState,
+    characters,
+    viewpointCharacter,
+    characterMatches
+  );
   if (knowledgeState) {
     sections.push(knowledgeState);
   }
@@ -386,16 +515,9 @@ function importanceRank(value: Memory['importance']): number {
 function renderCharacterKnowledgeState(
   storyState: StoryState,
   characters: Character[],
-  viewpointCharacter: Character | null
+  viewpointCharacter: Character | null,
+  characterMatches: CharacterStateMatchResult
 ): string {
-  const stateByCharacterId = new Map(
-    storyState.characterStates
-      .filter((state) => state.characterId)
-      .map((state) => [state.characterId!, state])
-  );
-  const stateByName = new Map(
-    storyState.characterStates.map((state) => [normalizeComparableText(state.name), state])
-  );
   const events = storyState.importantEvents.filter((event) => event.status !== 'archived');
   const orderedCharacters = viewpointCharacter
     ? [
@@ -408,12 +530,7 @@ function renderCharacterKnowledgeState(
   for (const character of orderedCharacters) {
     const known: string[] = [];
     const unknown: string[] = [];
-    const state =
-      stateByCharacterId.get(character.characterId) ??
-      stateByName.get(normalizeComparableText(character.name)) ??
-      (character.aliases ?? [])
-        .map((alias) => stateByName.get(normalizeComparableText(alias)))
-        .find((item): item is NonNullable<typeof item> => Boolean(item));
+    const state = characterMatches.byCharacterId.get(character.characterId);
     if (state?.knowledge.length) {
       known.push(...state.knowledge);
     }
@@ -445,6 +562,12 @@ function renderCharacterKnowledgeState(
     rows.push(details.join('\n'));
   }
 
+  for (const state of characterMatches.unmatchedStates) {
+    const knownLines = dedupeText(state.knowledge).slice(0, 6);
+    if (knownLines.length === 0) continue;
+    rows.push(`- ${state.name || '（名前未設定）'}（未照合）\n  知っている: ${knownLines.join(' / ')}`);
+  }
+
   if (rows.length === 0) return '';
   return `【人物の情報状態】\n「まだ知らない」とされた事実は、その人物の台詞・内心・行動の根拠・その人物視点の地の文に出さない。\n\n${rows.join('\n')}`;
 }
@@ -461,10 +584,6 @@ function dedupeText(values: string[]): string[] {
     result.push(text);
   }
   return result;
-}
-
-function normalizeComparableText(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function formatClock(clock: NonNullable<StoryState['clock']>): string {

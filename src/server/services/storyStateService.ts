@@ -1,5 +1,6 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { normalizeComparableText } from '../utils/characterStateMatching.js';
 import * as storage from './storageService.js';
 import type { ModelAdapter } from '../adapters/modelAdapter.js';
 import type {
@@ -94,6 +95,7 @@ export async function updateStoryStateFromAcceptedScene(input: {
       generationId: input.generation.generationId,
       sceneId: input.generation.sceneId,
       appliedAt,
+      previousUpdatedAt: previousState.updatedAt,
       summary: summarizeDiff(previousState, nextState, input.characters),
       beforeState: previousState,
       resultUpdatedAt: nextState.updatedAt,
@@ -123,7 +125,7 @@ function buildUpdatePrompt(input: {
     name: character.name,
     aliases: character.aliases ?? [],
     role: character.role,
-    currentState: character.currentState || '',
+    initialState: character.currentState || '',
     relationshipNotes: character.relationshipNotes || '',
   }));
 
@@ -145,6 +147,7 @@ function buildUpdatePrompt(input: {
       '- 出力は既存JSONの全置換ではなく、今回の場面から必要になった差分だけにする。',
       '- currentSituation には、次の場面開始時点の現在状況だけを短く入れる。',
       '- characterStates には、新規または更新が必要な人物だけを入れる。',
+      '- 人物ヒントの initialState は開始時点の状態であり、出力キーとして模倣しない。現在状態は characterStates[].currentState に返す。',
       '- characterStates の knowledge は更新対象ではないため出力しない。',
       '- importantEvents には、新規または更新が必要な不可逆な出来事・約束・秘密の開示だけを入れる。',
       '- importantEvents の characters は出来事の当事者名、presentCharacters はその場に居合わせた人物のcharacterId、learnedBy は伝聞・立ち聞き・観察などでこの場面で新たに知った人物のcharacterId。',
@@ -709,13 +712,15 @@ function appendUnique(values: string[], value: string): string[] {
 function findCharacterByNameOrAlias(characters: Character[], value: string): Character | null {
   const normalized = normalizeComparableSummary(value);
   if (!normalized) return null;
-  return (
-    characters.find((character) => normalizeComparableSummary(character.name) === normalized) ??
-    characters.find((character) =>
-      (character.aliases ?? []).some((alias) => normalizeComparableSummary(alias) === normalized)
-    ) ??
-    null
+  const candidates = characters.filter(
+    (character) =>
+      normalizeComparableSummary(character.name) === normalized ||
+      (character.aliases ?? []).some(
+        (alias) => normalizeComparableSummary(alias) === normalized
+      )
   );
+  // NOTE: LLM が名前だけを返した場合も、同名・同別名で任意の人物 ID を補完しない。
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function characterNameForId(characterId: string, characters: Character[]): string | null {
@@ -838,11 +843,13 @@ function normalizeDiffRecords(value: unknown): StoryStateDiffRecord[] {
       const beforeState = isRecord(item.beforeState)
         ? normalizeStoryState(item.beforeState, asString(item.appliedAt) || nowIso())
         : undefined;
+      const previousUpdatedAt = asString(item.previousUpdatedAt);
       return {
         diffId,
         generationId,
         sceneId,
         appliedAt: asString(item.appliedAt) || nowIso(),
+        ...(previousUpdatedAt ? { previousUpdatedAt } : {}),
         summary: normalizeDiffSummary(item.summary),
         ...(beforeState ? { beforeState } : {}),
         resultUpdatedAt: asString(item.resultUpdatedAt),
@@ -959,7 +966,7 @@ function normalizeId(value: unknown, prefix: string): string {
 }
 
 function normalizeComparableSummary(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+  return normalizeComparableText(value);
 }
 
 export async function withStoryStateLock<T>(

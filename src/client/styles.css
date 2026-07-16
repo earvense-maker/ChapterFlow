@@ -2013,6 +2013,17 @@ button:disabled:has(.generating-label) {
   font-size: 0.85rem;
 }
 
+.refine-review-nudge {
+  margin: 0 0 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(183, 140, 42, 0.5);
+  border-radius: var(--radius);
+  background: rgba(220, 170, 70, 0.14);
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
 .refine-scan-error {
   background: rgba(200, 90, 90, 0.15);
   border: 1px solid rgba(200, 90, 90, 0.4);
@@ -2453,6 +2464,13 @@ button:disabled:has(.generating-label) {
 .character-form-fields {
   display: grid;
   gap: 0.5rem;
+}
+
+.character-initial-state-field {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 
 .ng-expression-form {
