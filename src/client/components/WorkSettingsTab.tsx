@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import {
   KNOWLEDGE_WARN_CHARS,
@@ -16,6 +16,7 @@ import type {
   StoryStateDiffRecord,
   StyleSamplePreset,
   SystemPromptPreset,
+  WorldContent,
 } from '@shared/types';
 
 interface Props {
@@ -32,6 +33,7 @@ type PresetCategory = {
 };
 
 type DetailSettingsTab = 'basic' | 'style' | 'world' | 'characters' | 'story' | 'knowledge';
+type WorldArea = keyof WorldContent;
 
 const roleOptions: { value: Character['role']; label: string }[] = [
   { value: 'protagonist', label: '主人公' },
@@ -58,10 +60,15 @@ export default function WorkSettingsTab({
 }: Props) {
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
   const [presets, setPresets] = useState<Partial<PresetsFile>>({});
-  const [worldText, setWorldText] = useState('');
-  const [worldDraft, setWorldDraft] = useState('');
-  const [worldExpanded, setWorldExpanded] = useState(false);
-  const [worldEditing, setWorldEditing] = useState(false);
+  const [world, setWorld] = useState<WorldContent>({ foundation: '', initialSituation: '' });
+  const [worldSubTab, setWorldSubTab] = useState<WorldArea>('initialSituation');
+  const [foundationDraft, setFoundationDraft] = useState('');
+  const [foundationEditing, setFoundationEditing] = useState(false);
+  const [foundationExpanded, setFoundationExpanded] = useState(false);
+  const [initialSituationDraft, setInitialSituationDraft] = useState('');
+  const [initialSituationEditing, setInitialSituationEditing] = useState(false);
+  const [initialSituationExpanded, setInitialSituationExpanded] = useState(false);
+  const worldRefreshRequestId = useRef(0);
   const [projectDetails, setProjectDetails] = useState({
     title: project.title,
     coreConcept: project.coreConcept ?? '',
@@ -111,6 +118,7 @@ export default function WorkSettingsTab({
 
   useEffect(() => {
     let cancelled = false;
+    worldRefreshRequestId.current += 1;
 
     async function load() {
       try {
@@ -134,8 +142,9 @@ export default function WorkSettingsTab({
         ]);
         if (cancelled) return;
         setPresets(presetsData);
-        setWorldText(worldData.text);
-        setWorldDraft(worldData.text);
+        setWorld(worldData);
+        setFoundationDraft(worldData.foundation);
+        setInitialSituationDraft(worldData.initialSituation);
         setCharacters(charsData);
         setCharactersDraft(charsData);
         setCategories((presetMeta as { categories: Record<string, PresetCategory> }).categories);
@@ -206,13 +215,17 @@ export default function WorkSettingsTab({
   // NOTE: パッチ反映後に world / characters を再取得して UI を最新化。
   // 編集中の draft は上書きしないよう、編集モード時は skip する。
   async function refreshWorldAndCharacters() {
+    const requestId = ++worldRefreshRequestId.current;
     try {
       const [worldData, charsData] = await Promise.all([
         api.getWorld(projectId),
         api.getCharacters(projectId),
       ]);
-      setWorldText(worldData.text);
-      if (!worldEditing) setWorldDraft(worldData.text);
+      if (requestId === worldRefreshRequestId.current) {
+        setWorld(worldData);
+        if (!foundationEditing) setFoundationDraft(worldData.foundation);
+        if (!initialSituationEditing) setInitialSituationDraft(worldData.initialSituation);
+      }
       setCharacters(charsData);
       if (!charactersEditing) setCharactersDraft(charsData);
     } catch (err) {
@@ -237,15 +250,18 @@ export default function WorkSettingsTab({
     }
   }
 
-  async function handleSaveWorld() {
+  async function handleSaveWorldArea(area: WorldArea) {
     try {
       setLoading(true);
       onError(null);
-      await api.updateWorld(projectId, worldDraft);
-      setWorldText(worldDraft);
-      setWorldEditing(false);
+      const value = area === 'foundation' ? foundationDraft : initialSituationDraft;
+      const next = await api.updateWorldArea(projectId, area, value);
+      worldRefreshRequestId.current += 1;
+      setWorld(next);
+      if (area === 'foundation') setFoundationEditing(false);
+      else setInitialSituationEditing(false);
       void refreshRefineReviewStatus();
-      onFlashMessage('世界設定を保存しました');
+      onFlashMessage(`${area === 'foundation' ? '世界の土台' : '開始時点の状況'}を保存しました`);
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
     } finally {
@@ -253,9 +269,14 @@ export default function WorkSettingsTab({
     }
   }
 
-  function handleCancelWorld() {
-    setWorldDraft(worldText);
-    setWorldEditing(false);
+  function handleCancelWorldArea(area: WorldArea) {
+    if (area === 'foundation') {
+      setFoundationDraft(world.foundation);
+      setFoundationEditing(false);
+    } else {
+      setInitialSituationDraft(world.initialSituation);
+      setInitialSituationEditing(false);
+    }
   }
 
   async function handleSaveCharacters() {
@@ -727,7 +748,14 @@ export default function WorkSettingsTab({
     }
   }
 
-  const worldExcerpt = extractExcerpt(worldText, 120);
+  const worldIsEmpty = !world.foundation.trim() && !world.initialSituation.trim();
+  const activeWorldText = world[worldSubTab];
+  const activeWorldDraft =
+    worldSubTab === 'foundation' ? foundationDraft : initialSituationDraft;
+  const activeWorldEditing =
+    worldSubTab === 'foundation' ? foundationEditing : initialSituationEditing;
+  const activeWorldExpanded =
+    worldSubTab === 'foundation' ? foundationExpanded : initialSituationExpanded;
   const styleTags = deriveStyleTags(project.activePresetIds, categories);
   const isSystemPromptDraftCustomized =
     systemPromptDraft.trim() !== generatedSystemPrompt.trim();
@@ -772,7 +800,7 @@ export default function WorkSettingsTab({
           <div className="summary-card-badges">
             {projectDetails.coreConcept.trim() && <span className="settings-badge preset">核あり</span>}
             {styleSample.trim() && <span className="settings-badge preset">見本あり</span>}
-            {!worldText.trim() && <span className="settings-badge warn">世界未設定 ⚠</span>}
+            {worldIsEmpty && <span className="settings-badge warn">世界未設定 ⚠</span>}
             <span className="settings-meta">人物 {characters.length}人</span>
             <span className="settings-meta">資料 {knowledgeItems.length}件</span>
           </div>
@@ -1179,32 +1207,69 @@ export default function WorkSettingsTab({
         <header className="summary-card-header">
           <h2>世界</h2>
           <div className="summary-card-badges">
-            {!worldText.trim() && <span className="settings-badge warn">未設定 ⚠</span>}
-            {worldText.trim() && (
-              <span className="settings-meta">{worldText.length} 字</span>
+            {worldIsEmpty && <span className="settings-badge warn">未設定 ⚠</span>}
+            {!worldIsEmpty && (
+              <span className="settings-meta">
+                {world.foundation.length + world.initialSituation.length} 字
+              </span>
             )}
           </div>
-          {!worldEditing && (
+          {!activeWorldEditing && (
             <CardEditButton
               onClick={() => {
-                setWorldDraft(worldText);
-                setWorldEditing(true);
+                if (worldSubTab === 'foundation') {
+                  setFoundationDraft(world.foundation);
+                  setFoundationEditing(true);
+                } else {
+                  setInitialSituationDraft(world.initialSituation);
+                  setInitialSituationEditing(true);
+                }
               }}
             />
           )}
         </header>
-        {!worldEditing && (
+        <div className="detail-settings-tabs" role="tablist" aria-label="世界設定の領域">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={worldSubTab === 'foundation'}
+            className={worldSubTab === 'foundation' ? 'active' : ''}
+            onClick={() => setWorldSubTab('foundation')}
+          >
+            世界の土台
+            {!world.foundation.trim() && !worldIsEmpty && (
+              <span className="settings-badge">未記入</span>
+            )}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={worldSubTab === 'initialSituation'}
+            className={worldSubTab === 'initialSituation' ? 'active' : ''}
+            onClick={() => setWorldSubTab('initialSituation')}
+          >
+            開始時点の状況
+            {!world.initialSituation.trim() && !worldIsEmpty && (
+              <span className="settings-badge">未記入</span>
+            )}
+          </button>
+        </div>
+        {!activeWorldEditing && (
           <>
-            {worldText.trim() ? (
-              worldExpanded ? (
-                <pre className="summary-prewrap">{worldText}</pre>
+            {activeWorldText.trim() ? (
+              activeWorldExpanded ? (
+                <pre className="summary-prewrap">{activeWorldText}</pre>
               ) : (
                 <>
-                  <p className="summary-excerpt">{worldExcerpt}</p>
-                  {worldText.length > worldExcerpt.length && (
+                  <p className="summary-excerpt">{extractExcerpt(activeWorldText, 120)}</p>
+                  {activeWorldText.length > extractExcerpt(activeWorldText, 120).length && (
                     <button
                       className="summary-link-button"
-                      onClick={() => setWorldExpanded(true)}
+                      onClick={() =>
+                        worldSubTab === 'foundation'
+                          ? setFoundationExpanded(true)
+                          : setInitialSituationExpanded(true)
+                      }
                     >
                       全文を見る ▼
                     </button>
@@ -1212,31 +1277,51 @@ export default function WorkSettingsTab({
                 </>
               )
             ) : (
-              <p className="summary-empty">世界設定が未入力です。舞台や時代、独自ルールを書くと生成が安定します。</p>
+              <p className="summary-empty">
+                {worldSubTab === 'foundation'
+                  ? '物語進行で変わらない世界の土台が未入力です。'
+                  : '物語や会話の開始時点の状況が未入力です。'}
+              </p>
             )}
-            {worldExpanded && (
+            {activeWorldExpanded && (
               <button
                 className="summary-link-button"
-                onClick={() => setWorldExpanded(false)}
+                onClick={() =>
+                  worldSubTab === 'foundation'
+                    ? setFoundationExpanded(false)
+                    : setInitialSituationExpanded(false)
+                }
               >
                 折りたたむ ▲
               </button>
             )}
           </>
         )}
-        {worldEditing && (
+        {activeWorldEditing && (
           <>
             <textarea
-              value={worldDraft}
-              onChange={(e) => setWorldDraft(e.target.value)}
-              placeholder="舞台、時代、特殊なルールなどを自由に記述"
+              value={activeWorldDraft}
+              onChange={(e) =>
+                worldSubTab === 'foundation'
+                  ? setFoundationDraft(e.target.value)
+                  : setInitialSituationDraft(e.target.value)
+              }
+              placeholder={
+                worldSubTab === 'foundation'
+                  ? '魔法法則・地理・文化・宇宙観など、物語進行で変わらない土台。ここに書いた内容は物語が進んでも古びない前提で扱われる'
+                  : '勢力関係・人物の所属や所在・季節・直近の出来事など、物語進行で変わりうる開始時点の状況。本文が進むと古くなりやすい'
+              }
               rows={12}
             />
             <div className="summary-card-actions">
-              <button onClick={handleCancelWorld} disabled={loading}>
+              <button onClick={() => handleCancelWorldArea(worldSubTab)} disabled={loading}>
                 キャンセル
               </button>
-              <button className="primary" onClick={handleSaveWorld} disabled={loading}>
+              <button
+                className="primary"
+                onClick={() => handleSaveWorldArea(worldSubTab)}
+                disabled={loading}
+              >
                 保存
               </button>
             </div>

@@ -60,6 +60,7 @@ import type {
   SystemPromptPreset,
   UpdateSetupDraftBody,
   UpdateProjectBody,
+  WorldContent,
 } from '@shared/types';
 
 const API_BASE = '/api';
@@ -196,9 +197,17 @@ export const api = {
   updateCharacters: (id: string, characters: Character[]) =>
     request<Character[]>(`/projects/${id}/characters`, { method: 'PUT', body: JSON.stringify(characters) }),
 
-  getWorld: (id: string) => request<{ text: string }>(`/projects/${id}/world`),
-  updateWorld: (id: string, text: string) =>
-    request<{ text: string }>(`/projects/${id}/world`, { method: 'PUT', body: JSON.stringify({ text }) }),
+  getWorld: (id: string) => request<WorldContent>(`/projects/${id}/world`),
+  updateWorld: (id: string, world: WorldContent) =>
+    request<WorldContent>(`/projects/${id}/world`, {
+      method: 'PUT',
+      body: JSON.stringify(world),
+    }),
+  updateWorldArea: (id: string, area: keyof WorldContent, text: string) =>
+    request<WorldContent>(`/projects/${id}/world/${area}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ text }),
+    }),
 
   getStoryState: (id: string) => request<StoryState>(`/projects/${id}/story-state`),
   updateStoryState: (id: string, state: StoryState) =>

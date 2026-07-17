@@ -59,6 +59,11 @@ export interface Project {
   roleplayOutputChars?: number;
 }
 
+export interface WorldContent {
+  foundation: string;
+  initialSituation: string;
+}
+
 export interface ProjectState {
   lastOpenedAt: string;
   currentEpisodeId: EpisodeId | null;
@@ -530,7 +535,7 @@ export interface SetupCommitPlan {
   // NOTE: roleplay 用途では常に未設定。novel 用途のみ表示・保存する。
   firstWishSuggestion?: string;
   styleSample?: string;
-  worldText: string;
+  world: WorldContent;
   characters: Character[];
   memories: Memory[];
   storyState: StoryState;
@@ -759,7 +764,7 @@ export interface CreateProjectBody {
   coreConcept?: string;
   firstWishSuggestion?: string;
   styleSample?: string;
-  worldText?: string;
+  world?: WorldContent;
   characters?: Character[];
   customSystemPrompt?: string;
   // NOTE: ロールプレイ型プロジェクトを作る時のみ指定。UpdateProjectBody には含めない
@@ -992,7 +997,7 @@ export interface RefinePatch {
 }
 
 export interface RefineSession {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   sessionId: string;
   projectId: ProjectId;
   usedModel: { provider: string; modelName: string };

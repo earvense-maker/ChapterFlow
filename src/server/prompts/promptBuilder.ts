@@ -10,6 +10,10 @@ import {
   matchStoryCharacterStates,
   type CharacterStateMatchResult,
 } from '../utils/characterStateMatching.js';
+import {
+  splitWorldByConvention as splitWorldMdByConvention,
+  type WorldSegment,
+} from '../utils/worldMd.js';
 import type {
   Character,
   Memory,
@@ -68,7 +72,8 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
 
   // 作品設定
   const settingParts: string[] = [];
-  if (worldText.trim()) settingParts.push(renderWorldSettings(worldText));
+  const renderedWorldSettings = renderWorldSettings(worldText);
+  if (renderedWorldSettings) settingParts.push(renderedWorldSettings);
   if (characters.length > 0) {
     settingParts.push(renderCharacters(characters));
     settingParts.push(renderRelationships(characters));
@@ -260,7 +265,7 @@ function renderRelationships(characters: Character[]): string {
   return `【関係性設定】\n${notes.join('\n')}`;
 }
 
-export type WorldSegment = { kind: 'normal' | 'initial'; content: string };
+export type { WorldSegment } from '../utils/worldMd.js';
 
 function renderWorldSettings(worldText: string): string {
   return splitWorldByConvention(worldText)
@@ -275,81 +280,8 @@ function renderWorldSettings(worldText: string): string {
     .join('\n\n');
 }
 
-// NOTE: markdown 全体を解釈せず、オプトイン見出しだけを安全に分離する。
-// 構文が壊れている場合は本文を落とさず従来どおりに出す（fail-open）。
 export function splitWorldByConvention(worldText: string): WorldSegment[] {
-  const original = worldText.trim();
-  if (!original) return [];
-
-  const lines = original.replace(/\r\n?/g, '\n').split('\n');
-  const segments: WorldSegment[] = [];
-  let currentKind: WorldSegment['kind'] = 'normal';
-  let currentInitialLevel: number | null = null;
-  let fenceMarker: '`' | '~' | null = null;
-  let sawInitialHeading = false;
-  let buffer: string[] = [];
-
-  const flush = () => {
-    const content = buffer.join('\n').trim();
-    buffer = [];
-    if (!content) return;
-    const previous = segments[segments.length - 1];
-    if (previous?.kind === currentKind) {
-      previous.content = `${previous.content}\n${content}`;
-    } else {
-      segments.push({ kind: currentKind, content });
-    }
-  };
-
-  const beginInitial = (level: number) => {
-    flush();
-    currentKind = 'initial';
-    currentInitialLevel = level;
-    sawInitialHeading = true;
-  };
-
-  const beginNormal = () => {
-    flush();
-    currentKind = 'normal';
-    currentInitialLevel = null;
-  };
-
-  for (const line of lines) {
-    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0] as '`' | '~';
-      if (!fenceMarker) fenceMarker = marker;
-      else if (fenceMarker === marker) fenceMarker = null;
-      buffer.push(line);
-      continue;
-    }
-    if (fenceMarker) {
-      buffer.push(line);
-      continue;
-    }
-
-    const initialMatch = line.match(/^\s*(#{2,4})\s*開始時点の状況\s*$/);
-    const headingMatch = line.match(/^\s*(#{1,6})\s*(?=\S)/);
-    const headingLevel = headingMatch?.[1].length;
-
-    if (currentInitialLevel !== null && headingLevel !== undefined && headingLevel <= currentInitialLevel) {
-      beginNormal();
-    }
-
-    if (currentInitialLevel === null && initialMatch) {
-      beginInitial(initialMatch[1].length);
-      continue;
-    }
-
-    buffer.push(line);
-  }
-
-  if (fenceMarker || !sawInitialHeading) {
-    return [{ kind: 'normal', content: original }];
-  }
-
-  flush();
-  return segments;
+  return splitWorldMdByConvention(worldText);
 }
 
 function renderCurrentState(

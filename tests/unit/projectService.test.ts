@@ -234,7 +234,7 @@ describe('project settings validation', () => {
       activeModelProvider: 'gemini',
       activeModelName: ' gemini-1.5-flash ',
       activePresetIds: { genre: 'romance' },
-      worldText: '静かな管理都市',
+      world: { foundation: '都市の管理制度', initialSituation: '静かな管理都市' },
       characters: [
         {
           characterId: 'char-test',
@@ -265,7 +265,10 @@ describe('project settings validation', () => {
       status: 'fresh',
       generationId: null,
     });
-    expect(worldText).toBe('静かな管理都市');
+    expect(worldText).toEqual({
+      foundation: '都市の管理制度',
+      initialSituation: '静かな管理都市',
+    });
     expect(characters).toHaveLength(1);
     expect(presets?.conversationPreset).toBe('standard');
     expect(presets?.intimacyPreset).toBe('suggestive');

@@ -3,7 +3,7 @@ import * as refineChatService from '../../src/server/services/refineChatService'
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
-import type { Character } from '../../src/server/types/index';
+import type { Character, RefineSession } from '../../src/server/types/index';
 
 const createdProjectIds: string[] = [];
 
@@ -67,6 +67,53 @@ describe('refineChatService session lifecycle', () => {
     expect(s2.sessionId).toBe(s1.sessionId);
   });
 
+  it('migrates v1 pending patches to stale while preserving terminal patches', async () => {
+    const projectId = await createTrackedProject();
+    const current = await refineChatService.getOrCreateRefineSession(projectId);
+    const operation = { kind: 'world-append' as const, op: { text: '追記' } };
+    const legacy: RefineSession = {
+      ...current,
+      schemaVersion: 1,
+      patches: [
+        {
+          patchId: 'pending',
+          createdAt: current.createdAt,
+          sourceMessageId: 'msg-1',
+          summary: 'pending',
+          operations: [operation],
+          status: 'pending',
+        },
+        {
+          patchId: 'applied',
+          createdAt: current.createdAt,
+          sourceMessageId: 'msg-1',
+          summary: 'applied',
+          operations: [operation],
+          status: 'applied',
+        },
+        {
+          patchId: 'rejected',
+          createdAt: current.createdAt,
+          sourceMessageId: 'msg-1',
+          summary: 'rejected',
+          operations: [operation],
+          status: 'rejected',
+        },
+      ],
+    };
+    await storage.writeRefineSession(projectId, legacy);
+
+    const migrated = await refineChatService.getOrCreateRefineSession(projectId);
+
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.patches.map((patch) => patch.status)).toEqual([
+      'stale',
+      'applied',
+      'rejected',
+    ]);
+    expect(migrated.patches[0].applyError).toContain('保存形式が更新');
+  });
+
   it('reset returns a fresh session with different sessionId', async () => {
     const projectId = await createTrackedProject();
     const s1 = await refineChatService.getOrCreateRefineSession(projectId);
@@ -86,7 +133,10 @@ describe('refineChatService sendRefineMessage', () => {
       description: '27歳、蘭学者',
     };
     await storage.writeCharacters(projectId, [character]);
-    await storage.writeWorld(projectId, '江戸後期の江戸を舞台にした物語。');
+    await storage.writeWorld(projectId, {
+      foundation: '江戸後期の江戸を舞台にした物語。',
+      initialSituation: '',
+    });
 
     mockAssistantResponse({
       visibleReply: '秋葉の年齢を30歳に更新します。',
@@ -214,7 +264,7 @@ describe('refineChatService sendRefineMessage', () => {
 
   it('marks previous pending patches as stale on the next turn', async () => {
     const projectId = await createTrackedProject();
-    await storage.writeWorld(projectId, '江戸後期の物語。');
+    await storage.writeWorld(projectId, { foundation: '江戸後期の物語。', initialSituation: '' });
 
     mockAssistantResponse({
       visibleReply: '追記します。',
@@ -285,7 +335,7 @@ describe('refineChatService applyRefinePatch', () => {
 
   it('fails to apply a world-replace whose anchor no longer matches, and records the error', async () => {
     const projectId = await createTrackedProject();
-    await storage.writeWorld(projectId, '本文');
+    await storage.writeWorld(projectId, { foundation: '本文', initialSituation: '' });
     mockAssistantResponse({
       visibleReply: '書き換えます',
       patches: [
@@ -314,9 +364,128 @@ describe('refineChatService applyRefinePatch', () => {
     expect(patch?.status).toBe('pending');
   });
 
+  it('applies a new v2 patch against the original ordering of a legacy world document', async () => {
+    const projectId = await createTrackedProject();
+    await storage.restoreWorldText(
+      projectId,
+      '法則A\n## 開始時点の状況\n王国は平和\n## 地理\n北に山脈'
+    );
+    mockAssistantResponse({
+      visibleReply: '緊張状態へ更新します',
+      patches: [
+        {
+          summary: '旧形式の境界をまたぐ置換',
+          operations: [
+            {
+              kind: 'world-replace',
+              anchor: '王国は平和\n## 地理\n北に山脈',
+              replacement: '王国は緊張状態\n## 地理\n北に山脈',
+            },
+          ],
+        },
+      ],
+    });
+    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+
+    await refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId);
+
+    await expect(storage.readWorld(projectId)).resolves.toEqual({
+      foundation: '法則A\n## 地理\n北に山脈',
+      initialSituation: '王国は緊張状態',
+    });
+  });
+
+  it('rejects a world-replace that removes a canonical heading', async () => {
+    const projectId = await createTrackedProject();
+    const original = { foundation: '法則', initialSituation: '停戦中' };
+    await storage.writeWorld(projectId, original);
+    mockAssistantResponse({
+      visibleReply: '見出しを書き換えます',
+      patches: [
+        {
+          summary: '見出し破損',
+          operations: [
+            {
+              kind: 'world-replace',
+              anchor: '## 開始時点の状況',
+              replacement: '## 現在',
+            },
+          ],
+        },
+      ],
+    });
+    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+
+    await expect(
+      refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId)
+    ).rejects.toMatchObject({ code: 'patch_apply_failed' });
+    await expect(storage.readWorld(projectId)).resolves.toEqual(original);
+  });
+
+  it('appends world text to the initial situation', async () => {
+    const projectId = await createTrackedProject();
+    await storage.writeWorld(projectId, { foundation: '法則', initialSituation: '停戦中' });
+    mockAssistantResponse({
+      visibleReply: '追記します',
+      patches: [
+        {
+          summary: '開始状況へ追記',
+          operations: [{ kind: 'world-append', text: '王都では祭りの準備中。' }],
+        },
+      ],
+    });
+    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+
+    await refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId);
+    await expect(storage.readWorld(projectId)).resolves.toEqual({
+      foundation: '法則',
+      initialSituation: '停戦中\n\n王都では祭りの準備中。',
+    });
+  });
+
+  it('rolls world and characters back when a later file write fails', async () => {
+    const projectId = await createTrackedProject();
+    const originalWorld = { foundation: '法則', initialSituation: '停戦中' };
+    const originalCharacter: Character = {
+      characterId: 'char-rollback',
+      name: 'リナ',
+      role: 'protagonist',
+      description: '旅人',
+    };
+    await storage.writeWorld(projectId, originalWorld);
+    await storage.writeCharacters(projectId, [originalCharacter]);
+    mockAssistantResponse({
+      visibleReply: 'まとめて更新します',
+      patches: [
+        {
+          summary: '世界と人物を更新',
+          operations: [
+            { kind: 'world-append', text: '祭り前夜。' },
+            {
+              kind: 'character-update',
+              characterId: originalCharacter.characterId,
+              fields: { description: '王都の旅人' },
+            },
+          ],
+        },
+      ],
+    });
+    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const patchId = send.newPatches[0].patchId;
+    vi.spyOn(storage, 'writeCharacters').mockRejectedValueOnce(new Error('disk full'));
+
+    await expect(refineChatService.applyRefinePatch(projectId, patchId)).rejects.toThrow(
+      'disk full'
+    );
+    await expect(storage.readWorld(projectId)).resolves.toEqual(originalWorld);
+    await expect(storage.readCharacters(projectId)).resolves.toEqual([originalCharacter]);
+    const session = await storage.readRefineSession(projectId);
+    expect(session?.patches.find((item) => item.patchId === patchId)?.status).toBe('pending');
+  });
+
   it('rejects patches change status to rejected without touching files', async () => {
     const projectId = await createTrackedProject();
-    await storage.writeWorld(projectId, '元の本文');
+    await storage.writeWorld(projectId, { foundation: '元の本文', initialSituation: '' });
     mockAssistantResponse({
       visibleReply: 'ok',
       patches: [
@@ -332,7 +501,7 @@ describe('refineChatService applyRefinePatch', () => {
     const rejected = await refineChatService.rejectRefinePatch(projectId, patchId);
     expect(rejected.patch.status).toBe('rejected');
     const world = await storage.readWorld(projectId);
-    expect(world).toBe('元の本文');
+    expect(world).toEqual({ foundation: '元の本文', initialSituation: '' });
   });
 });
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import { DEFAULT_ACTIVE_PRESET_IDS } from '@shared/defaults';
-import type { Character, ModelProviderInfo } from '@shared/types';
+import type { Character, ModelProviderInfo, WorldContent } from '@shared/types';
 
 interface Props {
   onCreated: (projectId: string) => void;
@@ -32,7 +32,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
   const [modelName, setModelName] = useState('gemini-3.5-flash');
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
   const [customSystemPrompt, setCustomSystemPrompt] = useState('');
-  const [worldText, setWorldText] = useState('');
+  const [world, setWorld] = useState<WorldContent>({ foundation: '', initialSituation: '' });
   const [characters, setCharacters] = useState<Character[]>([]);
   const [apiKey, setApiKey] = useState('');
   const [loading, setLoading] = useState(false);
@@ -97,7 +97,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
         activeModelProvider: provider,
         activeModelName: modelName.trim() || providers.find((p) => p.name === provider)?.defaultModel,
         activePresetIds,
-        worldText,
+        world,
         characters,
         customSystemPrompt,
       });
@@ -229,11 +229,19 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
         </section>
 
         <section className="settings-section">
-          <h2>世界設定</h2>
+          <h2>世界の土台</h2>
           <textarea
-            value={worldText}
-            onChange={(e) => setWorldText(e.target.value)}
-            placeholder="舞台、時代、特殊なルールなどを自由に記述"
+            value={world.foundation}
+            onChange={(e) => setWorld((current) => ({ ...current, foundation: e.target.value }))}
+            placeholder="魔法法則・地理・文化・宇宙観など、物語進行で変わらない土台"
+          />
+          <h2>開始時点の状況</h2>
+          <textarea
+            value={world.initialSituation}
+            onChange={(e) =>
+              setWorld((current) => ({ ...current, initialSituation: e.target.value }))
+            }
+            placeholder="勢力関係・人物の所属や所在・季節・直近の出来事など、進行で変わりうる状況"
           />
         </section>
 

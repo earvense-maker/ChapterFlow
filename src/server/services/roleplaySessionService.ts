@@ -324,7 +324,7 @@ export async function createRoleplaySession(
     }
 
     const scenario = normalizeScenario(input.scenario);
-    const worldText = await storage.readWorld(input.projectId);
+    const worldText = await storage.readWorldPromptText(input.projectId);
     const presets = await storage.readPresets(input.projectId);
 
     const snapshot = buildContextSnapshot({

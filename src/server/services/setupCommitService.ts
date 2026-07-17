@@ -24,9 +24,11 @@ import type {
   StoryItemStatus,
   StoryState,
   StoryThreadRecord,
+  WorldContent,
 } from '../types/index.js';
 import type { PresetIdsByCategory } from './setupPromptBuilder.js';
 import { normalizeComparableText } from './setupDraftPatchService.js';
+import { parseWorldMd } from '../utils/worldMd.js';
 
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
@@ -56,7 +58,7 @@ export function normalizeSetupCommitData(input: {
   presetIdsByCategory: PresetIdsByCategory;
   now?: string;
 }): NormalizedSetupCommitData {
-  return normalizeSetupCommitPlan(input);
+  return normalizeSetupCommitPlan({ ...input, fallbackWhenWorldEmpty: true });
 }
 
 export function normalizeSetupCommitPlan(input: {
@@ -64,6 +66,7 @@ export function normalizeSetupCommitPlan(input: {
   session: SetupSession;
   presetIdsByCategory: PresetIdsByCategory;
   now?: string;
+  fallbackWhenWorldEmpty?: boolean;
 }): NormalizedSetupCommitData {
   const now = input.now ?? nowIso();
   const raw = isRecord(input.raw) ? input.raw : {};
@@ -115,7 +118,7 @@ export function normalizeSetupCommitPlan(input: {
     coreConcept: truncate(asString(raw.coreConcept) || input.session.draft.coreConcept, 300),
     firstWishSuggestion: truncate(firstWishSuggestion, 300),
     styleSample: truncate(asString(raw.styleSample), 1000),
-    worldText: asString(raw.worldText) || buildFallbackWorldText(input.session),
+    world: extractWorldContent(raw, input.session, input.fallbackWhenWorldEmpty === true),
     characters,
     customSystemPrompt: asString(raw.customSystemPrompt),
     projectType,
@@ -526,6 +529,27 @@ function buildFallbackWorldText(session: SetupSession): string {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function extractWorldContent(
+  raw: Record<string, unknown>,
+  session: SetupSession,
+  fallbackWhenEmpty: boolean
+): WorldContent {
+  if (isRecord(raw.world)) {
+    const world = {
+      foundation: asString(raw.world.foundation),
+      initialSituation: asString(raw.world.initialSituation),
+    };
+    if (!fallbackWhenEmpty || world.foundation || world.initialSituation) return world;
+  }
+  const slippedWorld = asString(raw.world);
+  if (slippedWorld) return parseWorldMd(slippedWorld);
+  const legacyWorldText = asString(raw.worldText);
+  if (legacyWorldText) return parseWorldMd(legacyWorldText);
+  // NOTE: フォールバックには可変・不変を判断できない相談ヒントも含まれるため、
+  // 古い固定設定として強く扱わず開始時点側へ安全に寄せる。
+  return { foundation: '', initialSituation: buildFallbackWorldText(session) };
 }
 
 function normalizeRole(value: unknown): CharacterRole | null {

@@ -40,7 +40,10 @@ describe('refineScanService', () => {
       description: '27歳、蘭学者。',
     };
     await storage.writeCharacters(projectId, [character]);
-    await storage.writeWorld(projectId, '江戸後期の江戸を舞台にした物語。');
+    await storage.writeWorld(projectId, {
+      foundation: '江戸後期の江戸を舞台にした物語。',
+      initialSituation: '',
+    });
 
     const responseJson = JSON.stringify({
       coreConcept: '江戸後期の蘭学者を軸にした静かなドラマ。',

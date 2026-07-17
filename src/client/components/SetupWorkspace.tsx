@@ -1414,6 +1414,38 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               />
             </label>
             <label>
+              世界の土台
+              <textarea
+                value={commitPlan.world.foundation}
+                onChange={(event) =>
+                  setCommitPlan((current) => current
+                    ? {
+                        ...current,
+                        world: { ...current.world, foundation: event.target.value },
+                      }
+                    : current)
+                }
+                rows={4}
+                placeholder="物語進行で変わらない法則・地理・文化など"
+              />
+            </label>
+            <label>
+              開始時点の状況
+              <textarea
+                value={commitPlan.world.initialSituation}
+                onChange={(event) =>
+                  setCommitPlan((current) => current
+                    ? {
+                        ...current,
+                        world: { ...current.world, initialSituation: event.target.value },
+                      }
+                    : current)
+                }
+                rows={4}
+                placeholder="勢力関係・季節・直近の出来事など、進行で変わりうる状況"
+              />
+            </label>
+            <label>
               第1話冒頭への希望
               <textarea
                 value={commitPlan.firstWishSuggestion ?? ''}

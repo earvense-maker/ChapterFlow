@@ -6,6 +6,10 @@ import { withProjectWriteLock } from './generationService.js';
 import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
+import {
+  hasCompleteCanonicalWorldStructure,
+  parseWorldMd,
+} from '../utils/worldMd.js';
 import type {
   Character,
   CharacterFieldPatch,
@@ -52,7 +56,7 @@ export class RefineChatError extends Error {
 
 export async function getOrCreateRefineSession(projectId: string): Promise<RefineSession> {
   const existing = await storage.readRefineSession(projectId);
-  if (existing) return existing;
+  if (existing) return migrateRefineSession(existing);
 
   const project = await storage.readProject(projectId);
   if (!project) {
@@ -60,7 +64,7 @@ export async function getOrCreateRefineSession(projectId: string): Promise<Refin
   }
   const now = nowIso();
   const session: RefineSession = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sessionId: generateTimestampId('refsess'),
     projectId,
     usedModel: {
@@ -76,6 +80,29 @@ export async function getOrCreateRefineSession(projectId: string): Promise<Refin
   };
   await storage.writeRefineSession(projectId, session);
   return session;
+}
+
+async function migrateRefineSession(session: RefineSession): Promise<RefineSession> {
+  if (session.schemaVersion === 2) return session;
+  const now = nowIso();
+  const migrated: RefineSession = {
+    ...session,
+    schemaVersion: 2,
+    patches: session.patches.map((patch) =>
+      patch.status === 'pending'
+        ? {
+            ...patch,
+            status: 'stale' as const,
+            applyError:
+              '世界設定の保存形式が更新されたため、この古い保留パッチは適用できません。もう一度提案を作成してください。',
+          }
+        : patch
+    ),
+    revision: session.revision + 1,
+    updatedAt: now,
+  };
+  await storage.writeRefineSession(session.projectId, migrated);
+  return migrated;
 }
 
 export async function resetRefineSession(projectId: string): Promise<RefineSession> {
@@ -110,10 +137,10 @@ async function sendRefineMessageUnlocked(
 ): Promise<RefineChatResponse> {
   await reloadCredentials();
 
-  const [session, project, world, characters] = await Promise.all([
+  const [session, project, worldText, characters] = await Promise.all([
     getOrCreateRefineSession(projectId),
     storage.readProject(projectId),
-    storage.readWorld(projectId),
+    storage.readWorldPromptText(projectId),
     storage.readCharacters(projectId),
   ]);
   if (!project) {
@@ -161,7 +188,7 @@ async function sendRefineMessageUnlocked(
 
   const { systemInstructions, userPrompt } = buildChatPrompt({
     project,
-    world,
+    world: worldText,
     characters,
     history: workingSession.messages,
     userMessage,
@@ -271,10 +298,11 @@ async function applyRefinePatchUnlocked(
   projectId: string,
   patchId: string
 ): Promise<RefineApplyResponse> {
-  const session = await storage.readRefineSession(projectId);
-  if (!session) {
+  const storedSession = await storage.readRefineSession(projectId);
+  if (!storedSession) {
     throw new RefineChatError('セッションがありません。', 'session_not_found', false, 404);
   }
+  const session = await migrateRefineSession(storedSession);
   const patchIndex = session.patches.findIndex((p) => p.patchId === patchId);
   if (patchIndex < 0) {
     throw new RefineChatError('パッチが見つかりません。', 'patch_not_found', false, 404);
@@ -289,30 +317,34 @@ async function applyRefinePatchUnlocked(
     );
   }
 
-  const [world, characters] = await Promise.all([
-    storage.readWorld(projectId),
+  const [originalWorldText, characters] = await Promise.all([
+    storage.readWorldText(projectId),
     storage.readCharacters(projectId),
   ]);
+  const world = parseWorldMd(originalWorldText);
 
   // NOTE: 全 operation を先に検証し、1 つでも失敗すれば全体を rollback（何も
   // 書かない）。中途半端に適用した状態を残さないため。
-  let nextWorld = world;
+  let nextWorldText = originalWorldText;
   let nextCharacters = [...characters];
+  let charactersChanged = false;
 
   for (const op of patch.operations) {
     switch (op.kind) {
       case 'world-replace': {
-        const applied = applyWorldReplace(nextWorld, op.op);
+        const applied = applyWorldReplace(nextWorldText, op.op);
         if (!applied.ok) {
           return recordApplyError(session, patchIndex, applied.error);
         }
-        nextWorld = applied.text;
+        nextWorldText = applied.text;
         break;
       }
       case 'world-append': {
         const suffix = op.op.text.trim();
         if (!suffix) break;
-        nextWorld = nextWorld.trim() ? `${nextWorld.trimEnd()}\n\n${suffix}` : suffix;
+        nextWorldText = nextWorldText.trim()
+          ? `${nextWorldText.trimEnd()}\n\n${suffix}\n`
+          : suffix;
         break;
       }
       case 'character-update': {
@@ -325,6 +357,7 @@ async function applyRefinePatchUnlocked(
           );
         }
         nextCharacters[idx] = { ...nextCharacters[idx], ...op.fields };
+        charactersChanged = true;
         break;
       }
       case 'character-add': {
@@ -336,6 +369,7 @@ async function applyRefinePatchUnlocked(
           );
         }
         nextCharacters = [...nextCharacters, op.character];
+        charactersChanged = true;
         break;
       }
       case 'character-remove': {
@@ -348,20 +382,32 @@ async function applyRefinePatchUnlocked(
             `削除対象の人物が見つかりません: ${op.characterId}`
           );
         }
+        charactersChanged = true;
         break;
       }
     }
   }
 
-  if (nextWorld !== world) {
-    await storage.writeWorld(projectId, nextWorld);
+  const worldChanged = nextWorldText !== originalWorldText;
+  let nextWorld = world;
+  if (worldChanged) {
+    if (
+      hasCompleteCanonicalWorldStructure(originalWorldText) &&
+      !hasCompleteCanonicalWorldStructure(nextWorldText)
+    ) {
+      return recordApplyError(
+        session,
+        patchIndex,
+        'world パッチ適用でカノニカル見出しが壊れました。anchor を見直してください。'
+      );
+    }
+    nextWorld = parseWorldMd(nextWorldText);
   }
-  if (nextCharacters !== characters) {
-    // NOTE: 全書き込み境界で共通正規化を通す（review §5.4）。ここを迂回すると
-    // roleplay 型プロジェクトで greeting/dialogueExamples の上限が保証されず、
-    // 設計書 2.1 の「同じ正規化を通す」不変条件が壊れる。
-    await storage.writeCharacters(projectId, normalizeCharactersForStorage(nextCharacters));
-  }
+  // NOTE: 全書き込み境界で共通正規化を通す（review §5.4）。ここを迂回すると
+  // roleplay 型プロジェクトで greeting/dialogueExamples の上限が保証されない。
+  const normalizedCharacters = charactersChanged
+    ? normalizeCharactersForStorage(nextCharacters)
+    : characters;
 
   const nowStr = nowIso();
   const appliedPatch: RefinePatch = {
@@ -379,7 +425,23 @@ async function applyRefinePatchUnlocked(
     updatedAt: nowStr,
     lastError: null,
   };
-  await storage.writeRefineSession(projectId, nextSession);
+  try {
+    if (worldChanged) await storage.writeWorld(projectId, nextWorld);
+    if (charactersChanged) await storage.writeCharacters(projectId, normalizedCharacters);
+    await storage.writeRefineSession(projectId, nextSession);
+  } catch (error) {
+    // NOTE: world / characters / session は別ファイルなので、後段失敗時は読み込み時の
+    // スナップショットへ戻し、パッチだけが部分適用された状態を残さない。
+    const rollbackResults = await Promise.allSettled([
+      ...(worldChanged ? [storage.restoreWorldText(projectId, originalWorldText)] : []),
+      ...(charactersChanged ? [storage.writeCharacters(projectId, characters)] : []),
+      storage.writeRefineSession(projectId, session),
+    ]);
+    if (rollbackResults.some((result) => result.status === 'rejected')) {
+      console.error('Refine patch rollback failed', { projectId, patchId });
+    }
+    throw error;
+  }
 
   return { session: nextSession, patch: appliedPatch };
 }
@@ -389,10 +451,11 @@ export async function rejectRefinePatch(
   patchId: string
 ): Promise<RefineApplyResponse> {
   return withSessionLock(projectId, async () => {
-    const session = await storage.readRefineSession(projectId);
-    if (!session) {
+    const storedSession = await storage.readRefineSession(projectId);
+    if (!storedSession) {
       throw new RefineChatError('セッションがありません。', 'session_not_found', false, 404);
     }
+    const session = await migrateRefineSession(storedSession);
     const patchIndex = session.patches.findIndex((p) => p.patchId === patchId);
     if (patchIndex < 0) {
       throw new RefineChatError('パッチが見つかりません。', 'patch_not_found', false, 404);
@@ -545,6 +608,8 @@ function buildChatPrompt(input: BuildChatPromptInput): {
     '',
     '重要なルール:',
     '- world-replace の anchor は、必ず入力の world 本文中にちょうど 1 回だけ現れる文字列にすること。同じ文字列が複数箇所にある場合は前後の文をつなげて一意にする。',
+    '- world-replace の anchor に `## 世界の土台` / `## 開始時点の状況` の見出し行そのものは含めない。これらを削除・書き換えるパッチは失敗する。',
+    '- world-append は開始時点の状況セクションの末尾に追記される。',
     '- world 全文の書き換えは絶対にしない。変更したい箇所だけを anchor / replacement で示す。',
     '- character-update の characterId は必ず入力の <人物> セクションから引く。',
     '- character の currentState は物語/会話の開始時点の状態である。進行中の状態を上書きする用途には使わない。',

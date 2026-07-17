@@ -1036,7 +1036,7 @@ function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPla
     firstWishSuggestion:
       projectType === 'roleplay' ? '' : projectInput.firstWishSuggestion ?? '',
     styleSample: projectInput.styleSample ?? '',
-    worldText: projectInput.worldText ?? '',
+    world: projectInput.world ?? { foundation: '', initialSituation: '' },
     characters: projectInput.characters ?? [],
     memories: normalized.memories,
     storyState: normalized.storyState,

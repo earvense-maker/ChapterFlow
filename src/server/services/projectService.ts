@@ -26,6 +26,7 @@ import type {
   ProjectType,
   SamplingConfig,
   UpdateProjectBody,
+  WorldContent,
 } from '../types/index.js';
 
 const DEFAULT_OUTPUT_LENGTH = 6000;
@@ -149,7 +150,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   let sourceProject: Project | null = null;
   let sourcePresets: PresetsFile | null = null;
   let sourceCharacters: Character[] = [];
-  let sourceWorld = '';
+  let sourceWorld: WorldContent = { foundation: '', initialSituation: '' };
   let sourceStoryState = createEmptyStoryState();
 
   if (body.duplicateFrom) {
@@ -253,14 +254,14 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     customSystemPrompt: body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
   };
   const characters = normalizeCharactersForStorage(body.characters ?? sourceCharacters);
-  const worldText = body.worldText ?? sourceWorld;
+  const world = body.world ?? sourceWorld;
 
   await storage.writeProject(project);
   await storage.writeState(projectId, state);
   await storage.writePresets(projectId, presets);
   await storage.writeCharacters(projectId, characters);
   await storage.writeMemories(projectId, []);
-  await storage.writeWorld(projectId, worldText);
+  await storage.writeWorld(projectId, world);
   await storage.writeStoryState(projectId, { ...sourceStoryState, updatedAt: now });
   if (body.duplicateFrom && sourceProject) {
     // NOTE: 複製元の knowledge はコピーするが、roleplay/sessions は複製元だけに残す

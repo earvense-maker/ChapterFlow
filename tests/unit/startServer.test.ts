@@ -47,6 +47,47 @@ describe('startServer', () => {
     expect(body.runtime).toBe('server');
   });
 
+  it('serves and validates the two-area world API shape', async () => {
+    const server = await track(startServer({ host: '127.0.0.1', port: 0 }));
+    const project = await projectService.createProject({ title: 'World API' });
+    createdProjectIds.push(project.projectId);
+    const endpoint = `http://127.0.0.1:${server.port}/api/projects/${project.projectId}/world`;
+
+    const invalid = await fetch(endpoint, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ foundation: '法則だけ' }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const world = {
+      foundation: '```ts\nconst magic = true;',
+      initialSituation: '王国は停戦中',
+    };
+    const updated = await fetch(endpoint, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(world),
+    });
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toEqual(world);
+
+    const loaded = await fetch(endpoint);
+    expect(loaded.status).toBe(200);
+    await expect(loaded.json()).resolves.toEqual(world);
+
+    const areaUpdated = await fetch(`${endpoint}/initialSituation`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: '王国は開戦直前' }),
+    });
+    expect(areaUpdated.status).toBe(200);
+    await expect(areaUpdated.json()).resolves.toEqual({
+      foundation: world.foundation,
+      initialSituation: '王国は開戦直前',
+    });
+  });
+
   it('does not allow unrelated CORS origins', async () => {
     const server = await track(startServer({ host: '127.0.0.1', port: 0 }));
 
