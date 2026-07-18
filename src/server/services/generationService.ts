@@ -100,7 +100,7 @@ async function generateSceneUnlocked(
 
   const memories = (await storage.readMemories(projectId)).filter((m) => m.status === 'active');
   const characters = await storage.readCharacters(projectId);
-  const worldText = await storage.readWorld(projectId);
+  const worldText = await storage.readWorldPromptText(projectId);
   const presets = await storage.readPresets(projectId);
 
   const target = await prepareTargetScene(projectId, state, options.mode);
@@ -254,7 +254,7 @@ async function generateSceneStreamUnlocked(
 
   const memories = (await storage.readMemories(projectId)).filter((m) => m.status === 'active');
   const characters = await storage.readCharacters(projectId);
-  const worldText = await storage.readWorld(projectId);
+  const worldText = await storage.readWorldPromptText(projectId);
   const presets = await storage.readPresets(projectId);
 
   const target = await prepareTargetScene(projectId, state, options.mode);
@@ -862,7 +862,7 @@ async function refreshStoryStateForGeneration(
 
     const [characters, worldText] = await Promise.all([
       storage.readCharacters(projectId),
-      storage.readWorld(projectId),
+      storage.readWorldPromptText(projectId),
     ]);
 
     const updated = await updateStoryStateFromAcceptedScene({
@@ -1401,7 +1401,7 @@ async function buildReaderContextUsage(
     await Promise.all([
       storage.readMemories(project.projectId),
       storage.readCharacters(project.projectId),
-      storage.readWorld(project.projectId),
+      storage.readWorldPromptText(project.projectId),
       storage.readPresets(project.projectId),
       getContextSummary(project.projectId),
       getRecentContext(project.projectId, state.currentEpisodeId, state.currentSceneId),

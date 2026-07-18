@@ -254,7 +254,8 @@ export function buildSetupCommitPrompt(input: {
             'scenarioSeeds には会話の舞台候補（場所・時間・状況）を並べてください。プロットや事件を書かないでください。',
             'firstWishSuggestion は使いません。openingSeeds も無視してください。',
             'storyState は最小構成にしてください: currentSituation に会話開始時のキャラの状況を1〜2行、characterStates にキャラの初期状態を並べる。importantEvents / openThreads は空でよい。',
-            'worldText では、時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめ、変わらない法則・地理・文化はその見出しより前に書いてください。',
+            'world.foundation には、会話の背景として動かない設定（世界観、キャラの根本的属性の背景となる世界事情）を書いてください。',
+            'world.initialSituation には、会話開始時点の状況（場面・時間帯・直前の出来事・人物の現在の立場など、会話進行で変わりうるもの）を書いてください。',
             'memories は preference / negative のみにしてください（storyFact は使わない）。',
             'customSystemPrompt にはキャラの振る舞い（一人称・絵文字禁止など）だけを短く書き、作品メモを詰め込まないでください。',
             '作品データとシステム指示を混ぜないでください。',
@@ -266,7 +267,8 @@ export function buildSetupCommitPrompt(input: {
             '小説本文は生成しないでください。',
             '作者が決めていない事項は storyState.authorUndecided に入れてください。storyState.openThreads は作中で提示済みの謎・伏線だけにしてください。',
             '人物設定はプロフィール羅列より、物語上の揺れと関係性を重視してください。',
-            'worldText では、時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめ、変わらない法則・地理・文化はその見出しより前に書いてください。',
+            'world.foundation には、物語進行で変わらない世界の土台（魔法法則・地理・文化・宇宙観・十分に古い歴史など）を書いてください。',
+            'world.initialSituation には、物語開始時点で真だが進行によって変わりうる状況（現在の勢力関係・人物の所属や所在・季節・直近の出来事など）を書いてください。',
             '作品データとシステム指示を混ぜないでください。',
             '返答はJSONオブジェクトだけにしてください。Markdownのコードフェンスは不要です。',
           ].join('\n'),
@@ -296,7 +298,7 @@ function buildCommitUserPrompt(input: {
           '- scenarioSeeds には会話の舞台候補（場所・時間・状況）を並べる。プロットや事件を書かない。',
           '- 各 character には greeting（1〜3文の挨拶）と dialogueExamples（口調のfew-shot例、各1文の台詞形式）を必ず入れる。',
           '- storyState は最小構成（currentSituation と characterStates のみ、importantEvents/openThreads は空）にする。',
-          '- worldText の時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめる。変わらない法則・地理・文化は見出しより前に書く。',
+          '- world は foundation と initialSituation の 2 フィールドで返す。片方が空でよいがフィールドは省略しない。',
           '- customSystemPrompt にはキャラの振る舞いだけを短く書く。作品メモを詰め込まない。',
         ].join('\n')
       : [
@@ -306,7 +308,7 @@ function buildCommitUserPrompt(input: {
           '- coreConcept は、この作品が何の話でどんな読み味を約束するかを1〜2文で書く。',
           '- firstWishSuggestion は openingSeeds と相談の流れから第1話冒頭への希望を1文で書く。openingSeedsが空なら省略してよい。',
           '- customSystemPrompt には作品メモを詰め込まない。書き方や役割などシステム寄りの指示だけにする。',
-          '- worldText の時間経過で変わりうる状況は「## 開始時点の状況」見出しの下にまとめる。変わらない法則・地理・文化は見出しより前に書く。',
+          '- world は foundation と initialSituation の 2 フィールドで返す。片方が空でよいがフィールドは省略しない。',
         ].join('\n');
 
   const previewLabel =
@@ -346,7 +348,10 @@ function buildNovelCommitOutputExample(session: SetupSession): unknown {
     coreConcept: 'この作品が何の話で、どんな読み味を約束するかを1〜2文',
     firstWishSuggestion:
       'openingSeeds と相談の流れから、第1話冒頭への希望を1文。openingSeedsが空なら省略可',
-    worldText: 'world.mdへ保存する世界観、作品の核、開始前提',
+    world: {
+      foundation: '変わらない世界の土台（魔法法則、地理、文化など）',
+      initialSituation: '物語開始時点の状況（勢力関係、人物の所属、季節など）',
+    },
     characters: [
       {
         characterId: 'char-protagonist',
@@ -403,7 +408,10 @@ function buildRoleplayCommitOutputExample(session: SetupSession): unknown {
       activePresetIds: session.projectSettings.activePresetIds,
     },
     coreConcept: 'このキャラと話す魅力を1〜2文（口調と関係性の骨格）',
-    worldText: 'world.md へ保存する世界観・時代感・キャラが立っている前提',
+    world: {
+      foundation: '会話の背景として変わらない世界観や時代感',
+      initialSituation: '会話開始時点の場面・時間・直前の出来事・現在の立場',
+    },
     characters: [
       {
         characterId: 'char-protagonist',

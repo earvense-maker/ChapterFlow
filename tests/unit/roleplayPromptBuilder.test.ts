@@ -6,6 +6,7 @@ import {
   buildRoleplaySystemInstructions,
   buildRoleplayUserPrompt,
 } from '../../src/server/services/roleplayPromptBuilder';
+import { baseInstruction } from '../../src/server/prompts/baseInstruction';
 import type {
   Character,
   RoleplayContextSnapshot,
@@ -116,6 +117,19 @@ describe('buildRoleplaySystemInstructions', () => {
     const snapshot = baseSnapshot({ worldDigest: '短い世界観' });
     const system = buildRoleplaySystemInstructions({ snapshot });
     expect(system).toContain('短い世界観');
+  });
+
+  it('does not inject a legacy generated prompt as an additional roleplay instruction', () => {
+    const legacyFullPrompt = [
+      baseInstruction(),
+      '【選択された設定】\n【文体: 自然な会話】\n自然な会話文で書く。',
+    ].join('\n\n---\n\n');
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({ customSystemPrompt: legacyFullPrompt }),
+    });
+
+    expect(system).not.toContain(baseInstruction());
+    expect(system).not.toContain('【追加のシステム指示】');
   });
 });
 

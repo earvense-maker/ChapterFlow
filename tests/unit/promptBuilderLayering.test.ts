@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildPrompt, splitWorldByConvention } from '../../src/server/prompts/promptBuilder';
 import * as storage from '../../src/server/services/storageService';
+import { parseWorldMd, serializeWorldMd } from '../../src/server/utils/worldMd';
 import type { Character, Project, ProjectState, StoryState } from '../../src/shared/types';
 
 const projectId = 'proj-prompt-layering-test';
@@ -88,6 +89,14 @@ describe('設定レイヤー分離 prompt rendering', () => {
     expect(withSettings.indexOf('【作品設定】')).toBeLessThan(
       withSettings.indexOf('以下は作品の基礎設定である')
     );
+  });
+
+  it('does not emit an empty work-settings header for a canonical empty world', async () => {
+    const emptyCanonical = serializeWorldMd({ foundation: '', initialSituation: '' });
+    const userPrompt = await prompt([], emptyCanonical);
+
+    expect(userPrompt).not.toContain('【作品設定】');
+    expect(userPrompt).not.toContain('以下は作品の基礎設定である');
   });
 
   it('uses dynamic current state once and keeps knowledge in the information-state section', async () => {
@@ -201,6 +210,26 @@ describe('splitWorldByConvention', () => {
     ]);
     expect(splitWorldByConvention('法則A\n```\n## 開始時点の状況')).toEqual([
       { kind: 'normal', content: '法則A\n```\n## 開始時点の状況' },
+    ]);
+  });
+
+  it('splits canonical fields without exposing canonical headings or resetting at subheadings', () => {
+    const text = serializeWorldMd({
+      foundation: '魔法法則',
+      initialSituation: '停戦中\n## 現在の勢力図\n東西が拮抗',
+    });
+
+    expect(splitWorldByConvention(text)).toEqual([
+      { kind: 'normal', content: '魔法法則' },
+      { kind: 'initial', content: '停戦中\n## 現在の勢力図\n東西が拮抗' },
+    ]);
+  });
+
+  it('intentionally treats pre-L4 world text as an initial situation after migration', () => {
+    const migrated = serializeWorldMd(parseWorldMd('分類されていない旧世界設定'));
+
+    expect(splitWorldByConvention(migrated)).toEqual([
+      { kind: 'initial', content: '分類されていない旧世界設定' },
     ]);
   });
 });

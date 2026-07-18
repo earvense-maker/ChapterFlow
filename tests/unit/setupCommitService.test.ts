@@ -135,8 +135,75 @@ describe('setupCommitService', () => {
       raw: {},
     });
 
-    expect(normalized.projectInput.worldText).toContain('気弱な絵師');
-    expect(normalized.projectInput.worldText).toContain('江戸時代風の町');
+    expect(normalized.projectInput.world?.initialSituation).toContain('気弱な絵師');
+    expect(normalized.projectInput.world?.initialSituation).toContain('江戸時代風の町');
+  });
+
+  it('accepts the new world schema and normalizes invalid fields to empty strings', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: {},
+      raw: { world: { foundation: '魔法法則', initialSituation: null } },
+    });
+
+    expect(normalized.projectInput.world).toEqual({
+      foundation: '魔法法則',
+      initialSituation: '',
+    });
+  });
+
+  it('recovers a string-valued world schema slip without discarding model output', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: {},
+      raw: { world: '魔法法則\n## 開始時点の状況\n王国は停戦中' },
+    });
+
+    expect(normalized.projectInput.world).toEqual({
+      foundation: '魔法法則',
+      initialSituation: '王国は停戦中',
+    });
+  });
+
+  it('uses draft fallback when the AI returns an entirely empty world record', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: {},
+      raw: { world: { foundation: ' ', initialSituation: '' } },
+    });
+
+    expect(normalized.projectInput.world?.foundation).toBe('');
+    expect(normalized.projectInput.world?.initialSituation).toContain('江戸時代風の町');
+  });
+
+  it('allows the user-edited commit plan to intentionally clear both world fields', () => {
+    const normalized = normalizeSetupCommitPlan({
+      session: session(),
+      now,
+      presetIdsByCategory: {},
+      raw: { world: { foundation: '', initialSituation: '' } },
+    });
+
+    expect(normalized.projectInput.world).toEqual({ foundation: '', initialSituation: '' });
+  });
+
+  it('maps legacy L4 worldText into both world fields', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: {},
+      raw: {
+        worldText: '魔法法則\n## 開始時点の状況\n王国は停戦中',
+      },
+    });
+
+    expect(normalized.projectInput.world).toEqual({
+      foundation: '魔法法則',
+      initialSituation: '王国は停戦中',
+    });
   });
 
   it('builds an editable provisional title from the core concept when conversion omits it', () => {
@@ -366,7 +433,10 @@ describe('setupCommitService', () => {
     });
 
     expect(planResult.projectInput.title).toBe('plan title');
-    expect(planResult.projectInput.worldText).toBe('plan world');
+    expect(planResult.projectInput.world).toEqual({
+      foundation: '',
+      initialSituation: 'plan world',
+    });
     expect(planResult.memories.some((memory) => memory.content === '流血表現' && memory.type === 'negative')).toBe(true);
     expect(planResult.memories.some((memory) => memory.content === 'plan memory')).toBe(true);
     expect(planResult.storyState.currentSituation).toContain('plan situation');

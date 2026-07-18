@@ -129,6 +129,7 @@ async function runStreamRoute(
         sessionId,
         message: sendBody.message,
         revision: sendBody.revision,
+        replacePendingMessageId: sendBody.replacePendingMessageId,
         abortSignal: abortController.signal,
       });
     } else {

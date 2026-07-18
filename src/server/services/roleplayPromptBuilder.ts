@@ -21,6 +21,7 @@ import type {
   RoleplayContextSnapshot,
   RoleplayMessage,
 } from '../types/index.js';
+import { normalizeRoleplayAdditionalInstructions } from '../prompts/systemPrompt.js';
 
 export const ROLEPLAY_WORLD_MAX_CHARS = 2000;
 export const ROLEPLAY_PERSONA_MAX_CHARS = 6000;
@@ -81,7 +82,7 @@ export function buildRoleplaySystemInstructions(
   // 「対象キャラ」まではどうしても入れたい塊なのでまとめて評価する。
   const persona = truncate(buildPersonaCard(character), ROLEPLAY_PERSONA_MAX_CHARS);
   const dialogueExamples = buildDialogueExamples(character.dialogueExamples, characterName);
-  const customSystemPrompt = snapshot.customSystemPrompt?.trim() ?? '';
+  const customSystemPrompt = normalizeRoleplayAdditionalInstructions(snapshot.customSystemPrompt);
   const worldDigest = truncate(snapshot.worldDigest, ROLEPLAY_WORLD_MAX_CHARS);
   const otherCharacters = buildOtherCharacters(snapshot.otherCharacters);
 

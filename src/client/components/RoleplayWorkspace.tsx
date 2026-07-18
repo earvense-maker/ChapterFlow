@@ -42,7 +42,9 @@ export default function RoleplayWorkspace({
   const [message, setMessage] = useState('');
   const [streamingText, setStreamingText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [isRegenerate, setIsRegenerate] = useState(false);
+  const [pendingReplaceMessageId, setPendingReplaceMessageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
@@ -55,6 +57,8 @@ export default function RoleplayWorkspace({
   } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const sentMessageRef = useRef('');
+  const stopRequestedRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef(true);
 
@@ -74,6 +78,7 @@ export default function RoleplayWorkspace({
         const first = sessionsRes.sessions[0];
         const view = await api.getRoleplaySession(projectId, first.sessionId);
         setActiveSession(view.session);
+        setPendingReplaceMessageId(null);
       } else if (chars.length > 0) {
         // NOTE: セッションが1つも無ければ、モーダルを自動で開いて開始を促す。
         setShowNewModal(true);
@@ -97,6 +102,21 @@ export default function RoleplayWorkspace({
 
   const currentCharacterName = activeSession?.characterName ?? '';
 
+  const resetStreamState = useCallback(() => {
+    setStreamingText('');
+    setIsStreaming(false);
+    setIsStopping(false);
+    setIsRegenerate(false);
+    abortRef.current = null;
+    stopRequestedRef.current = false;
+    sentMessageRef.current = '';
+  }, []);
+
+  const showStopNotice = useCallback((text: string) => {
+    setNotice(text);
+    window.setTimeout(() => setNotice(null), 2500);
+  }, []);
+
   const handleStartConversation = useCallback(
     async (input: StartConversationInput) => {
       setError(null);
@@ -104,6 +124,7 @@ export default function RoleplayWorkspace({
       try {
         const res = await api.createRoleplaySession(projectId, input);
         setActiveSession(res.session);
+        setPendingReplaceMessageId(null);
         const list = await api.listRoleplaySessions(projectId);
         setSessions(list.sessions);
       } catch (err) {
@@ -124,6 +145,8 @@ export default function RoleplayWorkspace({
         const res = await api.getRoleplaySession(projectId, sessionId);
         setActiveSession(res.session);
         setStreamingText('');
+        setPendingReplaceMessageId(null);
+        setMessage('');
       } catch (err) {
         setError(err instanceof Error ? err.message : '会話を読み込めませんでした');
       }
@@ -134,40 +157,72 @@ export default function RoleplayWorkspace({
   const handleSend = useCallback(async () => {
     if (!activeSession || !message.trim() || isStreaming) return;
     const text = message.trim();
+    const replacePendingMessageId = pendingReplaceMessageId ?? undefined;
     // NOTE: 送信前 revision を控え、pre-header 失敗（user 未保存）と post-header 失敗
     // （user 保存済み・応答失敗）を再同期後の revision 比較で判別する（review §5.4/6）。
     const preSendRevision = activeSession.revision;
     setMessage('');
     setStreamingText('');
     setIsStreaming(true);
+    setIsStopping(false);
     setIsRegenerate(false);
+    setError(null);
+    stopRequestedRef.current = false;
+    sentMessageRef.current = text;
     autoScrollRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
 
     const handlers: RoleplayStreamHandlers = {
-      onChunk: (chunk) => setStreamingText((prev) => prev + chunk),
+      onChunk: (chunk) => {
+        if (!stopRequestedRef.current) {
+          setStreamingText((prev) => prev + chunk);
+        }
+      },
       onDone: async (session) => {
+        const sentText = sentMessageRef.current;
+        const stopWasRequested = stopRequestedRef.current;
+        if (stopWasRequested) {
+          // NOTE: 停止と完了が入れ違った場合、既に応答まで保存された元発言を
+          // 入力欄へ残して二重送信させない。停止後に利用者が編集した文は保持する。
+          setMessage((current) => (current === sentText ? '' : current));
+        }
         setActiveSession(session);
-        setStreamingText('');
-        setIsStreaming(false);
-        abortRef.current = null;
+        setPendingReplaceMessageId(null);
+        resetStreamState();
         const list = await api.listRoleplaySessions(projectId).catch(() => null);
         if (list) setSessions(list.sessions);
       },
       onError: async (err) => {
+        const stoppedSend = err.code === 'aborted' && stopRequestedRef.current;
+        const sentText = sentMessageRef.current || text;
         setStreamingText('');
-        setIsStreaming(false);
         abortRef.current = null;
-        setError(err.error);
+        if (stoppedSend) {
+          setError(null);
+        } else {
+          setError(err.error);
+        }
         // NOTE: エラー時は GET で最新セッションに再同期して revision ズレを吸収し、
-        // その後 revision を比較して user メッセージが保存されたか判定する。
-        // preSendRevision と等しい = user 未保存 → 入力を復元してリトライ可能に。
+        // 末尾が未応答 user なら明示的な訂正送信へ移る。単なる入力欄の解放では
+        // サーバーの pending_response 制約を越えられないため、messageId も保持する。
         let userWasSaved = true;
         try {
           const res = await api.getRoleplaySession(projectId, activeSession.sessionId);
           setActiveSession(res.session);
           userWasSaved = res.session.revision > preSendRevision;
+          const last = res.session.messages[res.session.messages.length - 1];
+          if (stoppedSend && last?.role === 'user') {
+            setPendingReplaceMessageId(last.messageId);
+            setMessage((current) => (current ? current : sentText));
+          } else {
+            setPendingReplaceMessageId(null);
+            // NOTE: クライアント側は中断済みでも、サーバーが先に応答を保存していた場合は
+            // 復元した元発言だけを消す。停止後に利用者が編集した文は保持する。
+            if (stoppedSend && last?.role === 'character') {
+              setMessage((current) => (current === sentText ? '' : current));
+            }
+          }
         } catch {
           // 再同期失敗時は「保存された可能性」寄りに倒し、二重送信リスクを避ける。
           userWasSaved = true;
@@ -175,7 +230,11 @@ export default function RoleplayWorkspace({
         if (!userWasSaved) {
           // NOTE: setMessage は state のクロージャに依らないため、
           // ユーザーがエラー中に別の文字を打ち始めていても上書きしないよう prev ベースにする。
-          setMessage((current) => (current ? current : text));
+          setMessage((current) => (current ? current : sentText));
+        }
+        resetStreamState();
+        if (stoppedSend) {
+          showStopNotice('応答を停止しました。文章を訂正して送信できます。');
         }
       },
     };
@@ -183,11 +242,19 @@ export default function RoleplayWorkspace({
     await api.sendRoleplayMessageStream(
       projectId,
       activeSession.sessionId,
-      { message: text, revision: preSendRevision },
+      { message: text, revision: preSendRevision, replacePendingMessageId },
       handlers,
       controller.signal
     );
-  }, [activeSession, message, isStreaming, projectId]);
+  }, [
+    activeSession,
+    message,
+    isStreaming,
+    pendingReplaceMessageId,
+    projectId,
+    resetStreamState,
+    showStopNotice,
+  ]);
 
   const canRegenerate = useMemo(() => {
     // NOTE: 末尾が character + 直前 user、または末尾 user（送信失敗・再起動からの復旧）
@@ -217,35 +284,52 @@ export default function RoleplayWorkspace({
 
   const handleRegenerate = useCallback(async () => {
     if (!activeSession || !canRegenerate || isStreaming) return;
+    if (pendingReplaceMessageId) {
+      // 「もう一度応答をもらう」は保存済みの発言をそのまま再試行する操作。
+      // 訂正用に復元した同じ文を新規入力として残さない。
+      setMessage('');
+      setPendingReplaceMessageId(null);
+    }
     setStreamingText('');
     setIsStreaming(true);
+    setIsStopping(false);
     setIsRegenerate(true);
+    stopRequestedRef.current = false;
+    sentMessageRef.current = '';
     autoScrollRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
 
     const handlers: RoleplayStreamHandlers = {
-      onChunk: (chunk) => setStreamingText((prev) => prev + chunk),
+      onChunk: (chunk) => {
+        if (!stopRequestedRef.current) {
+          setStreamingText((prev) => prev + chunk);
+        }
+      },
       onDone: async (session) => {
         setActiveSession(session);
-        setStreamingText('');
-        setIsStreaming(false);
-        setIsRegenerate(false);
-        abortRef.current = null;
+        setPendingReplaceMessageId(null);
+        resetStreamState();
         const list = await api.listRoleplaySessions(projectId).catch(() => null);
         if (list) setSessions(list.sessions);
       },
       onError: async (err) => {
-        setStreamingText('');
-        setIsStreaming(false);
-        setIsRegenerate(false);
-        abortRef.current = null;
-        setError(err.error);
+        const stoppedRegenerate = err.code === 'aborted' && stopRequestedRef.current;
+        if (stoppedRegenerate) {
+          setError(null);
+        } else {
+          setError(err.error);
+        }
         try {
           const res = await api.getRoleplaySession(projectId, activeSession.sessionId);
           setActiveSession(res.session);
         } catch {
           // ignore
+        }
+        setPendingReplaceMessageId(null);
+        resetStreamState();
+        if (stoppedRegenerate) {
+          showStopNotice('応答を停止しました。「もう一度応答をもらう」から再試行できます。');
         }
       },
     };
@@ -257,14 +341,28 @@ export default function RoleplayWorkspace({
       handlers,
       controller.signal
     );
-  }, [activeSession, canRegenerate, isStreaming, projectId]);
+  }, [
+    activeSession,
+    canRegenerate,
+    isStreaming,
+    pendingReplaceMessageId,
+    projectId,
+    resetStreamState,
+    showStopNotice,
+  ]);
 
   const handleStop = useCallback(() => {
-    if (abortRef.current) abortRef.current.abort();
-  }, []);
+    if (!abortRef.current || isStopping) return;
+    stopRequestedRef.current = true;
+    setIsStopping(true);
+    if (!isRegenerate && sentMessageRef.current) {
+      setMessage((current) => (current ? current : sentMessageRef.current));
+    }
+    abortRef.current.abort();
+  }, [isRegenerate, isStopping]);
 
   const handleArchive = useCallback(async () => {
-    if (!activeSession) return;
+    if (!activeSession || isStreaming || isStopping) return;
     if (!window.confirm('この会話をアーカイブしますか？（一覧から消えますが履歴は保持されます）')) {
       return;
     }
@@ -272,6 +370,15 @@ export default function RoleplayWorkspace({
       await api.archiveRoleplaySession(projectId, activeSession.sessionId, {
         revision: activeSession.revision,
       });
+      setPendingReplaceMessageId(null);
+      setMessage('');
+      setStreamingText('');
+      setIsStreaming(false);
+      setIsStopping(false);
+      setIsRegenerate(false);
+      abortRef.current = null;
+      stopRequestedRef.current = false;
+      sentMessageRef.current = '';
       setActiveSession(null);
       const list = await api.listRoleplaySessions(projectId);
       setSessions(list.sessions);
@@ -283,7 +390,7 @@ export default function RoleplayWorkspace({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'アーカイブに失敗しました');
     }
-  }, [activeSession, projectId]);
+  }, [activeSession, isStopping, isStreaming, projectId]);
 
   // NOTE: 選択→NG登録の対象範囲検証（review §5.6 / P2）。
   //   1) selection の anchor/focus 両方が同一の「character バブル本文」要素内に閉じているか
@@ -440,7 +547,11 @@ export default function RoleplayWorkspace({
                   <div style={styles.scenario}>舞台: {activeSession.scenario}</div>
                 )}
               </div>
-              <button onClick={handleArchive} style={styles.linkButton}>
+              <button
+                onClick={handleArchive}
+                style={styles.linkButton}
+                disabled={isStreaming || isStopping}
+              >
                 アーカイブ
               </button>
             </div>
@@ -516,7 +627,7 @@ export default function RoleplayWorkspace({
                     if (!isStreaming) void handleSend();
                   }
                 }}
-                disabled={isStreaming}
+                disabled={(isStreaming && !isStopping) || activeSession.status !== 'active'}
                 placeholder={
                   activeSession.status === 'archived'
                     ? 'このセッションはアーカイブ済みです'
@@ -526,8 +637,10 @@ export default function RoleplayWorkspace({
                 rows={3}
               />
               <div style={styles.inputActions}>
-                {isStreaming ? (
+                {isStreaming && !isStopping ? (
                   <button onClick={handleStop}>停止</button>
+                ) : isStopping ? (
+                  <button disabled>停止完了後に送信できます</button>
                 ) : (
                   <>
                     {canRegenerate && (
@@ -543,7 +656,7 @@ export default function RoleplayWorkspace({
                       onClick={handleSend}
                       disabled={!message.trim() || activeSession.status !== 'active'}
                     >
-                      送信
+                      {pendingReplaceMessageId ? '訂正して送信' : '送信'}
                     </button>
                   </>
                 )}

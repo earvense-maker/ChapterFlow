@@ -68,9 +68,10 @@ describe('buildPrompt', () => {
     expect(systemInstructions).toContain('【文体見本】');
     expect(systemInstructions).toContain('【選択された設定】');
     expect(systemInstructions).toContain('静謐で控えめな文体');
+    expect(systemInstructions).not.toContain('【作品固有の追加指示】');
   });
 
-  it('uses a saved custom system prompt when provided', async () => {
+  it('appends a saved custom system prompt after the generated preset prompt', async () => {
     const { systemInstructions } = await buildPrompt({
       project: makeProject(),
       state: makeState(),
@@ -80,19 +81,23 @@ describe('buildPrompt', () => {
       worldText: '',
       customSystemPrompt: 'カスタムのシステム指示',
     });
-    expect(systemInstructions).toBe('カスタムのシステム指示');
+    expect(systemInstructions).toContain('経験豊かな小説家');
+    expect(systemInstructions).toContain('【選択された設定】');
+    expect(systemInstructions).toContain('【作品固有の追加指示】\nカスタムのシステム指示');
+    expect(systemInstructions.indexOf('【選択された設定】')).toBeLessThan(
+      systemInstructions.indexOf('【作品固有の追加指示】')
+    );
   });
 
-  // NOTE: customSystemPrompt は system 側を完全置換するため、baseInstruction が消える。
-  // 日本語・本文のみ・非完結・視点規則は userPrompt 側の【出力形式】に残ることが命綱。
-  // セットアップ由来の断片型と UI 編集由来の全文型の両方でこの命綱が効くことを固定する。
+  // NOTE: 既存作品には断片型と旧UI由来の長いカスタム指示があるため、どちらも
+  // 基本プロンプトを消さずに追加され、userPrompt 側の安全規則も残ることを固定する。
   it.each([
     {
       label: 'setup fragment-style custom prompt',
       custom: 'キャラは絵文字を使わず、地の文は静かめに書く。',
     },
     {
-      label: 'UI full-replacement custom prompt',
+      label: 'legacy UI full-length custom prompt',
       custom:
         'あなたは指導的な語り手。以下のガイドラインで書け。\n' +
         '- 三人称寄り添い視点で進める。\n- テンポは早め。\n- 説明過多を避ける。',
@@ -109,10 +114,9 @@ describe('buildPrompt', () => {
         worldText: '',
         customSystemPrompt: custom,
       });
-      // system は完全置換される
-      expect(systemInstructions).toBe(custom);
-      expect(systemInstructions).not.toContain('経験豊かな小説家');
-      // userPrompt に安全規則と視点規則が残っている
+      expect(systemInstructions).toContain('経験豊かな小説家');
+      expect(systemInstructions).toContain('【選択された設定】');
+      expect(systemInstructions).toContain(`【作品固有の追加指示】\n${custom}`);
       expect(userPrompt).toContain('出力は日本語の小説本文のみ');
       expect(userPrompt).toContain('前置き・後書き・設定の説明は書かない');
       expect(userPrompt).toContain('物語はユーザーの希望なしに完結させない');

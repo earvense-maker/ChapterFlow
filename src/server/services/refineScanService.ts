@@ -66,7 +66,7 @@ async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineSca
 
   const [project, world, characters, presets, previousScan, storySnapshot] = await Promise.all([
     storage.readProject(projectId),
-    storage.readWorld(projectId),
+    storage.readWorldPromptText(projectId),
     storage.readCharacters(projectId),
     storage.readPresets(projectId),
     storage.readRefineScan(projectId),
@@ -189,7 +189,7 @@ async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineSca
 export async function getRefineReviewStatus(projectId: string): Promise<RefineReviewStatus> {
   const [project, world, characters, presets, cachedScan, storySnapshot] = await Promise.all([
     storage.readProject(projectId),
-    storage.readWorld(projectId),
+    storage.readWorldPromptText(projectId),
     storage.readCharacters(projectId),
     storage.readPresets(projectId),
     storage.readRefineScan(projectId),

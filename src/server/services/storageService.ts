@@ -27,7 +27,13 @@ import type {
   SetupSession,
   StoryState,
   StoryStateDiffRecord,
+  WorldContent,
 } from '../types/index.js';
+import {
+  hasCompleteCanonicalWorldStructure,
+  parseWorldMd,
+  serializeWorldMd,
+} from '../utils/worldMd.js';
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
@@ -381,12 +387,31 @@ export async function deleteRefineSession(projectId: string): Promise<void> {
   await removeDataPath(refineSessionJsonPath(projectId), { force: true });
 }
 
-export async function readWorld(projectId: string): Promise<string> {
+export async function readWorld(projectId: string): Promise<WorldContent> {
   const text = await readTextFile(worldMdPath(projectId));
-  return text ?? '';
+  return parseWorldMd(text ?? '');
 }
 
-export async function writeWorld(projectId: string, text: string): Promise<void> {
+export async function readWorldText(projectId: string): Promise<string> {
+  return (await readTextFile(worldMdPath(projectId))) ?? '';
+}
+
+export async function readWorldPromptText(projectId: string): Promise<string> {
+  const text = await readWorldText(projectId);
+  const content = parseWorldMd(text);
+  return content.foundation.trim() || content.initialSituation.trim() ? text : '';
+}
+
+export async function writeWorld(projectId: string, content: WorldContent): Promise<void> {
+  const text = serializeWorldMd(content);
+  if (!hasCompleteCanonicalWorldStructure(text)) {
+    throw new Error('Invalid canonical world structure');
+  }
+  await safeWriteFile(worldMdPath(projectId), text);
+}
+
+// NOTE: refine の複数ファイル更新を巻き戻す時だけ使う。通常の保存は writeWorld を通す。
+export async function restoreWorldText(projectId: string, text: string): Promise<void> {
   await safeWriteFile(worldMdPath(projectId), text);
 }
 

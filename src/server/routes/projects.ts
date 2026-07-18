@@ -15,7 +15,19 @@ router.get('/', async (_req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Invalid project payload' });
+    }
     const body = req.body as CreateProjectBody;
+    if (
+      body.world !== undefined &&
+      (typeof body.world !== 'object' ||
+        body.world === null ||
+        typeof body.world.foundation !== 'string' ||
+        typeof body.world.initialSituation !== 'string')
+    ) {
+      return res.status(400).json({ error: 'Invalid world payload' });
+    }
     const project = await projectService.createProject(body);
     res.status(201).json(project);
   } catch (err) {

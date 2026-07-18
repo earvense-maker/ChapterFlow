@@ -2,6 +2,10 @@ import { Router, type NextFunction, type Response } from 'express';
 import { promises as fs } from 'node:fs';
 import { PRESETS_PATH } from '../config.js';
 import * as storage from '../services/storageService.js';
+import {
+  hasCompleteCanonicalWorldStructure,
+  serializeWorldMd,
+} from '../utils/worldMd.js';
 import * as projectService from '../services/projectService.js';
 import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
@@ -94,15 +98,28 @@ router.put('/projects/:id/presets', async (req, res, next) => {
   try {
     const body = req.body as Partial<PresetsFile>;
     const nextPresets = await withProjectWriteLock(req.params.id, async () => {
-      const presets = await storage.readPresets(req.params.id);
-      if (!presets) return null;
+      const [project, presets] = await Promise.all([
+        storage.readProject(req.params.id),
+        storage.readPresets(req.params.id),
+      ]);
+      if (!project || !presets) return null;
 
       const nextFile: PresetsFile = { ...presets, ...body };
-      await storage.writePresets(req.params.id, nextFile);
+      // NOTE: 古い presets.json は任意プリセットのキーを持たない場合があるため、
+      // undefined を project 側の選択値へ上書きしないよう、定義済み値だけを反映する。
+      const activePresetIds = {
+        ...project.activePresetIds,
+        ...activePresetsFromPresetFile(nextFile),
+      };
+      const { customSystemPrompt } = await resolveSystemPrompt(
+        activePresetIds,
+        nextFile.customSystemPrompt
+      );
+      const normalizedFile: PresetsFile = { ...nextFile, customSystemPrompt };
+      await storage.writePresets(req.params.id, normalizedFile);
 
-      const activePresetIds = activePresetsFromPresetFile(nextFile);
       await projectService.updateProject(req.params.id, { activePresetIds });
-      return nextFile;
+      return normalizedFile;
     });
 
     if (!nextPresets) return res.status(404).json({ error: 'Presets not found' });
@@ -166,8 +183,7 @@ router.put('/projects/:id/characters', async (req, res, next) => {
 
 router.get('/projects/:id/world', async (req, res, next) => {
   try {
-    const text = await storage.readWorld(req.params.id);
-    res.json({ text });
+    res.json(await storage.readWorld(req.params.id));
   } catch (err) {
     next(err);
   }
@@ -175,14 +191,47 @@ router.get('/projects/:id/world', async (req, res, next) => {
 
 router.put('/projects/:id/world', async (req, res, next) => {
   try {
-    const body = req.body as { text?: unknown };
-    if (typeof body.text !== 'string') {
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Invalid world payload' });
+    }
+    const body = req.body as { foundation?: unknown; initialSituation?: unknown };
+    if (typeof body.foundation !== 'string' || typeof body.initialSituation !== 'string') {
       return res.status(400).json({ error: 'Invalid world payload' });
     }
 
-    const text = body.text;
-    await withProjectWriteLock(req.params.id, () => storage.writeWorld(req.params.id, text));
-    res.json({ text });
+    const world = { foundation: body.foundation, initialSituation: body.initialSituation };
+    if (!hasCompleteCanonicalWorldStructure(serializeWorldMd(world))) {
+      return res.status(400).json({ error: 'Invalid canonical world structure' });
+    }
+    await withProjectWriteLock(req.params.id, () => storage.writeWorld(req.params.id, world));
+    res.json(world);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/projects/:id/world/:area', async (req, res, next) => {
+  try {
+    const area = req.params.area;
+    if (area !== 'foundation' && area !== 'initialSituation') {
+      return res.status(400).json({ error: 'Invalid world area' });
+    }
+    if (
+      typeof req.body !== 'object' ||
+      req.body === null ||
+      Array.isArray(req.body) ||
+      typeof req.body.text !== 'string'
+    ) {
+      return res.status(400).json({ error: 'Invalid world area payload' });
+    }
+
+    const world = await withProjectWriteLock(req.params.id, async () => {
+      const current = await storage.readWorld(req.params.id);
+      const next = { ...current, [area]: req.body.text };
+      await storage.writeWorld(req.params.id, next);
+      return next;
+    });
+    res.json(world);
   } catch (err) {
     next(err);
   }

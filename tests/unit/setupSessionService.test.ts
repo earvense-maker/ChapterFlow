@@ -431,7 +431,7 @@ describe('setupSessionService', () => {
       const planResult = await setupSessionService.createSetupCommitPlan(result.sessionId);
 
       expect(planResult.plan.project.title).toBe('LLM title');
-      expect(planResult.plan.worldText).toBe('LLM world');
+      expect(planResult.plan.world).toEqual({ foundation: '', initialSituation: 'LLM world' });
       expect(planResult.session.commitPlan?.plan.project.title).toBe('LLM title');
       expect(planResult.revision).toBeGreaterThan(prepared.revision);
     } finally {
@@ -484,7 +484,7 @@ describe('setupSessionService', () => {
         outputLength: 12000,
         activePresetIds: { genre: 'unknown-genre', density: 'balanced' },
       },
-      worldText: 'Edited world',
+      world: { foundation: 'Edited foundation', initialSituation: 'Edited world' },
       characters: [{ characterId: '../bad', name: 'Edited char', role: 'protagonist', description: 'desc' }],
       memories: [{ memoryId: 'bad id', type: 'preference', content: 'Edited memory', importance: 'high', relatedCharacters: [], relatedEpisodes: [], createdAt: now, updatedAt: now, sourceSceneId: null, status: 'active', source: 'manual' }],
       storyState: {
@@ -529,7 +529,7 @@ describe('setupSessionService', () => {
 
     const editedPlan: SetupCommitPlan = {
       project: { title: 'Once', outputLength: 3000, activePresetIds: {} },
-      worldText: 'world',
+      world: { foundation: '', initialSituation: 'world' },
       characters: [],
       memories: [],
       storyState: { schemaVersion: 1, currentSituation: [], characterStates: [], importantEvents: [], openThreads: [], updatedAt: now },
@@ -704,7 +704,7 @@ describe('setupSessionService', () => {
 
     const editedPlan: SetupCommitPlan = {
       project: { title: 'Fail', outputLength: 3000, activePresetIds: {} },
-      worldText: 'world',
+      world: { foundation: '', initialSituation: 'world' },
       characters: [],
       memories: [],
       storyState: { schemaVersion: 1, currentSituation: [], characterStates: [], importantEvents: [], openThreads: [], updatedAt: now },

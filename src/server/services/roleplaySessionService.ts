@@ -36,7 +36,9 @@ import {
   normalizeProjectType,
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
+import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import type {
+  ActivePresets,
   AdapterGenerateResult,
   Character,
   FinishReason,
@@ -270,12 +272,17 @@ function buildWorldDigest(worldText: string): string {
   return cutoff;
 }
 
-function buildContextSnapshot(input: {
+async function buildContextSnapshot(input: {
   character: Character;
   otherCharacters: Character[];
   worldText: string;
   customSystemPrompt: string;
-}): RoleplayContextSnapshot {
+  activePresetIds: ActivePresets;
+}): Promise<RoleplayContextSnapshot> {
+  const { customSystemPrompt } = await resolveSystemPrompt(
+    input.activePresetIds,
+    input.customSystemPrompt
+  );
   return {
     character: { ...input.character },
     otherCharacters: input.otherCharacters.map((c) => ({
@@ -284,7 +291,7 @@ function buildContextSnapshot(input: {
       description: c.description,
     })),
     worldDigest: buildWorldDigest(input.worldText),
-    customSystemPrompt: input.customSystemPrompt ?? '',
+    customSystemPrompt,
     capturedAt: nowIso(),
   };
 }
@@ -324,14 +331,15 @@ export async function createRoleplaySession(
     }
 
     const scenario = normalizeScenario(input.scenario);
-    const worldText = await storage.readWorld(input.projectId);
+    const worldText = await storage.readWorldPromptText(input.projectId);
     const presets = await storage.readPresets(input.projectId);
 
-    const snapshot = buildContextSnapshot({
+    const snapshot = await buildContextSnapshot({
       character,
       otherCharacters: characters.filter((c) => c.characterId !== input.characterId),
       worldText,
       customSystemPrompt: presets?.customSystemPrompt ?? '',
+      activePresetIds: project.activePresetIds,
     });
 
     const now = nowIso();
@@ -432,6 +440,7 @@ export interface SendRoleplayMessageInput {
   sessionId: string;
   message: string;
   revision: number;
+  replacePendingMessageId?: string;
   abortSignal?: AbortSignal;
 }
 
@@ -445,6 +454,7 @@ export async function* sendRoleplayMessage(
     abortSignal: input.abortSignal,
     kind: 'send',
     userMessage: input.message,
+    replacePendingMessageId: input.replacePendingMessageId,
   });
 }
 
@@ -474,6 +484,7 @@ interface RunTurnInput {
   abortSignal?: AbortSignal;
   kind: 'send' | 'regenerate';
   userMessage?: string;
+  replacePendingMessageId?: string;
 }
 
 // NOTE: 4段階構成:
@@ -763,10 +774,36 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
 
     if (input.kind === 'send') {
       const text = validateUserMessage(input.userMessage);
-      // NOTE: 末尾が user の状態で send を受けたら、regenerate 誘導のため pending_response で
-      // 拒否する（履歴二重化を防ぐ）。UI は 409 を見て regenerate へ導線を出す。
       const last = session.messages[session.messages.length - 1];
-      if (last && last.role === 'user') {
+      const pendingMessageId = normalizePendingMessageId(input.replacePendingMessageId);
+      if (pendingMessageId) {
+        // NOTE: 停止と応答完了が入れ違っても、末尾IDと revision の両方が一致する場合だけ
+        // 訂正を受け付ける。通常の新規発言として誤って追加しないための競合防止。
+        if (!last || last.role !== 'user' || last.messageId !== pendingMessageId) {
+          throw new RoleplayServiceError(
+            '訂正対象の発言は既に更新されています。会話を再読み込みしてください。',
+            'pending_message_changed',
+            false,
+            409,
+            session.revision
+          );
+        }
+        const now = nowIso();
+        workingSession = {
+          ...session,
+          messages: session.messages.map((message) =>
+            message.messageId === pendingMessageId
+              ? { ...message, content: text }
+              : message
+          ),
+          revision: session.revision + 1,
+          updatedAt: now,
+        };
+        await withDataDirWrite(() => storage.writeRoleplaySession(workingSession));
+        expectedRevisionForCommit = workingSession.revision;
+      } else if (last && last.role === 'user') {
+        // NOTE: 未応答の user 発言に通常送信を重ねると履歴が二重化するため拒否する。
+        // 訂正送信は上の明示的な messageId 付き経路だけで受け付ける。
         throw new RoleplayServiceError(
           '直前の発言に応答が返っていません。「もう一度」で再試行してください。',
           'pending_response',
@@ -774,22 +811,23 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
           409,
           session.revision
         );
+      } else {
+        const now = nowIso();
+        const userMessage: RoleplayMessage = {
+          messageId: generateTimestampId('rm'),
+          role: 'user',
+          content: text,
+          createdAt: now,
+        };
+        workingSession = {
+          ...session,
+          messages: [...session.messages, userMessage],
+          revision: session.revision + 1,
+          updatedAt: now,
+        };
+        await withDataDirWrite(() => storage.writeRoleplaySession(workingSession));
+        expectedRevisionForCommit = workingSession.revision;
       }
-      const now = nowIso();
-      const userMessage: RoleplayMessage = {
-        messageId: generateTimestampId('rm'),
-        role: 'user',
-        content: text,
-        createdAt: now,
-      };
-      workingSession = {
-        ...session,
-        messages: [...session.messages, userMessage],
-        revision: session.revision + 1,
-        updatedAt: now,
-      };
-      await withDataDirWrite(() => storage.writeRoleplaySession(workingSession));
-      expectedRevisionForCommit = workingSession.revision;
     } else {
       // NOTE: regenerate: 末尾が character の場合は直前 user への再応答。
       // 末尾が user の場合は送信失敗・プロセス再起動からの再試行として、そのまま応答生成へ。
@@ -859,6 +897,19 @@ function validateUserMessage(value: string | undefined): string {
     );
   }
   return text;
+}
+
+function normalizePendingMessageId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new RoleplayServiceError(
+      '訂正対象の発言IDが不正です。',
+      'invalid_pending_message',
+      false,
+      400
+    );
+  }
+  return value.trim();
 }
 
 async function commitTurn(input: {

@@ -27,6 +27,9 @@ export async function renderPresets(activePresets: ActivePresets): Promise<strin
     if (!category) continue;
     const item = category.items[presetId];
     if (!item) continue;
+    // NOTE: 「設定なし」のような空テキスト項目は選択状態だけを保存し、
+    // システムプロンプトには見出しを含めて何も追加しない。
+    if (!item.text.trim()) continue;
     parts.push(`【${category.label}: ${item.label}】\n${item.text}`);
   }
 

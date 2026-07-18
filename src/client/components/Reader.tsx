@@ -488,6 +488,23 @@ export default function Reader({
         </button>
         <h1>{project?.title || '読み込み中…'}</h1>
         <div className="scene-nav">
+          {hasText && (
+            <span
+              className={`reader-status-badge ${isCurrentAccepted ? 'accepted' : isDraft ? 'draft' : 'other'}`}
+            >
+              {isCurrentAccepted ? '採' : isDraft ? '下' : '—'}
+              {currentDraftLabel && totalDrafts > 0 && (
+                <span className="reader-status-badge-count">
+                  案 {currentDraftLabel}/{totalDrafts}
+                </span>
+              )}
+            </span>
+          )}
+          {navigation.currentSceneOrder && navigation.totalScenes > 0 && (
+            <span className="reader-scene-position">
+              場面 {navigation.currentSceneOrder}/{navigation.totalScenes}
+            </span>
+          )}
           <button
             aria-label="前の場面"
             onClick={() => handleNavigateScene('previous')}
@@ -506,11 +523,12 @@ export default function Reader({
         <div className="reader-menu-wrap" ref={menuRef}>
           <button
             className="reader-menu-toggle"
-            aria-label="メニュー"
+            aria-label={menuOpen ? 'オプションを閉じる' : 'オプションを開く'}
             aria-expanded={menuOpen}
+            title="オプション"
             onClick={() => setMenuOpen((v) => !v)}
           >
-            ⋯
+            <GearIcon />
           </button>
           {menuOpen && (
             <div className="reader-menu" role="menu">
@@ -528,7 +546,7 @@ export default function Reader({
                   onOpenMemories();
                 }}
               >
-                🧠 記憶
+                記憶
               </button>
               <button
                 className="reader-menu-item"
@@ -537,7 +555,7 @@ export default function Reader({
                   onOpenWorkSettings();
                 }}
               >
-                📖 作品設定
+                作品設定
               </button>
               <button
                 className="reader-menu-item"
@@ -546,11 +564,11 @@ export default function Reader({
                   onOpenTechSettings();
                 }}
               >
-                ⚙ 生成設定
+                生成設定
               </button>
               <div className="reader-menu-row">
-                <span className="reader-menu-label">表示テーマ</span>
-                <div className="theme-toggle" role="radiogroup" aria-label="表示テーマ">
+                <span className="reader-menu-label">テーマ</span>
+                <div className="theme-toggle" role="radiogroup" aria-label="テーマ">
                   <button
                     role="radio"
                     aria-checked={themeChoice === 'auto'}
@@ -562,18 +580,22 @@ export default function Reader({
                   <button
                     role="radio"
                     aria-checked={themeChoice === 'light'}
+                    aria-label="ライト"
+                    title="ライト"
                     className={themeChoice === 'light' ? 'active' : ''}
                     onClick={() => setThemeChoice('light')}
                   >
-                    ライト
+                    <SunIcon />
                   </button>
                   <button
                     role="radio"
                     aria-checked={themeChoice === 'dark'}
+                    aria-label="ダーク"
+                    title="ダーク"
                     className={themeChoice === 'dark' ? 'active' : ''}
                     onClick={() => setThemeChoice('dark')}
                   >
-                    ダーク
+                    <MoonIcon />
                   </button>
                 </div>
               </div>
@@ -591,43 +613,28 @@ export default function Reader({
         </div>
       </header>
 
-      <div className="reader-subheader">
-        {hasText && (
-          <span
-            className={`reader-status-badge ${isCurrentAccepted ? 'accepted' : isDraft ? 'draft' : 'other'}`}
-          >
-            {isCurrentAccepted ? '採' : isDraft ? '下' : '—'}
-            {currentDraftLabel && totalDrafts > 0 && (
-              <span className="reader-status-badge-count">
-                {' '}案 {currentDraftLabel}/{totalDrafts}
-              </span>
-            )}
-          </span>
-        )}
-        {navigation.currentSceneOrder && navigation.totalScenes > 0 && (
-          <span className="reader-scene-position">
-            場面 {navigation.currentSceneOrder}/{navigation.totalScenes}
-          </span>
-        )}
-        {contextWarn !== null && (
-          <span className="reader-context-badge" title="次回生成の文脈使用率">
-            ⚠ 文脈 {contextWarn}%
-          </span>
-        )}
-        {knowledgeSummary && (
-          <span
-            className={`reader-knowledge-badge ${enabledKnowledgeChars > KNOWLEDGE_WARN_CHARS ? 'warn' : ''}`}
-            title={knowledgeSummary}
-          >
-            {knowledgeSummary}
-          </span>
-        )}
-        {brokenEnabledKnowledgeCount > 0 && (
-          <span className="reader-knowledge-badge warn">
-            {brokenEnabledKnowledgeCount}件は本文がなく注入されません
-          </span>
-        )}
-      </div>
+      {(contextWarn !== null || knowledgeSummary || brokenEnabledKnowledgeCount > 0) && (
+        <div className="reader-subheader">
+          {contextWarn !== null && (
+            <span className="reader-context-badge" title="次回生成の文脈使用率">
+              ⚠ 文脈 {contextWarn}%
+            </span>
+          )}
+          {knowledgeSummary && (
+            <span
+              className={`reader-knowledge-badge ${enabledKnowledgeChars > KNOWLEDGE_WARN_CHARS ? 'warn' : ''}`}
+              title={knowledgeSummary}
+            >
+              {knowledgeSummary}
+            </span>
+          )}
+          {brokenEnabledKnowledgeCount > 0 && (
+            <span className="reader-knowledge-badge warn">
+              {brokenEnabledKnowledgeCount}件は本文がなく注入されません
+            </span>
+          )}
+        </div>
+      )}
 
       <main className="reader-body">
         {error && <div className="error-toast">{error}</div>}
@@ -802,5 +809,31 @@ export default function Reader({
         </div>
       )}
     </div>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg className="reader-menu-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.97 4.6 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15.03 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" />
+    </svg>
+  );
+}
+
+function SunIcon() {
+  return (
+    <svg className="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg className="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20.5 15.3A8.5 8.5 0 0 1 8.7 3.5 8.5 8.5 0 1 0 20.5 15.3Z" />
+    </svg>
   );
 }

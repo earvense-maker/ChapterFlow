@@ -8,6 +8,7 @@ import {
 } from './modelInfoService.js';
 import { createEmptyStoryState } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
+import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import {
   DEFAULT_ACTIVE_PRESET_IDS,
   DEFAULT_PROJECT_TYPE,
@@ -26,6 +27,7 @@ import type {
   ProjectType,
   SamplingConfig,
   UpdateProjectBody,
+  WorldContent,
 } from '../types/index.js';
 
 const DEFAULT_OUTPUT_LENGTH = 6000;
@@ -149,7 +151,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   let sourceProject: Project | null = null;
   let sourcePresets: PresetsFile | null = null;
   let sourceCharacters: Character[] = [];
-  let sourceWorld = '';
+  let sourceWorld: WorldContent = { foundation: '', initialSituation: '' };
   let sourceStoryState = createEmptyStoryState();
 
   if (body.duplicateFrom) {
@@ -188,6 +190,10 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     scenarioSeeds: body.scenarioSeeds ?? sourceProject?.scenarioSeeds,
     roleplayOutputChars: body.roleplayOutputChars ?? sourceProject?.roleplayOutputChars,
   });
+  const { customSystemPrompt } = await resolveSystemPrompt(
+    activePresetIds,
+    body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? ''
+  );
 
   const now = nowIso();
   const project: Project = {
@@ -250,17 +256,17 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     constraintPreset: activePresetIds.constraint,
     intimacyPreset: activePresetIds.intimacy,
     userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
-    customSystemPrompt: body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
+    customSystemPrompt,
   };
   const characters = normalizeCharactersForStorage(body.characters ?? sourceCharacters);
-  const worldText = body.worldText ?? sourceWorld;
+  const world = body.world ?? sourceWorld;
 
   await storage.writeProject(project);
   await storage.writeState(projectId, state);
   await storage.writePresets(projectId, presets);
   await storage.writeCharacters(projectId, characters);
   await storage.writeMemories(projectId, []);
-  await storage.writeWorld(projectId, worldText);
+  await storage.writeWorld(projectId, world);
   await storage.writeStoryState(projectId, { ...sourceStoryState, updatedAt: now });
   if (body.duplicateFrom && sourceProject) {
     // NOTE: 複製元の knowledge はコピーするが、roleplay/sessions は複製元だけに残す
