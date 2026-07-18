@@ -20,7 +20,7 @@ SmartScreen警告への対応は[利用ガイド](docs/利用ガイド.md)を確
 
 ## データ、プライバシー、料金
 
-- 作品データの保存先はPC内の `Documents\ChapterFlow` です。旧Yumeweavingに作品があり、新保存先にまだ作品がない環境では旧保存先を自動検出します。
+- 作品データの既定の保存先はPC内の `Documents\ChapterFlow` です。
 - 生成、相談、接続確認では、作品設定、本文、会話履歴、入力した指示のうち必要な部分を、選択したLLM事業者へ送信します。
 - OpenRouterでは生成内容がOpenRouterと、選択されたモデルの提供事業者の双方へ送信されます。既定は無料の `google/gemma-4-31b-it:free` で、利用できない場合はモデル名を変更できます。`openrouter/free`を指定した場合は、選択モデルが呼び出しごとに変わる場合があります。利用前に[OpenRouterのPrivacy設定](https://openrouter.ai/settings/privacy)を確認してください。
 - APIキーはデータ保存先の `config\credentials.json` に平文で保存されます。
