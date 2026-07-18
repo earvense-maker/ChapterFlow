@@ -13,7 +13,7 @@ body:
     attributes:
       label: ChapterFlowのバージョン
       description: アプリ設定の「アプリ情報」に表示されるバージョンです。
-      placeholder: 0.1.0-beta.1
+      placeholder: 0.1.0-beta.2
     validations:
       required: true
   - type: dropdown
@@ -43,6 +43,7 @@ body:
         - DeepSeek
         - OpenAI
         - xAI
+        - OpenRouter
     validations:
       required: true
   - type: textarea
