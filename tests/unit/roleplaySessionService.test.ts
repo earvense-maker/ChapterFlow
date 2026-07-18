@@ -534,6 +534,94 @@ describe('roleplaySessionService', () => {
     });
   });
 
+  it('atomically replaces the trailing unanswered user message before generating', async () => {
+    const project = await makeRoleplayProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementationOnce(() => {
+      async function* gen(): AsyncGenerator<AdapterGenerateStreamEvent> {
+        throw new Error('first response failed');
+      }
+      return gen();
+    });
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '間違った発言',
+        revision: created.revision,
+      })
+    );
+    const pending = await roleplayService.getRoleplaySession(
+      project.projectId,
+      created.sessionId
+    );
+    const pendingUser = pending.messages[pending.messages.length - 1];
+    expect(pendingUser).toMatchObject({ role: 'user', content: '間違った発言' });
+
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementationOnce(() =>
+      streamChunks(['訂正文への応答'])
+    );
+    const corrected = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '訂正した発言',
+        revision: pending.revision,
+        replacePendingMessageId: pendingUser.messageId,
+      })
+    );
+
+    expect(corrected.errors).toEqual([]);
+    const userMessages = corrected.done?.messages.filter((message) => message.role === 'user');
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages?.[0]).toMatchObject({
+      messageId: pendingUser.messageId,
+      content: '訂正した発言',
+    });
+    expect(corrected.done?.messages.at(-1)?.content).toBe('訂正文への応答');
+  });
+
+  it('rejects a stale pending-message replacement instead of appending a new turn', async () => {
+    const project = await makeRoleplayProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['通常の応答'])
+    );
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const completed = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '元の発言',
+        revision: created.revision,
+      })
+    );
+    const userMessage = completed.done?.messages
+      .filter((message) => message.role === 'user')
+      .at(-1);
+
+    const stale = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '遅れて届いた訂正',
+        revision: completed.done!.revision,
+        replacePendingMessageId: userMessage!.messageId,
+      })
+    );
+
+    expect(stale.errors[0]?.code).toBe('pending_message_changed');
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    expect(latest.messages.at(-1)?.content).toBe('通常の応答');
+    expect(latest.messages.some((message) => message.content === '遅れて届いた訂正')).toBe(false);
+  });
+
   it('surfaces summary_failed instead of silently dropping history when summarizer fails (review §追加設計)', async () => {
     const project = await makeRoleplayProject();
     const created = await roleplayService.createRoleplaySession({

@@ -28,6 +28,17 @@ describe('resolveSystemPrompt', () => {
     expect(result.isCustomized).toBe(true);
   });
 
+  it('omits the intimacy block when the explicit none preset is selected', async () => {
+    const generated = await buildGeneratedSystemPrompt({
+      ...activePresets,
+      intimacy: 'none',
+    });
+
+    expect(generated).not.toContain('【濡れ場の描写');
+    expect(generated).not.toContain('性的な場面');
+    expect(generated).toContain('【ジャンル: 現代ドラマ】');
+  });
+
   it.each([undefined, null, '', '   '])(
     'does not add an empty custom section for %s',
     async (custom) => {

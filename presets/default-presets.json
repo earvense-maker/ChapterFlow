@@ -244,6 +244,11 @@
     "intimacy": {
       "label": "濡れ場の描写",
       "items": {
+        "none": {
+          "id": "none",
+          "label": "設定なし",
+          "text": ""
+        },
         "fade-to-black": {
           "id": "fade-to-black",
           "label": "描かない（暗転）",

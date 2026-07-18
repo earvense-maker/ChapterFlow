@@ -1100,6 +1100,9 @@ export interface CreateRoleplaySessionBody {
 export interface SendRoleplayMessageBody {
   message: string;
   revision: number;
+  // NOTE: 停止後の訂正送信用。指定時は、現在末尾にある未応答の user 発言と
+  // messageId が一致する場合だけ内容を置き換えて応答生成を再開する。
+  replacePendingMessageId?: string;
 }
 
 export interface RegenerateRoleplayBody {
