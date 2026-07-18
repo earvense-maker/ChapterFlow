@@ -1,7 +1,7 @@
 {
   "name": "chapterflow",
   "private": true,
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "自分のAPIキーで連載小説とロールプレイを続けるWindows向け創作アプリ",
   "author": "ChapterFlow contributors",
   "license": "MIT",
@@ -27,7 +27,8 @@
     "build": "tsc -p tsconfig.server.json && vite build",
     "build:electron": "npm run build && tsc -p tsconfig.electron.json",
     "dev:electron": "npm run build:electron && electron dist/electron/main.js",
-    "dist:electron": "npm run build:electron && electron-builder --win && npm run release:assets",
+    "dist:electron": "npm run build:electron && electron-builder --win && npm run verify:electron-package && npm run release:assets",
+    "verify:electron-package": "node scripts/verify-electron-package.mjs",
     "release:assets": "node scripts/prepare-release-assets.mjs",
     "start": "node dist/server/index.js",
     "start:lan": "node scripts/start-lan.mjs",
@@ -42,6 +43,7 @@
     "uuid": "^14.0.1"
   },
   "devDependencies": {
+    "@electron/asar": "^3.4.1",
     "@playwright/test": "^1.45.1",
     "@testing-library/jest-dom": "^6.4.6",
     "@testing-library/react": "^16.0.0",
@@ -70,6 +72,7 @@
     },
     "files": [
       "dist/server/**",
+      "dist/shared/**",
       "dist/client/**",
       "dist/electron/**",
       "presets/**",
