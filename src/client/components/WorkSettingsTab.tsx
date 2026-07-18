@@ -15,6 +15,7 @@ import type {
   StoryState,
   StoryStateDiffRecord,
   StyleSamplePreset,
+  SystemPromptPreview,
   SystemPromptPreset,
   WorldContent,
 } from '@shared/types';
@@ -92,7 +93,6 @@ export default function WorkSettingsTab({
   const [generatedSystemPrompt, setGeneratedSystemPrompt] = useState('');
   const [isSystemPromptCustomized, setIsSystemPromptCustomized] = useState(false);
   const [systemPromptEditing, setSystemPromptEditing] = useState(false);
-  const [previewLoading, setPreviewLoading] = useState(false);
   const [systemPromptPresets, setSystemPromptPresets] = useState<SystemPromptPreset[]>([]);
   const [selectedSystemPromptPresetId, setSelectedSystemPromptPresetId] = useState('');
   const [systemPromptPresetNameDraft, setSystemPromptPresetNameDraft] = useState('');
@@ -159,8 +159,12 @@ export default function WorkSettingsTab({
           presetsData.customSystemPrompt
         );
         if (cancelled) return;
+        setPresets({
+          ...presetsData,
+          customSystemPrompt: promptPreview.customSystemPrompt,
+        });
         setSystemPrompt(promptPreview.systemPrompt);
-        setSystemPromptDraft(promptPreview.systemPrompt);
+        setSystemPromptDraft(promptPreview.customSystemPrompt);
         setGeneratedSystemPrompt(promptPreview.generatedSystemPrompt);
         setIsSystemPromptCustomized(promptPreview.isCustomized);
 
@@ -390,17 +394,40 @@ export default function WorkSettingsTab({
     try {
       setLoading(true);
       onError(null);
-      const nextIsCustom = systemPromptDraft.trim() !== generatedSystemPrompt.trim();
+      const customSystemPrompt = systemPromptDraft.trim() ? systemPromptDraft : '';
       const savedPresets = await api.updateProjectPresets(projectId, {
         ...presets,
-        customSystemPrompt: nextIsCustom ? systemPromptDraft : '',
+        customSystemPrompt,
       });
+      // NOTE: 保存 API の返却値は正規化済みの正とし、プレビュー失敗後の別設定保存でも
+      // 古い customSystemPrompt を再送して上書きしないよう、先にローカル状態へ反映する。
       setPresets(savedPresets);
-      setSystemPrompt(systemPromptDraft);
-      setIsSystemPromptCustomized(nextIsCustom);
+      let preview: SystemPromptPreview;
+      try {
+        preview = await api.previewSystemPrompt(
+          projectId,
+          savedPresets,
+          savedPresets.customSystemPrompt ?? ''
+        );
+      } catch (err) {
+        onError(
+          err instanceof Error
+            ? `追加指示は保存されましたが、プレビューの更新に失敗しました: ${err.message}`
+            : '追加指示は保存されましたが、プレビューの更新に失敗しました'
+        );
+        return;
+      }
+      setPresets({
+        ...savedPresets,
+        customSystemPrompt: preview.customSystemPrompt,
+      });
+      setSystemPrompt(preview.systemPrompt);
+      setSystemPromptDraft(preview.customSystemPrompt);
+      setGeneratedSystemPrompt(preview.generatedSystemPrompt);
+      setIsSystemPromptCustomized(preview.isCustomized);
       setSystemPromptEditing(false);
       void refreshRefineReviewStatus();
-      onFlashMessage('システムプロンプトを保存しました');
+      onFlashMessage('追加指示を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
     } finally {
@@ -409,7 +436,7 @@ export default function WorkSettingsTab({
   }
 
   function handleCancelSystemPrompt() {
-    setSystemPromptDraft(systemPrompt);
+    setSystemPromptDraft(presets.customSystemPrompt ?? '');
     setSystemPromptEditing(false);
   }
 
@@ -417,7 +444,7 @@ export default function WorkSettingsTab({
     const preset = systemPromptPresets.find((item) => item.id === selectedSystemPromptPresetId);
     if (!preset) return;
     if (
-      systemPromptDraft !== systemPrompt &&
+      systemPromptDraft !== (presets.customSystemPrompt ?? '') &&
       systemPromptDraft !== preset.prompt &&
       !window.confirm('未保存の編集内容を、選択したプリセットで置き換えますか？')
     ) {
@@ -544,7 +571,11 @@ export default function WorkSettingsTab({
       setSystemPrompt(preview.systemPrompt);
       setGeneratedSystemPrompt(preview.generatedSystemPrompt);
       setIsSystemPromptCustomized(preview.isCustomized);
-      if (!systemPromptEditing) setSystemPromptDraft(preview.systemPrompt);
+      setPresets({
+        ...savedPresets,
+        customSystemPrompt: preview.customSystemPrompt,
+      });
+      if (!systemPromptEditing) setSystemPromptDraft(preview.customSystemPrompt);
       void refreshRefineReviewStatus();
       onFlashMessage('濡れ場の描写設定を保存しました');
     } catch (err) {
@@ -554,18 +585,9 @@ export default function WorkSettingsTab({
     }
   }
 
-  async function handleResetSystemPrompt() {
-    try {
-      setPreviewLoading(true);
-      onError(null);
-      const preview = await api.previewSystemPrompt(projectId, presets, null);
-      setGeneratedSystemPrompt(preview.generatedSystemPrompt);
-      setSystemPromptDraft(preview.generatedSystemPrompt);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : 'プロンプトの更新に失敗しました');
-    } finally {
-      setPreviewLoading(false);
-    }
+  function handleResetSystemPrompt() {
+    onError(null);
+    setSystemPromptDraft('');
   }
 
   async function handleSaveStoryState() {
@@ -757,8 +779,7 @@ export default function WorkSettingsTab({
   const activeWorldExpanded =
     worldSubTab === 'foundation' ? foundationExpanded : initialSituationExpanded;
   const styleTags = deriveStyleTags(project.activePresetIds, categories);
-  const isSystemPromptDraftCustomized =
-    systemPromptDraft.trim() !== generatedSystemPrompt.trim();
+  const isSystemPromptDraftCustomized = systemPromptDraft.trim().length > 0;
   const enabledKnowledgeChars = knowledgeItems
     .filter((item) => item.enabled && item.contentStatus === 'ok')
     .reduce((sum, item) => sum + item.charCount, 0);
@@ -929,7 +950,7 @@ export default function WorkSettingsTab({
           <h2>文体・視点</h2>
           <div className="summary-card-badges">
             {isSystemPromptCustomized ? (
-              <span className="settings-badge custom">カスタム</span>
+              <span className="settings-badge custom">追加指示あり</span>
             ) : (
               <span className="settings-badge preset">プリセット由来</span>
             )}
@@ -937,7 +958,7 @@ export default function WorkSettingsTab({
           {!systemPromptEditing && (
             <CardEditButton
               onClick={() => {
-                setSystemPromptDraft(systemPrompt);
+                setSystemPromptDraft(presets.customSystemPrompt ?? '');
                 setSystemPromptEditing(true);
               }}
             />
@@ -945,7 +966,7 @@ export default function WorkSettingsTab({
         </header>
         {!systemPromptEditing && (
           <>
-            {styleTags.length > 0 && !isSystemPromptCustomized && (
+            {styleTags.length > 0 && (
               <div className="style-tags">
                 {styleTags.map((tag) => (
                   <span key={tag} className="style-tag">
@@ -994,9 +1015,16 @@ export default function WorkSettingsTab({
         )}
         {systemPromptEditing && (
           <>
+            <p className="settings-help">
+              選択中の文体・視点などのプリセットは常に適用されます。ここでは、その後ろに加える作品固有の追加指示だけを編集します。
+            </p>
+            <details className="summary-details">
+              <summary>常に適用される基本プロンプト（{generatedSystemPrompt.length} 字）</summary>
+              <pre className="summary-prewrap">{generatedSystemPrompt}</pre>
+            </details>
             <div className="system-prompt-preset-library">
               <p className="settings-help">
-                システムプロンプトを全作品共通のプリセットとして保存・読み込みできます。読み込み後は、下の「保存」で作品に反映してください。
+                追加指示を全作品共通のプリセットとして保存・読み込みできます。読み込み後は、下の「保存」で作品に反映してください。
               </p>
               {systemPromptPresetLoadError && (
                 <div className="system-prompt-preset-error">
@@ -1082,18 +1110,16 @@ export default function WorkSettingsTab({
             </div>
             <div className="prompt-toolbar">
               <span className="prompt-status">
-                {previewLoading
-                  ? '更新中…'
-                  : isSystemPromptDraftCustomized
-                    ? '手入力を使用中'
-                    : 'プリセットから生成'}
+                {isSystemPromptDraftCustomized ? '追加指示あり' : '追加指示なし'}
               </span>
-              <button onClick={handleResetSystemPrompt} disabled={loading || previewLoading}>
-                現在のプリセットから再生成
+              <button onClick={handleResetSystemPrompt} disabled={loading}>
+                追加指示をクリア
               </button>
             </div>
             <textarea
               className="system-prompt-editor"
+              aria-label="システムプロンプトの追加指示"
+              placeholder="プリセットに加えて守ってほしい、作品固有の指示を入力"
               value={systemPromptDraft}
               onChange={(e) => setSystemPromptDraft(e.target.value)}
             />

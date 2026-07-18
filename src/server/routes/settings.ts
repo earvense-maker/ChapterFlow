@@ -98,15 +98,28 @@ router.put('/projects/:id/presets', async (req, res, next) => {
   try {
     const body = req.body as Partial<PresetsFile>;
     const nextPresets = await withProjectWriteLock(req.params.id, async () => {
-      const presets = await storage.readPresets(req.params.id);
-      if (!presets) return null;
+      const [project, presets] = await Promise.all([
+        storage.readProject(req.params.id),
+        storage.readPresets(req.params.id),
+      ]);
+      if (!project || !presets) return null;
 
       const nextFile: PresetsFile = { ...presets, ...body };
-      await storage.writePresets(req.params.id, nextFile);
+      // NOTE: 古い presets.json は任意プリセットのキーを持たない場合があるため、
+      // undefined を project 側の選択値へ上書きしないよう、定義済み値だけを反映する。
+      const activePresetIds = {
+        ...project.activePresetIds,
+        ...activePresetsFromPresetFile(nextFile),
+      };
+      const { customSystemPrompt } = await resolveSystemPrompt(
+        activePresetIds,
+        nextFile.customSystemPrompt
+      );
+      const normalizedFile: PresetsFile = { ...nextFile, customSystemPrompt };
+      await storage.writePresets(req.params.id, normalizedFile);
 
-      const activePresetIds = activePresetsFromPresetFile(nextFile);
       await projectService.updateProject(req.params.id, { activePresetIds });
-      return nextFile;
+      return normalizedFile;
     });
 
     if (!nextPresets) return res.status(404).json({ error: 'Presets not found' });

@@ -132,9 +132,26 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
 
   return (
     <div className="project-form">
-      <h1>新規作品</h1>
-      {error && <div className="error-toast">{error}</div>}
-      <form onSubmit={handleSubmit}>
+      <header className="setup-header">
+        <div>
+          <h1>設定を直接入力</h1>
+          <p>作品の設定を入力して、そのまま作成します。</p>
+        </div>
+        <div className="setup-header-actions">
+          <button type="button" onClick={onCancel} disabled={loading}>戻る</button>
+          <button
+            type="submit"
+            form="direct-project-form"
+            className="primary"
+            disabled={loading}
+          >
+            {loading ? '作成中…' : '作品を作成'}
+          </button>
+        </div>
+      </header>
+      <main className="project-form-content">
+        {error && <div className="error-toast">{error}</div>}
+        <form id="direct-project-form" onSubmit={handleSubmit}>
         <section className="settings-section">
           <h2>基本設定</h2>
           <label>
@@ -193,38 +210,64 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
               placeholder={currentProvider(providers, provider)?.defaultModel ?? 'gemini-3.5-flash'}
             />
           </label>
+          <div className="project-api-key-field">
+            <label>
+              APIキー
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={currentProvider(providers, provider)?.apiKeyPlaceholder ?? 'sk-...'}
+              />
+            </label>
+            <p className="settings-help">
+              APIキーはPC内に平文で保存されます。生成時は、この作品の設定・本文・入力内容の必要な部分を
+              選択したモデルプロバイダーへ送信します。利用量に応じて料金が発生する場合があります。
+            </p>
+            <p className="project-api-key-help">
+              {currentProvider(providers, provider)?.apiKeyHelp ?? 'APIキーを保存します。作品データとは別に保存されます。'}
+            </p>
+          </div>
         </section>
 
-        <section className="settings-section">
-          <h2>プリセット</h2>
-          {Object.entries(categories).map(([key, category]) => (
-            <fieldset key={key}>
-              <legend>{category.label}</legend>
-              <div className="preset-options">
-                {Object.entries(category.items).map(([itemKey, item]) => (
-                  <label key={itemKey} className="preset-option">
-                    <input
-                      type="radio"
-                      name={key}
-                      value={item.id}
-                      checked={selection[key] === item.id}
-                      onChange={() => setSelection((s) => ({ ...s, [key]: item.id }))}
-                    />
-                    <span>{item.label}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-          ))}
-        </section>
+        <details className="settings-section settings-section-collapsible">
+          <summary>
+            <span>プリセット</span>
+            <span className="settings-section-summary-meta">選択内容を確認・変更</span>
+          </summary>
+          <div className="settings-section-collapsible-body">
+            {Object.entries(categories).map(([key, category]) => (
+              <fieldset key={key}>
+                <legend>{category.label}</legend>
+                <div className="preset-options">
+                  {Object.entries(category.items).map(([itemKey, item]) => (
+                    <label key={itemKey} className="preset-option">
+                      <input
+                        type="radio"
+                        name={key}
+                        value={item.id}
+                        checked={selection[key] === item.id}
+                        onChange={() => setSelection((s) => ({ ...s, [key]: item.id }))}
+                      />
+                      <span>{item.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            ))}
+          </div>
+        </details>
 
         <section className="settings-section">
-          <h2>システムプロンプト</h2>
+          <h2>作品固有の追加指示</h2>
+          <p className="settings-help">
+            選択したプリセットは常に適用されます。ここには、その後ろに追加する作品固有の指示だけを入力してください。
+          </p>
           <textarea
             className="system-prompt-editor"
             value={customSystemPrompt}
             onChange={(e) => setCustomSystemPrompt(e.target.value)}
-            placeholder="空欄ならプリセットから自動生成"
+            placeholder="プリセットに加えて守ってほしい、作品固有の指示を入力"
           />
         </section>
 
@@ -283,30 +326,14 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
           <button type="button" onClick={addCharacter}>人物を追加</button>
         </section>
 
-        <section className="settings-section">
-          <h2>APIキー</h2>
-          <p className="settings-help">
-            APIキーはPC内に平文で保存されます。生成時は、この作品の設定・本文・入力内容の必要な部分を
-            選択したモデルプロバイダーへ送信します。利用量に応じて料金が発生する場合があります。
-          </p>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            {currentProvider(providers, provider)?.apiKeyHelp ?? 'APIキーを保存します。作品データとは別に保存されます。'}
-          </p>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={currentProvider(providers, provider)?.apiKeyPlaceholder ?? 'sk-...'}
-          />
-        </section>
-
         <div className="form-actions">
-          <button type="button" onClick={onCancel}>キャンセル</button>
+          <button type="button" onClick={onCancel} disabled={loading}>キャンセル</button>
           <button type="submit" className="primary" disabled={loading}>
             {loading ? '作成中…' : '作品を作成'}
           </button>
         </div>
       </form>
+      </main>
     </div>
   );
 }

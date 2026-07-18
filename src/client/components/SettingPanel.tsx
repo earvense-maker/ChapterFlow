@@ -65,7 +65,7 @@ export default function SettingPanel({ projectId, onBack, onOpenAppSettings, ini
           onClick={() => setTab('work')}
           disabled={navigationLocked}
         >
-          📖 作品設定
+          作品設定
         </button>
         <button
           role="tab"
@@ -74,7 +74,7 @@ export default function SettingPanel({ projectId, onBack, onOpenAppSettings, ini
           onClick={() => setTab('memory')}
           disabled={navigationLocked}
         >
-          🧠 記憶
+          記憶
         </button>
         <button
           role="tab"
@@ -83,7 +83,7 @@ export default function SettingPanel({ projectId, onBack, onOpenAppSettings, ini
           onClick={() => setTab('tech')}
           disabled={navigationLocked}
         >
-          ⚙ 生成設定
+          生成設定
         </button>
       </nav>
 

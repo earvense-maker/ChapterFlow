@@ -268,19 +268,76 @@ legend {
 
 /* ProjectForm */
 .project-form {
+  min-height: 100vh;
+}
+
+.project-form-content {
   max-width: var(--max-width);
   margin: 0 auto;
   padding: 1.5rem;
 }
 
-.project-form h1 {
-  font-family: var(--font-body);
-  font-weight: normal;
-}
-
 .project-form label {
   display: block;
   margin: 1rem 0;
+}
+
+.project-api-key-field {
+  margin-top: 1rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.project-api-key-help {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0.35rem 0 0;
+}
+
+.settings-section-collapsible {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.settings-section-collapsible > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 1.1rem;
+  list-style: none;
+}
+
+.settings-section-collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-section-collapsible > summary::after {
+  content: '›';
+  color: var(--text-muted);
+  font-family: sans-serif;
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+
+.settings-section-collapsible[open] > summary::after {
+  transform: rotate(-90deg);
+}
+
+.settings-section-summary-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+}
+
+.settings-section-collapsible-body {
+  padding: 0 1rem 0.25rem;
+  border-top: 1px solid var(--border);
 }
 
 .preset-options {
@@ -1140,7 +1197,9 @@ button:disabled:has(.generating-label) {
 
 .scene-nav {
   display: inline-flex;
+  align-items: center;
   gap: 0.35rem;
+  flex: 0 0 auto;
 }
 
 .scene-nav button {
@@ -1159,6 +1218,18 @@ button:disabled:has(.generating-label) {
   font-size: 1.1rem;
   line-height: 1;
   min-height: 2.2rem;
+}
+
+.reader-menu-icon,
+.theme-icon {
+  display: block;
+  width: 1.1rem;
+  height: 1.1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .reader-menu {
@@ -1235,6 +1306,9 @@ button:disabled:has(.generating-label) {
 }
 
 .theme-toggle button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 0.25rem 0.6rem;
   font-size: 0.8rem;
   min-height: 1.9rem;
@@ -1281,13 +1355,16 @@ button:disabled:has(.generating-label) {
 }
 
 .reader-status-badge.accepted {
-  background: rgba(90, 170, 120, 0.22);
-  color: #2f6a44;
-  border: 1px solid rgba(90, 170, 120, 0.55);
+  background: rgba(90, 170, 120, 0.06);
+  color: var(--text-muted);
+  border: 1px solid rgba(90, 170, 120, 0.18);
+  font-weight: 500;
 }
 
 [data-theme='dark'] .reader-status-badge.accepted {
-  color: #7cc396;
+  background: rgba(124, 195, 150, 0.05);
+  color: var(--text-muted);
+  border-color: rgba(124, 195, 150, 0.16);
 }
 
 .reader-status-badge.other {
@@ -1305,6 +1382,7 @@ button:disabled:has(.generating-label) {
 .reader-scene-position {
   color: var(--text-muted);
   font-size: 0.78rem;
+  white-space: nowrap;
 }
 
 .reader-context-badge {
@@ -2583,7 +2661,7 @@ button:disabled:has(.generating-label) {
     min-height: 100dvh;
   }
 
-  /* NOTE: 1行完結。左から 戻る/タイトル/前次/⋯ を配置し、タイトルは省略でフレックス。 */
+  /* NOTE: 1行完結。左から 戻る/タイトル/案・場面・前次/歯車 を配置し、タイトルは省略でフレックス。 */
   .reader-header {
     flex-wrap: nowrap;
     align-items: center;
@@ -2608,6 +2686,20 @@ button:disabled:has(.generating-label) {
     padding: 0.25rem 0.5rem;
     font-size: 0.8rem;
     min-height: 2rem;
+  }
+
+  .scene-nav {
+    gap: 0.2rem;
+  }
+
+  .scene-nav .reader-status-badge {
+    padding: 0.12rem 0.35rem;
+    font-size: 0.72rem;
+  }
+
+  .scene-nav .reader-status-badge-count,
+  .scene-nav .reader-scene-position {
+    font-size: 0.7rem;
   }
 
   .reader-menu-toggle {

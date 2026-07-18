@@ -8,6 +8,7 @@ import {
 } from './modelInfoService.js';
 import { createEmptyStoryState } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
+import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import {
   DEFAULT_ACTIVE_PRESET_IDS,
   DEFAULT_PROJECT_TYPE,
@@ -189,6 +190,10 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     scenarioSeeds: body.scenarioSeeds ?? sourceProject?.scenarioSeeds,
     roleplayOutputChars: body.roleplayOutputChars ?? sourceProject?.roleplayOutputChars,
   });
+  const { customSystemPrompt } = await resolveSystemPrompt(
+    activePresetIds,
+    body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? ''
+  );
 
   const now = nowIso();
   const project: Project = {
@@ -251,7 +256,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     constraintPreset: activePresetIds.constraint,
     intimacyPreset: activePresetIds.intimacy,
     userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
-    customSystemPrompt: body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
+    customSystemPrompt,
   };
   const characters = normalizeCharactersForStorage(body.characters ?? sourceCharacters);
   const world = body.world ?? sourceWorld;

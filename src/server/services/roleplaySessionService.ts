@@ -36,7 +36,9 @@ import {
   normalizeProjectType,
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
+import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import type {
+  ActivePresets,
   AdapterGenerateResult,
   Character,
   FinishReason,
@@ -270,12 +272,17 @@ function buildWorldDigest(worldText: string): string {
   return cutoff;
 }
 
-function buildContextSnapshot(input: {
+async function buildContextSnapshot(input: {
   character: Character;
   otherCharacters: Character[];
   worldText: string;
   customSystemPrompt: string;
-}): RoleplayContextSnapshot {
+  activePresetIds: ActivePresets;
+}): Promise<RoleplayContextSnapshot> {
+  const { customSystemPrompt } = await resolveSystemPrompt(
+    input.activePresetIds,
+    input.customSystemPrompt
+  );
   return {
     character: { ...input.character },
     otherCharacters: input.otherCharacters.map((c) => ({
@@ -284,7 +291,7 @@ function buildContextSnapshot(input: {
       description: c.description,
     })),
     worldDigest: buildWorldDigest(input.worldText),
-    customSystemPrompt: input.customSystemPrompt ?? '',
+    customSystemPrompt,
     capturedAt: nowIso(),
   };
 }
@@ -327,11 +334,12 @@ export async function createRoleplaySession(
     const worldText = await storage.readWorldPromptText(input.projectId);
     const presets = await storage.readPresets(input.projectId);
 
-    const snapshot = buildContextSnapshot({
+    const snapshot = await buildContextSnapshot({
       character,
       otherCharacters: characters.filter((c) => c.characterId !== input.characterId),
       worldText,
       customSystemPrompt: presets?.customSystemPrompt ?? '',
+      activePresetIds: project.activePresetIds,
     });
 
     const now = nowIso();
