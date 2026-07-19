@@ -106,7 +106,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
     setCharacters((prev) => prev.filter((_, i) => i !== index));
   }
 
-  if (!categories) return <div className="loading">プリセット読み込み中…</div>;
+  if (!categories) return <div className="loading">作風設定を読み込み中…</div>;
 
   return (
     <div className="project-form">
@@ -210,7 +210,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
 
         <details className="settings-section settings-section-collapsible">
           <summary>
-            <span>プリセット</span>
+            <span>作風設定</span>
             <span className="settings-section-summary-meta">選択内容を確認・変更</span>
           </summary>
           <div className="settings-section-collapsible-body">
@@ -227,13 +227,13 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
         <section className="settings-section">
           <h2>作品固有の追加指示</h2>
           <p className="settings-help">
-            選択したプリセットは常に適用されます。ここには、その後ろに追加する作品固有の指示だけを入力してください。
+            選択した作風設定は常に適用されます。ここには、その後ろに追加する作品固有の指示だけを入力してください。
           </p>
           <textarea
             className="system-prompt-editor"
             value={customSystemPrompt}
             onChange={(e) => setCustomSystemPrompt(e.target.value)}
-            placeholder="プリセットに加えて守ってほしい、作品固有の指示を入力"
+            placeholder="作風設定に加えて守ってほしい、作品固有の指示を入力"
           />
         </section>
 

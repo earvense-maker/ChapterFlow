@@ -474,6 +474,14 @@ legend {
   cursor: pointer;
 }
 
+.setup-style-settings-bar details {
+  margin-top: 0;
+}
+
+.setup-style-settings-bar .preset-selector {
+  margin-top: 1rem;
+}
+
 .setup-model-controls {
   display: grid;
   grid-template-columns: minmax(150px, 0.7fr) minmax(220px, 1fr) auto;

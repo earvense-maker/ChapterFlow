@@ -352,5 +352,61 @@ describe('generationService state operations', () => {
 
   it.todo('acceptGeneration marks a draft as accepted');
   it.todo('rejectGeneration marks a draft as rejected');
-  it.todo('revertToPrevious returns the previous draft');
+  it('navigates backward and forward between drafts', async () => {
+    const project = await createTrackedProject();
+    const episodeId = 'ep-drafts';
+    const sceneId = 'scene-drafts';
+    const draftIds = ['gen-a', 'gen-b', 'gen-c'];
+    await storage.writeEpisodeRecord(project.projectId, {
+      episodeId,
+      title: '案移動',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: null,
+          draftGenerationIds: draftIds,
+        },
+      ],
+    });
+    for (const generationId of draftIds) {
+      await storage.appendGenerationLog(project.projectId, {
+        generationId,
+        episodeId,
+        sceneId,
+        request: { wish: '', outputLength: 1000, previousContextText: '' },
+        responseText: generationId,
+        usedPresets: project.activePresetIds,
+        usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+        referencedMemoryIds: [],
+        status: 'draft',
+        createdAt: '2026-07-02T00:00:00Z',
+        parentGenerationId: null,
+      });
+    }
+    const state = await storage.readState(project.projectId);
+    await storage.writeState(project.projectId, {
+      ...state!,
+      currentEpisodeId: episodeId,
+      currentSceneId: sceneId,
+      selectedDraftGenerationId: 'gen-b',
+    });
+
+    await expect(generationService.navigateDraft(project.projectId, 'previous')).resolves.toMatchObject({
+      generationId: 'gen-a',
+    });
+    await expect(generationService.navigateDraft(project.projectId, 'next')).resolves.toMatchObject({
+      generationId: 'gen-b',
+    });
+    await expect(generationService.navigateDraft(project.projectId, 'next')).resolves.toMatchObject({
+      generationId: 'gen-c',
+    });
+    await expect(generationService.navigateDraft(project.projectId, 'next')).resolves.toBeNull();
+  });
 });

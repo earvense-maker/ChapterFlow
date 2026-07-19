@@ -311,6 +311,70 @@ describe('updateStoryStateFromAcceptedScene', () => {
     const [diff] = await storage.readStoryStateDiffs(projectId);
     expect(diff.previousUpdatedAt).toBe(now);
   });
+
+  it('requests JSON and retries once after an output-limit finish, even when the JSON is valid', async () => {
+    await storage.createProjectDir(projectId);
+    await storage.writeStoryState(projectId, storyState());
+    const generateText = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ currentSituation: ['構文上は読めるが出力上限に達した状態'] }),
+        finishReason: 'length',
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ currentSituation: ['再試行で抽出できた状態'] }),
+        finishReason: 'stop',
+        retryable: false,
+      });
+    const adapter: ModelAdapter = {
+      providerName: 'fake',
+      generateText,
+      validateConnection: vi.fn(),
+    };
+
+    const updated = await updateStoryStateFromAcceptedScene({
+      project: project(),
+      adapter,
+      generation: generation(),
+      characters: [],
+      worldText: '',
+      timeoutMs: 1000,
+    });
+
+    expect(updated?.currentSituation).toEqual(['再試行で抽出できた状態']);
+    expect(generateText).toHaveBeenCalledTimes(2);
+    expect(generateText.mock.calls[0][0]).toMatchObject({
+      outputLength: 4000,
+      responseMimeType: 'application/json',
+    });
+    expect(generateText.mock.calls[1][0]).toMatchObject({
+      outputLength: 6000,
+      responseMimeType: 'application/json',
+    });
+  });
+
+  it('does not mark a generation as processed when both responses hit the output limit', async () => {
+    await storage.createProjectDir(projectId);
+    await storage.writeStoryState(projectId, storyState());
+    const adapter = fakeAdapter({
+      text: JSON.stringify({ currentSituation: ['不完全な可能性がある状態'] }),
+      finishReason: 'length',
+      retryable: false,
+    });
+
+    await expect(
+      updateStoryStateFromAcceptedScene({
+        project: project(),
+        adapter,
+        generation: generation(),
+        characters: [],
+        worldText: '',
+        timeoutMs: 1000,
+      })
+    ).rejects.toThrow('出力上限');
+    expect((await storage.readStoryState(projectId))?.processedGenerationIds ?? []).toEqual([]);
+  });
 });
 
 function storyState(patch: Partial<StoryState> = {}): StoryState {

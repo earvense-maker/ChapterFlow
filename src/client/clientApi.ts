@@ -300,6 +300,11 @@ export const api = {
     request<GenerationRecord>(`/projects/${id}/reject`, { method: 'POST', body: JSON.stringify({ generationId }) }),
   revertGeneration: (id: string) =>
     request<GenerationRecord>(`/projects/${id}/revert`, { method: 'POST' }),
+  navigateDraft: (id: string, direction: SceneNavigationDirection) =>
+    request<GenerationRecord>(`/projects/${id}/navigate-draft`, {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    }),
   unacceptCurrentScene: (id: string) =>
     request<GenerationRecord>(`/projects/${id}/unaccept`, { method: 'POST' }),
   navigateScene: (id: string, direction: SceneNavigationDirection) =>

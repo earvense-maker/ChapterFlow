@@ -672,6 +672,27 @@ describe('setupSessionService', () => {
     expect(patched.revision).toBe(result.session.revision + 1);
   });
 
+  it('patches style settings without changing the consultation model', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const patched = await setupSessionService.patchSetupSettings(result.sessionId, {
+      activePresetIds: {
+        narration: 'first-person',
+        painLevel: 'safe',
+        aftertaste: ['heartwarming'],
+      },
+      revision: result.session.revision,
+    });
+
+    expect(patched.session.model).toEqual(result.session.model);
+    expect(patched.session.projectSettings.activePresetIds).toEqual({
+      narration: 'first-person',
+      painLevel: 'safe',
+      aftertaste: ['heartwarming'],
+    });
+  });
+
   it('uses Grok 4.3 as the default xAI consultation model', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);

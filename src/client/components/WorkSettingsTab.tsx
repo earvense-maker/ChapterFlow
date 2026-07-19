@@ -632,7 +632,7 @@ export default function WorkSettingsTab({
       });
       if (!systemPromptEditing) setSystemPromptDraft(preview.customSystemPrompt);
       void refreshRefineReviewStatus();
-      onFlashMessage('プリセット設定を保存しました');
+      onFlashMessage('作風設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
     } finally {
@@ -913,7 +913,7 @@ export default function WorkSettingsTab({
             className={detailSettingsTab === 'style' ? 'active' : ''}
             onClick={() => setDetailSettingsTab('style')}
           >
-            文体・視点
+            作風設定
           </button>
           <button
             type="button"
@@ -1017,7 +1017,7 @@ export default function WorkSettingsTab({
       {detailSettingsTab === 'style' && (
       <section className="summary-card detail-settings-panel-card">
         <header className="summary-card-header">
-          <h2>文体・視点</h2>
+          <h2>作風設定</h2>
           <div className="summary-card-badges">
             {isBaseSystemPromptCustomized && (
               <span className="settings-badge custom">基本編集済み</span>
@@ -1025,7 +1025,7 @@ export default function WorkSettingsTab({
             {isSystemPromptCustomized ? (
               <span className="settings-badge custom">追加指示あり</span>
             ) : !isBaseSystemPromptCustomized ? (
-              <span className="settings-badge preset">プリセット由来</span>
+              <span className="settings-badge preset">作風設定由来</span>
             ) : null}
           </div>
           {!systemPromptEditing && (
@@ -1056,7 +1056,7 @@ export default function WorkSettingsTab({
               <pre className="summary-prewrap">{systemPrompt}</pre>
             </details>
             <details className="summary-details">
-              <summary>プリセット設定（全7カテゴリ）</summary>
+              <summary>作風設定（全7カテゴリ）</summary>
               <PresetSelector
                 categories={categories}
                 value={project.activePresetIds}
@@ -1070,7 +1070,7 @@ export default function WorkSettingsTab({
         {systemPromptEditing && (
           <>
             <p className="settings-help">
-              基本プロンプトはこの作品の生成で常に適用されます。選択中の文体・視点などのプリセットはその後ろに、作品固有の追加指示はさらに後ろに加わります。
+              基本プロンプトはこの作品の生成で常に適用されます。選択中の作風設定はその後ろに、作品固有の追加指示はさらに後ろに加わります。
             </p>
             <div className="prompt-toolbar">
               <strong>
@@ -1199,7 +1199,7 @@ export default function WorkSettingsTab({
               className="system-prompt-editor"
               aria-label="システムプロンプトの追加指示"
               maxLength={SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS}
-              placeholder="プリセットに加えて守ってほしい、作品固有の指示を入力"
+              placeholder="作風設定に加えて守ってほしい、作品固有の指示を入力"
               value={systemPromptDraft}
               onChange={(e) => setSystemPromptDraft(e.target.value)}
             />
@@ -1238,7 +1238,7 @@ export default function WorkSettingsTab({
           )}
         </header>
         <p className="settings-help">
-          文体・リズム・描写密度のサンプル本文です。生成時は本文の一部として参照され、文体プリセットより見本の質感が優先されます（人称・視点は上書きされません）。
+          文体・リズム・描写密度のサンプル本文です。生成時は本文の一部として参照され、作風設定より見本の質感が優先されます（人称・視点は上書きされません）。
         </p>
         {!styleSampleEditing && (
           <>

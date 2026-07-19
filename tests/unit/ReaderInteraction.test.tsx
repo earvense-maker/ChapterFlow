@@ -11,6 +11,7 @@ vi.mock('../../src/client/clientApi', () => ({
     getReaderState: vi.fn(),
     getKnowledge: vi.fn(),
     updateState: vi.fn(),
+    navigateDraft: vi.fn(),
   },
 }));
 
@@ -18,6 +19,7 @@ const generate = vi.mocked(api.generate);
 const generateStream = vi.mocked(api.generateStream);
 const getReaderState = vi.mocked(api.getReaderState);
 const getKnowledge = vi.mocked(api.getKnowledge);
+const navigateDraft = vi.mocked(api.navigateDraft);
 
 describe('Reader interactions', () => {
   beforeEach(() => {
@@ -26,6 +28,7 @@ describe('Reader interactions', () => {
     generateStream.mockReset();
     getReaderState.mockReset();
     getKnowledge.mockReset();
+    navigateDraft.mockReset();
     getKnowledge.mockResolvedValue([]);
   });
 
@@ -127,6 +130,40 @@ describe('Reader interactions', () => {
     expect(getByRole('radio', { name: 'ライト' }).querySelector('svg')).not.toBeNull();
     expect(getByRole('radio', { name: 'ダーク' }).querySelector('svg')).not.toBeNull();
     expect(queryByText(/🧠|📖|⚙/)).toBeNull();
+  });
+
+  it('moves to both the previous and next draft without changing draft status', async () => {
+    getReaderState.mockResolvedValue(readerStateWithDraft());
+    navigateDraft.mockResolvedValue({
+      ...generationRecord(),
+      generationId: 'gen-c',
+      responseText: 'Next draft text',
+      status: 'superseded',
+    });
+
+    const { findByRole, findByText } = render(
+      <Reader
+        projectId="proj-reader-interaction"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+        onOpenMemories={vi.fn()}
+      />
+    );
+
+    await findByText('Draft scene text');
+    expect(await findByRole('button', { name: '前の案' })).toBeEnabled();
+    const nextButton = await findByRole('button', { name: '次の案' });
+    expect(nextButton).toBeEnabled();
+
+    fireEvent.click(nextButton);
+
+    await waitFor(() =>
+      expect(navigateDraft).toHaveBeenCalledWith('proj-reader-interaction', 'next')
+    );
+    expect(await findByText('Next draft text')).toBeInTheDocument();
+    expect(await findByRole('button', { name: '前の案' })).toBeEnabled();
+    expect(await findByRole('button', { name: '次の案' })).toBeDisabled();
   });
 });
 

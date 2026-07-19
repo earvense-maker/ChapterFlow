@@ -479,6 +479,7 @@ export interface PatchSetupSettingsBody {
     provider: string;
     modelName?: string;
   };
+  activePresetIds?: ActivePresets;
   revision: number;
 }
 

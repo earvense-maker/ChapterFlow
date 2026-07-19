@@ -56,7 +56,7 @@ describe('ProjectForm layout', () => {
     const presets = container.querySelector('details.settings-section-collapsible');
     expect(presets).toBeInstanceOf(HTMLDetailsElement);
     expect((presets as HTMLDetailsElement).open).toBe(false);
-    fireEvent.click(screen.getByText('プリセット'));
+    fireEvent.click(screen.getByText('作風設定'));
     expect((presets as HTMLDetailsElement).open).toBe(true);
 
     const modelInput = screen.getByLabelText('モデル名');

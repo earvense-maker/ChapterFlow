@@ -174,6 +174,20 @@ router.post('/projects/:id/revert', async (req, res, next) => {
   }
 });
 
+router.post('/projects/:id/navigate-draft', async (req, res, next) => {
+  try {
+    const { direction } = (req.body ?? {}) as { direction?: 'previous' | 'next' };
+    if (direction !== 'previous' && direction !== 'next') {
+      return res.status(400).json({ error: 'direction must be previous or next' });
+    }
+    const record = await generationService.navigateDraft(req.params.id, direction);
+    if (!record) return res.status(404).json({ error: `No ${direction} generation found` });
+    res.json(record);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/projects/:id/unaccept', async (req, res, next) => {
   try {
     const record = await generationService.unacceptCurrentScene(req.params.id);

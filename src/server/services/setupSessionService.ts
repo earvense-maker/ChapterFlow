@@ -216,16 +216,28 @@ export async function patchSetupSettings(
     assertValidRevision(body.revision);
     assertRevision(session, body.revision);
 
-    const provider = body.model?.provider;
-    if (!provider || !isSupportedProvider(provider)) {
-      throw new SetupServiceError('未対応のモデルプロバイダーです。', 'unsupported_provider', false, 400);
+    let model = session.model;
+    if (body.model) {
+      const provider = body.model.provider;
+      if (!provider || !isSupportedProvider(provider)) {
+        throw new SetupServiceError('未対応のモデルプロバイダーです。', 'unsupported_provider', false, 400);
+      }
+      model = {
+        provider,
+        modelName: body.model.modelName?.trim() || defaultModelForProvider(provider),
+      };
     }
 
-    const modelName = body.model?.modelName?.trim() || defaultModelForProvider(provider);
     const now = nowIso();
     const nextSession: SetupSession = {
       ...session,
-      model: { provider, modelName },
+      model,
+      projectSettings: {
+        ...session.projectSettings,
+        ...(body.activePresetIds
+          ? { activePresetIds: normalizeActivePresetIds(body.activePresetIds) }
+          : {}),
+      },
       revision: session.revision + 1,
       updatedAt: now,
     };

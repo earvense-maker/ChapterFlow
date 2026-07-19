@@ -782,13 +782,16 @@ async function refreshStoryStateUnlocked(projectId: string): Promise<ReaderState
     return getReaderState(projectId);
   }
   await writeStoryStateRefresh(projectId, buildStoryStateRefreshStatus('pending', backlog[0].generationId));
-  await drainStoryStateBacklog(projectId, { lockRefreshStatusWrites: true });
+  await drainStoryStateBacklog(projectId, {
+    lockRefreshStatusWrites: true,
+    maxItems: 1,
+  });
   return getReaderState(projectId);
 }
 
 async function drainStoryStateBacklog(
   projectId: string,
-  options: { lockRefreshStatusWrites?: boolean } = {}
+  options: { lockRefreshStatusWrites?: boolean; maxItems?: number } = {}
 ): Promise<StoryStateRefreshStatus> {
   const writeRefreshStatus = options.lockRefreshStatusWrites
     ? writeStoryStateRefresh
@@ -801,7 +804,9 @@ async function drainStoryStateBacklog(
       return writeRefreshStatus(projectId, buildStoryStateRefreshStatus('fresh', null));
     }
 
-    const limit = backlog.slice(0, 10);
+    // NOTE: モデル呼び出しを直列に積むと手動再抽出も採用後更新も長時間
+    // ブロックするため、1回の処理は1場面に限定する。残りは状態表示から再実行できる。
+    const limit = backlog.slice(0, options.maxItems ?? 1);
     let processed = 0;
     let currentGenerationId = firstGenerationId;
     for (const item of limit) {
@@ -934,10 +939,20 @@ async function rejectGenerationUnlocked(
 }
 
 export async function revertToPrevious(projectId: string): Promise<GenerationRecord | null> {
-  return withProjectWriteLock(projectId, () => revertToPreviousUnlocked(projectId));
+  return navigateDraft(projectId, 'previous');
 }
 
-async function revertToPreviousUnlocked(projectId: string): Promise<GenerationRecord | null> {
+export async function navigateDraft(
+  projectId: string,
+  direction: SceneNavigationDirection
+): Promise<GenerationRecord | null> {
+  return withProjectWriteLock(projectId, () => navigateDraftUnlocked(projectId, direction));
+}
+
+async function navigateDraftUnlocked(
+  projectId: string,
+  direction: SceneNavigationDirection
+): Promise<GenerationRecord | null> {
   const state = await storage.readState(projectId);
   if (!state) throw new Error(`State not found: ${projectId}`);
 
@@ -949,27 +964,19 @@ async function revertToPreviousUnlocked(projectId: string): Promise<GenerationRe
   const scene = episode.scenes.find((s) => s.sceneId === state.currentSceneId);
   if (!scene) return null;
 
-  // 現在のdraftを探し、前のdraftに戻す
   const currentId = state.selectedDraftGenerationId;
   const idx = scene.draftGenerationIds.findIndex((id) => id === currentId);
-  if (idx <= 0) {
-    // 前のdraftがなければ最後のacceptedに戻す
-    if (scene.acceptedGenerationId) {
-      const gen = await findGeneration(projectId, scene.acceptedGenerationId);
-      if (gen) {
-        await storage.writeState(projectId, { ...state, selectedDraftGenerationId: gen.generationId });
-        return gen;
-      }
-    }
-    return null;
-  }
+  if (idx < 0) return null;
 
-  const previousId = scene.draftGenerationIds[idx - 1];
-  const previous = await findGeneration(projectId, previousId);
-  if (!previous) return null;
+  const targetIndex = direction === 'previous' ? idx - 1 : idx + 1;
+  const targetId = scene.draftGenerationIds[targetIndex];
+  if (!targetId) return null;
 
-  await storage.writeState(projectId, { ...state, selectedDraftGenerationId: previousId });
-  return previous;
+  const target = await findGeneration(projectId, targetId);
+  if (!target) return null;
+
+  await storage.writeState(projectId, { ...state, selectedDraftGenerationId: targetId });
+  return target;
 }
 
 export async function navigateScene(

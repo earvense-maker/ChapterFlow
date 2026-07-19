@@ -20,7 +20,8 @@ import type {
   StoryThreadRecord,
 } from '../types/index.js';
 
-const STORY_STATE_OUTPUT_LENGTH = 2400;
+const STORY_STATE_OUTPUT_LENGTH = 4000;
+const STORY_STATE_RETRY_OUTPUT_LENGTH = 6000;
 const STORY_STATE_TEMPERATURE = 0.15;
 const MAX_CURRENT_SITUATION = 12;
 const MAX_CHARACTER_STATES = 24;
@@ -60,26 +61,55 @@ export async function updateStoryStateFromAcceptedScene(input: {
   timeoutMs: number;
 }): Promise<StoryState | null> {
   const promptState = await readStoryState(input.project.projectId);
-  const result = await input.adapter.generateText({
-    systemInstructions: buildSystemInstructions(),
-    userPrompt: buildUpdatePrompt({
-      previousState: promptState,
-      generation: input.generation,
-      characters: input.characters,
-      worldText: input.worldText,
-    }),
-    outputLength: STORY_STATE_OUTPUT_LENGTH,
-    temperature: STORY_STATE_TEMPERATURE,
-    timeoutMs: input.timeoutMs,
-    modelName: input.project.activeModelName,
+  const userPrompt = buildUpdatePrompt({
+    previousState: promptState,
+    generation: input.generation,
+    characters: input.characters,
+    worldText: input.worldText,
   });
+  let parsed: unknown | null = null;
 
-  if (result.finishReason === 'error' || result.finishReason === 'timeout') {
-    return null;
+  const outputLengths = [STORY_STATE_OUTPUT_LENGTH, STORY_STATE_RETRY_OUTPUT_LENGTH];
+  for (const [attemptIndex, outputLength] of outputLengths.entries()) {
+    const result = await input.adapter.generateText({
+      systemInstructions: buildSystemInstructions(),
+      userPrompt,
+      outputLength,
+      temperature: STORY_STATE_TEMPERATURE,
+      timeoutMs: attemptIndex === 0 ? input.timeoutMs : Math.max(5_000, Math.floor(input.timeoutMs / 2)),
+      modelName: input.project.activeModelName,
+      responseMimeType: 'application/json',
+    });
+
+    if (result.finishReason === 'timeout') {
+      throw new Error('物語の状態抽出がタイムアウトしました。少し待ってから再抽出してください。');
+    }
+    if (result.finishReason === 'error') {
+      throw new Error(
+        result.errorMessage ||
+          (result.errorCode ? `物語の状態抽出に失敗しました（${result.errorCode}）。` : '物語の状態抽出に失敗しました。')
+      );
+    }
+    if (result.finishReason === 'content_filter') {
+      throw new Error('モデルの安全判定により物語の状態を抽出できませんでした。');
+    }
+
+    parsed = parseStoryStateJson(result.text);
+    if (result.finishReason === 'length') {
+      if (attemptIndex === outputLengths.length - 1) {
+        throw new Error('物語の状態JSONが出力上限で途中までになりました。再抽出してください。');
+      }
+      parsed = null;
+      continue;
+    }
+    if (parsed) break;
+    // NOTE: 長期作品では差分JSONも出力上限に達することがある。JSON指定でも
+    // 応答が途中で切れた場合だけ、一度だけ余裕を増やして再試行する。
   }
 
-  const parsed = parseStoryStateJson(result.text);
-  if (!parsed) return null;
+  if (!parsed) {
+    throw new Error('モデルの応答が途中で切れたか、状態JSONとして読み取れませんでした。再抽出してください。');
+  }
 
   return withStoryStateLock(input.project.projectId, async () => {
     const previousState = await readStoryState(input.project.projectId);

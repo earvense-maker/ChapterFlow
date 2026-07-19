@@ -216,7 +216,7 @@ describe('WorkSettingsTab style sample gallery', () => {
       </ConfirmProvider>
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     const section = screen.getByRole('heading', { name: '文体見本' }).closest('section');
     expect(section).not.toBeNull();
     fireEvent.click(within(section!).getByRole('button', { name: /編集/ }));
@@ -278,7 +278,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       />
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     await screen.findByText('追加指示あり');
     fireEvent.click(screen.getAllByRole('button', { name: /編集/ })[0]);
 
@@ -316,7 +316,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       />
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     fireEvent.click(screen.getAllByRole('button', { name: /編集/ })[0]);
 
     const baseEditor = screen.getByRole('textbox', {
@@ -350,7 +350,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       />
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     await screen.findByText('追加指示あり');
     fireEvent.click(screen.getAllByRole('button', { name: /編集/ })[0]);
     const previewCallsBeforeClear = apiMock.previewSystemPrompt.mock.calls.length;
@@ -374,7 +374,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       expect.objectContaining({ customSystemPrompt: '' }),
       ''
     );
-    expect(screen.getByText('プリセット由来')).toBeInTheDocument();
+    expect(screen.getByText('作風設定由来')).toBeInTheDocument();
     expect(screen.getByText('システムプロンプト全文（7 字）')).toBeInTheDocument();
   });
 
@@ -404,7 +404,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       />
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     await screen.findByText('追加指示あり');
     fireEvent.click(screen.getAllByRole('button', { name: /編集/ })[0]);
     fireEvent.change(screen.getByRole('textbox', { name: 'システムプロンプトの追加指示' }), {
@@ -444,7 +444,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       />
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     await screen.findByText('追加指示あり');
     fireEvent.click(screen.getAllByRole('button', { name: /編集/ })[0]);
     const select = await screen.findByRole('combobox', { name: 'システムプロンプトのプリセット' });
@@ -499,7 +499,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       />
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     await screen.findByText('追加指示あり');
     fireEvent.click(await screen.findByDisplayValue('direct-soft'));
     await waitFor(() =>
@@ -545,7 +545,7 @@ describe('WorkSettingsTab system prompt additions', () => {
       />
     );
 
-    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('tab', { name: '作風設定' }));
     fireEvent.click(await screen.findByRole('radio', { name: '指定しない' }));
     await waitFor(() =>
       expect(apiMock.updateProject).toHaveBeenCalledWith(project.projectId, {

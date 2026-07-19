@@ -299,17 +299,17 @@ export default function Reader({
     }
   }
 
-  async function handleRevert() {
+  async function handleNavigateDraft(direction: SceneNavigationDirection) {
     try {
       setLoading(true);
       setError(null);
       setNotice(null);
-      const record = await api.revertGeneration(projectId);
+      const record = await api.navigateDraft(projectId, direction);
       setText(record.responseText);
       setGenerationId(record.generationId);
       setStatus(record.status);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '復帰に失敗しました');
+      setError(err instanceof Error ? err.message : '案の移動に失敗しました');
     } finally {
       setLoading(false);
     }
@@ -469,8 +469,10 @@ export default function Reader({
       currentScene.acceptedGenerationId === generationId
   );
 
-  // NOTE: 前の案に戻す — 現在の draft が1件目より前 かつ 採用済みが存在しない場合は無効。
-  const canRevert = totalDrafts > 1 && currentDraftIndex > 0;
+  // NOTE: 案の移動は同じ場面の draft 配列内だけで行い、採用状態には触れない。
+  const canNavigatePreviousDraft = totalDrafts > 1 && currentDraftIndex > 0;
+  const canNavigateNextDraft =
+    totalDrafts > 1 && currentDraftIndex >= 0 && currentDraftIndex < totalDrafts - 1;
   // NOTE: 文脈使用率が閾値超えのときのみ、ヘッダー付近に警告バッジを出す。
   const contextWarn =
     contextUsage && contextUsage.usageRatio >= CONTEXT_WARNING_THRESHOLD
@@ -721,8 +723,21 @@ export default function Reader({
             <button onClick={openRewriteSheet} disabled={loading}>
               書き直す
             </button>
-            <button onClick={handleRevert} disabled={loading || !canRevert}>
+          </div>
+        )}
+        {hasText && currentDraftIndex >= 0 && totalDrafts > 1 && (
+          <div className="draft-actions">
+            <button
+              onClick={() => void handleNavigateDraft('previous')}
+              disabled={loading || !canNavigatePreviousDraft}
+            >
               前の案
+            </button>
+            <button
+              onClick={() => void handleNavigateDraft('next')}
+              disabled={loading || !canNavigateNextDraft}
+            >
+              次の案
             </button>
           </div>
         )}

@@ -3,7 +3,9 @@ import { api } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
 import LightMarkdown from './LightMarkdown';
+import PresetSelector, { type PresetCategory } from './PresetSelector';
 import type {
+  ActivePresets,
   CharacterRole,
   ModelProviderInfo,
   SetupCommitPlan,
@@ -141,6 +143,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
   const [providersLoaded, setProvidersLoaded] = useState(false);
+  const [presetCategories, setPresetCategories] = useState<Record<string, PresetCategory> | null>(null);
   const [sessionModelProvider, setSessionModelProvider] = useState('');
   const [sessionModelName, setSessionModelName] = useState('');
 
@@ -271,6 +274,24 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       ignore = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (purpose !== 'novel') return;
+    let ignore = false;
+    api.getPresets()
+      .then((result) => {
+        if (ignore) return;
+        setPresetCategories(
+          (result as { categories?: Record<string, PresetCategory> }).categories ?? {}
+        );
+      })
+      .catch(() => {
+        if (!ignore) setPresetCategories({});
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [purpose]);
 
   useEffect(() => {
     let ignore = false;
@@ -653,6 +674,26 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     }
   }
 
+  async function saveStyleSettings(activePresetIds: ActivePresets) {
+    if (!session || busy) return;
+    try {
+      setSavingDraft(true);
+      setError(null);
+      const result = await api.patchSetupSettings(session.sessionId, {
+        activePresetIds,
+        revision: session.revision,
+      });
+      setSession(result.session);
+      clearDraftChanges();
+      rememberSetupSession(result.session.sessionId, purpose);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '作風設定を変更できませんでした');
+      await reloadLatestSession(session.sessionId, true);
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
   async function reloadLatestSession(
     sessionId: string,
     preserveDraftChangesIfUnchanged = false
@@ -849,6 +890,33 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               </button>
               <span>会話履歴は残り、次の返答から新しいモデルを使います。</span>
             </div>
+          </details>
+        </section>
+      )}
+
+      {purpose === 'novel' && session && (
+        <section
+          className="setup-model-bar setup-style-settings-bar"
+          aria-label="この作品の作風設定"
+          inert={Boolean(commitPlan)}
+          aria-hidden={Boolean(commitPlan)}
+        >
+          <details>
+            <summary>
+              <strong>作風設定</strong>
+              <span> — 視点・境界・読み味など</span>
+            </summary>
+            {presetCategories ? (
+              <PresetSelector
+                categories={presetCategories}
+                value={session.projectSettings.activePresetIds}
+                onChange={(value) => void saveStyleSettings(value)}
+                disabled={busy}
+                namePrefix="setup-style"
+              />
+            ) : (
+              <p className="settings-help">作風設定を読み込み中…</p>
+            )}
           </details>
         </section>
       )}
