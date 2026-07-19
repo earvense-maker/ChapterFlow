@@ -1887,6 +1887,55 @@ button:disabled:has(.generating-label) {
   color: var(--text);
 }
 
+/* NOTE: 折りたたみ操作は本文や補助文に埋もれやすいため、既存のアクセント色と
+   点線下線を共通の操作サインにする。ホバー時だけ実線へ変えてリンクとは区別する。 */
+:is(
+  .settings-section-collapsible > summary,
+  .setup-model-bar summary,
+  .summary-details summary,
+  .refine-finding-detail summary,
+  .summary-link-button
+) {
+  color: var(--accent);
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+
+:is(
+  .settings-section-collapsible > summary,
+  .setup-model-bar summary,
+  .summary-details summary,
+  .refine-finding-detail summary,
+  .summary-link-button
+):hover {
+  color: var(--accent-hover);
+  text-decoration-style: solid;
+}
+
+:is(
+  .settings-section-collapsible > summary,
+  .setup-model-bar summary,
+  .summary-details summary,
+  .refine-finding-detail summary,
+  .summary-link-button
+):focus-visible {
+  color: var(--accent-hover);
+  text-decoration-style: solid;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.settings-section-collapsible > summary::after {
+  color: var(--accent);
+}
+
+.settings-section-collapsible > summary:hover::after {
+  color: var(--accent-hover);
+}
+
 .settings-badge {
   padding: 0.1rem 0.55rem;
   border-radius: 999px;

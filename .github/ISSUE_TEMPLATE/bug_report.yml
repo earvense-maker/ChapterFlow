@@ -13,7 +13,7 @@ body:
     attributes:
       label: ChapterFlowのバージョン
       description: アプリ設定の「アプリ情報」に表示されるバージョンです。
-      placeholder: 0.1.0-beta.4
+      placeholder: 0.1.0-beta.5
     validations:
       required: true
   - type: dropdown
