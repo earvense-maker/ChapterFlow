@@ -277,4 +277,84 @@ describe('setupDraftPatchService', () => {
     expect(draft.candidates).toEqual([]);
     expect(draft.relationshipSeeds).toEqual(['関係']);
   });
+
+  it('migrates legacy character fields and locked field names', () => {
+    const draft = normalizeSetupDraft({
+      characters: [
+        {
+          id: 'char-old',
+          role: 'protagonist',
+          name: 'アリス',
+          label: '主人公',
+          description: '旧形式',
+          want: '自由になりたい',
+          fear: '忘れられること',
+          secret: '実は王女',
+          lockedFields: ['want', 'secret'],
+          source: 'manual',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+
+    expect(draft.characters[0]).toMatchObject({
+      traits: [
+        { label: '望み', text: '自由になりたい' },
+        { label: '恐れ', text: '忘れられること' },
+      ],
+      secrets: '実は王女',
+      lockedFields: ['traits', 'secrets'],
+    });
+    expect(draft.characters[0]).not.toHaveProperty('want');
+    expect(draft.characters[0]).not.toHaveProperty('secret');
+  });
+
+  it('replaces and clears traits/secrets through character updates', () => {
+    const draft = normalizeSetupDraft({
+      characters: [
+        {
+          id: 'char-a',
+          role: 'protagonist',
+          name: 'アリス',
+          label: '主人公',
+          description: '人物',
+          traits: [{ label: '癖', text: '緊張すると笑う' }],
+          secrets: '実は王女',
+          source: 'manual',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    });
+
+    const replaced = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: {
+        charactersUpdate: [
+          {
+            id: 'char-a',
+            traits: [{ label: 'こだわり', text: '紅茶は熱いうちに飲む' }],
+            secrets: '',
+          },
+        ],
+      },
+    });
+    expect(replaced.characters[0].traits).toEqual([
+      { label: 'こだわり', text: '紅茶は熱いうちに飲む' },
+    ]);
+    expect(replaced.characters[0].secrets).toBeUndefined();
+
+    const cleared = applySetupDraftPatch({
+      draft: replaced,
+      locks: [],
+      now,
+      patch: { charactersUpdate: [{ id: 'char-a', traits: [] }] },
+    });
+    expect(cleared.characters[0].traits).toBeUndefined();
+  });
 });

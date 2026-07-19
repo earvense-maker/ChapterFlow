@@ -2620,6 +2620,52 @@ button:disabled:has(.generating-label) {
   gap: 0.5rem;
 }
 
+.character-traits-editor {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.character-traits-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-weight: 600;
+}
+
+.character-traits-editor .field-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.character-trait-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(220px, 2fr) auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.character-trait-label-field,
+.character-trait-text-field {
+  display: grid;
+  gap: 0.2rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.character-trait-text-field textarea {
+  min-height: 58px;
+}
+
+.character-trait-remove {
+  align-self: end;
+}
+
 .character-initial-state-field {
   display: grid;
   gap: 0.25rem;
@@ -2726,6 +2772,14 @@ button:disabled:has(.generating-label) {
 /* NOTE: PC 前提だった画面をスマホ幅で使えるように、ヘッダーを縦積みにし、
    ボタン群のパディング/フォントを詰め、iOS の入力欄自動ズームを防ぐ。 */
 @media (max-width: 640px) {
+  .character-trait-row {
+    grid-template-columns: 1fr;
+  }
+
+  .character-trait-remove {
+    justify-self: end;
+  }
+
   .reader {
     min-height: 100dvh;
   }

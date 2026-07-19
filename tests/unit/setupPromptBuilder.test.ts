@@ -179,12 +179,33 @@ describe('setupPromptBuilder', () => {
 
     expect(chat.systemInstructions).toContain('A/B/C');
     expect(chat.systemInstructions).toContain('気に入った要素は混ぜても大丈夫');
-    expect(chat.systemInstructions).toContain('何に揺れるか');
+    expect(chat.systemInstructions).toContain('traits');
+    expect(chat.systemInstructions).toContain('決まった枠に縛られない');
     expect(chat.systemInstructions).toContain('物語を動かす火種');
     expect(chat.systemInstructions).toContain('suggestedActions');
     expect(chat.systemInstructions).toContain('intent:"preview"');
     expect(chat.userPrompt).toContain('"intent": "preview"');
     expect(chat.userPrompt).not.toContain(session.sessionId);
     expect(chat.userPrompt).not.toContain('"revision": 1');
+  });
+
+  it('uses free-form traits and a separate secrets key in both commit prompt variants', () => {
+    const novel = buildSetupCommitPrompt({
+      session: baseSession(),
+      presetIdsByCategory,
+    });
+    const roleplay = buildSetupCommitPrompt({
+      session: { ...baseSession(), purpose: 'roleplay' },
+      presetIdsByCategory,
+    });
+
+    for (const prompt of [novel.userPrompt, roleplay.userPrompt]) {
+      expect(prompt).toContain('traits は最大4件');
+      expect(prompt).toContain('独立した secrets');
+      expect(prompt).toContain('"traits"');
+      expect(prompt).toContain('"secrets"');
+      expect(prompt).not.toContain('"want"');
+      expect(prompt).not.toContain('"fear"');
+    }
   });
 });

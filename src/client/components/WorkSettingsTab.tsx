@@ -7,6 +7,7 @@ import {
   SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
 } from '@shared/types';
 import RefineChatPanel from './RefineChatPanel';
+import CharacterTraitsEditor from './CharacterTraitsEditor';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import type {
   Character,
@@ -302,8 +303,9 @@ export default function WorkSettingsTab({
     try {
       setLoading(true);
       onError(null);
-      await api.updateCharacters(projectId, charactersDraft);
-      setCharacters(charactersDraft);
+      const savedCharacters = await api.updateCharacters(projectId, charactersDraft);
+      setCharacters(savedCharacters);
+      setCharactersDraft(savedCharacters);
       setCharactersEditing(false);
       void refreshRefineReviewStatus();
       onFlashMessage('人物設定を保存しました');
@@ -1493,16 +1495,15 @@ export default function WorkSettingsTab({
                             )}
                           </dd>
                         </div>
-                        {(c.aliases?.length || c.want || c.fear || c.secrets || c.currentState) && (
+                        {(c.aliases?.length || c.traits?.length || c.secrets || c.currentState) && (
                           <div>
                             <dt>詳細</dt>
                             <dd>
                               <span className="summary-prewrap-inline">
                                 {[
                                   c.aliases?.length ? `呼び名: ${c.aliases.join(' / ')}` : '',
-                                  c.want ? `欲求: ${c.want}` : '',
-                                  c.fear ? `恐れ: ${c.fear}` : '',
-                                  c.secrets ? `秘密: ${c.secrets}` : '',
+                                  ...(c.traits ?? []).map((trait) => `${trait.label}: ${trait.text}`),
+                                  c.secrets ? `見せない面: ${c.secrets}` : '',
                                   c.currentState ? `${initialStateLabel}: ${c.currentState}` : '',
                                 ].filter(Boolean).join('\n')}
                               </span>
@@ -1564,19 +1565,15 @@ export default function WorkSettingsTab({
                     placeholder="呼び名（カンマ区切り）"
                   />
                   <textarea
-                    value={c.want || ''}
-                    onChange={(e) => updateCharacterDraft(i, { want: e.target.value })}
-                    placeholder="欲求"
-                  />
-                  <textarea
-                    value={c.fear || ''}
-                    onChange={(e) => updateCharacterDraft(i, { fear: e.target.value })}
-                    placeholder="恐れ"
-                  />
-                  <textarea
                     value={c.secrets || ''}
                     onChange={(e) => updateCharacterDraft(i, { secrets: e.target.value })}
-                    placeholder="秘密"
+                    placeholder="見せない面（秘密、建前、外では見せない一面など）"
+                  />
+                  <CharacterTraitsEditor
+                    idPrefix={`work-character-${c.characterId}`}
+                    value={c.traits ?? []}
+                    onChange={(traits) => updateCharacterDraft(i, { traits })}
+                    disabled={loading}
                   />
                   <label className="character-initial-state-field">
                     {initialStateLabel}

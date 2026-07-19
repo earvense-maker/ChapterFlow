@@ -34,6 +34,10 @@ import {
   parseWorldMd,
   serializeWorldMd,
 } from '../utils/worldMd.js';
+import {
+  normalizeCharactersForStorage,
+  type LegacyCharacterInput,
+} from '../../shared/characterSchema.js';
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
@@ -77,6 +81,10 @@ export function presetsJsonPath(projectId: string): string {
 
 export function charactersJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'characters.json');
+}
+
+export function legacyCharactersBackupPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'characters.pre-traits-v1.json');
 }
 
 export function memoriesJsonPath(projectId: string): string {
@@ -247,12 +255,61 @@ export async function writePresets(projectId: string, presets: PresetsFile): Pro
 }
 
 export async function readCharacters(projectId: string): Promise<Character[]> {
-  const data = await readJsonFile<Character[]>(charactersJsonPath(projectId));
-  return data ?? [];
+  const data = await readJsonFile<LegacyCharacterInput[]>(charactersJsonPath(projectId));
+  return normalizeCharactersForStorage(Array.isArray(data) ? data : []);
 }
 
-export async function writeCharacters(projectId: string, characters: Character[]): Promise<void> {
-  await safeWriteJson(charactersJsonPath(projectId), characters);
+export async function writeCharacters(
+  projectId: string,
+  characters: LegacyCharacterInput[]
+): Promise<void> {
+  await withDataDirWrite(async () => {
+    await backupLegacyCharactersOnce(projectId);
+    await safeWriteJson(
+      charactersJsonPath(projectId),
+      normalizeCharactersForStorage(characters)
+    );
+  });
+}
+
+async function backupLegacyCharactersOnce(projectId: string): Promise<void> {
+  const sourcePath = charactersJsonPath(projectId);
+  let raw: string;
+  try {
+    raw = await fs.readFile(sourcePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (
+    !Array.isArray(parsed) ||
+    !parsed.some(
+      (item) =>
+        typeof item === 'object' &&
+        item !== null &&
+        !Array.isArray(item) &&
+        (Object.hasOwn(item, 'want') || Object.hasOwn(item, 'fear'))
+    )
+  ) {
+    return;
+  }
+
+  try {
+    // NOTE: ダウングレード復旧用。最初の旧形式だけを保持し、以後は上書きしない。
+    await fs.writeFile(legacyCharactersBackupPath(projectId), raw, {
+      encoding: 'utf-8',
+      flag: 'wx',
+    });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+  }
 }
 
 export async function readMemories(projectId: string): Promise<Memory[]> {

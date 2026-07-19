@@ -66,6 +66,63 @@ describe('setupSessionService', () => {
     });
   });
 
+  it('migrates v1 character fields to v2 when reading a stored setup session', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+    await storage.writeSetupSession({
+      ...result.session,
+      schemaVersion: 1,
+      draft: {
+        ...result.session.draft,
+        characters: [
+          {
+            id: 'legacy-character',
+            role: 'protagonist',
+            name: 'ユイ',
+            label: '旅人',
+            description: '帰郷を目指す旅人',
+            want: '故郷へ帰りたい',
+            fear: '仲間を失うこと',
+            secret: '王家の血を引く',
+            lockedFields: ['want', 'fear', 'secret'],
+            source: 'manual',
+            status: 'active',
+            createdAt: now,
+            updatedAt: now,
+          } as never,
+        ],
+      },
+    });
+
+    const loaded = await setupSessionService.getSetupSession(result.sessionId);
+
+    expect(loaded?.schemaVersion).toBe(2);
+    expect(loaded?.draft.characters[0]).toMatchObject({
+      traits: [
+        { label: '望み', text: '故郷へ帰りたい' },
+        { label: '恐れ', text: '仲間を失うこと' },
+      ],
+      secrets: '王家の血を引く',
+      lockedFields: ['traits', 'secrets'],
+    });
+  });
+
+  it('reports unsupported setup schemas and omits them from the session list', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+    await storage.writeSetupSession({
+      ...result.session,
+      schemaVersion: 99,
+    } as never);
+
+    await expect(setupSessionService.getSetupSession(result.sessionId)).rejects.toMatchObject({
+      code: 'unsupported_setup_schema',
+      status: 400,
+    });
+    const sessions = await setupSessionService.listSetupSessions();
+    expect(sessions.some((session) => session.sessionId === result.sessionId)).toBe(false);
+  });
+
   it('normalizes legacy preset selections when creating a setup session', async () => {
     const result = await setupSessionService.createSetupSession({
       projectSettings: {

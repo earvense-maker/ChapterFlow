@@ -319,7 +319,10 @@ describe('refineChatService applyRefinePatch', () => {
             {
               kind: 'character-update',
               characterId: 'char-akiba',
-              fields: { description: '30歳、蘭学者、長崎帰り' },
+              fields: {
+                description: '30歳、蘭学者、長崎帰り',
+                traits: [{ label: 'こだわり', text: '記録は必ず日付順に並べる' }],
+              },
             },
           ],
         },
@@ -331,6 +334,43 @@ describe('refineChatService applyRefinePatch', () => {
     expect(applied.patch.status).toBe('applied');
     const stored = await storage.readCharacters(projectId);
     expect(stored[0].description).toContain('長崎帰り');
+    expect(stored[0].traits).toEqual([
+      { label: 'こだわり', text: '記録は必ず日付順に並べる' },
+    ]);
+  });
+
+  it('treats an array-shaped malformed traits update as a normalized full replacement', async () => {
+    const projectId = await createTrackedProject();
+    await storage.writeCharacters(projectId, [
+      {
+        characterId: 'char-akiba',
+        name: '秋葉',
+        role: 'protagonist',
+        description: '蘭学者',
+        traits: [{ label: 'こだわり', text: '記録を日付順に並べる' }],
+      },
+    ]);
+    mockAssistantResponse({
+      visibleReply: 'ok',
+      patches: [
+        {
+          summary: '不完全な軸を正規化',
+          operations: [
+            {
+              kind: 'character-update',
+              characterId: 'char-akiba',
+              fields: { traits: ['broken'] },
+            },
+          ],
+        },
+      ],
+    });
+
+    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    await refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId);
+
+    const stored = await storage.readCharacters(projectId);
+    expect(stored[0]).not.toHaveProperty('traits');
   });
 
   it('fails to apply a world-replace whose anchor no longer matches, and records the error', async () => {

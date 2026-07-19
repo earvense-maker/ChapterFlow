@@ -120,6 +120,40 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.world?.initialSituation).toContain('江戸時代風の町');
   });
 
+  it('normalizes traits, promotes reserved labels to secrets, and accepts legacy fields', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        characters: [
+          {
+            characterId: 'char-a',
+            role: 'protagonist',
+            name: 'アリス',
+            description: '主人公',
+            traits: [
+              { label: '見せない面', text: '実は王女' },
+              { label: 'こだわり', text: '紅茶は熱いうちに飲む' },
+            ],
+            want: '自由になりたい',
+            fear: '忘れられること',
+          },
+        ],
+      },
+    });
+
+    expect(normalized.projectInput.characters?.[0]).toMatchObject({
+      secrets: '実は王女',
+      traits: [
+        { label: 'こだわり', text: '紅茶は熱いうちに飲む' },
+        { label: '望み', text: '自由になりたい' },
+        { label: '恐れ', text: '忘れられること' },
+      ],
+    });
+    expect(normalized.projectInput.characters?.[0]).not.toHaveProperty('want');
+  });
+
   it('accepts the new world schema and normalizes invalid fields to empty strings', () => {
     const normalized = normalizeSetupCommitData({
       session: session(),

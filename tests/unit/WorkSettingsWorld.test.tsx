@@ -9,6 +9,7 @@ const { apiMock } = vi.hoisted(() => ({
     getProjectPresets: vi.fn().mockResolvedValue({}),
     getWorld: vi.fn().mockResolvedValue({ foundation: '魔法法則', initialSituation: '停戦中' }),
     getCharacters: vi.fn().mockResolvedValue([]),
+    updateCharacters: vi.fn().mockResolvedValue([]),
     getPresets: vi.fn().mockResolvedValue({ categories: {} }),
     getStoryState: vi.fn().mockResolvedValue({
       schemaVersion: 1,
@@ -87,6 +88,8 @@ describe('WorkSettingsTab world areas', () => {
       foundation: '魔法法則',
       initialSituation: '停戦中',
     });
+    apiMock.getCharacters.mockReset().mockResolvedValue([]);
+    apiMock.updateCharacters.mockReset().mockResolvedValue([]);
     apiMock.updateWorldArea.mockReset().mockImplementation(
       async (_id, area, text) => ({
         foundation: area === 'foundation' ? text : '魔法法則',
@@ -183,6 +186,48 @@ describe('WorkSettingsTab world areas', () => {
     fireEvent.click(screen.getByRole('tab', { name: '開始時点の状況' }));
     expect(await screen.findByText('refineで更新済み')).toBeInTheDocument();
     expect(screen.queryByText('古い状況')).not.toBeInTheDocument();
+  });
+  it('uses the normalized character response returned by the save API', async () => {
+    const character = {
+      characterId: 'char-1',
+      name: 'ユイ',
+      role: 'protagonist' as const,
+      description: '旅人',
+      speechStyle: '',
+      traits: [{ label: 'こだわり', text: '保存前' }],
+    };
+    apiMock.getCharacters.mockResolvedValue([character]);
+    apiMock.updateCharacters.mockResolvedValue([
+      { ...character, traits: [{ label: 'こだわり', text: '保存後に正規化済み' }] },
+    ]);
+
+    render(
+      <WorkSettingsTab
+        projectId={project.projectId}
+        project={project}
+        onError={vi.fn()}
+        onFlashMessage={vi.fn()}
+        onProjectUpdated={vi.fn()}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole('tab', { name: '人物' }));
+    fireEvent.click(screen.getByRole('button', { name: /編集/ }));
+    fireEvent.change(screen.getByLabelText('内容'), { target: { value: '保存前の入力' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateCharacters).toHaveBeenCalledWith(
+        project.projectId,
+        expect.arrayContaining([
+          expect.objectContaining({
+            traits: [{ label: 'こだわり', text: '保存前の入力' }],
+          }),
+        ])
+      )
+    );
+    expect(await screen.findByText(/保存後に正規化済み/)).toBeInTheDocument();
+    expect(screen.queryByText(/保存前の入力/)).not.toBeInTheDocument();
   });
 });
 

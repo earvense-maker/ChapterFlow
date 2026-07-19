@@ -1,5 +1,8 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import {
+  normalizeCharacterTraitsWithLegacy,
+} from '../../shared/characterSchema.js';
 import type {
   CharacterRole,
   SetupDraft,
@@ -7,7 +10,7 @@ import type {
   SetupDraftCharacter,
   SetupDraftItemSource,
   SetupDraftItemStatus,
-  SetupDraftPatch,
+  LegacySetupDraftPatchInput,
   SetupDraftTextItem,
   SetupDraftUndecided,
   SetupLock,
@@ -98,7 +101,7 @@ export function applySetupDraftPatch(input: {
 }): SetupDraft {
   const now = input.now ?? nowIso();
   const source = input.source ?? 'llm';
-  const patch = isRecord(input.patch) ? (input.patch as SetupDraftPatch) : {};
+  const patch = isRecord(input.patch) ? (input.patch as LegacySetupDraftPatchInput) : {};
   const next = normalizeSetupDraft(input.draft, now);
 
   const coreConcept = asString(patch.coreConcept);
@@ -267,20 +270,38 @@ function updateCharacters(
       current.relationshipNotes = relationshipNotes;
       changed = true;
     }
-    const want = asString(update.want);
-    if (want && !lockedFields.has('want') && current.want !== want) {
-      current.want = want;
-      changed = true;
+    if (!lockedFields.has('traits')) {
+      const hasTraits = Object.hasOwn(update, 'traits');
+      const legacyWant = typeof update.want === 'string' ? update.want : undefined;
+      const legacyFear = typeof update.fear === 'string' ? update.fear : undefined;
+      let nextTraits = current.traits ?? [];
+      if (hasTraits && Array.isArray(update.traits)) {
+        nextTraits = normalizeCharacterTraitsWithLegacy(
+          update.traits,
+          legacyWant,
+          legacyFear
+        );
+      } else if (!hasTraits && (legacyWant !== undefined || legacyFear !== undefined)) {
+        nextTraits = normalizeCharacterTraitsWithLegacy(
+          current.traits,
+          legacyWant,
+          legacyFear
+        );
+      }
+      if (!sameTraits(nextTraits, current.traits ?? [])) {
+        current.traits = nextTraits.length > 0 ? nextTraits : undefined;
+        changed = true;
+      }
     }
-    const fear = asString(update.fear);
-    if (fear && !lockedFields.has('fear') && current.fear !== fear) {
-      current.fear = fear;
-      changed = true;
-    }
-    const secret = asString(update.secret);
-    if (secret && !lockedFields.has('secret') && current.secret !== secret) {
-      current.secret = secret;
-      changed = true;
+    if (!lockedFields.has('secrets')) {
+      const secretInput = Object.hasOwn(update, 'secrets') ? update.secrets : update.secret;
+      if (typeof secretInput === 'string') {
+        const nextSecret = secretInput.trim() || undefined;
+        if (current.secrets !== nextSecret) {
+          current.secrets = nextSecret;
+          changed = true;
+        }
+      }
     }
     const greeting = asString(update.greeting);
     if (greeting && !lockedFields.has('greeting') && current.greeting !== greeting) {
@@ -419,6 +440,8 @@ function normalizeCharacter(
   const description = asString(value.description);
   if (!name && !label && !description) return null;
   const createdAt = asString(value.createdAt) || fallbackNow;
+  const traits = normalizeCharacterTraitsWithLegacy(value.traits, value.want, value.fear);
+  const secrets = asString(value.secrets) || asString(value.secret);
   return {
     id: forceNewId ? generateTimestampId('char-draft') : normalizeItemId(value.id, 'char-draft'),
     role,
@@ -427,20 +450,40 @@ function normalizeCharacter(
     description,
     speechStyle: asString(value.speechStyle) || undefined,
     relationshipNotes: asString(value.relationshipNotes) || undefined,
-    want: asString(value.want) || undefined,
-    fear: asString(value.fear) || undefined,
-    secret: asString(value.secret) || undefined,
+    traits: traits.length > 0 ? traits : undefined,
+    secrets: secrets || undefined,
     // NOTE: ロールプレイ用途の追加フィールド。novel 用途では未使用でも保存し、
     // 用途変更（Phase 2 で相互昇格）に備えて情報を残す。
     greeting: asString(value.greeting) || undefined,
     dialogueExamples: normalizeStringList(value.dialogueExamples, 5),
-    lockedFields: normalizeStringList(value.lockedFields, 12),
+    lockedFields: normalizeLockedFields(value.lockedFields),
     source: normalizeSource(value.source, fallbackSource),
     status: normalizeStatus(value.status),
     locked: asBoolean(value.locked),
     createdAt,
     updatedAt: asString(value.updatedAt) || createdAt,
   };
+}
+
+function normalizeLockedFields(value: unknown): string[] {
+  const normalized = normalizeStringList(value, 12).map((field) => {
+    if (field === 'want' || field === 'fear') return 'traits';
+    if (field === 'secret') return 'secrets';
+    return field;
+  });
+  return [...new Set(normalized)];
+}
+
+function sameTraits(
+  left: SetupDraftCharacter['traits'],
+  right: SetupDraftCharacter['traits']
+): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return (
+    a.length === b.length &&
+    a.every((trait, index) => trait.label === b[index]?.label && trait.text === b[index]?.text)
+  );
 }
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;

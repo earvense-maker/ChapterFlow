@@ -11,6 +11,7 @@ import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import { loadStyleSamples } from '../prompts/styleSamplePresets.js';
+import type { LegacyCharacterInput } from '../../shared/characterSchema.js';
 import {
   createSystemPromptPreset,
   deleteSystemPromptPreset,
@@ -20,7 +21,7 @@ import {
   SystemPromptPresetValidationError,
   updateSystemPromptPreset,
 } from '../services/systemPromptPresetService.js';
-import type { Character, CharacterRole, PresetsFile } from '../types/index.js';
+import type { CharacterRole, PresetsFile } from '../types/index.js';
 
 const router = Router();
 
@@ -277,7 +278,7 @@ const characterRoles = new Set<CharacterRole>([
   'other',
 ]);
 
-function isCharacterInput(value: unknown): value is Character {
+function isCharacterInput(value: unknown): value is LegacyCharacterInput {
   if (!isRecord(value)) return false;
   return (
     typeof value.characterId === 'string' &&
@@ -291,9 +292,23 @@ function isCharacterInput(value: unknown): value is Character {
     optionalString(value.secrets) &&
     optionalString(value.want) &&
     optionalString(value.fear) &&
+    optionalCharacterTraits(value.traits) &&
     optionalString(value.currentState) &&
     optionalString(value.greeting) &&
     optionalStringArray(value.dialogueExamples)
+  );
+}
+
+function optionalCharacterTraits(value: unknown): boolean {
+  if (value === undefined) return true;
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isRecord(item) &&
+        typeof item.label === 'string' &&
+        typeof item.text === 'string'
+    )
   );
 }
 

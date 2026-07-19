@@ -85,6 +85,11 @@ export interface StoryStateRefreshStatus {
 
 export type CharacterRole = 'protagonist' | 'deuteragonist' | 'supporting' | 'other';
 
+export interface CharacterTrait {
+  label: string;
+  text: string;
+}
+
 export interface Character {
   characterId: CharacterId;
   name: string;
@@ -94,8 +99,7 @@ export interface Character {
   speechStyle?: string;
   relationshipNotes?: string;
   secrets?: string;
-  want?: string;
-  fear?: string;
+  traits?: CharacterTrait[];
   // NOTE: novel では物語開始時点、roleplay では会話開始時点の状態。
   // 進行中の状態は StoryState.characterStates で管理する。
   currentState?: string;
@@ -336,9 +340,8 @@ export interface SetupDraftCharacter {
   description: string;
   speechStyle?: string;
   relationshipNotes?: string;
-  want?: string;
-  fear?: string;
-  secret?: string;
+  traits?: CharacterTrait[];
+  secrets?: string;
   // NOTE: ロールプレイ用途で相談中に組み立てる開幕メッセージと会話例。
   greeting?: string;
   dialogueExamples?: string[];
@@ -380,7 +383,7 @@ export interface SetupSessionError {
 }
 
 export interface SetupSession {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   sessionId: SetupSessionId;
   projectId: ProjectId | null;
   committedProjectId?: ProjectId;
@@ -439,6 +442,21 @@ export interface SetupDraftPatch {
   scenarioSeedsAdd?: string[];
   archiveIds?: string[];
 }
+
+// NOTE: 旧 setup セッション/LLM 応答の互換入力。正規化後の draft には旧キーを残さない。
+export type LegacySetupDraftCharacterInput = Partial<SetupDraftCharacter> & {
+  want?: unknown;
+  fear?: unknown;
+  secret?: unknown;
+};
+
+export type LegacySetupDraftPatchInput = Omit<
+  SetupDraftPatch,
+  'charactersAdd' | 'charactersUpdate'
+> & {
+  charactersAdd?: LegacySetupDraftCharacterInput[];
+  charactersUpdate?: Array<LegacySetupDraftCharacterInput & { id: string }>;
+};
 
 export interface CreateSetupSessionBody {
   initialMessage?: string;
@@ -965,6 +983,7 @@ export interface CharacterFieldPatch {
   speechStyle?: string;
   relationshipNotes?: string;
   secrets?: string;
+  traits?: CharacterTrait[];
   // NOTE: Character.currentState と同じく、物語/会話の開始時点の状態。
   currentState?: string;
 }

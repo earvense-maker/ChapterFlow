@@ -84,7 +84,13 @@ export async function listSetupSessions(): Promise<SetupSessionSummary[]> {
 
   return sessions
     .filter((session): session is SetupSession => session !== null)
-    .map((session) => toSetupSessionSummary(normalizeStoredSession(session)))
+    .flatMap((session) => {
+      try {
+        return [toSetupSessionSummary(normalizeStoredSession(session))];
+      } catch {
+        return [];
+      }
+    })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -105,7 +111,7 @@ export async function createSetupSession(
   const purpose: SetupPurpose = normalizeSetupPurpose(body.purpose);
   const requestedPresetIds = body.projectSettings?.activePresetIds ?? {};
   const session: SetupSession = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sessionId: generateTimestampId('setup'),
     projectId: null,
     status: 'active',
@@ -168,7 +174,8 @@ export async function getSetupSession(sessionId: string): Promise<SetupSession |
   try {
     const session = await storage.readSetupSession(sessionId);
     return session ? normalizeStoredSession(session) : null;
-  } catch {
+  } catch (err) {
+    if (err instanceof SetupServiceError) throw err;
     throw new SetupServiceError('相談セッションIDが不正です。', 'invalid_setup_id', false, 400);
   }
 }
@@ -1016,8 +1023,17 @@ async function readSetupSessionOrThrow(sessionId: string): Promise<SetupSession>
 }
 
 function normalizeStoredSession(session: SetupSession): SetupSession {
+  if (session.schemaVersion !== 1 && session.schemaVersion !== 2) {
+    throw new SetupServiceError(
+      'この相談セッションの形式には対応していません。',
+      'unsupported_setup_schema',
+      false,
+      400
+    );
+  }
   return {
     ...session,
+    schemaVersion: 2,
     // NOTE: 保存ファイルは purpose 無しのまま許容し、境界で 'novel' に正規化する。
     purpose: normalizeSetupPurpose(session.purpose),
     projectSettings: {
@@ -1026,13 +1042,8 @@ function normalizeStoredSession(session: SetupSession): SetupSession {
         session.projectSettings?.activePresetIds ?? {}
       ),
     },
-    // NOTE: 既存の draft ファイルは scenarioSeeds が無い場合があるので空配列に埋める。
-    draft: {
-      ...session.draft,
-      scenarioSeeds: Array.isArray(session.draft?.scenarioSeeds)
-        ? session.draft.scenarioSeeds
-        : [],
-    },
+    // NOTE: v1 の人物フィールドと欠落した配列を、再開時に一括で v2 へ寄せる。
+    draft: normalizeSetupDraft(session.draft),
     previews: session.previews ?? [],
     conversationSummary: session.conversationSummary ?? '',
     commitPlan: session.commitPlan ?? null,

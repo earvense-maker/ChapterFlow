@@ -211,6 +211,35 @@ describe('refineScanService', () => {
     expect(failed.reviewedStaticInputHash).toBe(successful.reviewedStaticInputHash);
   });
 
+  it('treats trait content and registration order as part of the static input hash', async () => {
+    const projectId = await createTrackedProject();
+    const character: Character = {
+      characterId: 'char-1',
+      name: 'ユイ',
+      role: 'protagonist',
+      description: '旅人',
+      traits: [
+        { label: 'こだわり', text: '約束を守る' },
+        { label: '動機', text: '故郷へ帰る' },
+      ],
+    };
+    await storage.writeCharacters(projectId, [character]);
+    mockAdapterGenerateText({
+      text: JSON.stringify({ coreConcept: '旅人の帰郷譚', findings: [] }),
+      finishReason: 'stop',
+    });
+    await refineScanService.scanProjectSettings(projectId);
+
+    const before = await refineScanService.getRefineReviewStatus(projectId);
+    expect(before.reasons).not.toContain('settings_changed');
+
+    await storage.writeCharacters(projectId, [
+      { ...character, traits: [character.traits![1], character.traits![0]] },
+    ]);
+    const after = await refineScanService.getRefineReviewStatus(projectId);
+    expect(after.reasons).toContain('settings_changed');
+  });
+
   it('derives nudge status from progress, legacy cache, truncated history, settings changes, and manual state edits', () => {
     const reviewedAt = '2026-07-01T00:00:00.000Z';
     const reviewedScan = makeScan({

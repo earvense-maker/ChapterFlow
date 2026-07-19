@@ -11,6 +11,11 @@ import { writeShortcut } from './shortcutService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import {
+  normalizeCharacterForStorage,
+  normalizeCharactersForStorage,
+} from '../../shared/characterSchema.js';
+export { normalizeCharacterForStorage, normalizeCharactersForStorage };
+import {
   DEFAULT_ACTIVE_PRESET_IDS,
   DEFAULT_PROJECT_TYPE,
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
@@ -50,49 +55,6 @@ const ACTIVE_PRESET_KEYS = new Set<keyof ActivePresets>([
   'intimacy',
 ]);
 
-// NOTE: 全書き込み境界（createProject/updateProject/refine 適用/setup コミット/複製/
-// characters PUT）で共通に呼び、greeting・dialogueExamples の上限を保証する。
-// 元 Character の非破壊コピーで、余分なプロパティは通過させない。
-export function normalizeCharacterForStorage(character: Character): Character {
-  const greeting = trimToMax(character.greeting, ROLEPLAY_LIMITS.greetingChars);
-  const dialogueExamples = normalizeDialogueExamples(character.dialogueExamples);
-  const next: Character = {
-    characterId: character.characterId,
-    name: character.name,
-    role: character.role,
-    description: character.description,
-  };
-  if (character.aliases !== undefined) next.aliases = character.aliases;
-  if (character.speechStyle !== undefined) next.speechStyle = character.speechStyle;
-  if (character.relationshipNotes !== undefined) {
-    next.relationshipNotes = character.relationshipNotes;
-  }
-  if (character.secrets !== undefined) next.secrets = character.secrets;
-  if (character.want !== undefined) next.want = character.want;
-  if (character.fear !== undefined) next.fear = character.fear;
-  if (character.currentState !== undefined) next.currentState = character.currentState;
-  if (greeting !== undefined) next.greeting = greeting;
-  if (dialogueExamples.length > 0) next.dialogueExamples = dialogueExamples;
-  return next;
-}
-
-export function normalizeCharactersForStorage(characters: Character[]): Character[] {
-  return characters.map(normalizeCharacterForStorage);
-}
-
-function normalizeDialogueExamples(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const result: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const text = item.trim();
-    if (!text) continue;
-    result.push(text.slice(0, ROLEPLAY_LIMITS.dialogueExampleChars));
-    if (result.length >= ROLEPLAY_LIMITS.dialogueExamplesCount) break;
-  }
-  return result;
-}
-
 function normalizeScenarioSeeds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const result: string[] = [];
@@ -131,13 +93,6 @@ export function normalizeRoleplayOutputChars(value: unknown): number {
     ROLEPLAY_LIMITS.outputCharsMin,
     Math.min(ROLEPLAY_LIMITS.outputCharsMax, rounded)
   );
-}
-
-function trimToMax(value: string | undefined, max: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const text = value.trim();
-  if (!text) return undefined;
-  return text.length > max ? text.slice(0, max) : text;
 }
 
 export async function createProject(body: CreateProjectBody): Promise<Project> {

@@ -463,7 +463,7 @@ function PatchOpView({
               <div className="refine-patch-old">
                 - {formatCharacterFieldValue(character, key)}
               </div>
-              <div className="refine-patch-new">+ {String(value ?? '')}</div>
+              <div className="refine-patch-new">+ {formatCharacterPatchValue(value)}</div>
             </div>
           ))}
         </div>
@@ -478,6 +478,14 @@ function PatchOpView({
           </div>
           {op.character.description && (
             <div className="refine-patch-new"> {op.character.description}</div>
+          )}
+          {(op.character.traits?.length ?? 0) > 0 && (
+            <div className="refine-patch-new">
+              + {formatCharacterPatchValue(op.character.traits)}
+            </div>
+          )}
+          {op.character.secrets && (
+            <div className="refine-patch-new">+ 見せない面: {op.character.secrets}</div>
           )}
         </div>
       );
@@ -540,6 +548,31 @@ function formatCharacterFieldValue(
 ): string {
   if (!character) return '（該当なし）';
   const value = (character as unknown as Record<string, unknown>)[key];
+  if (key === 'traits') return value === undefined ? '（未記入）' : formatCharacterPatchValue(value);
   if (typeof value === 'string') return value.trim() || '（未記入）';
   return '（未記入）';
+}
+
+export function formatCharacterPatchValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '（なし）';
+    const lines = value.flatMap((item) => {
+      if (
+        typeof item !== 'object' ||
+        item === null ||
+        Array.isArray(item) ||
+        !('label' in item) ||
+        !('text' in item) ||
+        typeof item.label !== 'string' ||
+        typeof item.text !== 'string'
+      ) {
+        return [];
+      }
+      const text = item.text.replace(/\r\n?/g, '\n').replace(/\n/g, '\n  ');
+      return [`${item.label}: ${text}`];
+    });
+    return lines.length > 0 ? lines.join('\n') : '（なし）';
+  }
+  if (typeof value === 'string') return value.trim() || '（未記入）';
+  return value == null ? '（未記入）' : String(value);
 }

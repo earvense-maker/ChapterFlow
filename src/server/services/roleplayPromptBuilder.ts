@@ -187,15 +187,24 @@ function buildPersonaCard(character: Character): string {
   if (aliases.length > 0) push(lines, '別名', aliases.join(' / '));
   push(lines, '概要', character.description);
   push(lines, '口調', character.speechStyle);
-  push(lines, '望むもの (want)', character.want);
-  push(lines, '恐れ (fear)', character.fear);
-  // NOTE: 隠している人物として振る舞う旨は固定規則で説明済み。ここでは事実として記す。
   if (character.secrets?.trim()) {
-    push(lines, '本人が隠している秘密（自分からは明かさない）', character.secrets);
+    push(
+      lines,
+      '見せない面（自分からは明かさず、親密度や状況次第で滲ませる）',
+      character.secrets
+    );
+  }
+  for (const trait of character.traits ?? []) {
+    push(lines, trait.label, indentContinuation(trait.text, 2));
   }
   push(lines, '関係性メモ', character.relationshipNotes);
   push(lines, '会話開始時点の状態', character.currentState);
   return lines.join('\n');
+}
+
+function indentContinuation(value: string, spaces: number): string {
+  const indent = ' '.repeat(spaces);
+  return value.replace(/\r\n?/g, '\n').replace(/\n/g, `\n${indent}`);
 }
 
 function push(lines: string[], label: string, value: string | undefined): void {

@@ -392,6 +392,11 @@ describe('buildPrompt', () => {
         role: 'protagonist',
         description: '主人公',
         speechStyle: 'くだけた',
+        secrets: '人前では寂しさを見せない',
+        traits: [
+          { label: 'こだわり', text: '朝は必ず\n同じ店に寄る' },
+          { label: '意地の張り方', text: '助けを求めず先に動く' },
+        ],
       },
     ];
     const { userPrompt } = await buildPrompt({
@@ -405,6 +410,9 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('現代日本の地方都市');
     expect(userPrompt).toContain('太郎');
     expect(userPrompt).toContain('主人公');
+    expect(userPrompt).toContain('見せない面: 人前では寂しさを見せない');
+    expect(userPrompt).toContain('こだわり: 朝は必ず\n    同じ店に寄る');
+    expect(userPrompt).toContain('意地の張り方: 助けを求めず先に動く');
   });
 
   it('inserts knowledge references after work settings and keeps legacy output unchanged when omitted', async () => {

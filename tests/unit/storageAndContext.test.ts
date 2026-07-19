@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { promises as fs } from 'node:fs';
 import * as storage from '../../src/server/services/storageService';
 import { getRecentContext } from '../../src/server/prompts/contextAssembler';
 import type { EpisodeRecord, GenerationRecord } from '../../src/server/types/index';
@@ -89,6 +90,72 @@ describe('generation markdown storage', () => {
       generationId: 'gen-status-multi',
       status: 'rejected',
     });
+  });
+});
+
+describe('character storage migration', () => {
+  beforeEach(async () => {
+    await storage.deleteProjectDir(projectId);
+    await storage.createProjectDir(projectId);
+  });
+
+  afterEach(async () => {
+    await storage.deleteProjectDir(projectId);
+  });
+
+  it('normalizes legacy fields on read and creates a one-time backup before write', async () => {
+    const legacy = [
+      {
+        characterId: 'char-a',
+        name: 'アリス',
+        role: 'protagonist',
+        description: '主人公',
+        want: '自由になりたい',
+        fear: '忘れられること',
+      },
+    ];
+    const raw = JSON.stringify(legacy, null, 2);
+    await fs.writeFile(storage.charactersJsonPath(projectId), raw, 'utf-8');
+
+    const characters = await storage.readCharacters(projectId);
+    expect(characters[0].traits).toEqual([
+      { label: '望み', text: '自由になりたい' },
+      { label: '恐れ', text: '忘れられること' },
+    ]);
+    await expect(fs.readFile(storage.charactersJsonPath(projectId), 'utf-8')).resolves.toBe(raw);
+
+    await storage.writeCharacters(projectId, characters);
+    await expect(
+      fs.readFile(storage.legacyCharactersBackupPath(projectId), 'utf-8')
+    ).resolves.toBe(raw);
+    const migrated = JSON.parse(
+      await fs.readFile(storage.charactersJsonPath(projectId), 'utf-8')
+    ) as Array<Record<string, unknown>>;
+    expect(migrated[0]).not.toHaveProperty('want');
+    expect(migrated[0]).not.toHaveProperty('fear');
+
+    await storage.writeCharacters(projectId, [
+      { ...characters[0], traits: [{ label: 'こだわり', text: '紅茶' }] },
+    ]);
+    await expect(
+      fs.readFile(storage.legacyCharactersBackupPath(projectId), 'utf-8')
+    ).resolves.toBe(raw);
+  });
+
+  it('does not create a legacy backup for a project already using traits', async () => {
+    await storage.writeCharacters(projectId, [
+      {
+        characterId: 'char-a',
+        name: 'アリス',
+        role: 'protagonist',
+        description: '主人公',
+        traits: [{ label: 'こだわり', text: '紅茶は熱いうちに飲む' }],
+      },
+    ]);
+
+    await expect(
+      fs.stat(storage.legacyCharactersBackupPath(projectId))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 

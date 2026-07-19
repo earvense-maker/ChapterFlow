@@ -304,6 +304,10 @@ function createStaticInputHash(input: {
       speechStyle: normalizeHashText(character.speechStyle ?? ''),
       relationshipNotes: normalizeHashText(character.relationshipNotes ?? ''),
       secrets: normalizeHashText(character.secrets ?? ''),
+      traits: (character.traits ?? []).map((trait) => ({
+        label: normalizeHashText(trait.label),
+        text: normalizeHashText(trait.text),
+      })),
       initialState: normalizeHashText(character.currentState ?? ''),
     }))
     .sort((a, b) => a.characterId.localeCompare(b.characterId));
@@ -506,12 +510,20 @@ function renderCharactersForPrompt(characters: Character[]): string {
       if ((c.secrets ?? '').trim()) {
         lines.push(`  secrets: ${c.secrets!.trim()}`);
       }
+      for (const trait of c.traits ?? []) {
+        lines.push(`  ${trait.label}: ${indentContinuation(trait.text, 4)}`);
+      }
       if ((c.currentState ?? '').trim()) {
         lines.push(`  initialState（開始時点）: ${c.currentState!.trim()}`);
       }
       return lines.join('\n');
     })
     .join('\n\n');
+}
+
+function indentContinuation(value: string, spaces: number): string {
+  const indent = ' '.repeat(spaces);
+  return value.replace(/\r\n?/g, '\n').replace(/\n/g, `\n${indent}`);
 }
 
 function renderStoryStateForPrompt(state: StoryState | null): string {

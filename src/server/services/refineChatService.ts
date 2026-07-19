@@ -2,6 +2,7 @@ import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
 import { normalizeCharactersForStorage } from './projectService.js';
+import { normalizeCharacterTraits } from '../../shared/characterSchema.js';
 import { withProjectWriteLock } from './generationService.js';
 import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
@@ -597,8 +598,8 @@ function buildChatPrompt(input: BuildChatPromptInput): {
     '      "operations": [',
     '        { "kind": "world-replace", "anchor": "既存 world の中の一意な原文", "replacement": "書き換え後の文字列" },',
     '        { "kind": "world-append", "text": "世界設定に付け足す段落（world がほぼ空か新規追加時のみ）" },',
-    '        { "kind": "character-update", "characterId": "<既存のid>", "fields": { "description": "..." } },',
-    '        { "kind": "character-add", "character": { "characterId": "char-<slug>", "name": "...", "role": "protagonist|deuteragonist|supporting|other", "description": "..." } },',
+    '        { "kind": "character-update", "characterId": "<既存のid>", "fields": { "description": "...", "traits": [{ "label": "こだわり", "text": "..." }] } },',
+    '        { "kind": "character-add", "character": { "characterId": "char-<slug>", "name": "...", "role": "protagonist|deuteragonist|supporting|other", "description": "...", "traits": [{ "label": "動機", "text": "..." }] } },',
     '        { "kind": "character-remove", "characterId": "<既存のid>" }',
     '      ]',
     '    }',
@@ -661,6 +662,9 @@ function renderCharactersForPrompt(characters: Character[]): string {
       if ((c.relationshipNotes ?? '').trim())
         lines.push(`  relationshipNotes: ${c.relationshipNotes!.trim()}`);
       if ((c.secrets ?? '').trim()) lines.push(`  secrets: ${c.secrets!.trim()}`);
+      for (const trait of c.traits ?? []) {
+        lines.push(`  ${trait.label}: ${indentContinuation(trait.text, 4)}`);
+      }
       if ((c.currentState ?? '').trim()) {
         lines.push(`  currentState（開始時点の初期状態）: ${c.currentState!.trim()}`);
       }
@@ -781,6 +785,7 @@ function normalizeOperation(
         providedId && !characters.some((c) => c.characterId === providedId)
           ? providedId
           : generateTimestampId('char');
+      const traits = normalizeCharacterTraits(characterRaw.traits);
       const character: Character = {
         characterId,
         name,
@@ -793,6 +798,7 @@ function normalizeOperation(
           ? { relationshipNotes: asString(characterRaw.relationshipNotes) }
           : {}),
         ...(asString(characterRaw.secrets) ? { secrets: asString(characterRaw.secrets) } : {}),
+        ...(traits.length > 0 ? { traits } : {}),
         ...(asString(characterRaw.currentState)
           ? { currentState: asString(characterRaw.currentState) }
           : {}),
@@ -820,8 +826,16 @@ function normalizeCharacterFields(raw: unknown): CharacterFieldPatch {
   if (typeof raw.speechStyle === 'string') out.speechStyle = raw.speechStyle;
   if (typeof raw.relationshipNotes === 'string') out.relationshipNotes = raw.relationshipNotes;
   if (typeof raw.secrets === 'string') out.secrets = raw.secrets;
+  if (Array.isArray(raw.traits)) {
+    out.traits = normalizeCharacterTraits(raw.traits);
+  }
   if (typeof raw.currentState === 'string') out.currentState = raw.currentState;
   return out;
+}
+
+function indentContinuation(value: string, spaces: number): string {
+  const indent = ' '.repeat(spaces);
+  return value.replace(/\r\n?/g, '\n').replace(/\n/g, `\n${indent}`);
 }
 
 function asString(value: unknown): string {

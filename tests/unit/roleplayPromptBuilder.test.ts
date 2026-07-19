@@ -20,8 +20,10 @@ function baseCharacter(overrides: Partial<Character> = {}): Character {
     role: 'protagonist',
     description: '17歳の女子高生。よく本を読む。',
     speechStyle: '柔らかい丁寧語',
-    want: '静かに本を読みたい',
-    fear: '無視されること',
+    traits: [
+      { label: '会話で望むこと', text: '静かに本を読みたい' },
+      { label: '苦手なこと', text: '無視されること' },
+    ],
     secrets: '実は父と仲が悪い',
     relationshipNotes: 'ユーザーとは幼馴染',
     currentState: '放課後の教室に一人でいる',
@@ -72,12 +74,14 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('250字程度');
   });
 
-  it('includes persona fields (name, want, fear, secrets, currentState)', () => {
+  it('includes persona fields (name, traits, secrets, currentState)', () => {
     const snapshot = baseSnapshot();
     const system = buildRoleplaySystemInstructions({ snapshot });
     expect(system).toContain('アリス');
     expect(system).toContain('静かに本を読みたい');
     expect(system).toContain('無視されること');
+    expect(system).toContain('会話で望むこと');
+    expect(system).toContain('苦手なこと');
     expect(system).toContain('実は父と仲が悪い');
     expect(system).toContain('放課後の教室に一人でいる');
   });

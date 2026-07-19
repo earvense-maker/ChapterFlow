@@ -203,16 +203,22 @@ function renderCharacters(characters: Character[]): string {
     if ((c.aliases ?? []).length > 0) parts.push(`  呼び名: ${c.aliases!.join(' / ')}`);
     if (c.description) parts.push(`  概要: ${c.description}`);
     if (c.speechStyle) parts.push(`  口調: ${c.speechStyle}`);
-    if (c.want) parts.push(`  欲求: ${c.want}`);
-    if (c.fear) parts.push(`  恐れ: ${c.fear}`);
     if (c.secrets) {
       parts.push(
-        `  秘密: ${c.secrets}（本人だけが知る。知らない人物の前では言動に出さず、地の文でも軽々に明かさないこと）`
+        `  見せない面: ${c.secrets}（普段の言動には出さない。ふとした瞬間や限られた相手にだけ滲むように描き、地の文で軽々に説明しないこと）`
       );
+    }
+    for (const trait of c.traits ?? []) {
+      parts.push(`  ${trait.label}: ${indentContinuation(trait.text, 4)}`);
     }
     return parts.join('\n');
   });
   return `【人物設定】\n${lines.join('\n')}`;
+}
+
+function indentContinuation(value: string, spaces: number): string {
+  const indent = ' '.repeat(spaces);
+  return value.replace(/\r\n?/g, '\n').replace(/\n/g, `\n${indent}`);
 }
 
 function renderKnowledgeTexts(
