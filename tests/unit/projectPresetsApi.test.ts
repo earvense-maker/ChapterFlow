@@ -16,6 +16,7 @@ describe('project presets API', () => {
   it('stores an editable base prompt and uses it in the combined preview', async () => {
     const project = await projectService.createProject({ title: 'Editable base prompt API' });
     projectIds.push(project.projectId);
+    await storage.writeProject({ ...project, updatedAt: '2000-01-01T00:00:00.000Z' });
     const server = await startServer({ host: '127.0.0.1', port: 0 });
     servers.push(server);
 
@@ -46,6 +47,9 @@ describe('project presets API', () => {
       baseSystemPrompt: '編集した基本プロンプト',
     });
     expect(preview.systemPrompt).toContain('編集した基本プロンプト');
+    expect((await storage.readProject(project.projectId))?.updatedAt).not.toBe(
+      '2000-01-01T00:00:00.000Z'
+    );
   });
 
   it('stores and returns normalized additional instructions', async () => {
@@ -55,9 +59,7 @@ describe('project presets API', () => {
     const legacyCombinedPrompt = `${generated}\n\n---\n\n【作品固有の追加指示】\n会話文を短く保つ。`;
     const storedPresets = await storage.readPresets(project.projectId);
     if (!storedPresets) throw new Error('Presets were not created');
-    const legacyPresets = { ...storedPresets };
-    delete legacyPresets.intimacyPreset;
-    await storage.writePresets(project.projectId, legacyPresets);
+    await storage.writePresets(project.projectId, storedPresets);
     const server = await startServer({ host: '127.0.0.1', port: 0 });
     servers.push(server);
 
@@ -74,8 +76,8 @@ describe('project presets API', () => {
     expect((await storage.readPresets(project.projectId))?.customSystemPrompt).toBe(
       '会話文を短く保つ。'
     );
-    expect((await projectService.getProject(project.projectId))?.activePresetIds.intimacy).toBe(
-      project.activePresetIds.intimacy
+    expect((await projectService.getProject(project.projectId))?.activePresetIds).toEqual(
+      project.activePresetIds
     );
   });
 });

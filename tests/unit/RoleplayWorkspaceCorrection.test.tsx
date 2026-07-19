@@ -297,11 +297,7 @@ function project(): Project {
     outputLength: 1000,
     streamingEnabled: true,
     activePresetIds: {
-      genre: 'modern-drama',
-      style: 'natural-dialogue',
-      pov: 'third-person-close',
-      pacing: 'standard',
-      density: 'balanced',
+      narration: 'third-close',
       intimacy: 'suggestive',
     },
     samplingConfig: {

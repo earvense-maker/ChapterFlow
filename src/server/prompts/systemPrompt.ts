@@ -13,6 +13,18 @@ export interface SystemPromptResult {
 
 const ADDITIONAL_INSTRUCTIONS_HEADING = '【作品固有の追加指示】';
 const SELECTED_SETTINGS_HEADING = '【選択された設定】';
+const LEGACY_PRESET_LABELS = new Set([
+  'ジャンル',
+  '文体',
+  '視点スタイル',
+  '語りの距離感',
+  '展開テンポ',
+  '描写密度',
+  '会話量',
+  '関係性の進展速度',
+  '濡れ場の描写',
+  '禁止事項',
+]);
 
 export async function buildGeneratedSystemPrompt(
   activePresets: ActivePresets,
@@ -98,7 +110,9 @@ export function normalizeAdditionalInstructions(
       : '';
   const generatedSettingBlocks = new Set(splitSettingBlocks(generatedSettings));
   const changedSettingBlocks = splitSettingBlocks(legacySettings)
-    .filter((block) => !generatedSettingBlocks.has(block));
+    .filter(
+      (block) => !generatedSettingBlocks.has(block) && !isLegacyPresetSettingBlock(block)
+    );
 
   return [...changedPreambleBlocks, ...changedSettingBlocks].join('\n\n');
 }
@@ -174,4 +188,9 @@ function splitSettingBlocks(value: string): string[] {
     .split(/(?=^【[^】]+】\s*$)/m)
     .map((block) => block.trim())
     .filter(Boolean);
+}
+
+function isLegacyPresetSettingBlock(block: string): boolean {
+  const match = block.match(/^【([^:：】]+)[:：][^】]*】/);
+  return Boolean(match && LEGACY_PRESET_LABELS.has(match[1].trim()));
 }

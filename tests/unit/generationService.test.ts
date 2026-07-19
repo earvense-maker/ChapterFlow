@@ -51,11 +51,7 @@ async function writeAcceptedScene(projectId: string, text: string): Promise<void
     request: { wish: '', outputLength: 1000, previousContextText: '' },
     responseText: text,
     usedPresets: {
-      genre: 'modern-drama',
-      style: 'natural-dialogue',
-      pov: 'third-person-close',
-      pacing: 'standard',
-      density: 'balanced',
+      narration: 'third-close',
     },
     usedModel: { provider: 'gemini', modelName: 'gemini-test' },
     referencedMemoryIds: [],

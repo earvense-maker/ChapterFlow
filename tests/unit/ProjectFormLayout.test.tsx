@@ -17,13 +17,13 @@ describe('ProjectForm layout', () => {
   beforeEach(() => {
     apiMock.getPresets.mockReset().mockResolvedValue({
       categories: {
-        genre: {
-          label: 'ジャンル',
+        narration: {
+          label: '語り',
           items: {
-            'modern-drama': {
-              id: 'modern-drama',
-              label: '現代ドラマ',
-              text: '現代ドラマとして書く。',
+            'third-close': {
+              id: 'third-close',
+              label: '三人称・視点人物に寄り添う',
+              text: '視点人物の認識と感情に寄り添う。',
             },
           },
         },

@@ -291,6 +291,7 @@ function buildCommitUserPrompt(input: {
     purpose === 'roleplay'
       ? [
           '- activePresetIds は相談で明示的に合意した設定だけを、利用可能なプリセットIDで入れる。未指定なら空オブジェクトにする。',
+          '- aftertaste は配列で、最大2件までにする。',
           '- 不明なプリセットIDは作らない。',
           '- memories は preference または negative の高重要度情報だけに絞る。storyFact は使わない。',
           '- coreConcept は、このキャラと話す魅力を1〜2文で書く。',
@@ -303,6 +304,7 @@ function buildCommitUserPrompt(input: {
         ].join('\n')
       : [
           '- activePresetIds は相談で明示的に合意した設定だけを、利用可能なプリセットIDで入れる。未指定なら空オブジェクトにする。',
+          '- aftertaste は配列で、最大2件までにする。',
           '- 不明なプリセットIDは作らない。',
           '- memories は本当に次回生成で守りたい高重要度情報だけに絞る。',
           '- coreConcept は、この作品が何の話でどんな読み味を約束するかを1〜2文で書く。',

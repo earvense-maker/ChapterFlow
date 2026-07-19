@@ -23,6 +23,8 @@ import {
   readPresetIdsByCategory,
 } from './setupCommitService.js';
 import { normalizeSetupPurpose } from '../types/index.js';
+import { DEFAULT_ACTIVE_PRESET_IDS } from '../../shared/defaults.js';
+import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
@@ -101,6 +103,7 @@ export async function createSetupSession(
     );
   }
   const purpose: SetupPurpose = normalizeSetupPurpose(body.purpose);
+  const requestedPresetIds = body.projectSettings?.activePresetIds ?? {};
   const session: SetupSession = {
     schemaVersion: 1,
     sessionId: generateTimestampId('setup'),
@@ -117,7 +120,11 @@ export async function createSetupSession(
       title: body.projectSettings?.title?.trim() || '',
       outputLength: normalizeOutputLength(body.projectSettings?.outputLength),
       streamingEnabled: body.projectSettings?.streamingEnabled ?? false,
-      activePresetIds: { ...(body.projectSettings?.activePresetIds ?? {}) },
+      activePresetIds: normalizeActivePresetIds(
+        hasCurrentPresetCategory(requestedPresetIds)
+          ? { ...DEFAULT_ACTIVE_PRESET_IDS, ...requestedPresetIds }
+          : requestedPresetIds
+      ),
     },
     messages: [],
     draft: createEmptySetupDraft(),
@@ -1001,6 +1008,12 @@ function normalizeStoredSession(session: SetupSession): SetupSession {
     ...session,
     // NOTE: 保存ファイルは purpose 無しのまま許容し、境界で 'novel' に正規化する。
     purpose: normalizeSetupPurpose(session.purpose),
+    projectSettings: {
+      ...session.projectSettings,
+      activePresetIds: normalizeActivePresetIds(
+        session.projectSettings?.activePresetIds ?? {}
+      ),
+    },
     // NOTE: 既存の draft ファイルは scenarioSeeds が無い場合があるので空配列に埋める。
     draft: {
       ...session.draft,
@@ -1012,6 +1025,17 @@ function normalizeStoredSession(session: SetupSession): SetupSession {
     conversationSummary: session.conversationSummary ?? '',
     commitPlan: session.commitPlan ?? null,
   };
+}
+
+function hasCurrentPresetCategory(value: object): boolean {
+  return [
+    'narration',
+    'aftertaste',
+    'emotionDisplay',
+    'sceneProgression',
+    'chapterEnding',
+    'painLevel',
+  ].some((key) => Object.hasOwn(value, key));
 }
 
 function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPlan {

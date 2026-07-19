@@ -18,11 +18,8 @@ function baseSession(): SetupSession {
       outputLength: 3000,
       streamingEnabled: false,
       activePresetIds: {
-        genre: 'modern-drama',
-        style: 'natural-dialogue',
-        pov: 'third-person-close',
-        pacing: 'standard',
-        density: 'balanced',
+        narration: 'third-close',
+        aftertaste: ['poignant'],
       },
     },
     messages: [],
@@ -35,11 +32,12 @@ function baseSession(): SetupSession {
 }
 
 const presetIdsByCategory = {
-  genre: ['modern-drama'],
-  style: ['natural-dialogue'],
-  pov: ['third-person-close'],
-  pacing: ['standard'],
-  density: ['balanced'],
+  narration: ['third-close'],
+  aftertaste: ['poignant', 'searing'],
+  emotionDisplay: ['restrained', 'expressive'],
+  sceneProgression: ['immersive', 'brisk'],
+  chapterEnding: ['hook', 'lingering'],
+  painLevel: ['safe', 'bittersweet', 'unflinching'],
 };
 
 describe('setupPromptBuilder', () => {

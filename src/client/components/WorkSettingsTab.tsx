@@ -7,6 +7,7 @@ import {
   SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
 } from '@shared/types';
 import RefineChatPanel from './RefineChatPanel';
+import PresetSelector, { type PresetCategory } from './PresetSelector';
 import type {
   Character,
   KnowledgeListItem,
@@ -30,11 +31,6 @@ interface Props {
   onProjectUpdated: (project: Project) => void;
 }
 
-type PresetCategory = {
-  label: string;
-  items: Record<string, { id: string; label: string; text: string }>;
-};
-
 type DetailSettingsTab = 'basic' | 'style' | 'world' | 'characters' | 'story' | 'knowledge';
 type WorldArea = keyof WorldContent;
 
@@ -52,7 +48,14 @@ const roleLabelMap: Record<Character['role'], string> = Object.fromEntries(
 // NOTE: プリセットカテゴリ ID → タグに使う短い日本語名。作品像サマリーに
 // 「三人称一元 / 現代口語」のように出すため、preset ラベルの方を参照する
 // 一方でカテゴリ側は既知キーだけ扱う。
-const styleTagCategoryOrder = ['pov', 'style', 'pacing', 'density', 'distance'] as const;
+const styleTagCategoryOrder = [
+  'narration',
+  'aftertaste',
+  'emotionDisplay',
+  'sceneProgression',
+  'chapterEnding',
+  'painLevel',
+] as const;
 
 export default function WorkSettingsTab({
   projectId,
@@ -594,20 +597,25 @@ export default function WorkSettingsTab({
     }
   }
 
-  async function handleIntimacyChange(nextId: string) {
+  async function handlePresetChange(nextActivePresetIds: Project['activePresetIds']) {
     try {
       setLoading(true);
       onError(null);
-      const savedPresets = await api.updateProjectPresets(projectId, {
-        ...presets,
-        intimacyPreset: nextId,
+      // NOTE: updateProject は部分更新をマージするため、UI で「指定しない」に戻した値は
+      // 空値を明示して正規化時に削除させる。JSON では undefined が落ちるので使わない。
+      const activePresetIds = {
+        ...nextActivePresetIds,
+        ...clearRemovedPresetValues(project.activePresetIds, nextActivePresetIds),
+      };
+      const savedProject = await api.updateProject(projectId, {
+        activePresetIds,
       });
-      setPresets(savedPresets);
-      onProjectUpdated({
-        ...project,
-        activePresetIds: { ...project.activePresetIds, intimacy: nextId },
-      });
-      const preview = await api.previewSystemPrompt(projectId, savedPresets, savedPresets.customSystemPrompt);
+      onProjectUpdated(savedProject);
+      const preview = await api.previewSystemPrompt(
+        projectId,
+        presets,
+        presets.customSystemPrompt
+      );
       const previewBaseSystemPrompt =
         preview.baseSystemPrompt ?? preview.generatedSystemPrompt ?? '';
       const previewDefaultBaseSystemPrompt =
@@ -618,13 +626,13 @@ export default function WorkSettingsTab({
       setGeneratedSystemPrompt(preview.generatedSystemPrompt);
       setIsSystemPromptCustomized(preview.isCustomized);
       setPresets({
-        ...savedPresets,
+        ...presets,
         baseSystemPrompt: previewBaseSystemPrompt,
         customSystemPrompt: preview.customSystemPrompt,
       });
       if (!systemPromptEditing) setSystemPromptDraft(preview.customSystemPrompt);
       void refreshRefineReviewStatus();
-      onFlashMessage('濡れ場の描写設定を保存しました');
+      onFlashMessage('プリセット設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
     } finally {
@@ -1047,38 +1055,16 @@ export default function WorkSettingsTab({
               <summary>システムプロンプト全文（{systemPrompt.length} 字）</summary>
               <pre className="summary-prewrap">{systemPrompt}</pre>
             </details>
-            {categories?.intimacy && (
-              <details className="summary-details">
-                <summary>
-                  {categories.intimacy.label}（
-                  {Object.values(categories.intimacy.items).find(
-                    (item) => item.id === (presets.intimacyPreset ?? project.activePresetIds.intimacy)
-                  )?.label ?? '未選択'}
-                  ）
-                </summary>
-                <p className="settings-help">
-                  性的な場面をどう扱うかを選びます。露骨さ・直接性・耽美と生々しさの度合いをまとめて指定します。
-                </p>
-                <div className="preset-options">
-                  {Object.values(categories.intimacy.items).map((item) => (
-                    <label key={item.id} className="preset-option">
-                      <input
-                        type="radio"
-                        name="intimacyPreset"
-                        value={item.id}
-                        checked={(presets.intimacyPreset ?? project.activePresetIds.intimacy) === item.id}
-                        disabled={loading}
-                        onChange={() => handleIntimacyChange(item.id)}
-                      />
-                      <span>
-                        <strong>{item.label}</strong>
-                        <span className="preset-option-detail">{item.text}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </details>
-            )}
+            <details className="summary-details">
+              <summary>プリセット設定（全7カテゴリ）</summary>
+              <PresetSelector
+                categories={categories}
+                value={project.activePresetIds}
+                onChange={handlePresetChange}
+                disabled={loading}
+                namePrefix="work-preset"
+              />
+            </details>
           </>
         )}
         {systemPromptEditing && (
@@ -2015,12 +2001,32 @@ function deriveStyleTags(
   for (const categoryKey of styleTagCategoryOrder) {
     const category = categories[categoryKey];
     if (!category) continue;
-    const presetId = activePresetIds[categoryKey as keyof Project['activePresetIds']];
-    if (!presetId) continue;
-    const item = Object.values(category.items).find((it) => it.id === presetId);
-    if (item) tags.push(item.label);
+    const selected = activePresetIds[categoryKey];
+    const presetIds = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    for (const presetId of presetIds) {
+      const item = Object.values(category.items).find((it) => it.id === presetId);
+      if (item) tags.push(item.label);
+    }
   }
   return tags;
+}
+
+function clearRemovedPresetValues(
+  current: Project['activePresetIds'],
+  next: Project['activePresetIds']
+): Partial<Project['activePresetIds']> {
+  const cleared: Record<string, string | string[]> = {};
+  if (current.aftertaste && !next.aftertaste) cleared.aftertaste = [];
+  for (const key of [
+    'emotionDisplay',
+    'sceneProgression',
+    'chapterEnding',
+    'painLevel',
+    'intimacy',
+  ] as const) {
+    if (current[key] && !next[key]) cleared[key] = '';
+  }
+  return cleared as Partial<Project['activePresetIds']>;
 }
 
 function formatStoryDiffSummary(diff: StoryStateDiffRecord): string {

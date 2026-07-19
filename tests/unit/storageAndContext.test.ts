@@ -18,11 +18,9 @@ function generation(generationId: string, sceneId: string, responseText: string)
     },
     responseText,
     usedPresets: {
-      genre: 'modern-drama',
-      style: 'quiet',
-      pov: 'third-person-close',
-      pacing: 'slow',
-      density: 'dialogue-rich',
+      narration: 'third-close',
+      emotionDisplay: 'restrained',
+      sceneProgression: 'immersive',
     },
     usedModel: {
       provider: 'openai',

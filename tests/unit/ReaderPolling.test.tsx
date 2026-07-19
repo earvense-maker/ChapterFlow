@@ -93,11 +93,7 @@ function readerState(status: 'pending' | 'fresh'): ReaderState {
       outputLength: 3000,
       streamingEnabled: false,
       activePresetIds: {
-        genre: 'modern-drama',
-        style: 'natural-dialogue',
-        pov: 'third-person-close',
-        pacing: 'standard',
-        density: 'balanced',
+        narration: 'third-close',
       },
     },
     state: {

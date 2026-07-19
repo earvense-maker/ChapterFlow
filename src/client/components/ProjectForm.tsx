@@ -1,19 +1,13 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import { DEFAULT_ACTIVE_PRESET_IDS } from '@shared/defaults';
-import type { Character, ModelProviderInfo, WorldContent } from '@shared/types';
+import PresetSelector, { type PresetCategory } from './PresetSelector';
+import type { ActivePresets, Character, ModelProviderInfo, WorldContent } from '@shared/types';
 
 interface Props {
   onCreated: (projectId: string) => void;
   onCancel: () => void;
 }
-
-type PresetCategory = {
-  label: string;
-  items: Record<string, { id: string; label: string; text: string }>;
-};
-
-const defaultPresetSelection: Record<string, string> = { ...DEFAULT_ACTIVE_PRESET_IDS };
 
 const roleOptions: { value: Character['role']; label: string }[] = [
   { value: 'protagonist', label: '主人公' },
@@ -25,7 +19,7 @@ const roleOptions: { value: Character['role']; label: string }[] = [
 export default function ProjectForm({ onCreated, onCancel }: Props) {
   const [title, setTitle] = useState('');
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
-  const [selection, setSelection] = useState<Record<string, string>>({});
+  const [selection, setSelection] = useState<ActivePresets>({ ...DEFAULT_ACTIVE_PRESET_IDS });
   const [outputLength, setOutputLength] = useState(6000);
   const [streamingEnabled, setStreamingEnabled] = useState(false);
   const [provider, setProvider] = useState('gemini');
@@ -49,12 +43,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
         setCategories(typed.categories);
         setProviders(providerList);
 
-        const defaults: Record<string, string> = {};
-        for (const [key, cat] of Object.entries(typed.categories)) {
-          const defaultId = defaultPresetSelection[key];
-          if (defaultId && cat.items[defaultId]) defaults[key] = defaultId;
-        }
-        setSelection(defaults);
+        setSelection({ ...DEFAULT_ACTIVE_PRESET_IDS });
 
         const defaultProvider = providerList.find((p) => p.name === 'gemini') ?? providerList[0];
         if (defaultProvider) {
@@ -74,18 +63,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
     try {
       setLoading(true);
       setError(null);
-      const activePresetIds = {
-        genre: selection.genre || 'modern-drama',
-        style: selection.style || 'natural-dialogue',
-        pov: selection.pov || 'third-person-close',
-        pacing: selection.pacing || 'standard',
-        density: selection.density || 'balanced',
-        conversation: selection.conversation,
-        relationshipPacing: selection.relationshipPacing,
-        distance: selection.distance,
-        constraint: selection.constraint,
-        intimacy: selection.intimacy,
-      };
+      const activePresetIds = { ...DEFAULT_ACTIVE_PRESET_IDS, ...selection };
       if (apiKey.trim()) {
         await api.saveCredential(provider, apiKey.trim());
       }
@@ -236,25 +214,13 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
             <span className="settings-section-summary-meta">選択内容を確認・変更</span>
           </summary>
           <div className="settings-section-collapsible-body">
-            {Object.entries(categories).map(([key, category]) => (
-              <fieldset key={key}>
-                <legend>{category.label}</legend>
-                <div className="preset-options">
-                  {Object.entries(category.items).map(([itemKey, item]) => (
-                    <label key={itemKey} className="preset-option">
-                      <input
-                        type="radio"
-                        name={key}
-                        value={item.id}
-                        checked={selection[key] === item.id}
-                        onChange={() => setSelection((s) => ({ ...s, [key]: item.id }))}
-                      />
-                      <span>{item.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-            ))}
+            <PresetSelector
+              categories={categories}
+              value={selection}
+              onChange={setSelection}
+              disabled={loading}
+              namePrefix="create-preset"
+            />
           </div>
         </details>
 

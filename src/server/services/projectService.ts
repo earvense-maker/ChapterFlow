@@ -9,6 +9,7 @@ import {
 import { createEmptyStoryState } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import {
   DEFAULT_ACTIVE_PRESET_IDS,
   DEFAULT_PROJECT_TYPE,
@@ -39,13 +40,15 @@ const DEFAULT_MODEL_NAME = defaultModelForProvider(DEFAULT_MODEL_PROVIDER);
 const DEFAULT_STREAMING_ENABLED = false;
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
-const EMPTY_ACTIVE_PRESET_IDS: ActivePresets = {
-  genre: '',
-  style: '',
-  pov: '',
-  pacing: '',
-  density: '',
-};
+const ACTIVE_PRESET_KEYS = new Set<keyof ActivePresets>([
+  'narration',
+  'aftertaste',
+  'emotionDisplay',
+  'sceneProgression',
+  'chapterEnding',
+  'painLevel',
+  'intimacy',
+]);
 
 // NOTE: 全書き込み境界（createProject/updateProject/refine 適用/setup コミット/複製/
 // characters PUT）で共通に呼び、greeting・dialogueExamples の上限を保証する。
@@ -138,7 +141,7 @@ function trimToMax(value: string | undefined, max: number): string | undefined {
 }
 
 export async function createProject(body: CreateProjectBody): Promise<Project> {
-  validateProjectUpdates({
+  const validatedInput = validateProjectUpdates({
     outputLength: body.outputLength,
     streamingEnabled: body.streamingEnabled,
     activeModelProvider: body.activeModelProvider,
@@ -153,10 +156,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   try {
   await storage.createProjectDir(projectId);
 
-  const initialPresetIds =
-    body.applyDefaultPresets === false
-      ? EMPTY_ACTIVE_PRESET_IDS
-      : DEFAULT_ACTIVE_PRESET_IDS;
+  const initialPresetIds = DEFAULT_ACTIVE_PRESET_IDS;
   let activePresetIds: ActivePresets = { ...initialPresetIds };
   let title = body.title?.trim() || '無題の作品';
   let sourceProject: Project | null = null;
@@ -172,15 +172,17 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
       sourceCharacters = await storage.readCharacters(body.duplicateFrom);
       sourceWorld = await storage.readWorld(body.duplicateFrom);
       sourceStoryState = (await storage.readStoryState(body.duplicateFrom)) ?? sourceStoryState;
-      activePresetIds = {
-        ...DEFAULT_ACTIVE_PRESET_IDS,
-        ...sourceProject.activePresetIds,
-        ...(body.activePresetIds ?? {}),
-      };
+      activePresetIds = normalizeActivePresetIds({
+        ...normalizeActivePresetIds(sourceProject.activePresetIds),
+        ...(validatedInput.activePresetIds ?? {}),
+      });
       title = body.title?.trim() || `${sourceProject.title} のコピー`;
     }
-  } else if (body.activePresetIds) {
-    activePresetIds = { ...initialPresetIds, ...body.activePresetIds };
+  } else if (validatedInput.activePresetIds) {
+    activePresetIds = normalizeActivePresetIds({
+      ...initialPresetIds,
+      ...validatedInput.activePresetIds,
+    });
   }
 
   const provider =
@@ -256,17 +258,6 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   };
 
   const presets: PresetsFile = {
-    ...(sourcePresets ?? {}),
-    genrePreset: activePresetIds.genre,
-    stylePreset: activePresetIds.style,
-    povPreset: activePresetIds.pov,
-    pacingPreset: activePresetIds.pacing,
-    densityPreset: activePresetIds.density,
-    conversationPreset: activePresetIds.conversation,
-    relationshipPacingPreset: activePresetIds.relationshipPacing,
-    distancePreset: activePresetIds.distance,
-    constraintPreset: activePresetIds.constraint,
-    intimacyPreset: activePresetIds.intimacy,
     userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
     baseSystemPrompt,
     customSystemPrompt,
@@ -317,7 +308,11 @@ export async function getProject(projectId: string): Promise<Project | null> {
   if (!project) return null;
   // NOTE: API 境界で projectType を必ず正規化して返す。UI 側の遷移振り分けが
   // undefined を扱わなくて済む。
-  return { ...project, projectType: normalizeProjectType(project.projectType) };
+  return {
+    ...project,
+    activePresetIds: normalizeActivePresetIds(project.activePresetIds),
+    projectType: normalizeProjectType(project.projectType),
+  };
 }
 
 type ProjectUpdateInput = Omit<Partial<Project>, 'activePresetIds' | 'samplingConfig'> & {
@@ -326,8 +321,12 @@ type ProjectUpdateInput = Omit<Partial<Project>, 'activePresetIds' | 'samplingCo
 };
 
 export async function updateProject(projectId: string, updates: ProjectUpdateInput): Promise<Project> {
-  const project = await storage.readProject(projectId);
-  if (!project) throw new Error(`Project not found: ${projectId}`);
+  const storedProject = await storage.readProject(projectId);
+  if (!storedProject) throw new Error(`Project not found: ${projectId}`);
+  const project = {
+    ...storedProject,
+    activePresetIds: normalizeActivePresetIds(storedProject.activePresetIds),
+  };
 
   const normalizedUpdates = validateProjectUpdates(updates);
   const { activePresetIds, samplingConfig, ...rest } = normalizedUpdates;
@@ -341,7 +340,7 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
     ...project,
     ...rest,
     activePresetIds: activePresetIds
-      ? { ...project.activePresetIds, ...activePresetIds }
+      ? normalizeActivePresetIds({ ...project.activePresetIds, ...activePresetIds })
       : project.activePresetIds,
     samplingConfig: samplingConfig
       ? {
@@ -445,11 +444,27 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
       throw new ProjectValidationError('activePresetIds must be an object');
     }
 
+    const activePresetIds: Partial<ActivePresets> = {};
     for (const [key, value] of Object.entries(updates.activePresetIds)) {
+      if (!ACTIVE_PRESET_KEYS.has(key as keyof ActivePresets)) continue;
+      if (key === 'aftertaste') {
+        if (
+          value !== undefined &&
+          (!Array.isArray(value) || value.length > 2 || value.some((item) => typeof item !== 'string'))
+        ) {
+          throw new ProjectValidationError(
+            'activePresetIds.aftertaste must be an array of at most 2 strings'
+          );
+        }
+        activePresetIds.aftertaste = value as string[] | undefined;
+        continue;
+      }
       if (value !== undefined && typeof value !== 'string') {
         throw new ProjectValidationError(`activePresetIds.${key} must be a string`);
       }
+      (activePresetIds as Record<string, unknown>)[key] = value;
     }
+    normalized.activePresetIds = activePresetIds;
   }
 
   if ('samplingConfig' in updates && updates.samplingConfig !== undefined) {
@@ -550,7 +565,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
       title: project.title,
       updatedAt: project.updatedAt,
       lastOpenedAt: state.lastOpenedAt,
-      activePresetIds: project.activePresetIds,
+      activePresetIds: normalizeActivePresetIds(project.activePresetIds),
       lastExcerpt: await buildLastExcerpt(id, state.currentEpisodeId),
       projectType: normalizeProjectType(project.projectType),
     });
@@ -573,25 +588,9 @@ export async function touchProject(projectId: string): Promise<void> {
 
 export async function updateActivePresets(projectId: string, updates: Partial<ActivePresets>): Promise<void> {
   const project = await storage.readProject(projectId);
-  const presets = await storage.readPresets(projectId);
-  if (!project || !presets) throw new Error(`Project not found: ${projectId}`);
-
-  const next: ActivePresets = { ...project.activePresetIds, ...updates };
-
-  await updateProject(projectId, { activePresetIds: next });
-  await storage.writePresets(projectId, {
-    ...presets,
-    genrePreset: next.genre,
-    stylePreset: next.style,
-    povPreset: next.pov,
-    pacingPreset: next.pacing,
-    densityPreset: next.density,
-    conversationPreset: next.conversation,
-    relationshipPacingPreset: next.relationshipPacing,
-    distancePreset: next.distance,
-    constraintPreset: next.constraint,
-    intimacyPreset: next.intimacy,
-  });
+  if (!project) throw new Error(`Project not found: ${projectId}`);
+  const current = normalizeActivePresetIds(project.activePresetIds);
+  await updateProject(projectId, { activePresetIds: { ...current, ...updates } });
 }
 
 export function getDefaultActivePresets(): ActivePresets {

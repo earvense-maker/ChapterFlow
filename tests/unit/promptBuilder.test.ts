@@ -29,11 +29,9 @@ function makeProject(projectId = 'proj-test'): Project {
     outputLength: 3000,
     streamingEnabled: false,
     activePresetIds: {
-      genre: 'modern-drama',
-      style: 'quiet',
-      pov: 'third-person-close',
-      pacing: 'slow',
-      density: 'dialogue-rich',
+      narration: 'third-close',
+      emotionDisplay: 'restrained',
+      sceneProgression: 'immersive',
     },
   };
 }
@@ -67,7 +65,8 @@ describe('buildPrompt', () => {
     expect(systemInstructions).toContain('「今回の希望」と「出力形式」');
     expect(systemInstructions).toContain('【文体見本】');
     expect(systemInstructions).toContain('【選択された設定】');
-    expect(systemInstructions).toContain('静謐で控えめな文体');
+    expect(systemInstructions).toContain('【語り: 三人称・視点人物に寄り添う】');
+    expect(systemInstructions).toContain('感情を表す語');
     expect(systemInstructions).not.toContain('【作品固有の追加指示】');
   });
 

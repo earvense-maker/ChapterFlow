@@ -64,11 +64,7 @@ const project: Project = {
   outputLength: 3000,
   streamingEnabled: false,
   activePresetIds: {
-    genre: 'modern-drama',
-    style: 'natural-dialogue',
-    pov: 'third-person-close',
-    pacing: 'standard',
-    density: 'balanced',
+    narration: 'third-close',
   },
 };
 
@@ -86,6 +82,7 @@ describe('WorkSettingsTab world areas', () => {
       isCustomized: false,
     });
     apiMock.updateProjectPresets.mockReset().mockResolvedValue({});
+    apiMock.updateProject.mockReset().mockResolvedValue(project);
     apiMock.getWorld.mockReset().mockResolvedValue({
       foundation: '魔法法則',
       initialSituation: '停戦中',
@@ -461,21 +458,25 @@ describe('WorkSettingsTab system prompt additions', () => {
     expect(apiMock.previewSystemPrompt).toHaveBeenCalledTimes(previewCallsBeforeLoad);
   });
 
-  it('replaces a legacy value with the normalized preview value after changing intimacy', async () => {
+  it('updates active presets and refreshes the normalized prompt preview', async () => {
+    apiMock.getProjectPresets.mockReset().mockResolvedValue({
+      userCustomPromptParts: [],
+      customSystemPrompt: '旧プロンプト全文',
+    });
     apiMock.getPresets.mockReset().mockResolvedValue({
       categories: {
         intimacy: {
           label: '濡れ場の描写',
           items: {
             suggestive: { id: 'suggestive', label: '控えめ', text: '控えめに書く。' },
-            direct: { id: 'direct', label: '直接的', text: '直接的に書く。' },
+            'direct-soft': { id: 'direct-soft', label: '直接的', text: '直接的に書く。' },
           },
         },
       },
     });
-    apiMock.updateProjectPresets.mockReset().mockResolvedValue({
-      customSystemPrompt: '旧プロンプト全文',
-      intimacyPreset: 'direct',
+    apiMock.updateProject.mockReset().mockResolvedValue({
+      ...project,
+      activePresetIds: { ...project.activePresetIds, intimacy: 'direct-soft' },
     });
     apiMock.previewSystemPrompt.mockReset().mockImplementation(
       async (_id, _presets, customSystemPrompt?: string | null) => {
@@ -500,17 +501,56 @@ describe('WorkSettingsTab system prompt additions', () => {
 
     fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
     await screen.findByText('追加指示あり');
-    fireEvent.click(await screen.findByDisplayValue('direct'));
+    fireEvent.click(await screen.findByDisplayValue('direct-soft'));
     await waitFor(() =>
-      expect(apiMock.updateProjectPresets).toHaveBeenCalledWith(
+      expect(apiMock.updateProject).toHaveBeenCalledWith(
         project.projectId,
-        expect.objectContaining({ intimacyPreset: 'direct' })
+        { activePresetIds: { narration: 'third-close', intimacy: 'direct-soft' } }
       )
     );
     fireEvent.click(screen.getAllByRole('button', { name: /編集/ })[0]);
 
     expect(screen.getByRole('textbox', { name: 'システムプロンプトの追加指示' })).toHaveValue(
       '正規化済みの追加指示'
+    );
+  });
+
+  it('sends an explicit empty value when an optional preset is cleared', async () => {
+    const projectWithIntimacy: Project = {
+      ...project,
+      activePresetIds: { narration: 'third-close', intimacy: 'suggestive' },
+    };
+    apiMock.getPresets.mockReset().mockResolvedValue({
+      categories: {
+        intimacy: {
+          label: '濡れ場の描写',
+          items: {
+            suggestive: { id: 'suggestive', label: '気配だけ', text: '気配だけにする。' },
+          },
+        },
+      },
+    });
+    apiMock.updateProject.mockReset().mockResolvedValue({
+      ...projectWithIntimacy,
+      activePresetIds: { narration: 'third-close' },
+    });
+
+    render(
+      <WorkSettingsTab
+        projectId={project.projectId}
+        project={projectWithIntimacy}
+        onError={vi.fn()}
+        onFlashMessage={vi.fn()}
+        onProjectUpdated={vi.fn()}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(await screen.findByRole('radio', { name: '指定しない' }));
+    await waitFor(() =>
+      expect(apiMock.updateProject).toHaveBeenCalledWith(project.projectId, {
+        activePresetIds: { narration: 'third-close', intimacy: '' },
+      })
     );
   });
 });

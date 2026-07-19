@@ -40,7 +40,49 @@ describe('setupSessionService', () => {
     expect(result.session.status).toBe('active');
     expect(result.session.revision).toBe(1);
     expect(result.session.draft.confirmed).toEqual([]);
-    expect(result.session.projectSettings.activePresetIds).toEqual({});
+    expect(result.session.projectSettings.activePresetIds).toEqual({ narration: 'third-close' });
+  });
+
+  it('normalizes legacy preset selections when reading a stored setup session', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+    await storage.writeSetupSession({
+      ...result.session,
+      projectSettings: {
+        ...result.session.projectSettings,
+        activePresetIds: {
+          pov: 'first-person',
+          style: 'tense',
+          pacing: 'slow',
+        } as never,
+      },
+    });
+
+    const loaded = await setupSessionService.getSetupSession(result.sessionId);
+    expect(loaded?.projectSettings.activePresetIds).toEqual({
+      narration: 'first-person',
+      aftertaste: ['searing'],
+      sceneProgression: 'immersive',
+    });
+  });
+
+  it('normalizes legacy preset selections when creating a setup session', async () => {
+    const result = await setupSessionService.createSetupSession({
+      projectSettings: {
+        activePresetIds: {
+          pov: 'first-person',
+          style: 'tense',
+          intimacy: 'suggestive',
+        } as never,
+      },
+    });
+    createdSessionIds.push(result.sessionId);
+
+    expect(result.session.projectSettings.activePresetIds).toEqual({
+      narration: 'first-person',
+      aftertaste: ['searing'],
+      intimacy: 'suggestive',
+    });
   });
 
   it('lists setup sessions with the latest session first', async () => {
@@ -480,7 +522,7 @@ describe('setupSessionService', () => {
       project: {
         title: 'Edited title',
         outputLength: 12000,
-        activePresetIds: { genre: 'unknown-genre', density: 'balanced' },
+        activePresetIds: { narration: 'unknown-narration', painLevel: 'bittersweet' },
       },
       world: { foundation: 'Edited foundation', initialSituation: 'Edited world' },
       characters: [{ characterId: '../bad', name: 'Edited char', role: 'protagonist', description: 'desc' }],
@@ -507,8 +549,8 @@ describe('setupSessionService', () => {
 
     const project = await storage.readProject(commitResult.projectId);
     expect(project?.title).toBe('Edited title');
-    expect(project?.activePresetIds.genre).toBe('');
-    expect(project?.activePresetIds.density).toBe('balanced');
+    expect(project?.activePresetIds.narration).toBe('third-close');
+    expect(project?.activePresetIds.painLevel).toBe('bittersweet');
 
     const characters = await storage.readCharacters(commitResult.projectId);
     expect(characters[0].characterId).toMatch(/^char-/);
@@ -550,7 +592,7 @@ describe('setupSessionService', () => {
       committedPresets.customSystemPrompt,
       committedPresets.baseSystemPrompt
     );
-    expect(resolvedPrompt.systemPrompt).not.toContain('【選択された設定】');
+    expect(resolvedPrompt.systemPrompt).toContain('【語り: 三人称・視点人物に寄り添う】');
 
     const second = await setupSessionService.commitSetupSession(result.sessionId, {
       plan: editedPlan,

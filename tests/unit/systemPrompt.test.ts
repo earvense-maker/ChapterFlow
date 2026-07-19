@@ -6,11 +6,12 @@ import {
 import type { ActivePresets } from '../../src/shared/types';
 
 const activePresets: ActivePresets = {
-  genre: 'modern-drama',
-  style: 'natural-dialogue',
-  pov: 'third-person-close',
-  pacing: 'standard',
-  density: 'balanced',
+  narration: 'third-close',
+  aftertaste: ['poignant', 'searing'],
+  emotionDisplay: 'restrained',
+  sceneProgression: 'immersive',
+  chapterEnding: 'lingering',
+  painLevel: 'bittersweet',
   intimacy: 'direct-explicit',
 };
 
@@ -31,7 +32,7 @@ describe('resolveSystemPrompt', () => {
 
   it('allows an intentionally empty base prompt', async () => {
     const result = await resolveSystemPrompt(
-      { genre: '', style: '', pov: '', pacing: '', density: '' },
+      { narration: 'unknown' },
       '',
       ''
     );
@@ -54,15 +55,15 @@ describe('resolveSystemPrompt', () => {
     expect(result.isCustomized).toBe(true);
   });
 
-  it('omits the intimacy block when the explicit none preset is selected', async () => {
+  it('omits the intimacy block when intimacy is not selected', async () => {
+    const { intimacy: _intimacy, ...withoutIntimacy } = activePresets;
     const generated = await buildGeneratedSystemPrompt({
-      ...activePresets,
-      intimacy: 'none',
+      ...withoutIntimacy,
     });
 
     expect(generated).not.toContain('【濡れ場の描写');
     expect(generated).not.toContain('性的な場面');
-    expect(generated).toContain('【ジャンル: 現代ドラマ】');
+    expect(generated).toContain('【語り: 三人称・視点人物に寄り添う】');
   });
 
   it.each([undefined, null, '', '   '])(
@@ -85,20 +86,13 @@ describe('resolveSystemPrompt', () => {
     expect(result.isCustomized).toBe(false);
   });
 
-  it('keeps only changed blocks from a legacy full prompt', async () => {
+  it('drops legacy preset blocks from a legacy full prompt', async () => {
     const generated = await buildGeneratedSystemPrompt(activePresets);
-    const legacyWithCustomGenre = generated.replace(
-      '【ジャンル: 現代ドラマ】\n現代日本を舞台にした人間ドラマ。日常の小さな摩擦や感情の機微を丁寧に描く。',
-      '【ジャンル: 独自ジャンル】\nこの作品固有のジャンル指示。'
-    );
-    const result = await resolveSystemPrompt(activePresets, legacyWithCustomGenre);
+    const legacyWithOldBlock = `${generated}\n\n【ジャンル: 独自ジャンル】\nこの作品固有のジャンル指示。`;
+    const result = await resolveSystemPrompt(activePresets, legacyWithOldBlock);
 
-    expect(result.customSystemPrompt).toBe(
-      '【ジャンル: 独自ジャンル】\nこの作品固有のジャンル指示。'
-    );
-    expect(result.systemPrompt).toContain(
-      '【作品固有の追加指示】\n【ジャンル: 独自ジャンル】'
-    );
+    expect(result.customSystemPrompt).toBe('');
+    expect(result.systemPrompt).not.toContain('独自ジャンル');
     expect(result.systemPrompt.match(/【選択された設定】/g)).toHaveLength(1);
   });
 

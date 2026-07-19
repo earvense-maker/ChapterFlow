@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 
 describe('project settings validation', () => {
-  it('can create a consultation project without applying shared preset defaults', async () => {
+  it('keeps the required narration default for consultation projects', async () => {
     const project = await projectService.createProject({
       title: 'Consultation without defaults',
       applyDefaultPresets: false,
@@ -26,15 +26,9 @@ describe('project settings validation', () => {
     });
     createdProjectIds.push(project.projectId);
 
-    expect(project.activePresetIds).toMatchObject({
-      genre: '',
-      style: '',
-      pov: '',
-      pacing: '',
-      density: '',
-    });
-    expect(await buildGeneratedSystemPrompt(project.activePresetIds)).not.toContain(
-      '【選択された設定】'
+    expect(project.activePresetIds).toEqual({ narration: 'third-close' });
+    expect(await buildGeneratedSystemPrompt(project.activePresetIds)).toContain(
+      '【語り: 三人称・視点人物に寄り添う】'
     );
   });
 
@@ -70,6 +64,52 @@ describe('project settings validation', () => {
     await expect(
       projectService.updateProject(project.projectId, { outputLength: 10001 })
     ).rejects.toThrow(projectService.ProjectValidationError);
+  });
+
+  it('validates aftertaste arrays and ignores unknown preset categories', async () => {
+    const project = await createTrackedProject();
+
+    await expect(
+      projectService.updateProject(project.projectId, {
+        activePresetIds: { aftertaste: ['poignant', 'searing', 'eerie'] },
+      })
+    ).rejects.toThrow('activePresetIds.aftertaste');
+
+    const updated = await projectService.updateProject(project.projectId, {
+      activePresetIds: {
+        painLevel: 'bittersweet',
+        legacyCategory: 'ignored',
+      } as never,
+    });
+    expect(updated.activePresetIds).toEqual({
+      narration: 'third-close',
+      painLevel: 'bittersweet',
+    });
+  });
+
+  it('normalizes legacy active preset IDs at read and list boundaries', async () => {
+    const project = await createTrackedProject();
+    await storage.writeProject({
+      ...project,
+      activePresetIds: {
+        pov: 'first-person',
+        style: 'tense',
+        pacing: 'slow',
+        intimacy: 'suggestive',
+      } as never,
+    });
+
+    const loaded = await projectService.getProject(project.projectId);
+    expect(loaded?.activePresetIds).toEqual({
+      narration: 'first-person',
+      aftertaste: ['searing'],
+      sceneProgression: 'immersive',
+      intimacy: 'suggestive',
+    });
+    const listed = await projectService.listProjects();
+    expect(listed.find((item) => item.projectId === project.projectId)?.activePresetIds).toEqual(
+      loaded?.activePresetIds
+    );
   });
 
   it('normalizes valid model settings before saving', async () => {
@@ -254,7 +294,7 @@ describe('project settings validation', () => {
       streamingEnabled: true,
       activeModelProvider: 'gemini',
       activeModelName: ' gemini-1.5-flash ',
-      activePresetIds: { genre: 'romance' },
+      activePresetIds: { narration: 'first-person', aftertaste: ['heartwarming'] },
       world: { foundation: '都市の管理制度', initialSituation: '静かな管理都市' },
       characters: [
         {
@@ -278,9 +318,10 @@ describe('project settings validation', () => {
     expect(project.streamingEnabled).toBe(true);
     expect(project.activeModelProvider).toBe('gemini');
     expect(project.activeModelName).toBe('gemini-1.5-flash');
-    expect(project.activePresetIds.genre).toBe('romance');
-    expect(project.activePresetIds.conversation).toBe('standard');
-    expect(project.activePresetIds.intimacy).toBe('suggestive');
+    expect(project.activePresetIds).toEqual({
+      narration: 'first-person',
+      aftertaste: ['heartwarming'],
+    });
     const state = await storage.readState(project.projectId);
     expect(state?.storyStateRefresh).toMatchObject({
       status: 'fresh',
@@ -291,8 +332,8 @@ describe('project settings validation', () => {
       initialSituation: '静かな管理都市',
     });
     expect(characters).toHaveLength(1);
-    expect(presets?.conversationPreset).toBe('standard');
-    expect(presets?.intimacyPreset).toBe('suggestive');
+    expect(presets).not.toHaveProperty('conversationPreset');
+    expect(presets).not.toHaveProperty('intimacyPreset');
     expect(presets?.customSystemPrompt).toBe('本文だけを書く');
   });
 

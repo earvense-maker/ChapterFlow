@@ -1,254 +1,129 @@
 {
-  "version": 1,
+  "version": 2,
   "categories": {
-    "genre": {
-      "label": "ジャンル",
-      "items": {
-        "modern-drama": {
-          "id": "modern-drama",
-          "label": "現代ドラマ",
-          "text": "現代日本を舞台にした人間ドラマ。日常の小さな摩擦や感情の機微を丁寧に描く。"
-        },
-        "modern-fantasy": {
-          "id": "modern-fantasy",
-          "label": "現代ファンタジー",
-          "text": "現代世界に幻想的な要素が溶け込んだ世界。非日常が日常のすき間に潜む雰囲気。"
-        },
-        "isekai-fantasy": {
-          "id": "isekai-fantasy",
-          "label": "異世界ファンタジー",
-          "text": "異世界を舞台にした冒険譚。未知の土地の法則や人々の営みを探索する。"
-        },
-        "school": {
-          "id": "school",
-          "label": "学園もの",
-          "text": "学校を舞台にした青春譚。部活、教室、帰り道などの場所で人間関係が動く。"
-        },
-        "mystery": {
-          "id": "mystery",
-          "label": "ミステリ風",
-          "text": "謎や真相追究が軸の物語。情報の断片が徐々に繋がっていく緊張感。"
-        },
-        "daily": {
-          "id": "daily",
-          "label": "日常",
-          "text": "特別な事件は起きなくても、日常の積み重ねが物語となる。"
-        },
-        "romance": {
-          "id": "romance",
-          "label": "恋愛",
-          "text": "二人の関係性の変化を中心に据えた物語。"
-        },
-        "adventure": {
-          "id": "adventure",
-          "label": "冒険",
-          "text": "旅や探索、課題への挑戦を中心に据えた物語。"
-        }
-      }
-    },
-    "style": {
-      "label": "文体",
-      "items": {
-        "neat": {
-          "id": "neat",
-          "label": "端正",
-          "text": "文法を整え、無駄を削いだ整った文章。"
-        },
-        "afterglow": {
-          "id": "afterglow",
-          "label": "余韻重視",
-          "text": "場面の余韻や空気感を重視し、読後に印象を残す文体。"
-        },
-        "natural-dialogue": {
-          "id": "natural-dialogue",
-          "label": "会話自然",
-          "text": "自然な会話の流れを重視し、話者の個性を出す文体。"
-        },
-        "descriptive": {
-          "id": "descriptive",
-          "label": "地の文多め",
-          "text": "情景や心情の描写を豊かに入れる文体。"
-        },
-        "light": {
-          "id": "light",
-          "label": "軽妙",
-          "text": "軽やかで読みやすいテンポの文体。"
-        },
-        "quiet": {
-          "id": "quiet",
-          "label": "静か",
-          "text": "静謐で控えめな文体。感情を直接言わずに伝える。"
-        },
-        "tense": {
-          "id": "tense",
-          "label": "緊張感あり",
-          "text": "場面の緊張や不安を研ぎ澄ませた文体。"
-        }
-      }
-    },
-    "pov": {
-      "label": "視点スタイル",
+    "narration": {
+      "label": "語り",
       "items": {
         "first-person": {
           "id": "first-person",
           "label": "一人称",
-          "text": "主人公の一人称視点で物語を綴る。"
+          "text": "主人公の一人称で書く。地の文は主人公が見聞きし、感じ、考えたことだけで構成する。主人公が知り得ない事実や他者の内心を地の文に書かない。"
         },
-        "third-person-fixed": {
-          "id": "third-person-fixed",
-          "label": "三人称固定",
-          "text": "三人称で一人の人物に視点を固定する。"
+        "third-close": {
+          "id": "third-close",
+          "label": "三人称・視点人物に寄り添う",
+          "text": "三人称で書くが、地の文は場面の視点人物の認識と感情に寄り添う。視点人物以外の内心は断定せず、表情・仕草・言葉のニュアンスとして外から描く。"
         },
-        "third-person-close": {
-          "id": "third-person-close",
-          "label": "三人称寄り添い",
-          "text": "三人称でありながら、特定人物の内面に寄り添う視点。"
-        },
-        "per-scene": {
-          "id": "per-scene",
-          "label": "視点キャラを場面ごとに指定",
-          "text": "場面ごとに最も近い人物の視点で描く。"
+        "third-objective": {
+          "id": "third-objective",
+          "label": "三人称・客観",
+          "text": "三人称の客観視点で書く。カメラのように行動・会話・情景だけを描き、誰の内心にも立ち入らない。感情は言動と場の空気から読者に推測させる。"
         }
       }
     },
-    "distance": {
-      "label": "語りの距離感",
+    "aftertaste": {
+      "label": "読後感",
       "items": {
-        "close": {
-          "id": "close",
-          "label": "主人公の内面に近い",
-          "text": "思考や感覚に近づいて描写する。"
+        "heartwarming": {
+          "id": "heartwarming",
+          "label": "心温まる",
+          "text": "読み終えたとき、人のあたたかさが残る場面作りをする。皮肉や冷笑で場面を閉じない。小さな親切・不器用な思いやり・救いの瞬間を具体的な行動として描く。"
         },
-        "slightly-objective": {
-          "id": "slightly-objective",
-          "label": "少し客観的",
-          "text": "内面にも触れつつ、少し引いた位置から描写する。"
+        "poignant": {
+          "id": "poignant",
+          "label": "切ない",
+          "text": "届きそうで届かないもの、失われたもの、言えなかった言葉を場面の芯に置く。悲しみを声高に書かず、ふとした瞬間に読者の胸を突く形で差し込む。"
         },
-        "emotional": {
-          "id": "emotional",
-          "label": "情緒を強めに拾う",
-          "text": "感情の揺れや雰囲気を強調して描写する。"
+        "searing": {
+          "id": "searing",
+          "label": "ひりつく",
+          "text": "各場面に小さな不和・違和感・緊張を最低ひとつ残す。安易な和解や励ましで場面を閉じない。優しさを書くときも、その裏の危うさを一筆入れる。"
         },
-        "factual": {
-          "id": "factual",
-          "label": "事実を淡々と追う",
-          "text": "感情よりも事実と行動を中心に描写する。"
+        "uplifting": {
+          "id": "uplifting",
+          "label": "爽快",
+          "text": "停滞よりも前進を、内省よりも行動を選ぶ。障害は正面から乗り越えさせ、成功の瞬間は溜めを作ってから気持ちよく描き切る。"
+        },
+        "eerie": {
+          "id": "eerie",
+          "label": "不穏",
+          "text": "日常の描写の中に、わずかにずれたもの・説明のつかないものを混ぜる。恐怖を直接説明せず、読者が自分で気づく違和感として仕込む。正体は容易に明かさない。"
+        },
+        "comical": {
+          "id": "comical",
+          "label": "可笑しい",
+          "text": "会話のテンポとずれで笑わせる。登場人物は大真面目に振る舞い、その真剣さと状況の食い違いから可笑しさを生む。ギャグの説明や地の文でのツッコミはしない。"
         }
       }
     },
-    "pacing": {
-      "label": "展開テンポ",
+    "emotionDisplay": {
+      "label": "感情の見せ方",
       "items": {
-        "slow": {
-          "id": "slow",
-          "label": "ゆっくり",
-          "text": "時間をかけて場面や心情を丁寧に描く。"
+        "restrained": {
+          "id": "restrained",
+          "label": "抑えて示す",
+          "text": "感情を表す語（嬉しい・悲しい・怒りなど）を地の文で使わない。感情は行動・仕草・視線・沈黙・呼吸で示す。強い感情ほど描写を削り、短い文で置く。"
         },
-        "standard": {
-          "id": "standard",
-          "label": "標準",
-          "text": "バランスの取れたテンポで進める。"
-        },
-        "fast": {
-          "id": "fast",
-          "label": "早め",
-          "text": "場面を切り替えながら比較的早く進める。"
-        },
-        "dialogue-driven": {
-          "id": "dialogue-driven",
-          "label": "会話で少しずつ進める",
-          "text": "会話の積み重ねで状況を動かす。"
-        },
-        "action-driven": {
-          "id": "action-driven",
-          "label": "事件や行動で進める",
-          "text": "出来事や行動の変化を中心に進める。"
+        "expressive": {
+          "id": "expressive",
+          "label": "たっぷり語る",
+          "text": "視点人物の内心を惜しまず言葉にする。感情の揺れ・矛盾・言い訳めいた思考まで内語として書き、読者が人物の心に浸れる密度にする。"
         }
       }
     },
-    "density": {
-      "label": "描写密度",
+    "sceneProgression": {
+      "label": "場面の進み方",
       "items": {
-        "dialogue-rich": {
-          "id": "dialogue-rich",
-          "label": "会話中心",
-          "text": "会話を中心に、言葉の間で状況を示す。"
+        "immersive": {
+          "id": "immersive",
+          "label": "一場面をじっくり",
+          "text": "ひとつの場面を長く書く。時間経過の要約（「数日後」など）で話を進めない。その場の会話・仕草・空気の変化を実時間に近い密度で描き、場面の切り替えは最小限にする。"
         },
-        "scene-descriptive": {
-          "id": "scene-descriptive",
-          "label": "情景描写多め",
-          "text": "場所や空気、光や音などの情景描写を増やす。"
-        },
-        "emotion-descriptive": {
-          "id": "emotion-descriptive",
-          "label": "心情描写多め",
-          "text": "人物の内面や感情の動きを丁寧に描く。"
-        },
-        "action-descriptive": {
-          "id": "action-descriptive",
-          "label": "行動描写多め",
-          "text": "動作や行動を具体的に追う。"
-        },
-        "balanced": {
-          "id": "balanced",
-          "label": "バランス型",
-          "text": "会話、描写、心情、行動をバランスよく配置する。"
+        "brisk": {
+          "id": "brisk",
+          "label": "語りも交えて速く",
+          "text": "重要な場面はシーンで見せ、つなぎは要約で素早く進める。停滞する日常描写を長く続けず、各場面で必ず状況をひとつ前に動かす。"
         }
       }
     },
-    "conversation": {
-      "label": "会話量",
+    "chapterEnding": {
+      "label": "章の幕引き",
       "items": {
-        "more": {
-          "id": "more",
-          "label": "会話多め",
-          "text": "場面に会話を多く含める。"
+        "hook": {
+          "id": "hook",
+          "label": "引きで終わる",
+          "text": "章の最後は、新しい疑問・不穏の兆し・言いかけた言葉のいずれかで切る。その章の出来事を要約したり、感想めいた地の文でまとめたりしない。"
         },
-        "standard": {
-          "id": "standard",
-          "label": "標準",
-          "text": "会話と地の文のバランスを取る。"
-        },
-        "less": {
-          "id": "less",
-          "label": "会話少なめ",
-          "text": "会話を控えめにし、描写や叙述を増やす。"
+        "lingering": {
+          "id": "lingering",
+          "label": "余韻で終わる",
+          "text": "章の最後は、情景か小さな仕草で静かに閉じる。事件の途中で切らず、その章の感情がひとつ落ち着いた地点で終える。結論めいた説明は書かない。"
         }
       }
     },
-    "relationshipPacing": {
-      "label": "関係性の進展速度",
+    "painLevel": {
+      "label": "痛みの上限",
       "items": {
-        "slow-burn": {
-          "id": "slow-burn",
-          "label": "かなりゆっくり",
-          "text": "関係性の変化を長いスパンで描き、決定的な進展を急がない。"
+        "safe": {
+          "id": "safe",
+          "label": "安心して読める",
+          "text": "主要人物の死・恒久的な喪失・裏切りは起こさない。困難は描いてよいが、回復可能な範囲にとどめ、読者が安心して読み続けられる世界を保つ。"
         },
-        "gradual": {
-          "id": "gradual",
-          "label": "少しずつ",
-          "text": "小さな気づきや態度の変化を積み重ね、段階的に進展させる。"
+        "bittersweet": {
+          "id": "bittersweet",
+          "label": "ほろ苦さまで",
+          "text": "挫折・別れ・取り返しのつかなさを描いてよい。ただし救いのない結末や意味のない残酷さは避け、痛みには必ず物語上の意味を持たせる。"
         },
-        "standard": {
-          "id": "standard",
-          "label": "標準",
-          "text": "場面の流れと人物の納得感に合わせて、自然なタイミングで進展させる。"
-        },
-        "fast": {
-          "id": "fast",
-          "label": "早め",
-          "text": "ユーザーの希望や既存の流れに沿う場合は、関係性の変化を比較的はっきり描く。"
+        "unflinching": {
+          "id": "unflinching",
+          "label": "容赦なくてよい",
+          "text": "物語が要求するなら、死・喪失・裏切りをためらわず描く。登場人物を守るために展開を歪めない。ただし残酷さそのものを目的化せず、痛みの重さを軽く扱わない。"
         }
       }
     },
     "intimacy": {
       "label": "濡れ場の描写",
       "items": {
-        "none": {
-          "id": "none",
-          "label": "設定なし",
-          "text": ""
-        },
         "fade-to-black": {
           "id": "fade-to-black",
           "label": "描かない（暗転）",
@@ -273,36 +148,6 @@
           "id": "direct-explicit",
           "label": "露骨な語も辞さず生々しく",
           "text": "性的な場面は露骨な語彙も辞さずに直接的・生々しく描写する。生理反応や身体の詳細まで踏み込んでよい。ただし人物の内面や関係性の意味を置き去りにしない。"
-        }
-      }
-    },
-    "constraint": {
-      "label": "禁止事項",
-      "items": {
-        "no-rush": {
-          "id": "no-rush",
-          "label": "急な関係進展を避ける",
-          "text": "ユーザーの希望なしに関係を急進展させない。"
-        },
-        "keep-speech": {
-          "id": "keep-speech",
-          "label": "キャラの口調を崩さない",
-          "text": "設定された口調や話し方を保つ。"
-        },
-        "no-over-explain": {
-          "id": "no-over-explain",
-          "label": "過度な説明を避ける",
-          "text": "読者に知らせすぎる説明や解説を避ける。"
-        },
-        "no-new-major-setting": {
-          "id": "no-new-major-setting",
-          "label": "勝手に重大設定を増やさない",
-          "text": "既存設定と整合しない大きな設定を勝手に追加しない。"
-        },
-        "no-rush-ending": {
-          "id": "no-rush-ending",
-          "label": "ユーザー指定の結末へ急がない",
-          "text": "指定された方向へ無理やり急がない。"
         }
       }
     }

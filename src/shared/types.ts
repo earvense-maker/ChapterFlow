@@ -11,15 +11,12 @@ export type KnowledgeId = string;
 export const KNOWLEDGE_WARN_CHARS = 16_000;
 
 export interface ActivePresets {
-  genre: string;
-  style: string;
-  pov: string;
-  distance?: string;
-  pacing: string;
-  density: string;
-  conversation?: string;
-  relationshipPacing?: string;
-  constraint?: string;
+  narration: string;
+  aftertaste?: string[];
+  emotionDisplay?: string;
+  sceneProgression?: string;
+  chapterEnding?: string;
+  painLevel?: string;
   intimacy?: string;
 }
 
@@ -692,16 +689,6 @@ export interface ConnectionStatus {
 }
 
 export interface PresetsFile {
-  genrePreset: string;
-  stylePreset: string;
-  povPreset: string;
-  pacingPreset: string;
-  densityPreset: string;
-  conversationPreset?: string;
-  relationshipPacingPreset?: string;
-  distancePreset?: string;
-  constraintPreset?: string;
-  intimacyPreset?: string;
   userCustomPromptParts: string[];
   // NOTE: 未指定の旧データはアプリ既定の基本プロンプトを使う。空文字は、
   // 利用者が基本プロンプトを意図的に空にした状態として扱う。
@@ -764,8 +751,7 @@ export interface CreateProjectBody {
   activeModelProvider?: string;
   activeModelName?: string;
   activePresetIds?: Partial<ActivePresets>;
-  // NOTE: 通常の直接作成では既定プリセットを補完する。相談作成は false を指定し、
-  // 相談で明示されたプリセットだけを採用する。
+  // NOTE: 後方互換のため残す。現在は false でも必須の narration 既定値だけは補完する。
   applyDefaultPresets?: boolean;
   samplingConfig?: Partial<SamplingConfig>;
   duplicateFrom?: ProjectId;

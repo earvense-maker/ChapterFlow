@@ -9,6 +9,7 @@ import {
 import * as projectService from '../services/projectService.js';
 import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import { loadStyleSamples } from '../prompts/styleSamplePresets.js';
 import {
   createSystemPromptPreset,
@@ -19,7 +20,7 @@ import {
   SystemPromptPresetValidationError,
   updateSystemPromptPreset,
 } from '../services/systemPromptPresetService.js';
-import type { ActivePresets, Character, CharacterRole, PresetsFile } from '../types/index.js';
+import type { Character, CharacterRole, PresetsFile } from '../types/index.js';
 
 const router = Router();
 
@@ -104,13 +105,13 @@ router.put('/projects/:id/presets', async (req, res, next) => {
       ]);
       if (!project || !presets) return null;
 
-      const nextFile: PresetsFile = { ...presets, ...body };
-      // NOTE: 古い presets.json は任意プリセットのキーを持たない場合があるため、
-      // undefined を project 側の選択値へ上書きしないよう、定義済み値だけを反映する。
-      const activePresetIds = {
-        ...project.activePresetIds,
-        ...activePresetsFromPresetFile(nextFile),
+      const nextFile: PresetsFile = {
+        userCustomPromptParts:
+          body.userCustomPromptParts ?? presets.userCustomPromptParts ?? [],
+        baseSystemPrompt: body.baseSystemPrompt ?? presets.baseSystemPrompt,
+        customSystemPrompt: body.customSystemPrompt ?? presets.customSystemPrompt,
       };
+      const activePresetIds = normalizeActivePresetIds(project.activePresetIds);
       const { baseSystemPrompt, customSystemPrompt } = await resolveSystemPrompt(
         activePresetIds,
         nextFile.customSystemPrompt,
@@ -122,8 +123,10 @@ router.put('/projects/:id/presets', async (req, res, next) => {
         customSystemPrompt,
       };
       await storage.writePresets(req.params.id, normalizedFile);
+      // NOTE: プロンプト編集も作品の更新として一覧順へ反映する。プリセット選択値は
+      // project.json が正本なので、ミラーへ戻さず project の時刻だけ更新する。
+      await projectService.updateProject(req.params.id, {});
 
-      await projectService.updateProject(req.params.id, { activePresetIds });
       return normalizedFile;
     });
 
@@ -145,10 +148,7 @@ router.post('/projects/:id/system-prompt/preview', async (req, res, next) => {
       customSystemPrompt?: string | null;
     };
     const nextPresets = { ...presets, ...(body.presets ?? {}) };
-    const activePresetIds = {
-      ...project.activePresetIds,
-      ...activePresetsFromPresetFile(nextPresets),
-    };
+    const activePresetIds = normalizeActivePresetIds(project.activePresetIds);
     const customSystemPrompt = Object.hasOwn(body, 'customSystemPrompt')
       ? body.customSystemPrompt
       : nextPresets.customSystemPrompt;
@@ -268,23 +268,6 @@ function handleSystemPromptPresetError(
     return;
   }
   next(err);
-}
-
-function activePresetsFromPresetFile(presets: Partial<PresetsFile>): Partial<ActivePresets> {
-  const activePresets: Partial<ActivePresets> = {};
-  if (presets.genrePreset !== undefined) activePresets.genre = presets.genrePreset;
-  if (presets.stylePreset !== undefined) activePresets.style = presets.stylePreset;
-  if (presets.povPreset !== undefined) activePresets.pov = presets.povPreset;
-  if (presets.pacingPreset !== undefined) activePresets.pacing = presets.pacingPreset;
-  if (presets.densityPreset !== undefined) activePresets.density = presets.densityPreset;
-  if (presets.conversationPreset !== undefined) activePresets.conversation = presets.conversationPreset;
-  if (presets.relationshipPacingPreset !== undefined) {
-    activePresets.relationshipPacing = presets.relationshipPacingPreset;
-  }
-  if (presets.distancePreset !== undefined) activePresets.distance = presets.distancePreset;
-  if (presets.constraintPreset !== undefined) activePresets.constraint = presets.constraintPreset;
-  if (presets.intimacyPreset !== undefined) activePresets.intimacy = presets.intimacyPreset;
-  return activePresets;
 }
 
 const characterRoles = new Set<CharacterRole>([

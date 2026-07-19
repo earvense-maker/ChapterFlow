@@ -5,14 +5,13 @@ import type { SetupSession } from '../../src/server/types/index';
 
 const now = '2026-07-04T12:00:00.000Z';
 const defaultPresetIdsByCategory = {
-  genre: ['modern-drama'],
-  style: ['natural-dialogue'],
-  pov: ['third-person-close'],
-  pacing: ['standard'],
-  density: ['balanced'],
-  conversation: ['standard'],
-  relationshipPacing: ['standard'],
-  intimacy: ['suggestive'],
+  narration: ['first-person', 'third-close', 'third-objective'],
+  aftertaste: ['heartwarming', 'poignant', 'searing'],
+  emotionDisplay: ['restrained', 'expressive'],
+  sceneProgression: ['immersive', 'brisk'],
+  chapterEnding: ['hook', 'lingering'],
+  painLevel: ['safe', 'bittersweet', 'unflinching'],
+  intimacy: ['fade-to-black', 'suggestive'],
 };
 
 function session(): SetupSession {
@@ -31,12 +30,7 @@ function session(): SetupSession {
       outputLength: 3000,
       streamingEnabled: false,
       activePresetIds: {
-        genre: 'modern-drama',
-        style: 'natural-dialogue',
-        pov: 'third-person-close',
-        pacing: 'standard',
-        density: 'balanced',
-        relationshipPacing: 'standard',
+        narration: 'third-close',
       },
     },
     messages: [],
@@ -58,23 +52,15 @@ describe('setupCommitService', () => {
       session: session(),
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama', 'mystery'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced', 'dialogue-rich'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {
         project: {
           title: '臆病絵師と岡っ引き',
           outputLength: 12000,
           activePresetIds: {
-            genre: 'period-drama',
-            style: 'natural-dialogue',
-            pov: 'third-person-close',
-            pacing: 'standard',
-            density: 'dialogue-rich',
+            narration: 'unknown-narration',
+            aftertaste: ['poignant', 'searing', 'heartwarming'],
           },
         },
         worldText: '江戸時代風の町を舞台にした軽妙な事件もの。',
@@ -107,8 +93,8 @@ describe('setupCommitService', () => {
 
     expect(normalized.projectInput.title).toBe('臆病絵師と岡っ引き');
     expect(normalized.projectInput.outputLength).toBe(10000);
-    expect(normalized.projectInput.activePresetIds?.genre).toBe('modern-drama');
-    expect(normalized.projectInput.activePresetIds?.density).toBe('dialogue-rich');
+    expect(normalized.projectInput.activePresetIds?.narration).toBe('third-close');
+    expect(normalized.projectInput.activePresetIds?.aftertaste).toEqual(['poignant', 'searing']);
     expect(normalized.projectInput.characters?.[0].characterId).toMatch(/^char-/);
     expect(normalized.memories[0]).toMatchObject({
       type: 'preference',
@@ -125,12 +111,7 @@ describe('setupCommitService', () => {
       session: session(),
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {},
     });
@@ -211,12 +192,7 @@ describe('setupCommitService', () => {
       session: session(),
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {},
     });
@@ -257,7 +233,7 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.firstWishSuggestion).toBe('Start from the rainy library.');
   });
 
-  it('does not fill shared preset defaults when a setup session has no active presets', () => {
+  it('fills the required narration default when a setup session has no active presets', () => {
     const setupSession = session();
     setupSession.projectSettings.activePresetIds = {};
 
@@ -270,11 +246,11 @@ describe('setupCommitService', () => {
       },
     });
 
-    expect(normalized.projectInput.activePresetIds).toEqual({});
+    expect(normalized.projectInput.activePresetIds).toEqual({ narration: 'third-close' });
     expect(normalized.projectInput.applyDefaultPresets).toBe(false);
   });
 
-  it('drops the legacy automatically populated default preset set', () => {
+  it('ignores obsolete legacy categories while preserving compatible intimacy', () => {
     const setupSession = session();
     setupSession.projectSettings.activePresetIds = {
       genre: 'modern-drama',
@@ -299,7 +275,10 @@ describe('setupCommitService', () => {
       },
     });
 
-    expect(normalized.projectInput.activePresetIds).toEqual({});
+    expect(normalized.projectInput.activePresetIds).toEqual({
+      narration: 'third-close',
+      intimacy: 'suggestive',
+    });
     expect(normalized.projectInput.applyDefaultPresets).toBe(false);
   });
 
@@ -307,13 +286,8 @@ describe('setupCommitService', () => {
     const setupSession = session();
     setupSession.projectSettings.activePresetIds = {};
     const explicitlySelectedDefaults = {
-      genre: 'modern-drama',
-      style: 'natural-dialogue',
-      pov: 'third-person-close',
-      pacing: 'standard',
-      density: 'balanced',
-      conversation: 'standard',
-      relationshipPacing: 'standard',
+      narration: 'third-close',
+      emotionDisplay: 'restrained',
       intimacy: 'suggestive',
     };
 
@@ -332,19 +306,18 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.activePresetIds).toEqual(explicitlySelectedDefaults);
   });
 
-  it('removes legacy defaults while preserving explicit extra preset choices', () => {
+  it('maps legacy setup commit presets through the shared migration rules', () => {
     const setupSession = session();
     setupSession.projectSettings.activePresetIds = {
       genre: 'modern-drama',
-      style: 'natural-dialogue',
-      pov: 'third-person-close',
-      pacing: 'standard',
+      style: 'afterglow',
+      pov: 'first-person',
+      pacing: 'slow',
       density: 'balanced',
       conversation: 'standard',
       relationshipPacing: 'standard',
+      distance: 'emotional',
       intimacy: 'suggestive',
-      distance: 'close',
-      constraint: 'no-rush',
     };
 
     const normalized = normalizeSetupCommitPlan({
@@ -352,20 +325,69 @@ describe('setupCommitService', () => {
       now,
       presetIdsByCategory: {
         ...defaultPresetIdsByCategory,
-        distance: ['close'],
-        constraint: ['no-rush'],
       },
       raw: {
         project: {
-          title: 'Legacy defaults with explicit extras',
+          title: 'Legacy setup presets',
           activePresetIds: setupSession.projectSettings.activePresetIds,
         },
       },
     });
 
     expect(normalized.projectInput.activePresetIds).toEqual({
-      distance: 'close',
-      constraint: 'no-rush',
+      narration: 'first-person',
+      emotionDisplay: 'expressive',
+      sceneProgression: 'immersive',
+      chapterEnding: 'lingering',
+      intimacy: 'suggestive',
+    });
+  });
+
+  it('keeps fallback narration when legacy raw presets have no mapped pov', () => {
+    const setupSession = session();
+    setupSession.projectSettings.activePresetIds = {
+      narration: 'first-person',
+      painLevel: 'safe',
+    };
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: {
+          title: 'Discarded legacy genre',
+          activePresetIds: { genre: 'modern-drama' },
+        },
+      },
+    });
+
+    expect(normalized.projectInput.activePresetIds).toEqual({
+      narration: 'first-person',
+      painLevel: 'safe',
+    });
+  });
+
+  it('treats mixed data with narration as current format', () => {
+    const normalized = normalizeSetupCommitPlan({
+      session: session(),
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: {
+          title: 'Mixed preset data',
+          activePresetIds: {
+            narration: 'first-person',
+            painLevel: 'safe',
+            genre: 'modern-drama',
+          },
+        },
+      },
+    });
+
+    expect(normalized.projectInput.activePresetIds).toEqual({
+      narration: 'first-person',
+      painLevel: 'safe',
     });
   });
 
@@ -378,12 +400,7 @@ describe('setupCommitService', () => {
       session: setupSession,
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {},
     });
@@ -402,12 +419,7 @@ describe('setupCommitService', () => {
       session: setupSession,
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {
         memories: [{ type: 'negative', content: '流血表現', importance: 'high' }],
@@ -425,12 +437,7 @@ describe('setupCommitService', () => {
       session: setupSession,
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {
         memories: Array.from({ length: 24 }, (_, index) => ({
@@ -478,12 +485,7 @@ describe('setupCommitService', () => {
       session: setupSession,
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {},
     });
@@ -508,15 +510,14 @@ describe('setupCommitService', () => {
       session: setupSession,
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {
-        project: { title: 'plan title', outputLength: 5000, activePresetIds: { genre: 'modern-drama' } },
+        project: {
+          title: 'plan title',
+          outputLength: 5000,
+          activePresetIds: { narration: 'third-close' },
+        },
         worldText: 'plan world',
         characters: [{ name: 'plan char', role: 'protagonist', description: 'desc' }],
         memories: [{ type: 'preference', content: 'plan memory', importance: 'medium' }],
@@ -542,15 +543,13 @@ describe('setupCommitService', () => {
       session: setupSession,
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {
-        project: { title: 'edited', activePresetIds: { genre: 'unknown-genre', density: 'balanced' } },
+        project: {
+          title: 'edited',
+          activePresetIds: { narration: 'unknown-narration', painLevel: 'bittersweet' },
+        },
         worldText: 'edited world',
         characters: [],
         memories: [],
@@ -559,8 +558,8 @@ describe('setupCommitService', () => {
       },
     });
 
-    expect(normalized.projectInput.activePresetIds?.genre).toBe('modern-drama');
-    expect(normalized.projectInput.activePresetIds?.density).toBe('balanced');
+    expect(normalized.projectInput.activePresetIds?.narration).toBe('third-close');
+    expect(normalized.projectInput.activePresetIds?.painLevel).toBe('bittersweet');
     expect(normalized.storyState.openThreads[0].importance).toBe('medium');
   });
 
@@ -639,12 +638,7 @@ describe('setupCommitService', () => {
       session: session(),
       now,
       presetIdsByCategory: {
-        genre: ['modern-drama'],
-        style: ['natural-dialogue'],
-        pov: ['third-person-close'],
-        pacing: ['standard'],
-        density: ['balanced'],
-        relationshipPacing: ['standard'],
+        ...defaultPresetIdsByCategory,
       },
       raw: {
         characters: [

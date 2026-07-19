@@ -22,11 +22,9 @@ function project(): Project {
     outputLength: 3000,
     streamingEnabled: false,
     activePresetIds: {
-      genre: 'modern-drama',
-      style: 'quiet',
-      pov: 'third-person-close',
-      pacing: 'slow',
-      density: 'dialogue-rich',
+      narration: 'third-close',
+      emotionDisplay: 'restrained',
+      sceneProgression: 'immersive',
     },
   };
 }

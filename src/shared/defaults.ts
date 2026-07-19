@@ -1,14 +1,7 @@
 import type { ActivePresets, ProjectType, SetupPurpose } from './types.js';
 
 export const DEFAULT_ACTIVE_PRESET_IDS = {
-  genre: 'modern-drama',
-  style: 'natural-dialogue',
-  pov: 'third-person-close',
-  pacing: 'standard',
-  density: 'balanced',
-  conversation: 'standard',
-  relationshipPacing: 'standard',
-  intimacy: 'suggestive',
+  narration: 'third-close',
 } satisfies ActivePresets;
 
 // NOTE: 保存データが未指定のときの正規化先。全 API 境界で共通化する。

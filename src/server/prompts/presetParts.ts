@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { PRESETS_PATH } from '../config.js';
+import { PRESET_CATEGORY_ORDER } from '../../shared/presetMigration.js';
 import type { ActivePresets } from '../types/index.js';
 
 let presetCache: Record<string, PresetCategory> | null = null;
@@ -21,16 +22,16 @@ export async function renderPresets(activePresets: ActivePresets): Promise<strin
   const categories = await loadPresetCategories();
   const parts: string[] = [];
 
-  for (const [categoryKey, presetId] of Object.entries(activePresets)) {
-    if (!presetId) continue;
+  for (const categoryKey of PRESET_CATEGORY_ORDER) {
     const category = categories[categoryKey];
     if (!category) continue;
-    const item = category.items[presetId];
-    if (!item) continue;
-    // NOTE: 「設定なし」のような空テキスト項目は選択状態だけを保存し、
-    // システムプロンプトには見出しを含めて何も追加しない。
-    if (!item.text.trim()) continue;
-    parts.push(`【${category.label}: ${item.label}】\n${item.text}`);
+    const selected = activePresets[categoryKey];
+    const presetIds = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    for (const presetId of presetIds) {
+      const item = category.items[presetId];
+      if (!item?.text.trim()) continue;
+      parts.push(`【${category.label}: ${item.label}】\n${item.text}`);
+    }
   }
 
   if (parts.length === 0) return '';

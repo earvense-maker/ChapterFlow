@@ -340,6 +340,19 @@ legend {
   border-top: 1px solid var(--border);
 }
 
+.preset-selector {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.preset-selector-group > h3 {
+  margin-bottom: 0.75rem;
+}
+
+.preset-selector-group fieldset {
+  margin: 0 0 1rem;
+}
+
 .preset-options {
   display: flex;
   flex-wrap: wrap;
@@ -356,6 +369,12 @@ legend {
   border-radius: var(--radius);
   cursor: pointer;
   margin: 0;
+  flex: 1 1 18rem;
+}
+
+.preset-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .preset-option:has(input:checked) {

@@ -144,11 +144,7 @@ function readerState(overrides: Partial<ReaderState['project']> = {}): ReaderSta
       streamingEnabled: false,
       ...overrides,
       activePresetIds: {
-        genre: 'modern-drama',
-        style: 'natural-dialogue',
-        pov: 'third-person-close',
-        pacing: 'standard',
-        density: 'balanced',
+        narration: 'third-close',
       },
     },
     state: {
@@ -192,11 +188,7 @@ function generationRecord(): GenerationRecord {
     request: { wish: '', outputLength: 3000, previousContextText: '' },
     responseText: 'Generated text',
     usedPresets: {
-      genre: 'modern-drama',
-      style: 'natural-dialogue',
-      pov: 'third-person-close',
-      pacing: 'standard',
-      density: 'balanced',
+      narration: 'third-close',
     },
     usedModel: { provider: 'openai', modelName: 'gpt-test' },
     referencedMemoryIds: [],

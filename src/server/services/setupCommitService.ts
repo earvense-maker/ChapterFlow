@@ -29,6 +29,7 @@ import type {
 import type { PresetIdsByCategory } from './setupPromptBuilder.js';
 import { normalizeComparableText } from './setupDraftPatchService.js';
 import { parseWorldMd } from '../utils/worldMd.js';
+import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
@@ -74,22 +75,14 @@ export function normalizeSetupCommitPlan(input: {
   const purpose = normalizeSetupPurpose(input.session.purpose);
   const rawActivePresetIds =
     isRecord(rawProject.activePresetIds) ? rawProject.activePresetIds : undefined;
-  // NOTE: 旧バージョンの相談セッションは、利用者が選んでいなくても共有既定値一式を
-  // 保存していた。session 側がその旧形式である場合に限り、同じ一式を未選択として扱う。
-  // 新しい空 session から明示的に同じプリセット群が指定された場合は保持する。
-  const hasLegacySessionDefaults = containsSharedDefaultPresetSet(
-    input.session.projectSettings.activePresetIds
-  );
-  const fallbackPresets = hasLegacySessionDefaults
-    ? omitSharedDefaultPresetValues(input.session.projectSettings.activePresetIds)
-    : input.session.projectSettings.activePresetIds;
-  const activePresetIds = normalizeActivePresetIds(
-    hasLegacySessionDefaults
-      ? omitSharedDefaultPresetValues(rawActivePresetIds)
-      : rawActivePresetIds,
-    fallbackPresets ?? {},
-    input.presetIdsByCategory
-  );
+  const activePresetIds = {
+    ...DEFAULT_ACTIVE_PRESET_IDS,
+    ...normalizeSetupActivePresetIds(
+      rawActivePresetIds,
+      input.session.projectSettings.activePresetIds ?? {},
+      input.presetIdsByCategory
+    ),
+  };
   // NOTE: roleplay 用途では firstWishSuggestion を出力側で扱わない（設計書 2.2）。
   const firstWishSuggestion =
     purpose === 'roleplay'
@@ -182,13 +175,58 @@ function buildFallbackProjectTitle(session: SetupSession): string {
   return `仮題：${excerpt}`;
 }
 
-function normalizeActivePresetIds(
+function normalizeSetupActivePresetIds(
   raw: Record<string, unknown> | undefined,
   fallback: Partial<ActivePresets>,
   presetIdsByCategory: PresetIdsByCategory
 ): Partial<ActivePresets> {
+  const normalizedRaw = migrateLegacySetupPresetIds(raw);
+  const normalizedFallback = migrateLegacySetupPresetIds(fallback);
   const result: Partial<ActivePresets> = {};
   const keys: Array<keyof ActivePresets> = [
+    'narration',
+    'aftertaste',
+    'emotionDisplay',
+    'sceneProgression',
+    'chapterEnding',
+    'painLevel',
+    'intimacy',
+  ];
+
+  for (const key of keys) {
+    if (key === 'aftertaste') {
+      const allowed = presetIdsByCategory[key] ?? [];
+      const rawValues = normalizePresetIdList(normalizedRaw?.[key])
+        .filter((value) => allowed.includes(value));
+      const fallbackValues = normalizePresetIdList(normalizedFallback?.[key])
+        .filter((value) => allowed.includes(value));
+      const normalized = (rawValues.length > 0 ? rawValues : fallbackValues).slice(0, 2);
+      if (normalized.length > 0) result.aftertaste = normalized;
+      continue;
+    }
+    const fallbackValue = asString(normalizedFallback?.[key]);
+    const value = asString(normalizedRaw?.[key]) || fallbackValue;
+    if (!value) continue;
+    const allowed = presetIdsByCategory[key];
+    if (allowed?.includes(value)) {
+      result[key] = value;
+    } else if (
+      fallbackValue &&
+      allowed?.includes(fallbackValue)
+    ) {
+      result[key] = fallbackValue;
+    }
+  }
+
+  return result;
+}
+
+function migrateLegacySetupPresetIds(
+  value: Record<string, unknown> | Partial<ActivePresets> | undefined
+): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (Object.hasOwn(value, 'narration')) return { ...value };
+  const legacyKeys = [
     'genre',
     'style',
     'pov',
@@ -198,45 +236,33 @@ function normalizeActivePresetIds(
     'conversation',
     'relationshipPacing',
     'constraint',
-    'intimacy',
   ];
+  if (!legacyKeys.some((key) => Object.hasOwn(value, key))) return { ...value };
 
-  for (const key of keys) {
-    const value = asString(raw?.[key]) || fallback[key];
-    if (!value) continue;
-    const allowed = presetIdsByCategory[key];
-    if (allowed?.includes(value)) {
-      result[key] = value;
-    } else if (fallback[key] && allowed?.includes(fallback[key] as string)) {
-      result[key] = fallback[key];
-    }
+  const migrated: Partial<ActivePresets> = { ...normalizeActivePresetIds(value) };
+  const legacyPov = asString((value as Record<string, unknown>).pov);
+  if (
+    legacyPov !== 'first-person' &&
+    legacyPov !== 'third-person-fixed' &&
+    legacyPov !== 'third-person-close' &&
+    legacyPov !== 'per-scene'
+  ) {
+    // NOTE: 共通移行関数が必須 narration を補う分は、raw が実際に指定した値ではない。
+    // setup の fallback を不意に上書きしないよう、移行可能な旧 pov が無ければ外す。
+    delete migrated.narration;
   }
+  return { ...migrated };
+}
 
+function normalizePresetIdList(value: unknown): string[] {
+  const entries = Array.isArray(value) ? value : [value];
+  const result: string[] = [];
+  for (const entry of entries) {
+    const id = asString(entry);
+    if (!id || result.includes(id)) continue;
+    result.push(id);
+  }
   return result;
-}
-
-function containsSharedDefaultPresetSet(
-  value: Record<string, unknown> | undefined
-): boolean {
-  if (!value) return false;
-  return Object.entries(DEFAULT_ACTIVE_PRESET_IDS).every(
-    ([key, presetId]) => asString(value[key]) === presetId
-  );
-}
-
-function omitSharedDefaultPresetValues(
-  value: Record<string, unknown> | undefined
-): Partial<ActivePresets> | undefined {
-  if (!value) return undefined;
-  const defaults = DEFAULT_ACTIVE_PRESET_IDS as Partial<
-    Record<keyof ActivePresets, string>
-  >;
-  return Object.fromEntries(
-    Object.entries(value).filter(([key, presetId]) => {
-      const normalized = asString(presetId);
-      return Boolean(normalized) && defaults[key as keyof ActivePresets] !== normalized;
-    })
-  ) as Partial<ActivePresets>;
 }
 
 function normalizeCharacters(value: unknown, now: string, session: SetupSession): Character[] {
