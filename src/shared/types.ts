@@ -703,6 +703,9 @@ export interface PresetsFile {
   constraintPreset?: string;
   intimacyPreset?: string;
   userCustomPromptParts: string[];
+  // NOTE: 未指定の旧データはアプリ既定の基本プロンプトを使う。空文字は、
+  // 利用者が基本プロンプトを意図的に空にした状態として扱う。
+  baseSystemPrompt?: string;
   customSystemPrompt?: string;
 }
 
@@ -732,6 +735,8 @@ export interface SystemPromptPresetsFile {
 export interface SystemPromptPreview {
   systemPrompt: string;
   generatedSystemPrompt: string;
+  baseSystemPrompt: string;
+  defaultBaseSystemPrompt: string;
   customSystemPrompt: string;
   isCustomized: boolean;
 }
@@ -759,6 +764,9 @@ export interface CreateProjectBody {
   activeModelProvider?: string;
   activeModelName?: string;
   activePresetIds?: Partial<ActivePresets>;
+  // NOTE: 通常の直接作成では既定プリセットを補完する。相談作成は false を指定し、
+  // 相談で明示されたプリセットだけを採用する。
+  applyDefaultPresets?: boolean;
   samplingConfig?: Partial<SamplingConfig>;
   duplicateFrom?: ProjectId;
   coreConcept?: string;
@@ -1048,6 +1056,9 @@ export interface RoleplayContextSnapshot {
   character: Character;
   otherCharacters: Array<Pick<Character, 'characterId' | 'name' | 'description'>>;
   worldDigest: string;
+  // NOTE: 編集済み基本プロンプトと明示選択プリセットを、会話開始時に固定する。
+  // 旧セッションでは未指定のため optional。
+  projectSystemPrompt?: string;
   customSystemPrompt: string;
   capturedAt: string;
 }

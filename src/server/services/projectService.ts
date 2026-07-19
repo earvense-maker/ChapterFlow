@@ -39,6 +39,13 @@ const DEFAULT_MODEL_NAME = defaultModelForProvider(DEFAULT_MODEL_PROVIDER);
 const DEFAULT_STREAMING_ENABLED = false;
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
+const EMPTY_ACTIVE_PRESET_IDS: ActivePresets = {
+  genre: '',
+  style: '',
+  pov: '',
+  pacing: '',
+  density: '',
+};
 
 // NOTE: 全書き込み境界（createProject/updateProject/refine 適用/setup コミット/複製/
 // characters PUT）で共通に呼び、greeting・dialogueExamples の上限を保証する。
@@ -146,7 +153,11 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   try {
   await storage.createProjectDir(projectId);
 
-  let activePresetIds: ActivePresets = { ...DEFAULT_ACTIVE_PRESET_IDS };
+  const initialPresetIds =
+    body.applyDefaultPresets === false
+      ? EMPTY_ACTIVE_PRESET_IDS
+      : DEFAULT_ACTIVE_PRESET_IDS;
+  let activePresetIds: ActivePresets = { ...initialPresetIds };
   let title = body.title?.trim() || '無題の作品';
   let sourceProject: Project | null = null;
   let sourcePresets: PresetsFile | null = null;
@@ -169,7 +180,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
       title = body.title?.trim() || `${sourceProject.title} のコピー`;
     }
   } else if (body.activePresetIds) {
-    activePresetIds = { ...DEFAULT_ACTIVE_PRESET_IDS, ...body.activePresetIds };
+    activePresetIds = { ...initialPresetIds, ...body.activePresetIds };
   }
 
   const provider =
@@ -190,9 +201,10 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     scenarioSeeds: body.scenarioSeeds ?? sourceProject?.scenarioSeeds,
     roleplayOutputChars: body.roleplayOutputChars ?? sourceProject?.roleplayOutputChars,
   });
-  const { customSystemPrompt } = await resolveSystemPrompt(
+  const { baseSystemPrompt, customSystemPrompt } = await resolveSystemPrompt(
     activePresetIds,
-    body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? ''
+    body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
+    sourcePresets?.baseSystemPrompt
   );
 
   const now = nowIso();
@@ -256,6 +268,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     constraintPreset: activePresetIds.constraint,
     intimacyPreset: activePresetIds.intimacy,
     userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
+    baseSystemPrompt,
     customSystemPrompt,
   };
   const characters = normalizeCharactersForStorage(body.characters ?? sourceCharacters);

@@ -89,6 +89,22 @@ describe('buildPrompt', () => {
     );
   });
 
+  it('uses the saved editable base system prompt during generation', async () => {
+    const { systemInstructions } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: '',
+      baseSystemPrompt: 'この作品専用の基本指示',
+    });
+
+    expect(systemInstructions).toContain('この作品専用の基本指示');
+    expect(systemInstructions).not.toContain('経験豊かな小説家');
+    expect(systemInstructions).toContain('【選択された設定】');
+  });
+
   // NOTE: 既存作品には断片型と旧UI由来の長いカスタム指示があるため、どちらも
   // 基本プロンプトを消さずに追加され、userPrompt 側の安全規則も残ることを固定する。
   it.each([

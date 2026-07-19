@@ -36,7 +36,10 @@ import {
   normalizeProjectType,
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
-import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import {
+  buildGeneratedSystemPrompt,
+  resolveSystemPrompt,
+} from '../prompts/systemPrompt.js';
 import type {
   ActivePresets,
   AdapterGenerateResult,
@@ -276,12 +279,22 @@ async function buildContextSnapshot(input: {
   character: Character;
   otherCharacters: Character[];
   worldText: string;
+  baseSystemPrompt?: string;
   customSystemPrompt: string;
   activePresetIds: ActivePresets;
 }): Promise<RoleplayContextSnapshot> {
-  const { customSystemPrompt } = await resolveSystemPrompt(
+  const resolution = await resolveSystemPrompt(
     input.activePresetIds,
-    input.customSystemPrompt
+    input.customSystemPrompt,
+    input.baseSystemPrompt
+  );
+  // NOTE: 小説向けの未編集デフォルト本文はロールプレイ固定規則と競合するため除外する。
+  // 利用者が編集した基本文と、明示的に選ばれたプリセットだけを会話へ引き継ぐ。
+  const projectSystemPrompt = await buildGeneratedSystemPrompt(
+    input.activePresetIds,
+    resolution.baseSystemPrompt === resolution.defaultBaseSystemPrompt
+      ? ''
+      : resolution.baseSystemPrompt
   );
   return {
     character: { ...input.character },
@@ -291,7 +304,8 @@ async function buildContextSnapshot(input: {
       description: c.description,
     })),
     worldDigest: buildWorldDigest(input.worldText),
-    customSystemPrompt,
+    projectSystemPrompt,
+    customSystemPrompt: resolution.customSystemPrompt,
     capturedAt: nowIso(),
   };
 }
@@ -338,6 +352,7 @@ export async function createRoleplaySession(
       character,
       otherCharacters: characters.filter((c) => c.characterId !== input.characterId),
       worldText,
+      baseSystemPrompt: presets?.baseSystemPrompt,
       customSystemPrompt: presets?.customSystemPrompt ?? '',
       activePresetIds: project.activePresetIds,
     });

@@ -15,6 +15,32 @@ const activePresets: ActivePresets = {
 };
 
 describe('resolveSystemPrompt', () => {
+  it('uses an editable base prompt while keeping preset and additional layers separate', async () => {
+    const result = await resolveSystemPrompt(
+      activePresets,
+      '作品固有の指示',
+      'この作品専用の基本プロンプト'
+    );
+
+    expect(result.baseSystemPrompt).toBe('この作品専用の基本プロンプト');
+    expect(result.defaultBaseSystemPrompt).toContain('あなたは経験豊かな小説家');
+    expect(result.generatedSystemPrompt).toContain('この作品専用の基本プロンプト');
+    expect(result.generatedSystemPrompt).toContain('【選択された設定】');
+    expect(result.systemPrompt).toContain('【作品固有の追加指示】\n作品固有の指示');
+  });
+
+  it('allows an intentionally empty base prompt', async () => {
+    const result = await resolveSystemPrompt(
+      { genre: '', style: '', pov: '', pacing: '', density: '' },
+      '',
+      ''
+    );
+
+    expect(result.baseSystemPrompt).toBe('');
+    expect(result.generatedSystemPrompt).toBe('');
+    expect(result.systemPrompt).toBe('');
+  });
+
   it('keeps generated presets and appends only the custom text', async () => {
     const result = await resolveSystemPrompt(activePresets, '作品固有の指示');
 

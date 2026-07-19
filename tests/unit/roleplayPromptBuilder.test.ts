@@ -82,6 +82,17 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('放課後の教室に一人でいる');
   });
 
+  it('includes the editable project base prompt captured for the session', () => {
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        projectSystemPrompt: 'この会話では短い比喩を使う。',
+      }),
+    });
+
+    expect(system).toContain('【作品の基本システム指示】');
+    expect(system).toContain('この会話では短い比喩を使う。');
+  });
+
   it('treats secrets as hidden by the character (self-referential rule)', () => {
     const system = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
     expect(system).toContain('隠している秘密');

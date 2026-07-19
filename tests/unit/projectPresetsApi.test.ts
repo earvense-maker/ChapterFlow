@@ -13,6 +13,41 @@ afterEach(async () => {
 });
 
 describe('project presets API', () => {
+  it('stores an editable base prompt and uses it in the combined preview', async () => {
+    const project = await projectService.createProject({ title: 'Editable base prompt API' });
+    projectIds.push(project.projectId);
+    const server = await startServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+
+    const updateResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/projects/${project.projectId}/presets`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseSystemPrompt: '編集した基本プロンプト' }),
+      }
+    );
+    expect(updateResponse.status).toBe(200);
+    expect(await updateResponse.json()).toMatchObject({
+      baseSystemPrompt: '編集した基本プロンプト',
+    });
+
+    const previewResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/projects/${project.projectId}/system-prompt/preview`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ presets: {} }),
+      }
+    );
+    expect(previewResponse.status).toBe(200);
+    const preview = await previewResponse.json();
+    expect(preview).toMatchObject({
+      baseSystemPrompt: '編集した基本プロンプト',
+    });
+    expect(preview.systemPrompt).toContain('編集した基本プロンプト');
+  });
+
   it('stores and returns normalized additional instructions', async () => {
     const project = await projectService.createProject({ title: 'Prompt normalization API' });
     projectIds.push(project.projectId);

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as projectService from '../../src/server/services/projectService';
 import * as knowledgeService from '../../src/server/services/knowledgeService';
 import * as storage from '../../src/server/services/storageService';
+import { buildGeneratedSystemPrompt } from '../../src/server/prompts/systemPrompt';
 
 const createdProjectIds: string[] = [];
 
@@ -17,6 +18,26 @@ afterEach(async () => {
 });
 
 describe('project settings validation', () => {
+  it('can create a consultation project without applying shared preset defaults', async () => {
+    const project = await projectService.createProject({
+      title: 'Consultation without defaults',
+      applyDefaultPresets: false,
+      activePresetIds: {},
+    });
+    createdProjectIds.push(project.projectId);
+
+    expect(project.activePresetIds).toMatchObject({
+      genre: '',
+      style: '',
+      pov: '',
+      pacing: '',
+      density: '',
+    });
+    expect(await buildGeneratedSystemPrompt(project.activePresetIds)).not.toContain(
+      '【選択された設定】'
+    );
+  });
+
   it('rejects unsupported model providers without persisting them', async () => {
     const project = await createTrackedProject();
 

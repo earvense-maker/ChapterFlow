@@ -308,6 +308,40 @@ describe('WorkSettingsTab system prompt additions', () => {
     expect(screen.getByText('追加指示あり')).toBeInTheDocument();
   });
 
+  it('edits and saves the always-applied base prompt separately', async () => {
+    render(
+      <WorkSettingsTab
+        projectId={project.projectId}
+        project={project}
+        onError={vi.fn()}
+        onFlashMessage={vi.fn()}
+        onProjectUpdated={vi.fn()}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    fireEvent.click(screen.getAllByRole('button', { name: /編集/ })[0]);
+
+    const baseEditor = screen.getByRole('textbox', {
+      name: '常に適用される基本プロンプト',
+    });
+    expect(baseEditor).toHaveValue('基本プロンプト');
+    fireEvent.change(baseEditor, {
+      target: { value: '編集した基本プロンプト' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateProjectPresets).toHaveBeenCalledWith(
+        project.projectId,
+        expect.objectContaining({
+          baseSystemPrompt: '編集した基本プロンプト',
+          customSystemPrompt: '既存の追加指示',
+        })
+      )
+    );
+  });
+
   it('clears only the custom addition and keeps the generated prompt active', async () => {
     render(
       <WorkSettingsTab
@@ -383,7 +417,7 @@ describe('WorkSettingsTab system prompt additions', () => {
 
     await waitFor(() =>
       expect(onError).toHaveBeenCalledWith(
-        expect.stringContaining('追加指示は保存されましたが、プレビューの更新に失敗しました')
+        expect.stringContaining('システムプロンプトは保存されましたが、プレビューの更新に失敗しました')
       )
     );
     fireEvent.click(screen.getByRole('button', { name: 'キャンセル' }));

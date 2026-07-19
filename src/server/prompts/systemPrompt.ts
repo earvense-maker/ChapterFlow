@@ -5,6 +5,8 @@ import type { ActivePresets } from '../types/index.js';
 export interface SystemPromptResult {
   systemPrompt: string;
   generatedSystemPrompt: string;
+  baseSystemPrompt: string;
+  defaultBaseSystemPrompt: string;
   customSystemPrompt: string;
   isCustomized: boolean;
 }
@@ -12,16 +14,26 @@ export interface SystemPromptResult {
 const ADDITIONAL_INSTRUCTIONS_HEADING = '【作品固有の追加指示】';
 const SELECTED_SETTINGS_HEADING = '【選択された設定】';
 
-export async function buildGeneratedSystemPrompt(activePresets: ActivePresets): Promise<string> {
+export async function buildGeneratedSystemPrompt(
+  activePresets: ActivePresets,
+  baseSystemPrompt?: string | null
+): Promise<string> {
+  const resolvedBaseSystemPrompt = resolveBaseSystemPrompt(baseSystemPrompt);
   const presetInstructions = await renderPresets(activePresets);
-  return [baseInstruction(), presetInstructions].filter(Boolean).join('\n\n---\n\n');
+  return [resolvedBaseSystemPrompt, presetInstructions].filter(Boolean).join('\n\n---\n\n');
 }
 
 export async function resolveSystemPrompt(
   activePresets: ActivePresets,
-  customSystemPrompt?: string | null
+  customSystemPrompt?: string | null,
+  baseSystemPrompt?: string | null
 ): Promise<SystemPromptResult> {
-  const generatedSystemPrompt = await buildGeneratedSystemPrompt(activePresets);
+  const defaultBaseSystemPrompt = baseInstruction();
+  const resolvedBaseSystemPrompt = resolveBaseSystemPrompt(baseSystemPrompt);
+  const generatedSystemPrompt = await buildGeneratedSystemPrompt(
+    activePresets,
+    resolvedBaseSystemPrompt
+  );
   const custom = normalizeAdditionalInstructions(generatedSystemPrompt, customSystemPrompt ?? '');
   const isCustomized = custom.length > 0;
   const systemPrompt = isCustomized
@@ -34,9 +46,15 @@ export async function resolveSystemPrompt(
   return {
     systemPrompt,
     generatedSystemPrompt,
+    baseSystemPrompt: resolvedBaseSystemPrompt,
+    defaultBaseSystemPrompt,
     customSystemPrompt: custom,
     isCustomized,
   };
+}
+
+function resolveBaseSystemPrompt(value: string | null | undefined): string {
+  return value === undefined || value === null ? baseInstruction() : value.trim();
 }
 
 export function normalizeAdditionalInstructions(

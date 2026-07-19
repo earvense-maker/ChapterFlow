@@ -3,7 +3,6 @@ import { api } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
 import LightMarkdown from './LightMarkdown';
-import { DEFAULT_ACTIVE_PRESET_IDS } from '@shared/defaults';
 import type {
   CharacterRole,
   ModelProviderInfo,
@@ -65,7 +64,7 @@ function legacySetupSessionStorageKey(purpose: 'novel' | 'roleplay'): string {
 const DEFAULT_PROJECT_SETTINGS = {
   outputLength: 3000,
   streamingEnabled: false,
-  activePresetIds: { ...DEFAULT_ACTIVE_PRESET_IDS },
+  activePresetIds: {},
 };
 
 const ROLE_LABELS: Record<CharacterRole, string> = {

@@ -140,6 +140,39 @@ describe('roleplaySessionService', () => {
     expect(view.messages).toEqual([]);
   });
 
+  it('applies the edited project base prompt to roleplay generation', async () => {
+    const project = await makeRoleplayProject();
+    const presets = await storage.readPresets(project.projectId);
+    if (!presets) throw new Error('Presets not found');
+    await storage.writePresets(project.projectId, {
+      ...presets,
+      baseSystemPrompt: 'ロールプレイでも守る作品固有の基本指示。',
+    });
+
+    let capturedSystemInstructions = '';
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
+      capturedSystemInstructions = request.systemInstructions;
+      return streamChunks(['わかったよ。']);
+    });
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '話そう',
+        revision: created.revision,
+      })
+    );
+
+    expect(capturedSystemInstructions).toContain(
+      'ロールプレイでも守る作品固有の基本指示。'
+    );
+  });
+
   it('runs the send→character commit and revision transitions R → R+1 → R+2', async () => {
     const project = await makeRoleplayProject();
     vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>

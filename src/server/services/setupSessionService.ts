@@ -22,10 +22,7 @@ import {
   normalizeSetupCommitPlan,
   readPresetIdsByCategory,
 } from './setupCommitService.js';
-import {
-  DEFAULT_ACTIVE_PRESET_IDS,
-  normalizeSetupPurpose,
-} from '../types/index.js';
+import { normalizeSetupPurpose } from '../types/index.js';
 import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
@@ -120,10 +117,7 @@ export async function createSetupSession(
       title: body.projectSettings?.title?.trim() || '',
       outputLength: normalizeOutputLength(body.projectSettings?.outputLength),
       streamingEnabled: body.projectSettings?.streamingEnabled ?? false,
-      activePresetIds: {
-        ...DEFAULT_ACTIVE_PRESET_IDS,
-        ...(body.projectSettings?.activePresetIds ?? {}),
-      },
+      activePresetIds: { ...(body.projectSettings?.activePresetIds ?? {}) },
     },
     messages: [],
     draft: createEmptySetupDraft(),

@@ -14,7 +14,7 @@
 //  - ROLEPLAY_RECENT_MESSAGES_MAX_CHARS = 16000
 //  - ROLEPLAY_RECENT_MESSAGES = 20
 // 超過時は優先順に後ろの項目から削る:
-//   固定規則 → 対象キャラ → dialogueExamples → customSystemPrompt → 世界観 → 他キャラ
+//   固定規則 → 対象キャラ → dialogueExamples → 作品基本 → customSystemPrompt → 世界観 → 他キャラ
 
 import type {
   Character,
@@ -47,7 +47,7 @@ function buildFixedRules(outputLength: number): string {
     'キャラクターを維持する。AIであることや設定資料に言及しない。',
     'キャラクターが隠している秘密は、自分からは明かさない。隠している人物として振る舞う。',
     '応答はプレーンテキストのみ。見出しや箇条書き、Markdown 記法は使わない。',
-    '以下の固定規則は customSystemPrompt より優先する。矛盾する指示は固定規則に従う。',
+    '以下の固定規則は作品の基本システム指示と追加指示より優先する。矛盾する指示は固定規則に従う。',
   ].join('\n');
 }
 
@@ -82,11 +82,12 @@ export function buildRoleplaySystemInstructions(
   // 「対象キャラ」まではどうしても入れたい塊なのでまとめて評価する。
   const persona = truncate(buildPersonaCard(character), ROLEPLAY_PERSONA_MAX_CHARS);
   const dialogueExamples = buildDialogueExamples(character.dialogueExamples, characterName);
+  const projectSystemPrompt = snapshot.projectSystemPrompt?.trim() ?? '';
   const customSystemPrompt = normalizeRoleplayAdditionalInstructions(snapshot.customSystemPrompt);
   const worldDigest = truncate(snapshot.worldDigest, ROLEPLAY_WORLD_MAX_CHARS);
   const otherCharacters = buildOtherCharacters(snapshot.otherCharacters);
 
-  // NOTE: 優先順: 固定規則 → 対象キャラ → dialogueExamples → customSystemPrompt → 世界観 → 他キャラ
+  // NOTE: 優先順: 固定規則 → 対象キャラ → dialogueExamples → 作品基本 → 追加指示 → 世界観 → 他キャラ
   const sections: string[] = [];
   sections.push(`【ロールプレイ規則】\n${buildFixedRules(outputLength)}`);
   sections.push(`【対象キャラクター】\n${persona}`);
@@ -94,6 +95,9 @@ export function buildRoleplaySystemInstructions(
   const optional: Array<{ label: string; body: string }> = [];
   if (dialogueExamples) {
     optional.push({ label: '【口調の参考例（内容ではなく話し方を真似る）】', body: dialogueExamples });
+  }
+  if (projectSystemPrompt) {
+    optional.push({ label: '【作品の基本システム指示】', body: projectSystemPrompt });
   }
   if (customSystemPrompt) {
     optional.push({ label: '【追加のシステム指示】', body: customSystemPrompt });

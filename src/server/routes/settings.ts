@@ -111,11 +111,16 @@ router.put('/projects/:id/presets', async (req, res, next) => {
         ...project.activePresetIds,
         ...activePresetsFromPresetFile(nextFile),
       };
-      const { customSystemPrompt } = await resolveSystemPrompt(
+      const { baseSystemPrompt, customSystemPrompt } = await resolveSystemPrompt(
         activePresetIds,
-        nextFile.customSystemPrompt
+        nextFile.customSystemPrompt,
+        nextFile.baseSystemPrompt
       );
-      const normalizedFile: PresetsFile = { ...nextFile, customSystemPrompt };
+      const normalizedFile: PresetsFile = {
+        ...nextFile,
+        baseSystemPrompt,
+        customSystemPrompt,
+      };
       await storage.writePresets(req.params.id, normalizedFile);
 
       await projectService.updateProject(req.params.id, { activePresetIds });
@@ -148,7 +153,13 @@ router.post('/projects/:id/system-prompt/preview', async (req, res, next) => {
       ? body.customSystemPrompt
       : nextPresets.customSystemPrompt;
 
-    res.json(await resolveSystemPrompt(activePresetIds, customSystemPrompt));
+    res.json(
+      await resolveSystemPrompt(
+        activePresetIds,
+        customSystemPrompt,
+        nextPresets.baseSystemPrompt
+      )
+    );
   } catch (err) {
     next(err);
   }

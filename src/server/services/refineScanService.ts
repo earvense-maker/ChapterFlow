@@ -88,7 +88,8 @@ async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineSca
 
   const systemPromptResolution = await resolveSystemPrompt(
     project.activePresetIds,
-    presets?.customSystemPrompt ?? null
+    presets?.customSystemPrompt ?? null,
+    presets?.baseSystemPrompt
   );
 
   const { systemInstructions, userPrompt } = buildScanPrompt({
@@ -201,7 +202,8 @@ export async function getRefineReviewStatus(projectId: string): Promise<RefineRe
 
   const systemPromptResolution = await resolveSystemPrompt(
     project.activePresetIds,
-    presets?.customSystemPrompt ?? null
+    presets?.customSystemPrompt ?? null,
+    presets?.baseSystemPrompt
   );
   const staticInputHash = createStaticInputHash({
     project,

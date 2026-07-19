@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
+import { resolveSystemPrompt } from '../../src/server/prompts/systemPrompt';
 import * as setupSessionService from '../../src/server/services/setupSessionService';
 import * as storage from '../../src/server/services/storageService';
 import type { MemoryImportance, SetupCommitPlan, SetupDraft } from '../../src/server/types/index';
@@ -39,10 +40,7 @@ describe('setupSessionService', () => {
     expect(result.session.status).toBe('active');
     expect(result.session.revision).toBe(1);
     expect(result.session.draft.confirmed).toEqual([]);
-    expect(result.session.projectSettings.activePresetIds).toMatchObject({
-      conversation: 'standard',
-      intimacy: 'suggestive',
-    });
+    expect(result.session.projectSettings.activePresetIds).toEqual({});
   });
 
   it('lists setup sessions with the latest session first', async () => {
@@ -509,7 +507,8 @@ describe('setupSessionService', () => {
 
     const project = await storage.readProject(commitResult.projectId);
     expect(project?.title).toBe('Edited title');
-    expect(project?.activePresetIds.genre).toBe('modern-drama');
+    expect(project?.activePresetIds.genre).toBe('');
+    expect(project?.activePresetIds.density).toBe('balanced');
 
     const characters = await storage.readCharacters(commitResult.projectId);
     expect(characters[0].characterId).toMatch(/^char-/);
@@ -542,6 +541,16 @@ describe('setupSessionService', () => {
       revision: prepared.revision,
     });
     createdSessionIds.push(first.projectId);
+
+    const committedProject = await storage.readProject(first.projectId);
+    const committedPresets = await storage.readPresets(first.projectId);
+    if (!committedProject || !committedPresets) throw new Error('Committed project not found');
+    const resolvedPrompt = await resolveSystemPrompt(
+      committedProject.activePresetIds,
+      committedPresets.customSystemPrompt,
+      committedPresets.baseSystemPrompt
+    );
+    expect(resolvedPrompt.systemPrompt).not.toContain('【選択された設定】');
 
     const second = await setupSessionService.commitSetupSession(result.sessionId, {
       plan: editedPlan,

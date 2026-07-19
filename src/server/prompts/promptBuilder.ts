@@ -29,6 +29,7 @@ export interface BuildPromptInput {
   memories: Memory[];
   characters: Character[];
   worldText: string;
+  baseSystemPrompt?: string | null;
   customSystemPrompt?: string | null;
   bannedExpressions?: string[];
   knowledgeTexts?: Array<{ title: string; content: string }>;
@@ -49,6 +50,7 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     memories,
     characters,
     worldText,
+    baseSystemPrompt,
     customSystemPrompt,
     bannedExpressions,
     knowledgeTexts,
@@ -58,7 +60,8 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
 
   const { systemPrompt: systemInstructions } = await resolveSystemPrompt(
     project.activePresetIds,
-    customSystemPrompt
+    customSystemPrompt,
+    baseSystemPrompt
   );
 
   const parts: string[] = [];

@@ -257,7 +257,7 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.firstWishSuggestion).toBe('Start from the rainy library.');
   });
 
-  it('fills shared preset defaults when an older setup session has no active presets', () => {
+  it('does not fill shared preset defaults when a setup session has no active presets', () => {
     const setupSession = session();
     setupSession.projectSettings.activePresetIds = {};
 
@@ -270,9 +270,102 @@ describe('setupCommitService', () => {
       },
     });
 
-    expect(normalized.projectInput.activePresetIds).toMatchObject({
+    expect(normalized.projectInput.activePresetIds).toEqual({});
+    expect(normalized.projectInput.applyDefaultPresets).toBe(false);
+  });
+
+  it('drops the legacy automatically populated default preset set', () => {
+    const setupSession = session();
+    setupSession.projectSettings.activePresetIds = {
+      genre: 'modern-drama',
+      style: 'natural-dialogue',
+      pov: 'third-person-close',
+      pacing: 'standard',
+      density: 'balanced',
       conversation: 'standard',
+      relationshipPacing: 'standard',
       intimacy: 'suggestive',
+    };
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: {
+          title: 'Legacy defaults',
+          activePresetIds: setupSession.projectSettings.activePresetIds,
+        },
+      },
+    });
+
+    expect(normalized.projectInput.activePresetIds).toEqual({});
+    expect(normalized.projectInput.applyDefaultPresets).toBe(false);
+  });
+
+  it('keeps an explicitly selected full default set in a new empty setup session', () => {
+    const setupSession = session();
+    setupSession.projectSettings.activePresetIds = {};
+    const explicitlySelectedDefaults = {
+      genre: 'modern-drama',
+      style: 'natural-dialogue',
+      pov: 'third-person-close',
+      pacing: 'standard',
+      density: 'balanced',
+      conversation: 'standard',
+      relationshipPacing: 'standard',
+      intimacy: 'suggestive',
+    };
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: {
+          title: 'Explicit defaults',
+          activePresetIds: explicitlySelectedDefaults,
+        },
+      },
+    });
+
+    expect(normalized.projectInput.activePresetIds).toEqual(explicitlySelectedDefaults);
+  });
+
+  it('removes legacy defaults while preserving explicit extra preset choices', () => {
+    const setupSession = session();
+    setupSession.projectSettings.activePresetIds = {
+      genre: 'modern-drama',
+      style: 'natural-dialogue',
+      pov: 'third-person-close',
+      pacing: 'standard',
+      density: 'balanced',
+      conversation: 'standard',
+      relationshipPacing: 'standard',
+      intimacy: 'suggestive',
+      distance: 'close',
+      constraint: 'no-rush',
+    };
+
+    const normalized = normalizeSetupCommitPlan({
+      session: setupSession,
+      now,
+      presetIdsByCategory: {
+        ...defaultPresetIdsByCategory,
+        distance: ['close'],
+        constraint: ['no-rush'],
+      },
+      raw: {
+        project: {
+          title: 'Legacy defaults with explicit extras',
+          activePresetIds: setupSession.projectSettings.activePresetIds,
+        },
+      },
+    });
+
+    expect(normalized.projectInput.activePresetIds).toEqual({
+      distance: 'close',
+      constraint: 'no-rush',
     });
   });
 

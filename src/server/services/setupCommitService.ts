@@ -72,13 +72,22 @@ export function normalizeSetupCommitPlan(input: {
   const raw = isRecord(input.raw) ? input.raw : {};
   const rawProject = isRecord(raw.project) ? raw.project : {};
   const purpose = normalizeSetupPurpose(input.session.purpose);
-  const fallbackPresets: Partial<ActivePresets> = {
-    ...DEFAULT_ACTIVE_PRESET_IDS,
-    ...input.session.projectSettings.activePresetIds,
-  };
+  const rawActivePresetIds =
+    isRecord(rawProject.activePresetIds) ? rawProject.activePresetIds : undefined;
+  // NOTE: 旧バージョンの相談セッションは、利用者が選んでいなくても共有既定値一式を
+  // 保存していた。session 側がその旧形式である場合に限り、同じ一式を未選択として扱う。
+  // 新しい空 session から明示的に同じプリセット群が指定された場合は保持する。
+  const hasLegacySessionDefaults = containsSharedDefaultPresetSet(
+    input.session.projectSettings.activePresetIds
+  );
+  const fallbackPresets = hasLegacySessionDefaults
+    ? omitSharedDefaultPresetValues(input.session.projectSettings.activePresetIds)
+    : input.session.projectSettings.activePresetIds;
   const activePresetIds = normalizeActivePresetIds(
-    isRecord(rawProject.activePresetIds) ? rawProject.activePresetIds : undefined,
-    fallbackPresets,
+    hasLegacySessionDefaults
+      ? omitSharedDefaultPresetValues(rawActivePresetIds)
+      : rawActivePresetIds,
+    fallbackPresets ?? {},
     input.presetIdsByCategory
   );
   // NOTE: roleplay 用途では firstWishSuggestion を出力側で扱わない（設計書 2.2）。
@@ -115,6 +124,7 @@ export function normalizeSetupCommitPlan(input: {
     activeModelProvider: input.session.model.provider,
     activeModelName: input.session.model.modelName,
     activePresetIds,
+    applyDefaultPresets: false,
     coreConcept: truncate(asString(raw.coreConcept) || input.session.draft.coreConcept, 300),
     firstWishSuggestion: truncate(firstWishSuggestion, 300),
     styleSample: truncate(asString(raw.styleSample), 1000),
@@ -202,10 +212,31 @@ function normalizeActivePresetIds(
     }
   }
 
-  return {
-    ...DEFAULT_ACTIVE_PRESET_IDS,
-    ...result,
-  };
+  return result;
+}
+
+function containsSharedDefaultPresetSet(
+  value: Record<string, unknown> | undefined
+): boolean {
+  if (!value) return false;
+  return Object.entries(DEFAULT_ACTIVE_PRESET_IDS).every(
+    ([key, presetId]) => asString(value[key]) === presetId
+  );
+}
+
+function omitSharedDefaultPresetValues(
+  value: Record<string, unknown> | undefined
+): Partial<ActivePresets> | undefined {
+  if (!value) return undefined;
+  const defaults = DEFAULT_ACTIVE_PRESET_IDS as Partial<
+    Record<keyof ActivePresets, string>
+  >;
+  return Object.fromEntries(
+    Object.entries(value).filter(([key, presetId]) => {
+      const normalized = asString(presetId);
+      return Boolean(normalized) && defaults[key as keyof ActivePresets] !== normalized;
+    })
+  ) as Partial<ActivePresets>;
 }
 
 function normalizeCharacters(value: unknown, now: string, session: SetupSession): Character[] {

@@ -290,7 +290,7 @@ function buildCommitUserPrompt(input: {
   const importantRules =
     purpose === 'roleplay'
       ? [
-          '- activePresetIds は利用可能なプリセットIDだけを使う。',
+          '- activePresetIds は相談で明示的に合意した設定だけを、利用可能なプリセットIDで入れる。未指定なら空オブジェクトにする。',
           '- 不明なプリセットIDは作らない。',
           '- memories は preference または negative の高重要度情報だけに絞る。storyFact は使わない。',
           '- coreConcept は、このキャラと話す魅力を1〜2文で書く。',
@@ -302,7 +302,7 @@ function buildCommitUserPrompt(input: {
           '- customSystemPrompt にはキャラの振る舞いだけを短く書く。作品メモを詰め込まない。',
         ].join('\n')
       : [
-          '- activePresetIds は利用可能なプリセットIDだけを使う。',
+          '- activePresetIds は相談で明示的に合意した設定だけを、利用可能なプリセットIDで入れる。未指定なら空オブジェクトにする。',
           '- 不明なプリセットIDは作らない。',
           '- memories は本当に次回生成で守りたい高重要度情報だけに絞る。',
           '- coreConcept は、この作品が何の話でどんな読み味を約束するかを1〜2文で書く。',
@@ -343,7 +343,7 @@ function buildNovelCommitOutputExample(session: SetupSession): unknown {
     project: {
       title: '作品タイトル',
       outputLength: session.projectSettings.outputLength,
-      activePresetIds: session.projectSettings.activePresetIds,
+      activePresetIds: {},
     },
     coreConcept: 'この作品が何の話で、どんな読み味を約束するかを1〜2文',
     firstWishSuggestion:
@@ -405,7 +405,7 @@ function buildRoleplayCommitOutputExample(session: SetupSession): unknown {
     project: {
       title: '作品タイトル（キャラ名や設定名）',
       outputLength: session.projectSettings.outputLength,
-      activePresetIds: session.projectSettings.activePresetIds,
+      activePresetIds: {},
     },
     coreConcept: 'このキャラと話す魅力を1〜2文（口調と関係性の骨格）',
     world: {
