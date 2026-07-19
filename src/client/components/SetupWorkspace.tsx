@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../clientApi';
+import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
 import LightMarkdown from './LightMarkdown';
 import { DEFAULT_ACTIVE_PRESET_IDS } from '@shared/defaults';
@@ -101,6 +102,7 @@ const COLD_START_ACTIONS: SetupSuggestedAction[] = [
 const PREVIEW_STYLE_HINTS = ['もっと軽く', 'しっとり', '会話多め'];
 
 export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel, onOpenSettings }: Props) {
+  const confirmAction = useConfirm();
   const [session, setSession] = useState<SetupSession | null>(null);
   const [message, setMessage] = useState('');
   const [suggestedActions, setSuggestedActions] = useState<SetupSuggestedAction[]>([]);
@@ -356,7 +358,9 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   async function startNewSession() {
     if (
       (session?.messages.length || hasUnsavedDraftEdits) &&
-      !window.confirm('今の相談を終了して、新しい相談を始めますか？')
+      !(await confirmAction('今の相談を終了して、新しい相談を始めますか？', {
+        confirmLabel: '新しい相談を始める',
+      }))
     ) return;
     try {
       setCreatingNew(true);

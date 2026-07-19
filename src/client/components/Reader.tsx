@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { useTheme } from '../hooks/useTheme';
+import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
 import { KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import type {
@@ -34,6 +35,7 @@ export default function Reader({
   onOpenTechSettings,
   onOpenMemories,
 }: Props) {
+  const confirmAction = useConfirm();
   const [project, setProject] = useState<Project | null>(null);
   const [text, setText] = useState('');
   const [generationId, setGenerationId] = useState<string | null>(null);
@@ -279,7 +281,11 @@ export default function Reader({
   }
 
   async function handleUnaccept() {
-    if (!window.confirm('この場面の採用を取り消して下書きに戻しますか？')) return;
+    if (
+      !(await confirmAction('この場面の採用を取り消して下書きに戻しますか？', {
+        confirmLabel: '採用を取り消す',
+      }))
+    ) return;
     try {
       setLoading(true);
       setError(null);
@@ -431,7 +437,12 @@ export default function Reader({
   }, []);
 
   async function handleShutdown() {
-    if (!window.confirm('ChapterFlow を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
+    if (
+      !(await confirmAction(
+        'ChapterFlow を終了しますか？サーバーとターミナルも一緒に閉じます。',
+        { confirmLabel: '終了', danger: true }
+      ))
+    ) return;
     try {
       await api.shutdown();
     } catch {

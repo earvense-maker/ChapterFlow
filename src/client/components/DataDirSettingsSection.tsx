@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
+import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
 import type { DataDirInfo, DataDirPreview, RuntimeKind, SystemVersionInfo } from '@shared/types';
 
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export default function DataDirSettingsSection({ systemVersion, onBusyChange }: Props) {
+  const confirmAction = useConfirm();
   const [info, setInfo] = useState<DataDirInfo | null>(null);
   const [runtime, setRuntime] = useState<RuntimeKind>('server');
   const [targetPath, setTargetPath] = useState('');
@@ -158,7 +160,12 @@ export default function DataDirSettingsSection({ systemVersion, onBusyChange }: 
       });
       return;
     }
-    if (!window.confirm('保存先を移動します。完了後、アプリを自動で再起動します。移動中はアプリを終了しないでください。')) return;
+    if (
+      !(await confirmAction(
+        '保存先を移動します。完了後、アプリを自動で再起動します。移動中はアプリを終了しないでください。',
+        { confirmLabel: '移動して再起動' }
+      ))
+    ) return;
     try {
       clearRestartWatch();
       setSectionStatus({

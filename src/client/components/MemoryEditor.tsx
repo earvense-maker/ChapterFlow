@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import { useConfirm } from './ConfirmDialog';
 import type { Memory } from '@shared/types';
 
 interface Props {
@@ -16,6 +17,7 @@ const typeLabels: Record<Memory['type'], string> = {
 };
 
 export default function MemoryEditor({ projectId, onBack }: Props) {
+  const confirmAction = useConfirm();
   const [memories, setMemories] = useState<Memory[]>([]);
   const [type, setType] = useState<Memory['type']>('storyFact');
   const [content, setContent] = useState('');
@@ -53,7 +55,9 @@ export default function MemoryEditor({ projectId, onBack }: Props) {
   }
 
   async function handleDelete(memoryId: string) {
-    if (!window.confirm('この記憶を削除しますか？')) return;
+    if (!(await confirmAction('この記憶を削除しますか？', { confirmLabel: '削除', danger: true }))) {
+      return;
+    }
     try {
       setLoading(true);
       await api.deleteMemory(projectId, memoryId);

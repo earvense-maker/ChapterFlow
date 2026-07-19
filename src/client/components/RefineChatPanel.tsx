@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
+import { useConfirm } from './ConfirmDialog';
 import type {
   Character,
   RefineFinding,
@@ -34,6 +35,7 @@ export default function RefineChatPanel({
   onScanRefine,
   onSettingsChanged,
 }: Props) {
+  const confirmAction = useConfirm();
   const [session, setSession] = useState<RefineSession | null>(null);
   const [input, setInput] = useState('');
   const [activeTab, setActiveTab] = useState<RefineTab>('findings');
@@ -127,7 +129,12 @@ export default function RefineChatPanel({
 
   async function handleReset() {
     if (busyPatchId) return;
-    if (!window.confirm('相談の履歴をリセットしますか？（適用済みの変更はそのまま残ります）'))
+    if (
+      !(await confirmAction(
+        '相談の履歴をリセットしますか？（適用済みの変更はそのまま残ります）',
+        { confirmLabel: 'リセット', danger: true }
+      ))
+    )
       return;
     try {
       setSending(true);

@@ -10,6 +10,7 @@
 //  - error/停止時は暫定表示を破棄して GET で再同期する（409復旧）。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type RoleplayStreamHandlers } from '../clientApi';
+import { useConfirm } from './ConfirmDialog';
 import type {
   Character,
   Project,
@@ -35,6 +36,7 @@ export default function RoleplayWorkspace({
   onOpenWorkSettings,
   onOpenTechSettings,
 }: Props) {
+  const confirmAction = useConfirm();
   const [project, setProject] = useState<Project | null>(null);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [sessions, setSessions] = useState<RoleplaySessionSummary[]>([]);
@@ -363,7 +365,12 @@ export default function RoleplayWorkspace({
 
   const handleArchive = useCallback(async () => {
     if (!activeSession || isStreaming || isStopping) return;
-    if (!window.confirm('この会話をアーカイブしますか？（一覧から消えますが履歴は保持されます）')) {
+    if (
+      !(await confirmAction(
+        'この会話をアーカイブしますか？（一覧から消えますが履歴は保持されます）',
+        { confirmLabel: 'アーカイブ' }
+      ))
+    ) {
       return;
     }
     try {
@@ -390,7 +397,7 @@ export default function RoleplayWorkspace({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'アーカイブに失敗しました');
     }
-  }, [activeSession, isStopping, isStreaming, projectId]);
+  }, [activeSession, confirmAction, isStopping, isStreaming, projectId]);
 
   // NOTE: 選択→NG登録の対象範囲検証（review §5.6 / P2）。
   //   1) selection の anchor/focus 両方が同一の「character バブル本文」要素内に閉じているか

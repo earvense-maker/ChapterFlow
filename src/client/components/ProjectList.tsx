@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import { useConfirm } from './ConfirmDialog';
 import type { ProjectSummary, ProjectType } from '@shared/types';
 
 interface Props {
@@ -17,6 +18,7 @@ export default function ProjectList({
   onSetupRoleplay,
   onOpenAppSettings,
 }: Props) {
+  const confirmAction = useConfirm();
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +67,9 @@ export default function ProjectList({
 
   async function handleDelete(e: React.MouseEvent, projectId: string) {
     e.stopPropagation();
-    if (!window.confirm('この作品を削除しますか？')) return;
+    if (!(await confirmAction('この作品を削除しますか？', { confirmLabel: '削除', danger: true }))) {
+      return;
+    }
     try {
       await api.deleteProject(projectId);
       await load();
@@ -75,7 +79,12 @@ export default function ProjectList({
   }
 
   async function handleShutdown() {
-    if (!window.confirm('ChapterFlow を終了しますか？サーバーとターミナルも一緒に閉じます。')) return;
+    if (
+      !(await confirmAction(
+        'ChapterFlow を終了しますか？サーバーとターミナルも一緒に閉じます。',
+        { confirmLabel: '終了', danger: true }
+      ))
+    ) return;
     try {
       await api.shutdown();
     } catch {

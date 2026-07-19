@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConfirmProvider } from '../../src/client/components/ConfirmDialog';
 import WorkSettingsTab from '../../src/client/components/WorkSettingsTab';
 import type { Project } from '../../src/shared/types';
 
@@ -32,6 +33,7 @@ const { apiMock } = vi.hoisted(() => ({
     getRefineReviewStatus: vi.fn().mockResolvedValue(null),
     getStyleSamples: vi.fn().mockResolvedValue([]),
     getSystemPromptPresets: vi.fn().mockResolvedValue([]),
+    updateProject: vi.fn(),
     updateProjectPresets: vi.fn().mockResolvedValue({}),
     updateWorldArea: vi.fn().mockImplementation(
       async (_id, area, text) => ({
@@ -69,6 +71,10 @@ const project: Project = {
     density: 'balanced',
   },
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe('WorkSettingsTab world areas', () => {
   beforeEach(() => {
@@ -180,6 +186,64 @@ describe('WorkSettingsTab world areas', () => {
     fireEvent.click(screen.getByRole('tab', { name: '開始時点の状況' }));
     expect(await screen.findByText('refineで更新済み')).toBeInTheDocument();
     expect(screen.queryByText('古い状況')).not.toBeInTheDocument();
+  });
+});
+
+describe('WorkSettingsTab style sample gallery', () => {
+  beforeEach(() => {
+    apiMock.getStyleSamples.mockReset().mockResolvedValue([
+      {
+        id: 'quiet-prose',
+        label: '静かな文体',
+        description: '落ち着いた描写',
+        text: '雨音だけが、静かな部屋に残っていた。',
+      },
+    ]);
+    apiMock.updateProject.mockReset().mockImplementation(async (_id, updates) => ({
+      ...project,
+      styleSample: updates.styleSample,
+    }));
+  });
+
+  it('replaces an existing sample through the in-app confirmation and saves it', async () => {
+    const nativeConfirm = vi.spyOn(window, 'confirm');
+    render(
+      <ConfirmProvider>
+        <WorkSettingsTab
+          projectId={project.projectId}
+          project={{ ...project, styleSample: '既存の文体見本' }}
+          onError={vi.fn()}
+          onFlashMessage={vi.fn()}
+          onProjectUpdated={vi.fn()}
+        />
+      </ConfirmProvider>
+    );
+
+    fireEvent.click(await screen.findByRole('tab', { name: '文体・視点' }));
+    const section = screen.getByRole('heading', { name: '文体見本' }).closest('section');
+    expect(section).not.toBeNull();
+    fireEvent.click(within(section!).getByRole('button', { name: /編集/ }));
+
+    fireEvent.change(within(section!).getByLabelText('見本ギャラリーから選ぶ'), {
+      target: { value: 'quiet-prose' },
+    });
+    fireEvent.click(within(section!).getByRole('button', { name: 'この見本を採用' }));
+
+    expect(await screen.findByRole('dialog', { name: '確認' })).toBeVisible();
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '置き換える' }));
+
+    const textarea = within(section!).getByPlaceholderText('文体見本（1000字まで）');
+    await waitFor(() =>
+      expect(textarea).toHaveValue('雨音だけが、静かな部屋に残っていた。')
+    );
+    fireEvent.click(within(section!).getByRole('button', { name: '保存' }));
+
+    await waitFor(() =>
+      expect(apiMock.updateProject).toHaveBeenCalledWith(project.projectId, {
+        styleSample: '雨音だけが、静かな部屋に残っていた。',
+      })
+    );
   });
 });
 

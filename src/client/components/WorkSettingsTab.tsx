@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../clientApi';
+import { useConfirm } from './ConfirmDialog';
 import {
   KNOWLEDGE_WARN_CHARS,
   SYSTEM_PROMPT_PRESET_NAME_MAX_CHARS,
@@ -59,6 +60,7 @@ export default function WorkSettingsTab({
   onFlashMessage,
   onProjectUpdated,
 }: Props) {
+  const confirmAction = useConfirm();
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
   const [presets, setPresets] = useState<Partial<PresetsFile>>({});
   const [world, setWorld] = useState<WorldContent>({ foundation: '', initialSituation: '' });
@@ -356,11 +358,16 @@ export default function WorkSettingsTab({
     setSelectedStyleSamplePresetId('');
   }
 
-  function handleApplyStyleSamplePreset() {
+  async function handleApplyStyleSamplePreset() {
     const preset = styleSamplePresets.find((p) => p.id === selectedStyleSamplePresetId);
     if (!preset) return;
     const hasContent = styleSampleDraft.trim().length > 0;
-    if (hasContent && !window.confirm('現在の見本を選んだ見本で置き換えます。よろしいですか？')) {
+    if (
+      hasContent &&
+      !(await confirmAction('現在の見本を選んだ見本で置き換えます。よろしいですか？', {
+        confirmLabel: '置き換える',
+      }))
+    ) {
       return;
     }
     setStyleSampleDraft(preset.text);
@@ -440,13 +447,15 @@ export default function WorkSettingsTab({
     setSystemPromptEditing(false);
   }
 
-  function handleLoadSystemPromptPreset() {
+  async function handleLoadSystemPromptPreset() {
     const preset = systemPromptPresets.find((item) => item.id === selectedSystemPromptPresetId);
     if (!preset) return;
     if (
       systemPromptDraft !== (presets.customSystemPrompt ?? '') &&
       systemPromptDraft !== preset.prompt &&
-      !window.confirm('未保存の編集内容を、選択したプリセットで置き換えますか？')
+      !(await confirmAction('未保存の編集内容を、選択したプリセットで置き換えますか？', {
+        confirmLabel: '置き換える',
+      }))
     ) {
       return;
     }
@@ -479,7 +488,12 @@ export default function WorkSettingsTab({
     const existing = systemPromptPresets.find(
       (item) => item.name.toLocaleLowerCase('ja-JP') === name.toLocaleLowerCase('ja-JP')
     );
-    if (existing && !window.confirm(`プリセット「${existing.name}」を現在の内容で上書きしますか？`)) {
+    if (
+      existing &&
+      !(await confirmAction(`プリセット「${existing.name}」を現在の内容で上書きしますか？`, {
+        confirmLabel: '上書き',
+      }))
+    ) {
       return;
     }
 
@@ -518,7 +532,13 @@ export default function WorkSettingsTab({
 
   async function handleDeleteSystemPromptPreset() {
     const preset = systemPromptPresets.find((item) => item.id === selectedSystemPromptPresetId);
-    if (!preset || !window.confirm(`プリセット「${preset.name}」を削除しますか？`)) return;
+    if (
+      !preset ||
+      !(await confirmAction(`プリセット「${preset.name}」を削除しますか？`, {
+        confirmLabel: '削除',
+        danger: true,
+      }))
+    ) return;
 
     try {
       setSystemPromptPresetLoading(true);
@@ -611,7 +631,7 @@ export default function WorkSettingsTab({
           '',
           '本当に保存しますか？',
         ].join('\n');
-        if (!window.confirm(message)) return;
+        if (!(await confirmAction(message, { confirmLabel: '保存', danger: true }))) return;
       }
       setLoading(true);
       const saved = await api.updateStoryState(projectId, parsed);
@@ -752,7 +772,12 @@ export default function WorkSettingsTab({
   }
 
   async function handleDeleteKnowledge(item: KnowledgeListItem) {
-    if (!window.confirm(`資料「${item.title}」を削除しますか？`)) return;
+    if (
+      !(await confirmAction(`資料「${item.title}」を削除しますか？`, {
+        confirmLabel: '削除',
+        danger: true,
+      }))
+    ) return;
     try {
       setLoading(true);
       onError(null);
