@@ -12,6 +12,7 @@ vi.mock('../../src/client/clientApi', () => ({
     getKnowledge: vi.fn(),
     updateState: vi.fn(),
     navigateDraft: vi.fn(),
+    shutdown: vi.fn(),
   },
 }));
 
@@ -20,6 +21,7 @@ const generateStream = vi.mocked(api.generateStream);
 const getReaderState = vi.mocked(api.getReaderState);
 const getKnowledge = vi.mocked(api.getKnowledge);
 const navigateDraft = vi.mocked(api.navigateDraft);
+const shutdown = vi.mocked(api.shutdown);
 
 describe('Reader interactions', () => {
   beforeEach(() => {
@@ -29,6 +31,7 @@ describe('Reader interactions', () => {
     getReaderState.mockReset();
     getKnowledge.mockReset();
     navigateDraft.mockReset();
+    shutdown.mockReset().mockResolvedValue({ ok: true });
     getKnowledge.mockResolvedValue([]);
   });
 
@@ -164,6 +167,26 @@ describe('Reader interactions', () => {
     expect(await findByText('Next draft text')).toBeInTheDocument();
     expect(await findByRole('button', { name: '前の案' })).toBeEnabled();
     expect(await findByRole('button', { name: '次の案' })).toBeDisabled();
+  });
+
+  it('shuts down immediately without opening a confirmation dialog', async () => {
+    getReaderState.mockResolvedValue(readerState());
+
+    const { findByRole, queryByRole } = render(
+      <Reader
+        projectId="proj-reader-interaction"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+        onOpenMemories={vi.fn()}
+      />
+    );
+
+    fireEvent.click(await findByRole('button', { name: 'オプションを開く' }));
+    fireEvent.click(await findByRole('button', { name: 'サーバー終了' }));
+
+    await waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
+    expect(queryByRole('dialog')).toBeNull();
   });
 });
 

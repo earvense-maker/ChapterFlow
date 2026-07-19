@@ -79,12 +79,6 @@ export default function ProjectList({
   }
 
   async function handleShutdown() {
-    if (
-      !(await confirmAction(
-        'ChapterFlow を終了しますか？サーバーとターミナルも一緒に閉じます。',
-        { confirmLabel: '終了', danger: true }
-      ))
-    ) return;
     try {
       await api.shutdown();
     } catch {
