@@ -81,6 +81,10 @@ npm run build:start:lan
 
 旧 `YUMEWEAVING_*` 環境変数も移行期間中は互換用に読み込みます。
 
+## 開発資料
+
+実装時の設計書とレビュー記録は[設計資料アーカイブ](docs/design/README.md)にまとめています。これらは履歴資料であり、現行仕様はコードと利用ガイドを優先します。
+
 ## 不具合報告とセキュリティ
 
 通常の不具合は[Issues](https://github.com/earvense-maker/ChapterFlow/issues)へ報告してください。
