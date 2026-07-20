@@ -2715,6 +2715,15 @@ button:disabled:has(.generating-label) {
   align-self: end;
 }
 
+/* NOTE: 種メモ欄はPC画面でも右カラムとして狭いため、人物の軸は縦に並べる。 */
+.setup-draft-panel .character-trait-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.setup-draft-panel .character-trait-remove {
+  justify-self: end;
+}
+
 .character-initial-state-field {
   display: grid;
   gap: 0.25rem;

@@ -50,7 +50,10 @@ describe('Reader story state polling', () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(screen.getByText('物語の状態を更新中です')).toBeInTheDocument();
+    expect(screen.getByText('続きに反映する情報を整理しています')).toBeInTheDocument();
+    expect(
+      screen.getByText('採用した場面から人物の状況や伏線を読み取り、次の場面に反映する準備をしています。')
+    ).toBeInTheDocument();
 
     await act(async () => {
       vi.advanceTimersByTime(2000);
@@ -76,7 +79,7 @@ describe('Reader story state polling', () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(screen.queryByText('物語の状態を更新中です')).not.toBeInTheDocument();
+    expect(screen.queryByText('続きに反映する情報を整理しています')).not.toBeInTheDocument();
   });
 });
 

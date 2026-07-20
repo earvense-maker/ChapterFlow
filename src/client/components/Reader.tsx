@@ -717,14 +717,14 @@ export default function Reader({
             <div>
               <strong>
                 {storyStateIsPending
-                  ? '物語の状態を更新中です'
+                  ? '続きに反映する情報を整理しています'
                   : storyStateBacklogCount > 0
                     ? `物語の状態: ${storyStateBacklogCount}場面未反映`
                     : '物語の状態を更新できませんでした'}
               </strong>
               <p>
                 {storyStateIsPending
-                  ? '採用済み本文から、次回生成で使う人物状態や伏線を整理しています。'
+                  ? '採用した場面から人物の状況や伏線を読み取り、次の場面に反映する準備をしています。'
                   : storyStateBacklogCount > 0
                     ? '採用済み本文から、次回生成で使う人物状態や伏線を再抽出してください。'
                   : storyStateRefresh?.errorMessage ||
