@@ -15,6 +15,7 @@ import {
   type WorldSegment,
 } from '../utils/worldMd.js';
 import { trimTrailingTextToSentenceBoundary } from '../utils/textBoundary.js';
+import { extractFrequentPhrases } from '../utils/phraseFrequency.js';
 import type {
   Character,
   Memory,
@@ -131,11 +132,6 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
   // 出力形式（機械的条件と安全規則）
   parts.push(renderOutputConditions(project, mode, viewpointCharacter));
 
-  const bannedSection = renderBannedExpressions(bannedExpressions);
-  if (bannedSection) {
-    parts.push(bannedSection);
-  }
-
   // 直前の文脈（rewrite モードでは現在シーンを除外し、別セクションで明示する）
   const recentContext = await getRecentContext(
     project.projectId,
@@ -143,6 +139,12 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     state.currentSceneId,
     { includeCurrentScene: !isRewriteMode }
   );
+  const frequentPhrases = selectFrequentPhrases(recentContext, characters, bannedExpressions);
+  const bannedSection = renderBannedExpressions(bannedExpressions, frequentPhrases);
+  if (bannedSection) {
+    parts.push(bannedSection);
+  }
+
   if (recentContext.trim()) {
     const heading = isRewriteMode
       ? '【これまでの作品本文（直近／今回書き直す場面より前まで）】'
@@ -557,15 +559,60 @@ function characterNameForId(characterId: string, characters: Character[]): strin
   return characters.find((character) => character.characterId === characterId)?.name ?? null;
 }
 
-function renderBannedExpressions(expressions: string[] | undefined): string {
-  const items = expressions?.filter((text) => text.trim().length > 0) ?? [];
-  if (items.length === 0) return '';
+function selectFrequentPhrases(
+  recentContext: string,
+  characters: Character[],
+  bannedExpressions: string[] | undefined
+): string[] {
+  if (!recentContext.trim()) return [];
 
-  const lines = items.map((text) => `- 「${text.trim()}」`).join('\n');
-  return `【表現上の注意】
-以下の言い回しは直近の本文に頻出しているか、読者が避けたい表現である。
-今回の本文では使わないこと。同じ意味は別の言い方で書くこと。
-${lines}`;
+  const characterTokens = characters
+    .flatMap((character) => [character.name, ...(character.aliases ?? [])])
+    .map(normalizeExpressionText)
+    .filter(Boolean);
+  const banned = new Set(
+    (bannedExpressions ?? []).map(normalizeExpressionText).filter(Boolean)
+  );
+
+  return extractFrequentPhrases(recentContext)
+    .map((item) => item.text)
+    .filter((text) => {
+      const normalized = normalizeExpressionText(text);
+      if (!normalized || banned.has(normalized)) return false;
+      return !characterTokens.some((token) => normalized.includes(token));
+    })
+    .slice(0, 8);
+}
+
+function normalizeExpressionText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(/[\s\p{P}\p{S}]+/gu, '')
+    .toLocaleLowerCase();
+}
+
+function renderBannedExpressions(
+  expressions: string[] | undefined,
+  frequentPhrases: string[] = []
+): string {
+  const manualItems = expressions?.filter((text) => text.trim().length > 0) ?? [];
+  if (manualItems.length === 0 && frequentPhrases.length === 0) return '';
+
+  const sections = ['【表現上の注意】'];
+  if (manualItems.length > 0) {
+    const lines = manualItems.map((text) => `- 「${text.trim()}」`).join('\n');
+    sections.push(
+      `【使わない表現】\n以下の言い回しは今回の本文では使わないこと。同じ意味は別の言い方で書くこと。\n${lines}`
+    );
+  }
+  if (frequentPhrases.length > 0) {
+    const lines = frequentPhrases.map((text) => `- 「${text}」`).join('\n');
+    sections.push(
+      `【直近本文で頻出した表現】\n以下の表現は直近の本文で繰り返し使われている。多用を避け、同じ意味は別の言い方で書くこと。\n${lines}`
+    );
+  }
+
+  return sections.join('\n\n');
 }
 
 function resolveWishLine(wish: string, mode: 'continue' | 'regenerate' | 'variate'): string {

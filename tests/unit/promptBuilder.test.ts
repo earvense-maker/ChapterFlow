@@ -189,7 +189,7 @@ describe('buildPrompt', () => {
   // 「直近 → 対象場面 → 今回の希望」であることを実データで固定する。
   // 実装が壊れて対象本文が二重掲載されたり順序が入れ替わったりしないよう防ぐ。
   it('places rewrite target scene between recent context and wish, without duplication', async () => {
-    const project = makeProject(promptStateProjectId);
+    const project = { ...makeProject(promptStateProjectId), styleSample: '文体見本センチネル。' };
     const episodeId = 'ep-rewrite';
     const prevSceneId = 'scene-prev';
     const currentSceneId = 'scene-current';
@@ -287,13 +287,16 @@ describe('buildPrompt', () => {
 
       const recentIdx = userPrompt.indexOf('【これまでの作品本文（直近／今回書き直す場面より前まで）】');
       const targetIdx = userPrompt.search(/【今回(?:書き直しの|別案を作る)対象となる場面】/);
+      const styleIdx = userPrompt.indexOf('【文体見本】');
       const wishIdx = userPrompt.indexOf('【今回の希望】');
       expect(recentIdx).toBeGreaterThan(-1);
       expect(targetIdx).toBeGreaterThan(-1);
+      expect(styleIdx).toBeGreaterThan(-1);
       expect(wishIdx).toBeGreaterThan(-1);
-      // 順序: 直近 → 対象場面 → 今回の希望
+      // 順序: 直近 → 対象場面 → 文体見本 → 今回の希望
       expect(recentIdx).toBeLessThan(targetIdx);
-      expect(targetIdx).toBeLessThan(wishIdx);
+      expect(targetIdx).toBeLessThan(styleIdx);
+      expect(styleIdx).toBeLessThan(wishIdx);
       // 対象場面セクション内に現在シーン本文がある
       expect(userPrompt.indexOf(currentText)).toBeGreaterThan(targetIdx);
       expect(userPrompt.indexOf(currentText)).toBeLessThan(wishIdx);
@@ -624,6 +627,137 @@ describe('buildPrompt', () => {
       bannedExpressions: [],
     });
     expect(userPrompt).not.toContain('【表現上の注意】');
+  });
+
+  it('adds frequent recent phrases as a soft caution, excluding character names and manual NG duplicates', async () => {
+    const project = makeProject(promptStateProjectId);
+    const episodeId = 'ep-frequent-phrases';
+    const sceneId = 'scene-frequent-phrases';
+    const generationId = 'gen-frequent-phrases';
+    const repeatedPhrase = '彼女は息を呑んだ';
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Frequent phrases',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [{
+        sceneId,
+        episodeId,
+        order: 1,
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+        acceptedGenerationId: generationId,
+        draftGenerationIds: [],
+      }],
+    };
+    const generation: GenerationRecord = {
+      generationId,
+      sceneId,
+      episodeId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      responseText: `${repeatedPhrase}。`.repeat(3),
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'openai', modelName: 'gpt-4o-mini' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-02T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const state = { ...makeState(), currentEpisodeId: episodeId, currentSceneId: sceneId };
+
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeEpisodeRecord(promptStateProjectId, episode);
+    await storage.appendGenerationLog(promptStateProjectId, generation);
+
+    const baseInput = {
+      project,
+      state,
+      wish: '続き',
+      memories: [],
+      worldText: '',
+    };
+    const automatic = await buildPrompt({ ...baseInput, characters: [] });
+    expect(automatic.userPrompt).toContain('【直近本文で頻出した表現】');
+    expect(automatic.userPrompt).toContain(`「${repeatedPhrase}」`);
+    expect(automatic.userPrompt).toContain('多用を避け');
+
+    const namedCharacter = await buildPrompt({
+      ...baseInput,
+      characters: [{
+        characterId: 'char-her',
+        name: '本名',
+        aliases: ['彼女'],
+        role: 'supporting',
+        description: '名前が頻出表現に含まれる人物',
+      }],
+    });
+    expect(namedCharacter.userPrompt).not.toContain('【直近本文で頻出した表現】');
+
+    const manualDuplicate = await buildPrompt({
+      ...baseInput,
+      characters: [],
+      bannedExpressions: [` ${repeatedPhrase}。 `],
+    });
+    expect(manualDuplicate.userPrompt).toContain('【使わない表現】');
+    expect(manualDuplicate.userPrompt).not.toContain('【直近本文で頻出した表現】');
+    const manualSection = manualDuplicate.userPrompt.split('【表現上の注意】')[1]?.split('---')[0] ?? '';
+    expect(manualSection.split(repeatedPhrase).length - 1).toBe(1);
+  });
+
+  it('limits automatically injected frequent phrases to eight items', async () => {
+    const project = makeProject(promptStateProjectId);
+    const episodeId = 'ep-frequent-phrase-limit';
+    const sceneId = 'scene-frequent-phrase-limit';
+    const generationId = 'gen-frequent-phrase-limit';
+    const repeatedPhrases = ['一番目の表現', '二番目の表現', '三番目の表現', '四番目の表現', '五番目の表現', '六番目の表現', '七番目の表現', '八番目の表現', '九番目の表現', '十番目の表現'];
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Frequent phrase limit',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [{
+        sceneId,
+        episodeId,
+        order: 1,
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+        acceptedGenerationId: generationId,
+        draftGenerationIds: [],
+      }],
+    };
+    const generation: GenerationRecord = {
+      generationId,
+      sceneId,
+      episodeId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      responseText: repeatedPhrases.map((text) => `${text}。`.repeat(3)).join(''),
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'openai', modelName: 'gpt-4o-mini' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-02T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const state = { ...makeState(), currentEpisodeId: episodeId, currentSceneId: sceneId };
+
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeEpisodeRecord(promptStateProjectId, episode);
+    await storage.appendGenerationLog(promptStateProjectId, generation);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state,
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: '',
+    });
+    const automaticSection = userPrompt.split('【直近本文で頻出した表現】')[1]?.split('---')[0] ?? '';
+    expect((automaticSection.match(/^- 「/gm) ?? []).length).toBe(8);
   });
 
   it('orders structured state before important past, summaries, recent text, wish, and output rules', async () => {
