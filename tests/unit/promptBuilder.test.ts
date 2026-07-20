@@ -59,10 +59,11 @@ describe('buildPrompt', () => {
       worldText: '',
     });
     expect(systemInstructions).toContain('経験豊かな小説家');
-    expect(systemInstructions).toContain('ユーザー専用の連載小説');
+    expect(systemInstructions).toContain('ただ一人の読者のために連載小説');
     expect(systemInstructions).toContain('テキストファイルに保存される小説本文そのもの');
     expect(systemInstructions).toContain('本文だけを出力');
-    expect(systemInstructions).toContain('「今回の希望」と「出力形式」');
+    expect(systemInstructions).toContain('「今回の希望」');
+    expect(systemInstructions).toContain('「出力形式」');
     expect(systemInstructions).toContain('【文体見本】');
     expect(systemInstructions).toContain('【選択された設定】');
     expect(systemInstructions).toContain('【語り: 三人称・視点人物に寄り添う】');
