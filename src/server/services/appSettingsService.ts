@@ -10,6 +10,7 @@ let appSettingsMutationTail: Promise<void> = Promise.resolve();
 export interface AppSettings {
   dataDir?: string;
   pendingCleanup?: string | null;
+  previousDataDir?: string | null;
   setupModel?: {
     provider?: string;
     modelName?: string;
@@ -87,6 +88,11 @@ function normalizeAppSettings(settings: AppSettings | null): AppSettings {
     normalized.pendingCleanup = null;
   } else if (typeof settings.pendingCleanup === 'string' && settings.pendingCleanup.trim()) {
     normalized.pendingCleanup = path.resolve(settings.pendingCleanup);
+  }
+  if (settings.previousDataDir === null) {
+    normalized.previousDataDir = null;
+  } else if (typeof settings.previousDataDir === 'string' && settings.previousDataDir.trim()) {
+    normalized.previousDataDir = path.resolve(settings.previousDataDir);
   }
   if (settings.setupModel && typeof settings.setupModel === 'object') {
     const setupModel: AppSettings['setupModel'] = {};

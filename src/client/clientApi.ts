@@ -10,6 +10,8 @@ import type {
   DataDirInfo,
   DataDirPreview,
   DataDirSelectResponse,
+  DataDirSwitchPreview,
+  DataDirSwitchResponse,
   AppModelSettings,
   GenerateRequestBody,
   GenerationRecord,
@@ -135,10 +137,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ targetPath }),
     }),
-  selectDataDirFolder: (currentPath?: string) =>
+  previewDataDirSwitch: (targetPath: string) =>
+    request<DataDirSwitchPreview>('/system/data-dir/switch-preview', {
+      method: 'POST',
+      body: JSON.stringify({ targetPath }),
+    }),
+  applyDataDirSwitch: (targetPath: string) =>
+    request<DataDirSwitchResponse>('/system/data-dir/switch', {
+      method: 'POST',
+      body: JSON.stringify({ targetPath }),
+    }),
+  selectDataDirFolder: (currentPath?: string, purpose: 'move' | 'switch' = 'move') =>
     request<DataDirSelectResponse>('/system/data-dir/select-folder', {
       method: 'POST',
-      body: JSON.stringify({ currentPath }),
+      body: JSON.stringify({ currentPath, purpose }),
     }),
 
   createSetupSession: (body: CreateSetupSessionBody) =>

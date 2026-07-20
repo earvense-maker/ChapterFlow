@@ -3,25 +3,40 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DATA_DIR } from '../../src/server/config';
-import { readAppSettings } from '../../src/server/services/appSettingsService';
-import { withDataDirWrite } from '../../src/server/services/dataDirLock';
 import {
+  readAppSettings,
+  writeAppSettings,
+} from '../../src/server/services/appSettingsService';
+import {
+  resetDataDirRestartPendingForTests,
+  withDataDirWrite,
+} from '../../src/server/services/dataDirLock';
+import {
+  applyDataDirSwitch,
   applyDataDirMove,
   copyMissingFiles,
+  previewDataDirSwitch,
   previewDataDirMove,
   verifyManifestForCleanup,
 } from '../../src/server/services/dataDirMoveService';
 
 const tempDirs: string[] = [];
 const originalSettingsPath = process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
+const originalDataDirSource = process.env.CHAPTERFLOW_DATA_DIR_SOURCE;
 
 afterEach(async () => {
+  resetDataDirRestartPendingForTests();
   await Promise.all(tempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
   tempDirs.length = 0;
   if (originalSettingsPath === undefined) {
     delete process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
   } else {
     process.env.CHAPTERFLOW_APP_SETTINGS_PATH = originalSettingsPath;
+  }
+  if (originalDataDirSource === undefined) {
+    delete process.env.CHAPTERFLOW_DATA_DIR_SOURCE;
+  } else {
+    process.env.CHAPTERFLOW_DATA_DIR_SOURCE = originalDataDirSource;
   }
 });
 
@@ -116,3 +131,183 @@ describe('dataDirMoveService apply', () => {
     expect(settings.pendingCleanup).toBe(DATA_DIR);
   });
 });
+
+describe('dataDirMoveService switch preview', () => {
+  it('summarizes a valid existing ChapterFlow data directory', async () => {
+    const target = await createSwitchTarget('chapterflow-switch-preview-', [
+      { projectId: 'project-a', title: '春の夢', updatedAt: '2026-07-20T01:00:00.000Z' },
+      { projectId: 'project-b', title: '夏の夢', updatedAt: '2026-07-20T02:00:00.000Z' },
+    ]);
+    await fs.mkdir(path.join(target, 'config'), { recursive: true });
+    await fs.writeFile(path.join(target, 'config', 'credentials.json'), '{}');
+
+    const preview = await previewDataDirSwitch(target);
+
+    expect(preview).toMatchObject({
+      resolvedPath: await fs.realpath(target),
+      projectCount: 2,
+      hasCredentials: true,
+    });
+    expect(preview.projects.map((project) => project.title)).toEqual(['夏の夢', '春の夢']);
+    expect(preview.invalidReason).toBeUndefined();
+  });
+
+  it('rejects folders that do not contain readable projects', async () => {
+    const emptyTarget = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-switch-empty-'));
+    tempDirs.push(emptyTarget);
+
+    await expect(previewDataDirSwitch(emptyTarget)).resolves.toMatchObject({
+      projectCount: 0,
+      invalidReason: 'ChapterFlow の projects フォルダが見つかりません',
+    });
+
+    const corruptTarget = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-switch-corrupt-'));
+    tempDirs.push(corruptTarget);
+    await fs.mkdir(path.join(corruptTarget, 'projects', 'project-broken'), { recursive: true });
+    await fs.writeFile(
+      path.join(corruptTarget, 'projects', 'project-broken', 'project.json'),
+      '{"projectId":"project-broken","title":'
+    );
+
+    await expect(previewDataDirSwitch(corruptTarget)).resolves.toMatchObject({
+      invalidReason: '読み込める作品が見つかりません',
+      unreadableProjectIds: ['project-broken'],
+    });
+  });
+
+  it('keeps readable projects available and warns about unreadable ones', async () => {
+    const target = await createSwitchTarget('chapterflow-switch-mixed-', [
+      { projectId: 'project-good', title: '読める作品', updatedAt: '2026-07-20T02:00:00.000Z' },
+    ]);
+    await fs.mkdir(path.join(target, 'projects', 'project-broken'), { recursive: true });
+    await fs.writeFile(
+      path.join(target, 'projects', 'project-broken', 'project.json'),
+      '{"projectId":"project-broken"}'
+    );
+
+    await expect(previewDataDirSwitch(target)).resolves.toMatchObject({
+      projectCount: 1,
+      unreadableProjectIds: ['project-broken'],
+      projects: [{ projectId: 'project-good', title: '読める作品' }],
+    });
+  });
+});
+
+describe('dataDirMoveService switch apply', () => {
+  it('rejects immediately when another data write is active', async () => {
+    const target = await createSwitchTarget('chapterflow-switch-busy-', [
+      { projectId: 'project-switch', title: '切り替え先', updatedAt: '2026-07-20T02:00:00.000Z' },
+    ]);
+    let releaseWrite!: () => void;
+    const writePromise = withDataDirWrite(
+      () => new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      })
+    );
+
+    try {
+      await expect(applyDataDirSwitch(target)).rejects.toMatchObject({
+        status: 409,
+        code: 'data_dir_busy',
+        retryable: true,
+      });
+    } finally {
+      releaseWrite?.();
+      await writePromise;
+    }
+  });
+
+  it('updates only the configured path and keeps both data directories intact', async () => {
+    const target = await createSwitchTarget('chapterflow-switch-apply-', [
+      { projectId: 'project-switch', title: '切り替え先', updatedAt: '2026-07-20T02:00:00.000Z' },
+    ]);
+    const settingsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-switch-settings-'));
+    const currentSentinel = path.join(DATA_DIR, 'switch-do-not-copy.txt');
+    tempDirs.push(settingsDir, currentSentinel);
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = path.join(settingsDir, 'app-settings.json');
+    delete process.env.CHAPTERFLOW_DATA_DIR_SOURCE;
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.writeFile(currentSentinel, 'current only');
+    await writeAppSettings({ pendingCleanup: null });
+
+    const result = await applyDataDirSwitch(target);
+    const settings = await readAppSettings();
+
+    expect(result).toMatchObject({
+      dataDir: await fs.realpath(target),
+      previousDataDir: DATA_DIR,
+      restartScheduled: true,
+    });
+    expect(settings).toMatchObject({
+      dataDir: await fs.realpath(target),
+      previousDataDir: DATA_DIR,
+      pendingCleanup: null,
+    });
+    await expect(fs.readFile(currentSentinel, 'utf8')).resolves.toBe('current only');
+    await expect(fs.stat(path.join(target, 'switch-do-not-copy.txt'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(withDataDirWrite(async () => undefined)).rejects.toThrow(
+      '保存先の切り替え後、再起動を待っているため書き込みできません。'
+    );
+  });
+
+  it('blocks switching while cleanup from a move is pending', async () => {
+    const target = await createSwitchTarget('chapterflow-switch-pending-', [
+      { projectId: 'project-switch', title: '切り替え先', updatedAt: '2026-07-20T02:00:00.000Z' },
+    ]);
+    const settingsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-switch-settings-'));
+    tempDirs.push(settingsDir);
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = path.join(settingsDir, 'app-settings.json');
+    delete process.env.CHAPTERFLOW_DATA_DIR_SOURCE;
+    await writeAppSettings({ pendingCleanup: path.join(settingsDir, 'old-data') });
+
+    await expect(applyDataDirSwitch(target)).rejects.toMatchObject({
+      status: 409,
+      code: 'pending_cleanup',
+    });
+  });
+
+  it('keeps the current data writable when the app settings cannot be read', async () => {
+    const target = await createSwitchTarget('chapterflow-switch-settings-failure-', [
+      { projectId: 'project-switch', title: '切り替え先', updatedAt: '2026-07-20T02:00:00.000Z' },
+    ]);
+    const badSettingsPath = await fs.mkdtemp(
+      path.join(os.tmpdir(), 'chapterflow-switch-bad-settings-')
+    );
+    tempDirs.push(badSettingsPath);
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = badSettingsPath;
+    delete process.env.CHAPTERFLOW_DATA_DIR_SOURCE;
+
+    await expect(applyDataDirSwitch(target)).rejects.toMatchObject({
+      status: 500,
+      code: 'settings_read_failed',
+      retryable: true,
+    });
+    await expect(withDataDirWrite(async () => 'still writable')).resolves.toBe('still writable');
+  });
+});
+
+async function createSwitchTarget(
+  prefix: string,
+  projects: Array<{ projectId: string; title: string; updatedAt: string }>
+): Promise<string> {
+  const target = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempDirs.push(target);
+  for (const project of projects) {
+    const projectDir = path.join(target, 'projects', project.projectId);
+    await fs.mkdir(projectDir, { recursive: true });
+    await fs.writeFile(
+      path.join(projectDir, 'project.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        ...project,
+      })
+    );
+    await fs.writeFile(
+      path.join(projectDir, 'state.json'),
+      JSON.stringify({ lastOpenedAt: project.updatedAt })
+    );
+  }
+  return target;
+}

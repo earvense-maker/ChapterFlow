@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 let locked = false;
+let restartPending = false;
 let activeWrites = 0;
 const waiters: Array<() => void> = [];
 const writeScope = new AsyncLocalStorage<boolean>();
@@ -21,7 +22,7 @@ export class DataDirBusyError extends DataDirLockedError {
 }
 
 export function isDataDirLocked(): boolean {
-  return locked;
+  return locked || restartPending;
 }
 
 export function hasActiveDataDirWrites(): boolean {
@@ -32,8 +33,24 @@ export function runOutsideDataDirWrite<T>(fn: () => T): T {
   return writeScope.run(false, fn);
 }
 
+export function markDataDirRestartPending(): void {
+  restartPending = true;
+}
+
+export function resetDataDirRestartPendingForTests(): void {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('Restart-pending state can only be reset in tests');
+  }
+  restartPending = false;
+}
+
 export async function withDataDirWrite<T>(fn: () => Promise<T>): Promise<T> {
   if (writeScope.getStore() === true) return fn();
+  if (restartPending) {
+    throw new DataDirLockedError(
+      '保存先の切り替え後、再起動を待っているため書き込みできません。'
+    );
+  }
   if (locked) throw new DataDirLockedError();
   activeWrites += 1;
   try {
@@ -50,6 +67,9 @@ export async function withDataDirLock<T>(
   fn: () => Promise<T>,
   options: { waitTimeoutMs?: number } = {}
 ): Promise<T> {
+  if (restartPending) {
+    throw new DataDirLockedError('保存先の切り替え後、再起動を待っています。');
+  }
   if (locked) throw new DataDirLockedError('別のデータ移動が進行中です。');
   locked = true;
   try {

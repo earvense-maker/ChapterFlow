@@ -3,9 +3,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { PROJECT_ROOT } from '../config.js';
 import {
+  applyDataDirSwitch,
   applyDataDirMove,
   DataDirMoveError,
   getDataDirInfo,
+  previewDataDirSwitch,
   previewDataDirMove,
 } from '../services/dataDirMoveService.js';
 
@@ -68,13 +70,52 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
     }
   });
 
+  router.post('/system/data-dir/switch-preview', async (req, res, next) => {
+    try {
+      if (!process.versions.electron) {
+        return res.status(409).json({ error: '保存先の切り替えは Electron 版のアプリでのみ使えます' });
+      }
+      const { targetPath } = req.body as { targetPath?: string };
+      res.json(await previewDataDirSwitch(targetPath ?? ''));
+    } catch (err) {
+      if (err instanceof DataDirMoveError) {
+        return res.status(err.status).json({ error: err.message });
+      }
+      next(err);
+    }
+  });
+
+  router.post('/system/data-dir/switch', async (req, res, next) => {
+    try {
+      if (!process.versions.electron) {
+        return res.status(409).json({ error: '保存先の切り替えは Electron 版のアプリでのみ使えます' });
+      }
+      const { targetPath } = req.body as { targetPath?: string };
+      const result = await applyDataDirSwitch(targetPath ?? '');
+      res.json(result);
+      setTimeout(() => requestRestart(options), 250);
+    } catch (err) {
+      if (err instanceof DataDirMoveError) {
+        return res.status(err.status).json({
+          error: err.message,
+          ...(err.code ? { code: err.code } : {}),
+          ...(err.retryable ? { retryable: true } : {}),
+        });
+      }
+      next(err);
+    }
+  });
+
   router.post('/system/data-dir/select-folder', async (req, res, next) => {
     try {
       if (!process.versions.electron) {
         return res.status(409).json({ error: 'フォルダ参照は Electron 版のアプリでのみ使えます' });
       }
-      const { currentPath } = req.body as { currentPath?: string };
-      res.json({ path: await selectDataDirFolder(currentPath) });
+      const { currentPath, purpose } = req.body as {
+        currentPath?: string;
+        purpose?: 'move' | 'switch';
+      };
+      res.json({ path: await selectDataDirFolder(currentPath, purpose) });
     } catch (err) {
       next(err);
     }
@@ -120,12 +161,19 @@ async function readPackageVersion(): Promise<string> {
   return cachedVersion;
 }
 
-async function selectDataDirFolder(currentPath?: string): Promise<string | null> {
+async function selectDataDirFolder(
+  currentPath?: string,
+  purpose: 'move' | 'switch' = 'move'
+): Promise<string | null> {
   const { BrowserWindow, dialog } = await import('electron');
   const options = {
-    title: '新しい保存先フォルダを選択',
+    title: purpose === 'switch'
+      ? '既存の ChapterFlow 保存先を選択'
+      : '新しい保存先フォルダを選択',
     defaultPath: currentPath || undefined,
-    properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+    properties: purpose === 'switch'
+      ? ['openDirectory'] as Array<'openDirectory'>
+      : ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
   };
   const focusedWindow = BrowserWindow.getFocusedWindow();
   const result = focusedWindow

@@ -2,13 +2,27 @@ import { constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, DEFAULT_DATA_DIR } from '../config.js';
 import { readAppSettings, updateAppSettings } from './appSettingsService.js';
-import { hasActiveDataDirWrites, withDataDirLock } from './dataDirLock.js';
-import type { DataDirApplyResponse, DataDirInfo, DataDirPreview } from '../types/index.js';
+import {
+  hasActiveDataDirWrites,
+  markDataDirRestartPending,
+  withDataDirLock,
+} from './dataDirLock.js';
+import type {
+  DataDirApplyResponse,
+  DataDirInfo,
+  DataDirPreview,
+  DataDirSwitchPreview,
+  DataDirSwitchProjectSummary,
+  DataDirSwitchResponse,
+} from '../types/index.js';
 
 interface FileEntry {
   relativePath: string;
   size: number;
 }
+
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
+const SWITCH_PREVIEW_PROJECT_LIMIT = 10;
 
 export interface DataDirManifestDiff {
   missingInNew: FileEntry[];
@@ -33,6 +47,7 @@ export async function getDataDirInfo(): Promise<DataDirInfo> {
     defaultPath: DEFAULT_DATA_DIR,
     isUsingDefault: samePath(DATA_DIR, DEFAULT_DATA_DIR),
     pendingCleanup: settings.pendingCleanup ?? null,
+    previousDataDir: settings.previousDataDir ?? null,
   };
 }
 
@@ -98,6 +113,192 @@ export async function applyDataDirMove(targetPath: string): Promise<DataDirApply
       if (err instanceof DataDirMoveError) throw err;
       throw new DataDirMoveError(err instanceof Error ? err.message : 'データ移動に失敗しました', 500);
     }
+  });
+}
+
+export async function previewDataDirSwitch(targetPath: string): Promise<DataDirSwitchPreview> {
+  const normalized = stripSurroundingQuotes(targetPath).trim();
+  if (!normalized) {
+    throw new DataDirMoveError('切り替え先フォルダを入力してください');
+  }
+
+  const selectedPath = path.resolve(normalized);
+  const emptyPreview = (invalidReason: string): DataDirSwitchPreview => ({
+    resolvedPath: selectedPath,
+    projectCount: 0,
+    projects: [],
+    unreadableProjectIds: [],
+    hasCredentials: false,
+    invalidReason,
+  });
+
+  if (process.env.CHAPTERFLOW_DATA_DIR_SOURCE === 'external') {
+    return emptyPreview('環境変数で保存先が固定されているため、アプリから切り替えられません');
+  }
+
+  const targetStat = await statOrNull(selectedPath);
+  if (!targetStat) return emptyPreview('指定したフォルダが見つかりません');
+  if (!targetStat.isDirectory()) return emptyPreview('切り替え先はフォルダを指定してください');
+
+  const resolvedPath = await fs.realpath(selectedPath);
+  const currentPath = await fs.realpath(DATA_DIR).catch(() => path.resolve(DATA_DIR));
+  const previewForResolvedPath = (invalidReason: string): DataDirSwitchPreview => ({
+    ...emptyPreview(invalidReason),
+    resolvedPath,
+  });
+
+  if (samePath(resolvedPath, currentPath)) {
+    return previewForResolvedPath('現在の保存先と同じです');
+  }
+  if (isPathInside(resolvedPath, currentPath) || isPathInside(currentPath, resolvedPath)) {
+    return previewForResolvedPath('現在の保存先と親子関係にある場所は指定できません');
+  }
+
+  try {
+    await fs.access(resolvedPath, fsConstants.R_OK | fsConstants.W_OK);
+  } catch {
+    return previewForResolvedPath('選択したフォルダを読み書きできません');
+  }
+
+  const projectsPath = path.join(resolvedPath, 'projects');
+  const projectsStat = await statOrNull(projectsPath);
+  if (!projectsStat?.isDirectory()) {
+    return previewForResolvedPath('ChapterFlow の projects フォルダが見つかりません');
+  }
+
+  const entries = (await fs.readdir(projectsPath, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && SAFE_PATH_SEGMENT.test(entry.name));
+  if (entries.length === 0) {
+    return previewForResolvedPath('切り替え先に作品が見つかりません');
+  }
+
+  const projects: DataDirSwitchProjectSummary[] = [];
+  const unreadableProjectIds: string[] = [];
+  for (const entry of entries) {
+    try {
+      const project = JSON.parse(
+        await fs.readFile(path.join(projectsPath, entry.name, 'project.json'), 'utf8')
+      ) as Record<string, unknown>;
+      const state = JSON.parse(
+        await fs.readFile(path.join(projectsPath, entry.name, 'state.json'), 'utf8')
+      ) as Record<string, unknown>;
+      if (
+        project.projectId !== entry.name ||
+        typeof project.title !== 'string' ||
+        !project.title.trim() ||
+        typeof project.updatedAt !== 'string' ||
+        !project.updatedAt.trim() ||
+        !Number.isFinite(Date.parse(project.updatedAt)) ||
+        typeof state.lastOpenedAt !== 'string' ||
+        !state.lastOpenedAt.trim() ||
+        !Number.isFinite(Date.parse(state.lastOpenedAt))
+      ) {
+        throw new Error('invalid project metadata');
+      }
+      projects.push({
+        projectId: entry.name,
+        title: project.title.trim(),
+        updatedAt: project.updatedAt,
+      });
+    } catch {
+      unreadableProjectIds.push(entry.name);
+    }
+  }
+  if (projects.length === 0) {
+    return {
+      ...previewForResolvedPath('読み込める作品が見つかりません'),
+      unreadableProjectIds,
+    };
+  }
+  projects.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+
+  return {
+    resolvedPath,
+    projectCount: projects.length,
+    projects: projects.slice(0, SWITCH_PREVIEW_PROJECT_LIMIT),
+    unreadableProjectIds,
+    hasCredentials: Boolean(
+      (await statOrNull(path.join(resolvedPath, 'config', 'credentials.json')))?.isFile()
+    ),
+  };
+}
+
+export async function applyDataDirSwitch(targetPath: string): Promise<DataDirSwitchResponse> {
+  if (hasActiveDataDirWrites()) {
+    throw new DataDirMoveError(
+      '生成や保存の処理中のため、保存先を切り替えられません。完了後にもう一度お試しください。',
+      409,
+      'data_dir_busy',
+      true
+    );
+  }
+  if (process.env.CHAPTERFLOW_DATA_DIR_SOURCE === 'external') {
+    throw new DataDirMoveError(
+      '環境変数で保存先が固定されているため、アプリから切り替えられません',
+      409,
+      'data_dir_external'
+    );
+  }
+
+  return withDataDirLock(async () => {
+    let currentSettings;
+    try {
+      currentSettings = await readAppSettings();
+    } catch {
+      throw new DataDirMoveError(
+        '現在の保存先設定を読み込めませんでした。設定ファイルを確認してから再試行してください。',
+        500,
+        'settings_read_failed',
+        true
+      );
+    }
+    if (currentSettings.pendingCleanup) {
+      throw new DataDirMoveError(
+        '以前の移動で残った旧データの整理が完了していません。アプリを再起動してからお試しください。',
+        409,
+        'pending_cleanup'
+      );
+    }
+
+    const preview = await previewDataDirSwitch(targetPath);
+    if (preview.invalidReason) {
+      throw new DataDirMoveError(preview.invalidReason);
+    }
+
+    try {
+      await updateAppSettings((settings) => {
+        if (settings.pendingCleanup) {
+          throw new DataDirMoveError(
+            '以前の移動で残った旧データの整理が完了していません。アプリを再起動してからお試しください。',
+            409,
+            'pending_cleanup'
+          );
+        }
+        return {
+          ...settings,
+          dataDir: preview.resolvedPath,
+          previousDataDir: DATA_DIR,
+        };
+      });
+      // NOTE: 設定保存後から再起動まで旧 DATA_DIR への新規書き込みを通すと、
+      // 切り替え先に反映されず「保存が消えた」ように見えるため、終了まで拒否する。
+      markDataDirRestartPending();
+    } catch (err) {
+      if (err instanceof DataDirMoveError) throw err;
+      throw new DataDirMoveError(
+        '切り替え先の設定を保存できませんでした。現在の保存先は変更されていません。',
+        500,
+        'settings_write_failed',
+        true
+      );
+    }
+
+    return {
+      ok: true,
+      dataDir: preview.resolvedPath,
+      previousDataDir: DATA_DIR,
+      restartScheduled: true,
+    };
   });
 }
 
