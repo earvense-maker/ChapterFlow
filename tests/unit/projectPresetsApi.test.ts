@@ -80,4 +80,25 @@ describe('project presets API', () => {
       project.activePresetIds
     );
   });
+
+  it('rejects malformed prompt settings without overwriting the saved file', async () => {
+    const project = await projectService.createProject({ title: 'Prompt validation API' });
+    projectIds.push(project.projectId);
+    const before = await storage.readPresets(project.projectId);
+    const server = await startServer({ host: '127.0.0.1', port: 0 });
+    servers.push(server);
+
+    const response = await fetch(
+      `http://127.0.0.1:${server.port}/api/projects/${project.projectId}/presets`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseSystemPrompt: { invalid: true } }),
+      }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ code: 'invalid_presets' });
+    expect(await storage.readPresets(project.projectId)).toEqual(before);
+  });
 });

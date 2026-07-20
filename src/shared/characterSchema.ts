@@ -1,5 +1,5 @@
 import { ROLEPLAY_LIMITS } from './defaults.js';
-import type { Character, CharacterTrait } from './types.js';
+import type { Character, CharacterRole, CharacterTrait } from './types.js';
 
 export const CHARACTER_TRAIT_LIMITS = {
   count: 4,
@@ -12,6 +12,34 @@ export type LegacyCharacterInput = Omit<Character, 'traits'> & {
   want?: unknown;
   fear?: unknown;
 };
+
+const CHARACTER_ROLES = new Set<CharacterRole>([
+  'protagonist',
+  'deuteragonist',
+  'supporting',
+  'other',
+]);
+
+export function isValidCharacterInput(value: unknown): value is LegacyCharacterInput {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.characterId === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.role === 'string' &&
+    CHARACTER_ROLES.has(value.role as CharacterRole) &&
+    optionalStringArray(value.aliases) &&
+    optionalString(value.speechStyle) &&
+    optionalString(value.relationshipNotes) &&
+    optionalString(value.secrets) &&
+    optionalString(value.want) &&
+    optionalString(value.fear) &&
+    optionalCharacterTraits(value.traits) &&
+    optionalString(value.currentState) &&
+    optionalString(value.greeting) &&
+    optionalStringArray(value.dialogueExamples)
+  );
+}
 
 export function normalizeCharacterTraits(value: unknown): CharacterTrait[] {
   if (!Array.isArray(value)) return [];
@@ -112,4 +140,28 @@ function trimToMax(value: unknown, max: number): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function optionalStringArray(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) && value.every((item) => typeof item === 'string'))
+  );
+}
+
+function optionalCharacterTraits(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.every(
+        (item) =>
+          isRecord(item) &&
+          typeof item.label === 'string' &&
+          typeof item.text === 'string'
+      ))
+  );
 }

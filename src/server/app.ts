@@ -106,9 +106,40 @@ export function createApp(options: CreateAppOptions): express.Express {
   }
 
   app.use(
-    (err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    (
+      err: Error & { status?: number; statusCode?: number; type?: string },
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction
+    ) => {
+      if (err.type === 'entity.too.large') {
+        res.status(413).json({
+          error: '送信データが大きすぎます。',
+          code: 'payload_too_large',
+          retryable: false,
+        });
+        return;
+      }
+      if (err.type === 'entity.parse.failed') {
+        res.status(400).json({
+          error: 'JSONの形式が不正です。',
+          code: 'invalid_json',
+          retryable: false,
+        });
+        return;
+      }
+
+      const declaredStatus = err.status ?? err.statusCode;
+      const status =
+        typeof declaredStatus === 'number' && declaredStatus >= 400 && declaredStatus < 500
+          ? declaredStatus
+          : 500;
       console.error(err);
-      res.status(500).json({ error: err.message || 'Internal server error' });
+      res.status(status).json({
+        error: status === 500 ? 'サーバー内部でエラーが発生しました。' : err.message,
+        code: status === 500 ? 'internal_error' : 'request_failed',
+        retryable: status === 500,
+      });
     }
   );
 

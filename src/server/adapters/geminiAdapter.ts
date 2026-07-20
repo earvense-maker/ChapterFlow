@@ -34,6 +34,7 @@ export class GeminiAdapter implements ModelAdapter {
     };
     const handleAbort = () => controller.abort();
     if (request.abortSignal?.aborted) {
+      clearTimeout(timeout);
       throw new ModelAdapterError('生成が中断されました', 'aborted', false);
     }
     request.abortSignal?.addEventListener('abort', handleAbort, { once: true });
@@ -62,6 +63,7 @@ export class GeminiAdapter implements ModelAdapter {
       let finishReason: FinishReason = 'stop';
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
       let anyChunkYielded = false;
+      let sawFinishReason = false;
       let diagnosticData: GeminiGenerateContentResponse | null = null;
 
       for await (const eventData of readServerSentEvents(res.body, resetTimeout)) {
@@ -74,7 +76,10 @@ export class GeminiAdapter implements ModelAdapter {
           anyChunkYielded = true;
           yield { type: 'chunk', text };
         }
-        if (candidate?.finishReason) finishReason = mapFinishReason(candidate.finishReason);
+        if (candidate?.finishReason) {
+          finishReason = mapFinishReason(candidate.finishReason);
+          sawFinishReason = true;
+        }
         if (data.usageMetadata) {
           rawUsage = {
             promptTokens: data.usageMetadata.promptTokenCount ?? 0,
@@ -82,6 +87,14 @@ export class GeminiAdapter implements ModelAdapter {
             totalTokens: data.usageMetadata.totalTokenCount ?? 0,
           };
         }
+      }
+
+      if (anyChunkYielded && !sawFinishReason) {
+        throw new ModelAdapterError(
+          'Gemini のストリーミング応答が完了前に終了しました',
+          'stream_ended_unexpectedly',
+          true
+        );
       }
 
       const debugInfo =
@@ -104,6 +117,7 @@ export class GeminiAdapter implements ModelAdapter {
       );
     } finally {
       clearTimeout(timeout);
+      controller.abort();
       request.abortSignal?.removeEventListener('abort', handleAbort);
     }
   }

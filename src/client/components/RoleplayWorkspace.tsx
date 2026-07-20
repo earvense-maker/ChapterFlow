@@ -59,12 +59,36 @@ export default function RoleplayWorkspace({
   } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+  const projectIdRef = useRef(projectId);
+  const sessionLoadRequestRef = useRef(0);
+  const noticeTimerRef = useRef<number | null>(null);
   const sentMessageRef = useRef('');
   const stopRequestedRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef(true);
+  projectIdRef.current = projectId;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    abortRef.current = null;
+    stopRequestedRef.current = false;
+    sentMessageRef.current = '';
+    setIsStreaming(false);
+    setIsStopping(false);
+    setIsRegenerate(false);
+    setStreamingText('');
+    return () => {
+      mountedRef.current = false;
+      sessionLoadRequestRef.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    };
+  }, [projectId]);
 
   const loadInitial = useCallback(async () => {
+    const expectedProjectId = projectId;
     setLoading(true);
     setError(null);
     try {
@@ -73,12 +97,14 @@ export default function RoleplayWorkspace({
         api.getCharacters(projectId),
         api.listRoleplaySessions(projectId),
       ]);
+      if (!mountedRef.current || projectIdRef.current !== expectedProjectId) return;
       setProject(proj);
       setCharacters(chars);
       setSessions(sessionsRes.sessions);
       if (sessionsRes.sessions.length > 0) {
         const first = sessionsRes.sessions[0];
         const view = await api.getRoleplaySession(projectId, first.sessionId);
+        if (!mountedRef.current || projectIdRef.current !== expectedProjectId) return;
         setActiveSession(view.session);
         setPendingReplaceMessageId(null);
       } else if (chars.length > 0) {
@@ -86,9 +112,13 @@ export default function RoleplayWorkspace({
         setShowNewModal(true);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '読み込みに失敗しました');
+      if (mountedRef.current && projectIdRef.current === expectedProjectId) {
+        setError(err instanceof Error ? err.message : '読み込みに失敗しました');
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current && projectIdRef.current === expectedProjectId) {
+        setLoading(false);
+      }
     }
   }, [projectId]);
 
@@ -116,21 +146,30 @@ export default function RoleplayWorkspace({
 
   const showStopNotice = useCallback((text: string) => {
     setNotice(text);
-    window.setTimeout(() => setNotice(null), 2500);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => {
+      noticeTimerRef.current = null;
+      if (mountedRef.current) setNotice(null);
+    }, 2500);
   }, []);
 
   const handleStartConversation = useCallback(
     async (input: StartConversationInput) => {
+      const expectedProjectId = projectId;
       setError(null);
       setShowNewModal(false);
       try {
         const res = await api.createRoleplaySession(projectId, input);
+        if (!mountedRef.current || projectIdRef.current !== expectedProjectId) return;
         setActiveSession(res.session);
         setPendingReplaceMessageId(null);
         const list = await api.listRoleplaySessions(projectId);
+        if (!mountedRef.current || projectIdRef.current !== expectedProjectId) return;
         setSessions(list.sessions);
       } catch (err) {
-        setError(err instanceof Error ? err.message : '会話を開始できませんでした');
+        if (mountedRef.current && projectIdRef.current === expectedProjectId) {
+          setError(err instanceof Error ? err.message : '会話を開始できませんでした');
+        }
       }
     },
     [projectId]
@@ -142,22 +181,35 @@ export default function RoleplayWorkspace({
         setError('生成中は他の会話に移動できません。停止してからやり直してください。');
         return;
       }
+      const expectedProjectId = projectId;
+      const requestId = ++sessionLoadRequestRef.current;
       setError(null);
       try {
         const res = await api.getRoleplaySession(projectId, sessionId);
+        if (
+          !mountedRef.current ||
+          projectIdRef.current !== expectedProjectId ||
+          sessionLoadRequestRef.current !== requestId
+        ) return;
         setActiveSession(res.session);
         setStreamingText('');
         setPendingReplaceMessageId(null);
         setMessage('');
       } catch (err) {
-        setError(err instanceof Error ? err.message : '会話を読み込めませんでした');
+        if (
+          mountedRef.current &&
+          projectIdRef.current === expectedProjectId &&
+          sessionLoadRequestRef.current === requestId
+        ) {
+          setError(err instanceof Error ? err.message : '会話を読み込めませんでした');
+        }
       }
     },
     [projectId, isStreaming]
   );
 
   const handleSend = useCallback(async () => {
-    if (!activeSession || !message.trim() || isStreaming) return;
+    if (!activeSession || !message.trim() || isStreaming || abortRef.current) return;
     const text = message.trim();
     const replacePendingMessageId = pendingReplaceMessageId ?? undefined;
     // NOTE: 送信前 revision を控え、pre-header 失敗（user 未保存）と post-header 失敗
@@ -177,11 +229,16 @@ export default function RoleplayWorkspace({
 
     const handlers: RoleplayStreamHandlers = {
       onChunk: (chunk) => {
-        if (!stopRequestedRef.current) {
+        if (
+          mountedRef.current &&
+          projectIdRef.current === projectId &&
+          !stopRequestedRef.current
+        ) {
           setStreamingText((prev) => prev + chunk);
         }
       },
       onDone: async (session) => {
+        if (!mountedRef.current || projectIdRef.current !== projectId) return;
         const sentText = sentMessageRef.current;
         const stopWasRequested = stopRequestedRef.current;
         if (stopWasRequested) {
@@ -193,9 +250,12 @@ export default function RoleplayWorkspace({
         setPendingReplaceMessageId(null);
         resetStreamState();
         const list = await api.listRoleplaySessions(projectId).catch(() => null);
-        if (list) setSessions(list.sessions);
+        if (list && mountedRef.current && projectIdRef.current === projectId) {
+          setSessions(list.sessions);
+        }
       },
       onError: async (err) => {
+        if (!mountedRef.current || projectIdRef.current !== projectId) return;
         const stoppedSend = err.code === 'aborted' && stopRequestedRef.current;
         const sentText = sentMessageRef.current || text;
         setStreamingText('');
@@ -211,6 +271,7 @@ export default function RoleplayWorkspace({
         let userWasSaved = true;
         try {
           const res = await api.getRoleplaySession(projectId, activeSession.sessionId);
+          if (!mountedRef.current || projectIdRef.current !== projectId) return;
           setActiveSession(res.session);
           userWasSaved = res.session.revision > preSendRevision;
           const last = res.session.messages[res.session.messages.length - 1];
@@ -285,7 +346,7 @@ export default function RoleplayWorkspace({
   }, [activeSession]);
 
   const handleRegenerate = useCallback(async () => {
-    if (!activeSession || !canRegenerate || isStreaming) return;
+    if (!activeSession || !canRegenerate || isStreaming || abortRef.current) return;
     if (pendingReplaceMessageId) {
       // 「もう一度応答をもらう」は保存済みの発言をそのまま再試行する操作。
       // 訂正用に復元した同じ文を新規入力として残さない。
@@ -304,18 +365,26 @@ export default function RoleplayWorkspace({
 
     const handlers: RoleplayStreamHandlers = {
       onChunk: (chunk) => {
-        if (!stopRequestedRef.current) {
+        if (
+          mountedRef.current &&
+          projectIdRef.current === projectId &&
+          !stopRequestedRef.current
+        ) {
           setStreamingText((prev) => prev + chunk);
         }
       },
       onDone: async (session) => {
+        if (!mountedRef.current || projectIdRef.current !== projectId) return;
         setActiveSession(session);
         setPendingReplaceMessageId(null);
         resetStreamState();
         const list = await api.listRoleplaySessions(projectId).catch(() => null);
-        if (list) setSessions(list.sessions);
+        if (list && mountedRef.current && projectIdRef.current === projectId) {
+          setSessions(list.sessions);
+        }
       },
       onError: async (err) => {
+        if (!mountedRef.current || projectIdRef.current !== projectId) return;
         const stoppedRegenerate = err.code === 'aborted' && stopRequestedRef.current;
         if (stoppedRegenerate) {
           setError(null);
@@ -324,6 +393,7 @@ export default function RoleplayWorkspace({
         }
         try {
           const res = await api.getRoleplaySession(projectId, activeSession.sessionId);
+          if (!mountedRef.current || projectIdRef.current !== projectId) return;
           setActiveSession(res.session);
         } catch {
           // ignore
@@ -461,15 +531,15 @@ export default function RoleplayWorkspace({
     if (!selectedText) return;
     try {
       await api.createExpression(projectId, { text: selectedText, source: 'selection' });
-      setNotice(`「${selectedText}」をNG表現に登録しました。次のターンから反映されます。`);
-      window.setTimeout(() => setNotice(null), 2500);
+      if (!mountedRef.current || projectIdRef.current !== projectId) return;
+      showStopNotice(`「${selectedText}」をNG表現に登録しました。次のターンから反映されます。`);
       setSelectionButtonPosition(null);
       setSelectedText('');
       window.getSelection()?.removeAllRanges();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'NG表現の登録に失敗しました');
     }
-  }, [projectId, selectedText]);
+  }, [projectId, selectedText, showStopNotice]);
 
   // NOTE: selectionchange はドキュメント全体の選択変化を捉える（touch 選択の受け口）。
   // evaluateSelection 側で対象外の場合は早期 return するので副作用は最小限。

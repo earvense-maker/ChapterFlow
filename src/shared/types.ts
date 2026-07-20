@@ -9,6 +9,8 @@ export type CharacterId = string;
 export type KnowledgeId = string;
 
 export const KNOWLEDGE_WARN_CHARS = 16_000;
+export const GENERATION_WISH_MAX_CHARS = 20_000;
+export const MEMORY_CONTENT_MAX_CHARS = 10_000;
 
 export interface ActivePresets {
   narration: string;
@@ -637,6 +639,8 @@ export interface GenerationRecord {
   parentGenerationId: GenerationId | null;
   outputFilePath?: string;
   bannedExpressions?: string[];
+  // NOTE: 'length' の場合は本文を失わず下書きとして残しつつ、UIで上限到達を通知する。
+  finishReason?: FinishReason;
 }
 
 export interface ModelConfig {

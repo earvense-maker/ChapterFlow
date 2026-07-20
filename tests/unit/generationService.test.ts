@@ -6,6 +6,7 @@ import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
 import { OpenRouterAdapter } from '../../src/server/adapters/openrouterAdapter';
 import { ModelAdapterError } from '../../src/server/adapters/modelAdapter';
+import { withDataDirLock } from '../../src/server/services/dataDirLock';
 import type {
   AdapterGenerateStreamEvent,
   EpisodeRecord,
@@ -100,6 +101,25 @@ describe('generationService generation', () => {
     });
 
     expect(record.bannedExpressions).toContain('避けたい表現');
+    expect(record.finishReason).toBe('stop');
+  });
+
+  it('keeps a length-limited response as a draft and records why it ended', async () => {
+    const project = await createTrackedProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '上限まで生成された本文',
+      finishReason: 'length',
+      retryable: false,
+    });
+
+    const record = await generationService.generateScene(project.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+
+    expect(record.responseText).toBe('上限まで生成された本文');
+    expect(record.status).toBe('draft');
+    expect(record.finishReason).toBe('length');
   });
 
   it('records the model actually selected by the OpenRouter free router', async () => {
@@ -350,8 +370,96 @@ describe('generationService state operations', () => {
     });
   });
 
-  it.todo('acceptGeneration marks a draft as accepted');
-  it.todo('rejectGeneration marks a draft as rejected');
+  it('accepts the selected draft, supersedes alternatives, and rebuilds the episode text', async () => {
+    const project = await createTrackedProject();
+    let callCount = 0;
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async () => {
+      callCount += 1;
+      return {
+        // 3回目は採用後の非同期ストーリー状態更新用。空の差分JSONなら外部APIに出ない。
+        text: callCount === 1 ? '最初の案' : callCount === 2 ? '採用する案' : '{}',
+        finishReason: 'stop',
+        retryable: false,
+      };
+    });
+
+    const first = await generationService.generateScene(project.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+    const second = await generationService.generateScene(project.projectId, {
+      wish: '別案',
+      mode: 'variate',
+    });
+
+    const accepted = await generationService.acceptGeneration(project.projectId);
+
+    expect(accepted).toMatchObject({ generationId: second.generationId, status: 'accepted' });
+    await expect(generationService.findGeneration(project.projectId, first.generationId)).resolves.toMatchObject({
+      status: 'superseded',
+    });
+    await expect(generationService.findGeneration(project.projectId, second.generationId)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+
+    const episode = await storage.readEpisodeRecord(project.projectId, second.episodeId);
+    const state = await storage.readState(project.projectId);
+    expect(episode?.scenes[0]).toMatchObject({
+      acceptedGenerationId: second.generationId,
+      draftGenerationIds: [first.generationId, second.generationId],
+    });
+    expect(await storage.readEpisodeText(project.projectId, second.episodeId)).toBe('採用する案');
+    expect(state).toMatchObject({
+      selectedDraftGenerationId: second.generationId,
+      lastAcceptedGenerationId: second.generationId,
+      storyStateRefresh: { status: 'pending', generationId: second.generationId },
+    });
+
+    // acceptGeneration は本文の保存を待たせず、物語状態の更新をバックグラウンドで行う。
+    // テストの後片付けで作品ディレクトリを消す前に、その処理がモデル呼び出しへ到達するのを待つ。
+    await waitForCondition(() => callCount >= 3);
+    await withDataDirLock(async () => undefined);
+  });
+
+  it('rejects the selected draft and selects the previous remaining draft', async () => {
+    const project = await createTrackedProject();
+    let callCount = 0;
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async () => {
+      callCount += 1;
+      return {
+        text: callCount === 1 ? '残す案' : '却下する案',
+        finishReason: 'stop',
+        retryable: false,
+      };
+    });
+
+    const first = await generationService.generateScene(project.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+    const second = await generationService.generateScene(project.projectId, {
+      wish: '別案',
+      mode: 'variate',
+    });
+
+    const rejected = await generationService.rejectGeneration(project.projectId);
+
+    expect(rejected).toMatchObject({ generationId: second.generationId, status: 'rejected' });
+    await expect(generationService.findGeneration(project.projectId, first.generationId)).resolves.toMatchObject({
+      status: 'draft',
+    });
+    await expect(generationService.findGeneration(project.projectId, second.generationId)).resolves.toMatchObject({
+      status: 'rejected',
+    });
+
+    const episode = await storage.readEpisodeRecord(project.projectId, second.episodeId);
+    const state = await storage.readState(project.projectId);
+    expect(episode?.scenes[0]).toMatchObject({
+      acceptedGenerationId: null,
+      draftGenerationIds: [first.generationId],
+    });
+    expect(state?.selectedDraftGenerationId).toBe(first.generationId);
+  });
   it('navigates backward and forward between drafts', async () => {
     const project = await createTrackedProject();
     const episodeId = 'ep-drafts';
@@ -410,3 +518,13 @@ describe('generationService state operations', () => {
     await expect(generationService.navigateDraft(project.projectId, 'next')).resolves.toBeNull();
   });
 });
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) {
+      throw new Error('Timed out waiting for background story-state refresh');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

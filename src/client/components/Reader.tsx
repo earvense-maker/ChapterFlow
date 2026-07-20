@@ -3,7 +3,7 @@ import { api } from '../clientApi';
 import { useTheme } from '../hooks/useTheme';
 import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
-import { KNOWLEDGE_WARN_CHARS } from '@shared/types';
+import { GENERATION_WISH_MAX_CHARS, KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import type {
   ContextUsageEstimate,
   GenerationRecord,
@@ -67,7 +67,10 @@ export default function Reader({
   const textRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const generationAbortRef = useRef<AbortController | null>(null);
+  const generationRunRef = useRef<symbol | null>(null);
   const projectIdRef = useRef(projectId);
+  const loadRequestIdRef = useRef(0);
+  const mountedRef = useRef(true);
   const storyStatePollInFlightRef = useRef(false);
   const initialWishPrefilledRef = useRef(false);
   // NOTE: 場面切替で戻ってきたときにスクロール位置を復元するため、
@@ -78,12 +81,29 @@ export default function Reader({
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   projectIdRef.current = projectId;
 
-  async function load() {
+  async function load(): Promise<boolean> {
+    const expectedProjectId = projectId;
+    const requestId = ++loadRequestIdRef.current;
     try {
-      const state = await api.getReaderState(projectId);
+      const state = await api.getReaderState(expectedProjectId);
+      if (
+        !mountedRef.current ||
+        projectIdRef.current !== expectedProjectId ||
+        loadRequestIdRef.current !== requestId
+      ) {
+        return false;
+      }
       applyReaderState(state);
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : '読み込みに失敗しました');
+      if (
+        mountedRef.current &&
+        projectIdRef.current === expectedProjectId &&
+        loadRequestIdRef.current === requestId
+      ) {
+        setError(err instanceof Error ? err.message : '読み込みに失敗しました');
+      }
+      return false;
     }
   }
 
@@ -125,15 +145,30 @@ export default function Reader({
 
   useEffect(() => {
     initialWishPrefilledRef.current = false;
-    load();
+    void load();
   }, [projectId]);
 
   useEffect(() => {
     setLoading(false);
     setIsGeneratingStream(false);
     generationAbortRef.current = null;
-    return () => generationAbortRef.current?.abort();
+    generationRunRef.current = null;
+    return () => {
+      loadRequestIdRef.current += 1;
+      generationAbortRef.current?.abort();
+      generationAbortRef.current = null;
+      generationRunRef.current = null;
+    };
   }, [projectId]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      loadRequestIdRef.current += 1;
+      generationAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (storyStateRefresh?.status !== 'pending') return;
@@ -170,6 +205,9 @@ export default function Reader({
     mode: 'continue' | 'regenerate' | 'variate',
     requestWish = wish
   ) {
+    if (generationRunRef.current) return;
+    const runId = Symbol('generation');
+    generationRunRef.current = runId;
     // NOTE: 生成失敗時に元の画面へ戻すためのスナップショット。ストリーミングは
     // 途中経過で text を上書きするが、エラー時の部分テキストはサーバーに保存されて
     // いないため、表示に残すと「見えているのに採用できない本文」になる。
@@ -198,6 +236,13 @@ export default function Reader({
               let streamedText = '';
               setText('');
               return (chunk: string) => {
+                if (
+                  !mountedRef.current ||
+                  generationRunRef.current !== runId ||
+                  projectIdRef.current !== generationProjectId
+                ) {
+                  return;
+                }
                 streamedText += chunk;
                 setText(streamedText);
               };
@@ -206,21 +251,35 @@ export default function Reader({
           )
         : await api.generate(projectId, { wish: requestWish, mode });
 
-      if (projectIdRef.current !== generationProjectId) return;
+      if (
+        !mountedRef.current ||
+        generationRunRef.current !== runId ||
+        projectIdRef.current !== generationProjectId
+      ) {
+        return;
+      }
       setText(record.responseText);
       setGenerationId(record.generationId);
       setStatus(record.status);
       setWish('');
       setRewriteWish('');
       setRewriteSheetOpen(false);
-      try {
-        await load();
-      } catch {
+      if (!(await load())) {
         setNotice('生成は完了しましたが、場面情報の再読み込みに失敗しました');
+      } else if (record.finishReason === 'length') {
+        setNotice(
+          'モデルの出力上限に達したため、本文が途中で終わった可能性があります。内容を確認して採用または再生成してください'
+        );
       }
       inputRef.current?.focus();
     } catch (err) {
-      if (projectIdRef.current !== generationProjectId) return;
+      if (
+        !mountedRef.current ||
+        generationRunRef.current !== runId ||
+        projectIdRef.current !== generationProjectId
+      ) {
+        return;
+      }
       // 未保存の部分テキストを消して生成前の表示へ戻し、指示を入力欄に復元して
       // そのまま再生成できるようにする。
       setText(previous.text);
@@ -240,7 +299,10 @@ export default function Reader({
       if (generationAbortRef.current === abortController) {
         generationAbortRef.current = null;
       }
-      if (projectIdRef.current === generationProjectId) {
+      if (generationRunRef.current === runId) {
+        generationRunRef.current = null;
+      }
+      if (mountedRef.current && projectIdRef.current === generationProjectId) {
         setIsGeneratingStream(false);
         setLoading(false);
       }
@@ -754,6 +816,7 @@ export default function Reader({
             rows={1}
             value={wish}
             onChange={(e) => setWish(e.target.value)}
+            maxLength={GENERATION_WISH_MAX_CHARS}
             onKeyDown={(e) => {
               // NOTE: Ctrl/Cmd+Enter=送信 / 素の Enter=改行。IME 変換中は無視。
               if (
@@ -803,6 +866,7 @@ export default function Reader({
                 ref={rewriteInputRef}
                 value={rewriteWish}
                 onChange={(e) => setRewriteWish(e.target.value)}
+                maxLength={GENERATION_WISH_MAX_CHARS}
                 placeholder="展開はそのまま心理描写を増やす、会話を多めにする、もっと静かな文体にする…"
                 disabled={loading}
               />

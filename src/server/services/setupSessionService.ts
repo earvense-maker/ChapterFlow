@@ -62,6 +62,9 @@ const CHAT_TEMPERATURE = 0.7;
 const PREVIEW_TEMPERATURE = 0.8;
 const COMMIT_TEMPERATURE = 0.2;
 const TIMEOUT_MS = 120_000;
+const INITIAL_MESSAGE_MAX_CHARS = 4_000;
+const SETUP_TITLE_MAX_CHARS = 100;
+const MODEL_NAME_MAX_CHARS = 200;
 const UNREADABLE_CHAT_REPLY =
   '相談相手の返答をうまく読み取れませんでした。あなたの入力は保存されています。もう一度、今の内容を整理してみます。';
 const UNREADABLE_CHAT_ACTIONS: SetupSuggestedAction[] = [
@@ -97,6 +100,7 @@ export async function listSetupSessions(): Promise<SetupSessionSummary[]> {
 export async function createSetupSession(
   body: CreateSetupSessionBody
 ): Promise<SetupSessionResponse> {
+  assertValidCreateSetupSessionBody(body);
   const now = nowIso();
   const provider = normalizeProvider(body.model?.provider);
   // NOTE: 'novel' | 'roleplay' 以外は 400。undefined は 'novel' 扱い。
@@ -1402,6 +1406,88 @@ function mapErrorMessage(code: string, detail?: string): string {
       base = '相談処理に失敗しました。設定を確認して再試行してください。';
   }
   return detail && detail !== base ? `${base}\n詳細: ${detail}` : base;
+}
+
+function assertValidCreateSetupSessionBody(
+  value: unknown
+): asserts value is CreateSetupSessionBody {
+  if (!isRecord(value)) {
+    throw invalidCreateRequest('リクエスト本文はオブジェクトで指定してください。');
+  }
+
+  if (
+    value.initialMessage !== undefined &&
+    (typeof value.initialMessage !== 'string' ||
+      value.initialMessage.length > INITIAL_MESSAGE_MAX_CHARS)
+  ) {
+    throw invalidCreateRequest(
+      `最初のメッセージは${INITIAL_MESSAGE_MAX_CHARS.toLocaleString('ja-JP')}文字以内で指定してください。`
+    );
+  }
+
+  if (value.model !== undefined) {
+    if (!isRecord(value.model)) {
+      throw invalidCreateRequest('モデル設定が不正です。');
+    }
+    const provider = value.model.provider;
+    if (provider !== undefined && typeof provider !== 'string') {
+      throw invalidCreateRequest('モデルプロバイダーが不正です。');
+    }
+    if (typeof provider === 'string' && provider.trim() && !isSupportedProvider(provider)) {
+      throw new SetupServiceError(
+        '未対応のモデルプロバイダーです。',
+        'unsupported_provider',
+        false,
+        400
+      );
+    }
+    if (
+      value.model.modelName !== undefined &&
+      (typeof value.model.modelName !== 'string' ||
+        value.model.modelName.length > MODEL_NAME_MAX_CHARS)
+    ) {
+      throw invalidCreateRequest(
+        `モデル名は${MODEL_NAME_MAX_CHARS.toLocaleString('ja-JP')}文字以内で指定してください。`
+      );
+    }
+  }
+
+  if (value.projectSettings !== undefined) {
+    if (!isRecord(value.projectSettings)) {
+      throw invalidCreateRequest('作品設定が不正です。');
+    }
+    const settings = value.projectSettings;
+    if (
+      settings.title !== undefined &&
+      (typeof settings.title !== 'string' || settings.title.length > SETUP_TITLE_MAX_CHARS)
+    ) {
+      throw invalidCreateRequest(
+        `タイトルは${SETUP_TITLE_MAX_CHARS.toLocaleString('ja-JP')}文字以内で指定してください。`
+      );
+    }
+    if (
+      settings.outputLength !== undefined &&
+      (typeof settings.outputLength !== 'number' || !Number.isFinite(settings.outputLength))
+    ) {
+      throw invalidCreateRequest('出力文字数が不正です。');
+    }
+    if (
+      settings.streamingEnabled !== undefined &&
+      typeof settings.streamingEnabled !== 'boolean'
+    ) {
+      throw invalidCreateRequest('ストリーミング設定が不正です。');
+    }
+    if (
+      settings.activePresetIds !== undefined &&
+      !isRecord(settings.activePresetIds)
+    ) {
+      throw invalidCreateRequest('プリセット設定が不正です。');
+    }
+  }
+}
+
+function invalidCreateRequest(message: string): SetupServiceError {
+  return new SetupServiceError(message, 'invalid_request', false, 400);
 }
 
 function normalizeProvider(value: string | undefined): string {

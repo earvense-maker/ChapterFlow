@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as projectService from '../../src/server/services/projectService';
 import * as knowledgeService from '../../src/server/services/knowledgeService';
 import * as storage from '../../src/server/services/storageService';
@@ -110,6 +111,25 @@ describe('project settings validation', () => {
     expect(listed.find((item) => item.projectId === project.projectId)?.activePresetIds).toEqual(
       loaded?.activePresetIds
     );
+  });
+
+  it('keeps healthy projects visible when another project file is corrupt', async () => {
+    const healthy = await createTrackedProject();
+    const corrupt = await createTrackedProject();
+    await fs.writeFile(storage.projectJsonPath(corrupt.projectId), '{"title":', 'utf8');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const listed = await projectService.listProjects();
+      expect(listed.some((item) => item.projectId === healthy.projectId)).toBe(true);
+      expect(listed.some((item) => item.projectId === corrupt.projectId)).toBe(false);
+      expect(warning).toHaveBeenCalledWith(
+        'Skipping unreadable project while building project list',
+        expect.objectContaining({ projectId: corrupt.projectId })
+      );
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it('normalizes valid model settings before saving', async () => {
@@ -285,6 +305,23 @@ describe('project settings validation', () => {
 
     expect(updated.activeModelProvider).toBe('openrouter');
     expect(updated.activeModelName).toBe('openrouter/free');
+  });
+
+  it('does not persist immutable or unknown update fields', async () => {
+    const project = await createTrackedProject();
+
+    const updated = await projectService.updateProject(project.projectId, {
+      title: 'Updated title',
+      createdAt: 'forged',
+      unknownField: 'forged',
+    } as never);
+    const stored = await storage.readProject(project.projectId);
+
+    expect(updated.title).toBe('Updated title');
+    expect(updated.createdAt).toBe(project.createdAt);
+    expect(updated).not.toHaveProperty('unknownField');
+    expect(stored?.createdAt).toBe(project.createdAt);
+    expect(stored).not.toHaveProperty('unknownField');
   });
 
   it('creates a project with initial detailed settings', async () => {

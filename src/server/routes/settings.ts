@@ -11,7 +11,7 @@ import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import { loadStyleSamples } from '../prompts/styleSamplePresets.js';
-import type { LegacyCharacterInput } from '../../shared/characterSchema.js';
+import { isValidCharacterInput } from '../../shared/characterSchema.js';
 import {
   createSystemPromptPreset,
   deleteSystemPromptPreset,
@@ -21,7 +21,8 @@ import {
   SystemPromptPresetValidationError,
   updateSystemPromptPreset,
 } from '../services/systemPromptPresetService.js';
-import type { CharacterRole, PresetsFile } from '../types/index.js';
+import { SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS } from '../types/index.js';
+import type { PresetsFile } from '../types/index.js';
 
 const router = Router();
 
@@ -98,7 +99,7 @@ router.get('/projects/:id/presets', async (req, res, next) => {
 
 router.put('/projects/:id/presets', async (req, res, next) => {
   try {
-    const body = req.body as Partial<PresetsFile>;
+    const body = parsePresetsPatch(req.body);
     const nextPresets = await withProjectWriteLock(req.params.id, async () => {
       const [project, presets] = await Promise.all([
         storage.readProject(req.params.id),
@@ -134,6 +135,9 @@ router.put('/projects/:id/presets', async (req, res, next) => {
     if (!nextPresets) return res.status(404).json({ error: 'Presets not found' });
     res.json(nextPresets);
   } catch (err) {
+    if (err instanceof ProjectPresetsValidationError) {
+      return res.status(400).json({ error: err.message, code: 'invalid_presets' });
+    }
     next(err);
   }
 });
@@ -144,10 +148,7 @@ router.post('/projects/:id/system-prompt/preview', async (req, res, next) => {
     const presets = await storage.readPresets(req.params.id);
     if (!project || !presets) return res.status(404).json({ error: 'Project not found' });
 
-    const body = req.body as {
-      presets?: Partial<PresetsFile>;
-      customSystemPrompt?: string | null;
-    };
+    const body = parseSystemPromptPreviewBody(req.body);
     const nextPresets = { ...presets, ...(body.presets ?? {}) };
     const activePresetIds = normalizeActivePresetIds(project.activePresetIds);
     const customSystemPrompt = Object.hasOwn(body, 'customSystemPrompt')
@@ -162,6 +163,9 @@ router.post('/projects/:id/system-prompt/preview', async (req, res, next) => {
       )
     );
   } catch (err) {
+    if (err instanceof ProjectPresetsValidationError) {
+      return res.status(400).json({ error: err.message, code: 'invalid_presets' });
+    }
     next(err);
   }
 });
@@ -178,7 +182,7 @@ router.get('/projects/:id/characters', async (req, res, next) => {
 router.put('/projects/:id/characters', async (req, res, next) => {
   try {
     const characters = req.body;
-    if (!Array.isArray(characters) || !characters.every(isCharacterInput)) {
+    if (!Array.isArray(characters) || !characters.every(isValidCharacterInput)) {
       return res.status(400).json({ error: 'Invalid characters payload' });
     }
 
@@ -271,55 +275,82 @@ function handleSystemPromptPresetError(
   next(err);
 }
 
-const characterRoles = new Set<CharacterRole>([
-  'protagonist',
-  'deuteragonist',
-  'supporting',
-  'other',
-]);
-
-function isCharacterInput(value: unknown): value is LegacyCharacterInput {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.characterId === 'string' &&
-    typeof value.name === 'string' &&
-    typeof value.description === 'string' &&
-    typeof value.role === 'string' &&
-    characterRoles.has(value.role as CharacterRole) &&
-    optionalStringArray(value.aliases) &&
-    optionalString(value.speechStyle) &&
-    optionalString(value.relationshipNotes) &&
-    optionalString(value.secrets) &&
-    optionalString(value.want) &&
-    optionalString(value.fear) &&
-    optionalCharacterTraits(value.traits) &&
-    optionalString(value.currentState) &&
-    optionalString(value.greeting) &&
-    optionalStringArray(value.dialogueExamples)
-  );
-}
-
-function optionalCharacterTraits(value: unknown): boolean {
-  if (value === undefined) return true;
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (item) =>
-        isRecord(item) &&
-        typeof item.label === 'string' &&
-        typeof item.text === 'string'
-    )
-  );
-}
-
-function optionalString(value: unknown): boolean {
-  return value === undefined || typeof value === 'string';
-}
-
-function optionalStringArray(value: unknown): boolean {
-  return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === 'string'));
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+class ProjectPresetsValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProjectPresetsValidationError';
+  }
+}
+
+function parsePresetsPatch(value: unknown): Partial<PresetsFile> {
+  if (!isRecord(value)) {
+    throw new ProjectPresetsValidationError('プロンプト設定の形式が不正です。');
+  }
+
+  const patch: Partial<PresetsFile> = {};
+  if (Object.hasOwn(value, 'userCustomPromptParts')) {
+    if (
+      !Array.isArray(value.userCustomPromptParts) ||
+      value.userCustomPromptParts.some(
+        (item) =>
+          typeof item !== 'string' ||
+          item.length > SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS
+      ) ||
+      value.userCustomPromptParts.reduce(
+        (total, item) => total + (typeof item === 'string' ? item.length : 0),
+        0
+      ) > SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS
+    ) {
+      throw new ProjectPresetsValidationError(
+        `追加プロンプトは合計${SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS.toLocaleString('ja-JP')}文字以内の文字列配列で指定してください。`
+      );
+    }
+    patch.userCustomPromptParts = value.userCustomPromptParts;
+  }
+  if (Object.hasOwn(value, 'baseSystemPrompt')) {
+    patch.baseSystemPrompt = validatePromptText(value.baseSystemPrompt, '基本プロンプト');
+  }
+  if (Object.hasOwn(value, 'customSystemPrompt')) {
+    patch.customSystemPrompt = validatePromptText(value.customSystemPrompt, '追加指示');
+  }
+  return patch;
+}
+
+function parseSystemPromptPreviewBody(value: unknown): {
+  presets?: Partial<PresetsFile>;
+  customSystemPrompt?: string | null;
+} {
+  if (!isRecord(value)) {
+    throw new ProjectPresetsValidationError('プロンプトプレビューの形式が不正です。');
+  }
+  const body: {
+    presets?: Partial<PresetsFile>;
+    customSystemPrompt?: string | null;
+  } = {};
+  if (Object.hasOwn(value, 'presets')) {
+    body.presets = parsePresetsPatch(value.presets);
+  }
+  if (Object.hasOwn(value, 'customSystemPrompt')) {
+    body.customSystemPrompt =
+      value.customSystemPrompt === null
+        ? null
+        : validatePromptText(value.customSystemPrompt, '追加指示');
+  }
+  return body;
+}
+
+function validatePromptText(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new ProjectPresetsValidationError(`${label}は文字列で入力してください。`);
+  }
+  if (value.length > SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS) {
+    throw new ProjectPresetsValidationError(
+      `${label}は${SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS.toLocaleString('ja-JP')}文字以内で入力してください。`
+    );
+  }
+  return value;
 }

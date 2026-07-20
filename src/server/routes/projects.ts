@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import * as projectService from '../services/projectService.js';
+import { withProjectWriteLock } from '../services/generationService.js';
 import type { CreateProjectBody, UpdateProjectBody } from '../types/index.js';
 
 const router = Router();
@@ -31,6 +32,9 @@ router.post('/', async (req, res, next) => {
     const project = await projectService.createProject(body);
     res.status(201).json(project);
   } catch (err) {
+    if (err instanceof projectService.ProjectValidationError) {
+      return res.status(400).json({ error: err.message });
+    }
     next(err);
   }
 });
@@ -47,8 +51,13 @@ router.get('/:id', async (req, res, next) => {
 
 router.put('/:id', async (req, res, next) => {
   try {
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Invalid project payload' });
+    }
     const updates = req.body as UpdateProjectBody;
-    const project = await projectService.updateProject(req.params.id, updates);
+    const project = await withProjectWriteLock(req.params.id, () =>
+      projectService.updateProject(req.params.id, updates)
+    );
     res.json(project);
   } catch (err) {
     if (err instanceof projectService.ProjectValidationError) {
@@ -60,20 +69,26 @@ router.put('/:id', async (req, res, next) => {
 
 router.post('/:id/duplicate', async (req, res, next) => {
   try {
-    const body = req.body as { title?: string };
+    const body = (req.body ?? {}) as { title?: string };
+    if (body.title !== undefined && typeof body.title !== 'string') {
+      return res.status(400).json({ error: 'Invalid project title' });
+    }
     const project = await projectService.createProject({
       title: body.title,
       duplicateFrom: req.params.id,
     });
     res.status(201).json(project);
   } catch (err) {
+    if (err instanceof projectService.ProjectValidationError) {
+      return res.status(400).json({ error: err.message });
+    }
     next(err);
   }
 });
 
 router.delete('/:id', async (req, res, next) => {
   try {
-    await projectService.deleteProject(req.params.id);
+    await withProjectWriteLock(req.params.id, () => projectService.deleteProject(req.params.id));
     res.status(204).send();
   } catch (err) {
     next(err);

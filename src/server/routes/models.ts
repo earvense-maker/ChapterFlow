@@ -30,7 +30,7 @@ router.get('/models/default', async (_req, res, next) => {
 
 router.put('/models/default', async (req, res, next) => {
   try {
-    const { provider, modelName } = req.body as Partial<AppModelSettings>;
+    const { provider, modelName } = (req.body ?? {}) as Partial<AppModelSettings>;
     if (typeof provider !== 'string' || !isSupportedProvider(provider)) {
       return res.status(400).json({ error: '未対応のモデルプロバイダーです。' });
     }
@@ -53,7 +53,7 @@ router.put('/models/default', async (req, res, next) => {
 
 router.post('/models/validate', async (req, res, next) => {
   try {
-    const config = req.body as ModelConfig;
+    const config = (req.body ?? {}) as ModelConfig;
     const adapter = adapters.find((a) => a.providerName === config.provider);
     if (!adapter) return res.status(400).json({ error: 'Unknown provider' });
     const status = await adapter.validateConnection(config);
@@ -65,11 +65,19 @@ router.post('/models/validate', async (req, res, next) => {
 
 router.post('/models/credentials', async (req, res, next) => {
   try {
-    const { provider, apiKey } = req.body as { provider: string; apiKey: string };
-    if (!provider || !apiKey) {
+    const { provider, apiKey } = (req.body ?? {}) as { provider?: unknown; apiKey?: unknown };
+    if (
+      typeof provider !== 'string' ||
+      !isSupportedProvider(provider) ||
+      typeof apiKey !== 'string' ||
+      !apiKey.trim()
+    ) {
       return res.status(400).json({ error: 'provider and apiKey are required' });
     }
-    await credentialService.saveCredential(provider, apiKey);
+    if (apiKey.length > 20_000) {
+      return res.status(400).json({ error: 'APIキーが長すぎます。' });
+    }
+    await credentialService.saveCredential(provider, apiKey.trim());
     await credentialService.reloadCredentials();
     res.json({ ok: true });
   } catch (err) {

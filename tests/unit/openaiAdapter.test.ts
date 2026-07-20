@@ -139,4 +139,22 @@ describe('OpenAIAdapter', () => {
 
     await expect(consume()).rejects.toMatchObject({ code: 'timeout' });
   });
+
+  it('rejects a clean EOF that arrives before a finish reason or DONE marker', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+      Promise.resolve(sseResponse([sseChunkBlock('途中まで')], 0, init.signal ?? undefined))
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const consume = async () => {
+      for await (const event of new OpenAIAdapter().generateTextStream(baseRequest)) {
+        void event;
+      }
+    };
+
+    await expect(consume()).rejects.toMatchObject({
+      code: 'stream_ended_unexpectedly',
+      retryable: true,
+    });
+  });
 });

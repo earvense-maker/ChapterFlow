@@ -11,6 +11,7 @@ import { writeShortcut } from './shortcutService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import {
+  isValidCharacterInput,
   normalizeCharacterForStorage,
   normalizeCharactersForStorage,
 } from '../../shared/characterSchema.js';
@@ -20,6 +21,7 @@ import {
   DEFAULT_PROJECT_TYPE,
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
   ROLEPLAY_LIMITS,
+  SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
   normalizeProjectType,
 } from '../types/index.js';
 import type {
@@ -96,7 +98,27 @@ export function normalizeRoleplayOutputChars(value: unknown): number {
 }
 
 export async function createProject(body: CreateProjectBody): Promise<Project> {
+  if (
+    body.characters !== undefined &&
+    (!Array.isArray(body.characters) || !body.characters.every(isValidCharacterInput))
+  ) {
+    throw new ProjectValidationError('characters must be a valid character array');
+  }
+  if (
+    body.world !== undefined &&
+    (typeof body.world !== 'object' ||
+      body.world === null ||
+      Array.isArray(body.world) ||
+      typeof body.world.foundation !== 'string' ||
+      typeof body.world.initialSituation !== 'string')
+  ) {
+    throw new ProjectValidationError('world must contain foundation and initialSituation strings');
+  }
   const validatedInput = validateProjectUpdates({
+    title:
+      typeof body.title === 'string' && !body.title.trim()
+        ? undefined
+        : body.title,
     outputLength: body.outputLength,
     streamingEnabled: body.streamingEnabled,
     activeModelProvider: body.activeModelProvider,
@@ -107,13 +129,27 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     firstWishSuggestion: body.firstWishSuggestion,
     styleSample: body.styleSample,
   });
+  const customSystemPromptInput = normalizeInitialSystemPrompt(body.customSystemPrompt);
+  if (
+    body.duplicateFrom !== undefined &&
+    (typeof body.duplicateFrom !== 'string' || !/^[A-Za-z0-9_-]+$/.test(body.duplicateFrom))
+  ) {
+    throw new ProjectValidationError('duplicateFrom must be a valid project ID');
+  }
+  if (
+    body.projectType !== undefined &&
+    body.projectType !== 'novel' &&
+    body.projectType !== 'roleplay'
+  ) {
+    throw new ProjectValidationError("projectType must be 'novel' or 'roleplay'");
+  }
   const projectId = generateTimestampId('proj');
   try {
   await storage.createProjectDir(projectId);
 
   const initialPresetIds = DEFAULT_ACTIVE_PRESET_IDS;
   let activePresetIds: ActivePresets = { ...initialPresetIds };
-  let title = body.title?.trim() || '無題の作品';
+  let title = validatedInput.title || '無題の作品';
   let sourceProject: Project | null = null;
   let sourcePresets: PresetsFile | null = null;
   let sourceCharacters: Character[] = [];
@@ -131,7 +167,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
         ...normalizeActivePresetIds(sourceProject.activePresetIds),
         ...(validatedInput.activePresetIds ?? {}),
       });
-      title = body.title?.trim() || `${sourceProject.title} のコピー`;
+      title = validatedInput.title || `${sourceProject.title} のコピー`;
     }
   } else if (validatedInput.activePresetIds) {
     activePresetIds = normalizeActivePresetIds({
@@ -160,7 +196,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   });
   const { baseSystemPrompt, customSystemPrompt } = await resolveSystemPrompt(
     activePresetIds,
-    body.customSystemPrompt ?? sourcePresets?.customSystemPrompt ?? '',
+    customSystemPromptInput ?? sourcePresets?.customSystemPrompt ?? '',
     sourcePresets?.baseSystemPrompt
   );
 
@@ -341,7 +377,9 @@ export class ProjectValidationError extends Error {
 }
 
 function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput {
-  const normalized: ProjectUpdateInput = { ...updates };
+  // NOTE: API の型は実行時には消えるため、既知の編集可能フィールドだけを拾う。
+  // createdAt や未知キーを spread すると、任意の永続フィールドを上書きできてしまう。
+  const normalized: ProjectUpdateInput = {};
 
   if ('title' in updates && updates.title !== undefined) {
     if (
@@ -372,6 +410,7 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
     if (typeof updates.streamingEnabled !== 'boolean') {
       throw new ProjectValidationError('streamingEnabled must be a boolean');
     }
+    normalized.streamingEnabled = updates.streamingEnabled;
   }
 
   if ('activeModelProvider' in updates && updates.activeModelProvider !== undefined) {
@@ -381,10 +420,15 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
     ) {
       throw new ProjectValidationError('activeModelProvider is not supported');
     }
+    normalized.activeModelProvider = updates.activeModelProvider;
   }
 
   if ('activeModelName' in updates && updates.activeModelName !== undefined) {
-    if (typeof updates.activeModelName !== 'string' || !updates.activeModelName.trim()) {
+    if (
+      typeof updates.activeModelName !== 'string' ||
+      !updates.activeModelName.trim() ||
+      updates.activeModelName.trim().length > 200
+    ) {
       throw new ProjectValidationError('activeModelName must be a non-empty string');
     }
     normalized.activeModelName = updates.activeModelName.trim();
@@ -405,7 +449,9 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
       if (key === 'aftertaste') {
         if (
           value !== undefined &&
-          (!Array.isArray(value) || value.length > 2 || value.some((item) => typeof item !== 'string'))
+          (!Array.isArray(value) ||
+            value.length > 2 ||
+            value.some((item) => typeof item !== 'string' || item.length > 200))
         ) {
           throw new ProjectValidationError(
             'activePresetIds.aftertaste must be an array of at most 2 strings'
@@ -417,13 +463,20 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
       if (value !== undefined && typeof value !== 'string') {
         throw new ProjectValidationError(`activePresetIds.${key} must be a string`);
       }
+      if (typeof value === 'string' && value.length > 200) {
+        throw new ProjectValidationError(`activePresetIds.${key} is too long`);
+      }
       (activePresetIds as Record<string, unknown>)[key] = value;
     }
     normalized.activePresetIds = activePresetIds;
   }
 
   if ('samplingConfig' in updates && updates.samplingConfig !== undefined) {
-    if (typeof updates.samplingConfig !== 'object' || updates.samplingConfig === null) {
+    if (
+      typeof updates.samplingConfig !== 'object' ||
+      updates.samplingConfig === null ||
+      Array.isArray(updates.samplingConfig)
+    ) {
       throw new ProjectValidationError('samplingConfig must be an object');
     }
     normalized.samplingConfig = {
@@ -480,6 +533,19 @@ function normalizeOptionalText(value: unknown, maxChars: number): string | undef
   return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
+function normalizeInitialSystemPrompt(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    throw new ProjectValidationError('customSystemPrompt must be a string');
+  }
+  if (value.length > SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS) {
+    throw new ProjectValidationError(
+      `customSystemPrompt must be at most ${SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS} characters`
+    );
+  }
+  return value;
+}
+
 function normalizePenalty(value: unknown, name: string): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -511,19 +577,28 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   const summaries: ProjectSummary[] = [];
 
   for (const id of ids) {
-    const project = await storage.readProject(id);
-    const state = await storage.readState(id);
-    if (!project || !state) continue;
+    try {
+      const project = await storage.readProject(id);
+      const state = await storage.readState(id);
+      if (!project || !state) continue;
 
-    summaries.push({
-      projectId: id,
-      title: project.title,
-      updatedAt: project.updatedAt,
-      lastOpenedAt: state.lastOpenedAt,
-      activePresetIds: normalizeActivePresetIds(project.activePresetIds),
-      lastExcerpt: await buildLastExcerpt(id, state.currentEpisodeId),
-      projectType: normalizeProjectType(project.projectType),
-    });
+      summaries.push({
+        projectId: id,
+        title: project.title,
+        updatedAt: project.updatedAt,
+        lastOpenedAt: state.lastOpenedAt,
+        activePresetIds: normalizeActivePresetIds(project.activePresetIds),
+        lastExcerpt: await buildLastExcerpt(id, state.currentEpisodeId),
+        projectType: normalizeProjectType(project.projectType),
+      });
+    } catch (err) {
+      // NOTE: 1作品のJSON破損で一覧全体が開けなくなると、正常な作品まで利用不能になる。
+      // 壊れた作品だけを除外し、ログには復旧用のIDと原因を残す。
+      console.warn('Skipping unreadable project while building project list', {
+        projectId: id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   return summaries.sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime());

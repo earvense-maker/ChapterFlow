@@ -188,6 +188,50 @@ describe('Reader interactions', () => {
     await waitFor(() => expect(shutdown).toHaveBeenCalledTimes(1));
     expect(queryByRole('dialog')).toBeNull();
   });
+
+  it('does not let a slow load from the previous project overwrite the current project', async () => {
+    const firstLoad = deferred<ReaderState>();
+    const secondState = readerStateWithDraft();
+    secondState.project = {
+      ...secondState.project,
+      projectId: 'proj-reader-second',
+      title: 'Second project',
+    };
+    secondState.currentGeneration = {
+      ...secondState.currentGeneration!,
+      responseText: 'Second project text',
+    };
+    getReaderState.mockImplementation((projectId) =>
+      projectId === 'proj-reader-first' ? firstLoad.promise : Promise.resolve(secondState)
+    );
+
+    const props = {
+      onBack: vi.fn(),
+      onOpenWorkSettings: vi.fn(),
+      onOpenTechSettings: vi.fn(),
+      onOpenMemories: vi.fn(),
+    };
+    const { findByText, queryByText, rerender } = render(
+      <Reader projectId="proj-reader-first" {...props} />
+    );
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledWith('proj-reader-first'));
+
+    rerender(<Reader projectId="proj-reader-second" {...props} />);
+    await findByText('Second project text');
+
+    firstLoad.resolve({
+      ...readerStateWithDraft(),
+      currentGeneration: {
+        ...readerStateWithDraft().currentGeneration!,
+        responseText: 'Stale first project text',
+      },
+    });
+    await firstLoad.promise;
+    await Promise.resolve();
+
+    expect(queryByText('Stale first project text')).toBeNull();
+    expect(queryByText('Second project text')).not.toBeNull();
+  });
 });
 
 function readerState(overrides: Partial<ReaderState['project']> = {}): ReaderState {
@@ -309,4 +353,12 @@ function readerStateWithDraft(): ReaderState {
       hasNextScene: true,
     },
   };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }

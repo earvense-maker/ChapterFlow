@@ -7,23 +7,37 @@ export async function* readServerSentEvents(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let reachedEof = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        reachedEof = true;
+        break;
+      }
 
-    // NOTE: OpenRouterは生成待ち中に「: OPENROUTER PROCESSING」のSSEコメントを
-    // 送る。dataイベントでなくても受信自体を無通信タイムアウトのリセットに使う。
-    if (value.byteLength > 0) onActivity?.();
-    buffer += decoder.decode(value, { stream: true });
-    yield* drainEventBuffer(buffer, (next) => {
-      buffer = next;
-    });
-  }
+      // NOTE: OpenRouterは生成待ち中に「: OPENROUTER PROCESSING」のSSEコメントを
+      // 送る。dataイベントでなくても受信自体を無通信タイムアウトのリセットに使う。
+      if (value.byteLength > 0) onActivity?.();
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > 2_000_000) {
+        throw new Error('SSE event exceeded the maximum supported size');
+      }
+      yield* drainEventBuffer(buffer, (next) => {
+        buffer = next;
+      });
+    }
 
-  buffer += decoder.decode();
-  if (buffer.trim()) {
-    yield* parseEventBlock(buffer);
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      yield* parseEventBlock(buffer);
+    }
+  } finally {
+    if (!reachedEof) {
+      await reader.cancel().catch(() => undefined);
+    }
+    reader.releaseLock();
   }
 }
 

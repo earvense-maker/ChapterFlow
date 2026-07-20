@@ -128,6 +128,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   const [streamingMessage, setStreamingMessage] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const sendAbortController = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
   const createProjectButtonRef = useRef<HTMLButtonElement | null>(null);
   const pendingIdCounter = useRef(0);
   const [pendingConfirmed, setPendingConfirmed] = useState<PendingDescriptor[]>([]);
@@ -278,6 +279,15 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      sendAbortController.current?.abort();
+      sendAbortController.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (purpose !== 'novel') return;
     let ignore = false;
     api.getPresets()
@@ -422,7 +432,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   }
 
   async function send(text: string) {
-    if (!session || sending || committing) return;
+    if (!session || sending || committing || sendAbortController.current) return;
     if (hasUnsavedDraftEdits) {
       setError('メモに未保存の変更があります。保存してから相談を続けてください。');
       return;
@@ -444,10 +454,12 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         { message: trimmed, revision: session.revision },
         {
           onDelta: (delta) => {
+            if (!mountedRef.current) return;
             setIsStreaming(true);
             setStreamingMessage((current) => current + delta);
           },
           onResult: (response) => {
+            if (!mountedRef.current) return;
             applySessionWithDraftChanges(session, response.session);
             setDirtyDraftEditKeys(new Set());
             rememberSetupSession(response.session.sessionId, purpose);
@@ -457,16 +469,20 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             setShowRetry(false);
           },
           onError: (payload) => {
+            if (!mountedRef.current) return;
             throw new Error(payload.error || '相談処理に失敗しました');
           },
         },
         abortController.signal
       );
     } catch (err) {
+      if (!mountedRef.current) return;
       if (abortController.signal.aborted) {
         setShowRetry(true);
         setStreamingMessage('');
-        sendAbortController.current = null;
+        if (sendAbortController.current === abortController) {
+          sendAbortController.current = null;
+        }
         setIsStreaming(false);
         setSending(false);
         return;
@@ -503,9 +519,13 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         setStreamingMessage('');
       }
     } finally {
-      sendAbortController.current = null;
-      setIsStreaming(false);
-      setSending(false);
+      if (sendAbortController.current === abortController) {
+        sendAbortController.current = null;
+      }
+      if (mountedRef.current) {
+        setIsStreaming(false);
+        setSending(false);
+      }
     }
   }
 

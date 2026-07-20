@@ -5,6 +5,8 @@ import { readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
 import { readEnvWithLegacyFallback } from '../utils/env.js';
 import { withDataDirWrite } from './dataDirLock.js';
 
+let appSettingsMutationTail: Promise<void> = Promise.resolve();
+
 export interface AppSettings {
   dataDir?: string;
   pendingCleanup?: string | null;
@@ -50,11 +52,29 @@ export async function writeAppSettings(settings: AppSettings): Promise<void> {
 export async function updateAppSettings(
   update: (settings: AppSettings) => AppSettings | Promise<AppSettings>
 ): Promise<AppSettings> {
-  return withDataDirWrite(async () => {
-    const next = normalizeAppSettings(await update(await readAppSettings()));
-    await safeWriteJson(getAppSettingsPath(), next);
-    return next;
+  return withAppSettingsMutationLock(() =>
+    withDataDirWrite(async () => {
+      const next = normalizeAppSettings(await update(await readAppSettings()));
+      await safeWriteJson(getAppSettingsPath(), next);
+      return next;
+    })
+  );
+}
+
+async function withAppSettingsMutationLock<T>(task: () => Promise<T>): Promise<T> {
+  const previous = appSettingsMutationTail;
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
   });
+  appSettingsMutationTail = previous.catch(() => undefined).then(() => current);
+
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+  }
 }
 
 function normalizeAppSettings(settings: AppSettings | null): AppSettings {

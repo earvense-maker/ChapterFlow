@@ -266,6 +266,26 @@ describe('GeminiAdapter', () => {
     );
   });
 
+  it('rejects streamed text when EOF arrives without a finish reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        sseResponse([{ candidates: [{ content: { parts: [{ text: '途中まで' }] } }] }])
+      )
+    );
+
+    const consume = async () => {
+      for await (const event of new GeminiAdapter().generateTextStream(baseRequest)) {
+        void event;
+      }
+    };
+
+    await expect(consume()).rejects.toMatchObject({
+      code: 'stream_ended_unexpectedly',
+      retryable: true,
+    });
+  });
+
   it('validates connections with the API key header instead of a URL query', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ models: [] }));
     vi.stubGlobal('fetch', fetchMock);

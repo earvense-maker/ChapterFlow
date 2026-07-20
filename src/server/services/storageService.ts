@@ -222,7 +222,9 @@ export async function listSetupSessionIds(): Promise<string[]> {
 export async function listProjectIds(): Promise<string[]> {
   try {
     const entries = await fs.readdir(PROJECTS_DIR, { withFileTypes: true });
-    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    return entries
+      .filter((entry) => entry.isDirectory() && SAFE_PATH_SEGMENT.test(entry.name))
+      .map((entry) => entry.name);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return [];

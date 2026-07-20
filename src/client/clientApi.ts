@@ -65,17 +65,52 @@ import type {
 
 const API_BASE = '/api';
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly retryable = false,
+    public readonly status = 0,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = 'ApiError';
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+    });
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    throw new ApiError(
+      'サーバーに接続できませんでした。ネットワーク接続を確認して再試行してください。',
+      'network_error',
+      true,
+      0,
+      { cause: err }
+    );
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(body, res.status));
+    throw apiErrorFromBody(body, res.status);
   }
   if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+  try {
+    return (await res.json()) as T;
+  } catch (err) {
+    throw new ApiError(
+      'サーバーから不正な応答を受信しました。',
+      'invalid_response',
+      true,
+      res.status,
+      { cause: err }
+    );
+  }
 }
 
 export const api = {
@@ -409,7 +444,16 @@ async function roleplayStream(
     return;
   }
   if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({}));
+    const rawErrorBody = await res.json().catch(() => ({}));
+    const errorBody =
+      typeof rawErrorBody === 'object' && rawErrorBody !== null
+        ? (rawErrorBody as {
+            error?: string;
+            code?: string;
+            retryable?: boolean;
+            revision?: number;
+          })
+        : {};
     handlers.onError({
       error: errorBody.error || `Request failed: ${res.status}`,
       code: errorBody.code,
@@ -431,21 +475,29 @@ async function roleplayStream(
   let sawTerminal = false;
 
   const handleEvent = (event: string, data: string) => {
+    if (sawTerminal) return;
     if (event === 'chunk') {
-      const payload = JSON.parse(data) as { text?: string };
+      const payload = parseStreamJson<{ text?: string }>(data);
       if (payload.text) handlers.onChunk(payload.text);
     } else if (event === 'done') {
+      const payload = parseStreamJson<{ session?: RoleplaySessionView }>(data);
+      if (!isRecord(payload?.session)) {
+        throw new ApiError(
+          'ロールプレイ応答の完了データが不正です。',
+          'invalid_stream_event',
+          true
+        );
+      }
       sawTerminal = true;
-      const payload = JSON.parse(data) as { session?: RoleplaySessionView };
-      if (payload.session) handlers.onDone(payload.session);
+      handlers.onDone(payload.session);
     } else if (event === 'error') {
       sawTerminal = true;
-      const payload = JSON.parse(data) as {
+      const payload = parseStreamJson<{
         error?: string;
         code?: string;
         retryable?: boolean;
         revision?: number;
-      };
+      }>(data);
       handlers.onError({
         error: payload.error ?? 'ロールプレイ応答に失敗しました',
         code: payload.code,
@@ -455,19 +507,32 @@ async function roleplayStream(
     }
   };
 
+  let reachedEof = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        reachedEof = true;
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       buffer = drainStreamEvents(buffer, handleEvent);
+      if (sawTerminal) break;
     }
-    buffer += decoder.decode();
-    if (buffer.trim()) {
+    if (!sawTerminal) buffer += decoder.decode();
+    if (!sawTerminal && buffer.trim()) {
       drainStreamEvents(`${buffer}\n\n`, handleEvent);
     }
   } catch (err) {
     // NOTE: reader.read() 中の abort・通信断・decode エラー。ここも必ず onError へ流す。
+    if (err instanceof ApiError) {
+      handlers.onError({
+        error: err.message,
+        code: err.code,
+        retryable: err.retryable,
+      });
+      return;
+    }
     const aborted = (err as { name?: string })?.name === 'AbortError';
     handlers.onError({
       error: aborted
@@ -479,6 +544,9 @@ async function roleplayStream(
       retryable: !aborted,
     });
     return;
+  } finally {
+    if (!reachedEof) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 
   if (!sawTerminal) {
@@ -509,38 +577,55 @@ async function sendSetupMessageStream(
   handlers: SetupMessageStreamHandlers,
   abortSignal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/setup-sessions/${id}/messages/stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: abortSignal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/setup-sessions/${id}/messages/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abortSignal,
+    });
+  } catch (err) {
+    throw toStreamTransportError(err);
+  }
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
-    throw new Error(formatApiError(errorBody, res.status));
+    throw apiErrorFromBody(errorBody, res.status);
   }
   if (!res.body) throw new Error('ストリーミング応答を読み取れませんでした');
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let sawTerminal = false;
 
   const handleEvent = (event: string, data: string) => {
+    if (sawTerminal) return;
     if (event === 'delta') {
-      const payload = JSON.parse(data) as { text?: string };
+      const payload = parseStreamJson<{ text?: string }>(data);
       if (payload.text) handlers.onDelta(payload.text);
     }
     if (event === 'result') {
-      handlers.onResult(JSON.parse(data) as SetupMessageResponse);
+      const payload = parseStreamJson<SetupMessageResponse>(data);
+      if (!isRecord(payload?.session)) {
+        throw new ApiError(
+          '相談応答の完了データが不正です。',
+          'invalid_stream_event',
+          true
+        );
+      }
+      sawTerminal = true;
+      handlers.onResult(payload);
     }
     if (event === 'error') {
-      const payload = JSON.parse(data) as {
+      sawTerminal = true;
+      const payload = parseStreamJson<{
         error?: string;
         code?: string;
         retryable?: boolean;
         session?: SetupSession;
-      };
+      }>(data);
       handlers.onError({
         error: payload.error ?? '相談処理に失敗しました',
         code: payload.code,
@@ -550,17 +635,41 @@ async function sendSetupMessageStream(
     }
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  let reachedEof = false;
+  try {
+    while (true) {
+      let readResult: ReadableStreamReadResult<Uint8Array>;
+      try {
+        readResult = await reader.read();
+      } catch (err) {
+        throw toStreamTransportError(err);
+      }
+      const { done, value } = readResult;
+      if (done) {
+        reachedEof = true;
+        break;
+      }
 
-    buffer += decoder.decode(value, { stream: true });
-    buffer = drainStreamEvents(buffer, handleEvent);
+      buffer += decoder.decode(value, { stream: true });
+      buffer = drainStreamEvents(buffer, handleEvent);
+      if (sawTerminal) break;
+    }
+
+    if (!sawTerminal) buffer += decoder.decode();
+    if (!sawTerminal && buffer.trim()) {
+      drainStreamEvents(`${buffer}\n\n`, handleEvent);
+    }
+  } finally {
+    if (!reachedEof) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 
-  buffer += decoder.decode();
-  if (buffer.trim()) {
-    drainStreamEvents(`${buffer}\n\n`, handleEvent);
+  if (!sawTerminal) {
+    throw new ApiError(
+      '相談の応答が完了せずに切断されました。再試行してください。',
+      'stream_ended_unexpectedly',
+      true
+    );
   }
 }
 
@@ -570,16 +679,21 @@ async function requestGenerationStream(
   onChunk: (text: string) => void,
   abortSignal?: AbortSignal
 ): Promise<GenerationRecord> {
-  const res = await fetch(`${API_BASE}/projects/${id}/generate-stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: abortSignal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/projects/${id}/generate-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abortSignal,
+    });
+  } catch (err) {
+    throw toStreamTransportError(err);
+  }
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
-    throw new Error(errorBody.error || `Request failed: ${res.status}`);
+    throw apiErrorFromBody(errorBody, res.status);
   }
   if (!res.body) throw new Error('ストリーミング応答を読み取れませんでした');
 
@@ -588,46 +702,74 @@ async function requestGenerationStream(
   let buffer = '';
   let finalRecord: GenerationRecord | null = null;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    buffer = drainStreamEvents(buffer, (event, data) => {
+  const handleEvent = (event: string, data: string) => {
+    if (finalRecord) return;
+    try {
       if (event === 'chunk') {
         const payload = JSON.parse(data) as { text?: string };
         if (payload.text) onChunk(payload.text);
       }
       if (event === 'done') {
         const payload = JSON.parse(data) as { record?: GenerationRecord };
-        if (payload.record) finalRecord = payload.record;
+        if (!isRecord(payload.record)) {
+          throw new ApiError(
+            '生成結果の完了データが不正です。',
+            'invalid_stream_event',
+            true
+          );
+        }
+        finalRecord = payload.record as unknown as GenerationRecord;
       }
       if (event === 'error') {
         const payload = JSON.parse(data) as { error?: string; code?: string; retryable?: boolean };
-        throw new Error(formatApiError(payload, 503));
+        throw apiErrorFromBody(payload, 503);
       }
-    });
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new ApiError(
+        '生成ストリームに不正なデータが含まれていました。再試行してください。',
+        'invalid_stream_event',
+        true,
+        0,
+        { cause: err }
+      );
+    }
+  };
+
+  let reachedEof = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        reachedEof = true;
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      buffer = drainStreamEvents(buffer, handleEvent);
+      if (finalRecord) break;
+    }
+
+    if (!finalRecord) buffer += decoder.decode();
+    if (!finalRecord && buffer.trim()) {
+      drainStreamEvents(`${buffer}\n\n`, handleEvent);
+    }
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    if (isAbortError(err)) throw err;
+    throw toStreamTransportError(err);
+  } finally {
+    if (!reachedEof) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 
-  buffer += decoder.decode();
-  if (buffer.trim()) {
-    drainStreamEvents(`${buffer}\n\n`, (event, data) => {
-      if (event === 'chunk') {
-        const payload = JSON.parse(data) as { text?: string };
-        if (payload.text) onChunk(payload.text);
-      }
-      if (event === 'done') {
-        const payload = JSON.parse(data) as { record?: GenerationRecord };
-        if (payload.record) finalRecord = payload.record;
-      }
-      if (event === 'error') {
-        const payload = JSON.parse(data) as { error?: string; code?: string; retryable?: boolean };
-        throw new Error(formatApiError(payload, 503));
-      }
-    });
+  if (!finalRecord) {
+    throw new ApiError(
+      '生成結果が完了せずに切断されました。再試行してください。',
+      'stream_ended_unexpectedly',
+      true
+    );
   }
-
-  if (!finalRecord) throw new Error('生成結果を確定できませんでした');
   return finalRecord;
 }
 
@@ -636,6 +778,58 @@ function formatApiError(body: { error?: string; code?: string; retryable?: boole
   if (body.code) parts.push(`コード: ${body.code}`);
   if (body.retryable) parts.push('少し待って再試行できます。');
   return parts.join('\n');
+}
+
+function apiErrorFromBody(
+  value: unknown,
+  status: number
+): ApiError {
+  const body =
+    typeof value === 'object' && value !== null
+      ? (value as { error?: string; code?: string; retryable?: boolean })
+      : {};
+  return new ApiError(
+    formatApiError(body, status),
+    body.code,
+    body.retryable ?? (status === 429 || status >= 500),
+    status
+  );
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    (typeof DOMException !== 'undefined' && err instanceof DOMException && err.name === 'AbortError') ||
+    (err instanceof Error && err.name === 'AbortError')
+  );
+}
+
+function toStreamTransportError(err: unknown): Error {
+  if (isAbortError(err)) return err as Error;
+  return new ApiError(
+    'ストリーミング応答の受信中に接続が切れました。再試行してください。',
+    'stream_read_failed',
+    true,
+    0,
+    { cause: err }
+  );
+}
+
+function parseStreamJson<T>(data: string): T {
+  try {
+    return JSON.parse(data) as T;
+  } catch (err) {
+    throw new ApiError(
+      'ストリーミング応答に不正なデータが含まれていました。再試行してください。',
+      'invalid_stream_event',
+      true,
+      0,
+      { cause: err }
+    );
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function drainStreamEvents(

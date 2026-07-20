@@ -74,7 +74,7 @@ router.delete('/projects/:id/refine/session', async (req, res, next) => {
 
 router.post('/projects/:id/refine/messages', async (req, res, next) => {
   try {
-    const body = req.body as { content?: unknown };
+    const body = (req.body ?? {}) as { content?: unknown };
     const content = typeof body.content === 'string' ? body.content : '';
     const result = await refineChatService.sendRefineMessage(req.params.id, content);
     res.json(result);

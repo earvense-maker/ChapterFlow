@@ -199,6 +199,7 @@ async function generateSceneUnlocked(
     parentGenerationId: state.selectedDraftGenerationId,
     outputFilePath,
     bannedExpressions,
+    finishReason: result.finishReason,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -376,6 +377,7 @@ async function generateSceneStreamUnlocked(
     parentGenerationId: state.selectedDraftGenerationId,
     outputFilePath,
     bannedExpressions,
+    finishReason,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);

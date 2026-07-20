@@ -182,6 +182,26 @@ describe('setupSessionService', () => {
     ).rejects.toMatchObject({ code: 'invalid_purpose', status: 400 });
   });
 
+  it('rejects malformed nested create settings instead of persisting them', async () => {
+    await expect(
+      setupSessionService.createSetupSession({
+        model: { modelName: 123 },
+      } as never)
+    ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+
+    await expect(
+      setupSessionService.createSetupSession({
+        projectSettings: { streamingEnabled: 'yes' },
+      } as never)
+    ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+
+    await expect(
+      setupSessionService.createSetupSession({
+        model: { provider: 'unknown-provider' },
+      } as never)
+    ).rejects.toMatchObject({ code: 'unsupported_provider', status: 400 });
+  });
+
   it('rejects stale draft revisions', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);

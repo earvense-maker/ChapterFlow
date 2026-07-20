@@ -3,19 +3,23 @@ import * as generationService from '../services/generationService.js';
 import * as storage from '../services/storageService.js';
 import * as storyStateService from '../services/storyStateService.js';
 import { DataDirLockedError } from '../services/dataDirLock.js';
+import { GENERATION_WISH_MAX_CHARS } from '../types/index.js';
 import type { GenerateRequestBody, SceneNavigationDirection } from '../types/index.js';
 
 const router = Router();
 
 router.post('/projects/:id/generate', async (req, res, next) => {
   try {
-    const body = req.body as GenerateRequestBody;
+    const body = parseGenerateRequest(req.body);
     const record = await generationService.generateScene(req.params.id, {
-      wish: body.wish || '',
-      mode: body.mode || 'continue',
+      wish: body.wish,
+      mode: body.mode,
     });
     res.json(record);
   } catch (err) {
+    if (err instanceof GenerateRequestValidationError) {
+      return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
     if (err instanceof generationService.GenerateError) {
       console.warn('Generation failed', {
         projectId: req.params.id,
@@ -34,7 +38,15 @@ router.post('/projects/:id/generate', async (req, res, next) => {
 });
 
 router.post('/projects/:id/generate-stream', async (req, res) => {
-  const body = req.body as GenerateRequestBody;
+  let body: GenerateRequestBody;
+  try {
+    body = parseGenerateRequest(req.body);
+  } catch (err) {
+    const message =
+      err instanceof GenerateRequestValidationError ? err.message : '生成リクエストが不正です。';
+    res.status(400).json({ error: message, code: 'invalid_generate_request' });
+    return;
+  }
   const abortController = new AbortController();
   let completed = false;
 
@@ -61,8 +73,8 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
     const record = await generationService.generateSceneStream(
       req.params.id,
       {
-        wish: body.wish || '',
-        mode: body.mode || 'continue',
+        wish: body.wish,
+        mode: body.mode,
         abortSignal: abortController.signal,
       },
       (text) => send('chunk', { text })
@@ -106,13 +118,16 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
 
 router.post('/projects/:id/regenerate', async (req, res, next) => {
   try {
-    const body = req.body as { wish?: string };
+    const body = parseGenerateRequest(req.body, 'regenerate');
     const record = await generationService.generateScene(req.params.id, {
-      wish: body.wish || '',
+      wish: body.wish,
       mode: 'regenerate',
     });
     res.json(record);
   } catch (err) {
+    if (err instanceof GenerateRequestValidationError) {
+      return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
     if (err instanceof generationService.GenerateError) {
       return res.status(503).json({
         error: err.message,
@@ -126,13 +141,16 @@ router.post('/projects/:id/regenerate', async (req, res, next) => {
 
 router.post('/projects/:id/variate', async (req, res, next) => {
   try {
-    const body = req.body as { wish?: string };
+    const body = parseGenerateRequest(req.body, 'variate');
     const record = await generationService.generateScene(req.params.id, {
-      wish: body.wish || '',
+      wish: body.wish,
       mode: 'variate',
     });
     res.json(record);
   } catch (err) {
+    if (err instanceof GenerateRequestValidationError) {
+      return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
     if (err instanceof generationService.GenerateError) {
       return res.status(503).json({
         error: err.message,
@@ -146,7 +164,7 @@ router.post('/projects/:id/variate', async (req, res, next) => {
 
 router.post('/projects/:id/accept', async (req, res, next) => {
   try {
-    const { generationId } = req.body as { generationId?: string };
+    const { generationId } = (req.body ?? {}) as { generationId?: string };
     const record = await generationService.acceptGeneration(req.params.id, generationId);
     res.json(record);
   } catch (err) {
@@ -156,7 +174,7 @@ router.post('/projects/:id/accept', async (req, res, next) => {
 
 router.post('/projects/:id/reject', async (req, res, next) => {
   try {
-    const { generationId } = req.body as { generationId?: string };
+    const { generationId } = (req.body ?? {}) as { generationId?: string };
     const record = await generationService.rejectGeneration(req.params.id, generationId);
     res.json(record);
   } catch (err) {
@@ -200,7 +218,7 @@ router.post('/projects/:id/unaccept', async (req, res, next) => {
 
 router.post('/projects/:id/navigate-scene', async (req, res, next) => {
   try {
-    const { direction } = req.body as { direction?: SceneNavigationDirection };
+    const { direction } = (req.body ?? {}) as { direction?: SceneNavigationDirection };
     if (direction !== 'previous' && direction !== 'next') {
       return res.status(400).json({ error: 'direction must be previous or next' });
     }
@@ -318,3 +336,36 @@ router.get('/projects/:id/generations/:generationId/markdown', async (req, res, 
 });
 
 export default router;
+
+class GenerateRequestValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GenerateRequestValidationError';
+  }
+}
+
+function parseGenerateRequest(
+  value: unknown,
+  forcedMode?: GenerateRequestBody['mode']
+): GenerateRequestBody {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new GenerateRequestValidationError('生成リクエストの形式が不正です。');
+  }
+
+  const body = value as { wish?: unknown; mode?: unknown };
+  const wish = body.wish === undefined ? '' : body.wish;
+  if (typeof wish !== 'string') {
+    throw new GenerateRequestValidationError('生成指示は文字列で入力してください。');
+  }
+  if (wish.length > GENERATION_WISH_MAX_CHARS) {
+    throw new GenerateRequestValidationError(
+      `生成指示は${GENERATION_WISH_MAX_CHARS.toLocaleString('ja-JP')}文字以内で入力してください。`
+    );
+  }
+
+  const mode = forcedMode ?? (body.mode === undefined ? 'continue' : body.mode);
+  if (mode !== 'continue' && mode !== 'regenerate' && mode !== 'variate') {
+    throw new GenerateRequestValidationError('生成モードが不正です。');
+  }
+  return { wish, mode };
+}

@@ -61,6 +61,7 @@ export class OpenAIAdapter implements ModelAdapter {
     };
     const handleAbort = () => controller.abort();
     if (request.abortSignal?.aborted) {
+      clearTimeout(timeout);
       throw new ModelAdapterError('生成が中断されました', 'aborted', false);
     }
     request.abortSignal?.addEventListener('abort', handleAbort, { once: true });
@@ -106,9 +107,13 @@ export class OpenAIAdapter implements ModelAdapter {
       let finishReason: FinishReason = 'stop';
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
       let resolvedModelName: string | undefined;
+      let sawTerminalMarker = false;
 
       for await (const eventData of readServerSentEvents(res.body, resetTimeout)) {
-        if (eventData === '[DONE]') break;
+        if (eventData === '[DONE]') {
+          sawTerminalMarker = true;
+          break;
+        }
 
         const data = JSON.parse(eventData) as OpenAIStreamChunk;
         if (data.error) {
@@ -123,7 +128,10 @@ export class OpenAIAdapter implements ModelAdapter {
         const choice = data.choices?.[0];
         const text = choice?.delta?.content;
         if (text) yield { type: 'chunk', text };
-        if (choice?.finish_reason) finishReason = mapFinishReason(choice.finish_reason);
+        if (choice?.finish_reason) {
+          finishReason = mapFinishReason(choice.finish_reason);
+          sawTerminalMarker = true;
+        }
         if (data.usage) {
           rawUsage = {
             promptTokens: data.usage.prompt_tokens,
@@ -131,6 +139,14 @@ export class OpenAIAdapter implements ModelAdapter {
             totalTokens: data.usage.total_tokens,
           };
         }
+      }
+
+      if (!sawTerminalMarker) {
+        throw new ModelAdapterError(
+          `${this.apiLabel} のストリーミング応答が完了前に終了しました`,
+          'stream_ended_unexpectedly',
+          true
+        );
       }
 
       yield {
@@ -154,6 +170,7 @@ export class OpenAIAdapter implements ModelAdapter {
       );
     } finally {
       clearTimeout(timeout);
+      controller.abort();
       request.abortSignal?.removeEventListener('abort', handleAbort);
     }
   }
