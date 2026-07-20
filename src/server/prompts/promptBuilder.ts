@@ -14,6 +14,7 @@ import {
   splitWorldByConvention as splitWorldMdByConvention,
   type WorldSegment,
 } from '../utils/worldMd.js';
+import { trimTrailingTextToSentenceBoundary } from '../utils/textBoundary.js';
 import type {
   Character,
   Memory,
@@ -135,12 +136,6 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     parts.push(bannedSection);
   }
 
-  if (project.styleSample?.trim()) {
-    parts.push(
-      `【文体見本】\n以下は文体・リズム・描写の密度の見本である。内容・人物・出来事は本編と無関係であり、参照しないこと。書き方だけを参考にすること。\n文体・リズム・描写密度について文体設定と食い違う場合は見本を優先する。ただし、人称・視点人物・【出力形式】の指定は上書きしない。\n\n${project.styleSample.trim().slice(0, 1000)}`
-    );
-  }
-
   // 直前の文脈（rewrite モードでは現在シーンを除外し、別セクションで明示する）
   const recentContext = await getRecentContext(
     project.projectId,
@@ -173,6 +168,15 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     }
   }
 
+  if (project.styleSample?.trim()) {
+    const styleSample = trimTrailingTextToSentenceBoundary(
+      project.styleSample.trim().slice(0, 1000)
+    );
+    parts.push(
+      `【文体見本】\n以下は文体・リズム・描写の密度の見本である。内容・人物・出来事は本編と無関係であり、参照しないこと。書き方だけを参考にすること。\n文体・リズム・描写密度について文体設定と食い違う場合は見本を優先する。ただし、人称・視点人物・【出力形式】の指定は上書きしない。\n\n${styleSample}`
+    );
+  }
+
   // 今回の希望（末尾。優先順位と裁量段落を付加）
   parts.push(renderWishSection(wish, mode));
 
@@ -189,7 +193,7 @@ function renderWishSection(wish: string, mode: 'continue' | 'regenerate' | 'vari
 
   const priorityAndFreedom = `
 
-守るべき優先順位は、①作品の核・既出事実との整合、および NG 表現の回避、②今回の希望、③文体・雰囲気、④目安文字数、の順である。
+守るべき優先順位は、①作品の核・既出事実との整合、および NG 表現の回避、②今回の希望、③文体・雰囲気、④文字数の上限、の順である。
 既出事実の情報源どうしが食い違う場合は、採用済み本文 ＞ 現在状態・重要イベントなどの派生データ ＞ 作品設定・参考資料、の順に信頼する。${rewriteExemption}
 判断に迷う場合は上位を優先し、今回の希望が既存事実の変更を明示している場合はその変更を優先する。
 設定と事実メモは舞台であり、演出はあなたに委ねられている。場面の切り取り方、構成、文章表現は、この舞台の上で自由に選んでよい。最も重要な仕事は、読者を物語に引き込む生きた文章を書くことである。`;
@@ -596,7 +600,7 @@ function renderOutputConditions(
   return `【出力形式】
 - 出力は日本語の小説本文のみ。前置き・後書き・設定の説明は書かない。
 - 物語はユーザーの希望なしに完結させない。
-- 目安文字数: 約${outputRange.target}字（${outputRange.lower}〜${outputRange.upper}字程度）。字数を合わせるために急停止せず、文や段落の切りがよいところで自然に終える。上限に届きそうな場合は少し短くても自然な区切りを優先する。
+- 文字数: 上限は約${outputRange.upper}字。${outputRange.target}字前後を標準としつつ、場面が求める密度に応じてそれより短くてよい。字数を満たすための説明・要約・感情の言い換えによる引き延ばしはしない。場面が自然に閉じる位置で、文や段落の切りがよいところで終える。
 - 物語内時間と矛盾する時間経過・時間帯を書かない。時間を進める場合は本文中で自然に示す。
 - ${viewpointLine} 地の文は視点人物の認識範囲で書き、視点人物以外の内心は断定せず、外から観察できる言動として描く。${rewriteHint}`;
 }

@@ -25,8 +25,8 @@ export interface ActivePresets {
 export interface SamplingConfig {
   frequencyPenalty: number;
   presencePenalty: number;
-  // NOTE: 未指定なら生成サービス側の TEMPERATURE_DEFAULT (0.7) を使う。variate モードは
-  // ここで指定した値に +0.15 を上乗せ（上限 1.5）する。
+  // NOTE: 未指定なら生成サービス側の TEMPERATURE_DEFAULT (0.9) を使う。variate モードは
+  // ここで指定した値に +0.15 を上乗せ（上限 1.3）する。
   temperature?: number;
 }
 

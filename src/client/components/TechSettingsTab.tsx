@@ -51,7 +51,7 @@ export default function TechSettingsTab({
   const [presencePenalty, setPresencePenalty] = useState(
     project.samplingConfig?.presencePenalty ?? 0
   );
-  const [temperature, setTemperature] = useState(project.samplingConfig?.temperature ?? 0.7);
+  const [temperature, setTemperature] = useState(project.samplingConfig?.temperature ?? 0.9);
   // NOTE: roleplay 用の応答字数目標。新規プロジェクトでは projectService の
   // デフォルトが入る想定だが、既存プロジェクトが更新前で欠けている場合の保険で
   // デフォルト値にフォールバックする。
@@ -138,7 +138,7 @@ export default function TechSettingsTab({
       onProjectUpdated(updatedProject);
       setFrequencyPenalty(updatedProject.samplingConfig?.frequencyPenalty ?? 0.1);
       setPresencePenalty(updatedProject.samplingConfig?.presencePenalty ?? 0);
-      setTemperature(updatedProject.samplingConfig?.temperature ?? 0.7);
+      setTemperature(updatedProject.samplingConfig?.temperature ?? 0.9);
       onFlashMessage('サンプリング設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -297,7 +297,7 @@ export default function TechSettingsTab({
           <h2>サンプリング</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
             Temperature を上げると発想が広がり、下げると堅実になります。
-            目安: 堅く 0.5 / 標準 0.7 / 冒険 1.0〜1.2。
+            目安: 堅く 0.5 / 標準 0.9 / 冒険 1.0〜1.2。
           </p>
           <label>
             Temperature（発想の広がり）

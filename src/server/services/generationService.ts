@@ -42,7 +42,7 @@ import type {
   StoryStateRefreshStatus,
 } from '../types/index.js';
 
-const TEMPERATURE_DEFAULT = 0.7;
+const TEMPERATURE_DEFAULT = 0.9;
 const TEMPERATURE_VARIATE_DELTA = 0.15;
 const TEMPERATURE_MAX = 1.3;
 const TEMPERATURE_SUMMARY = 0.25;

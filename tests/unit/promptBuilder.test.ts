@@ -152,8 +152,12 @@ describe('buildPrompt', () => {
     });
     expect(userPrompt).toContain('【出力形式】');
     expect(userPrompt).toContain('もっと不穏に');
-    expect(userPrompt).toContain('目安文字数: 約3000字（2600〜3400字程度）');
-    expect(userPrompt).toContain('切りがよいところで自然に終える');
+    expect(userPrompt).toContain('文字数: 上限は約3400字。3000字前後を標準としつつ');
+    expect(userPrompt).toContain('字数を満たすための説明・要約・感情の言い換えによる引き延ばしはしない');
+    expect(userPrompt).not.toContain('2600〜3400字程度');
+    expect(userPrompt).not.toContain('④目安文字数');
+    expect(userPrompt).toContain('④文字数の上限');
+    expect(userPrompt).toContain('場面が自然に閉じる位置で、文や段落の切りがよいところで終える');
     expect(userPrompt).toContain('出力は日本語の小説本文のみ');
     expect(userPrompt).toContain('物語はユーザーの希望なしに完結させない');
     expect(userPrompt).toContain('視点人物以外の内心は断定せず');
@@ -328,6 +332,67 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('人称・視点人物・【出力形式】の指定は上書きしない');
     const styleBody = userPrompt.match(/あ+/g)?.reduce((max, s) => (s.length > max ? s.length : max), 0);
     expect(styleBody).toBe(1000);
+  });
+
+  it('places the style sample after recent text and trims its incomplete final sentence', async () => {
+    const project = { ...makeProject(promptStateProjectId), styleSample: '見本の一文。'.repeat(142) + '途中' };
+    const episodeId = 'ep-style-sample-order';
+    const sceneId = 'scene-style-sample-order';
+    const generationId = 'gen-style-sample-order';
+    const recentText = 'RECENT_STYLE_SAMPLE_ORDER_TEXT';
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Style sample order',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [{
+        sceneId,
+        episodeId,
+        order: 1,
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+        acceptedGenerationId: generationId,
+        draftGenerationIds: [],
+      }],
+    };
+    const generation: GenerationRecord = {
+      generationId,
+      sceneId,
+      episodeId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      responseText: recentText,
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'openai', modelName: 'gpt-4o-mini' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-02T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const state = { ...makeState(), currentEpisodeId: episodeId, currentSceneId: sceneId };
+
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeEpisodeRecord(promptStateProjectId, episode);
+    await storage.appendGenerationLog(promptStateProjectId, generation);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state,
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: '',
+    });
+
+    const recentIndex = userPrompt.indexOf('【これまでの作品本文（直近）】');
+    const styleIndex = userPrompt.indexOf('【文体見本】');
+    const wishIndex = userPrompt.indexOf('【今回の希望】');
+    expect(recentIndex).toBeGreaterThan(-1);
+    expect(styleIndex).toBeGreaterThan(recentIndex);
+    expect(wishIndex).toBeGreaterThan(styleIndex);
+    expect(userPrompt).toContain(recentText);
+    expect(userPrompt).not.toContain('途中');
   });
 
   it('includes high story facts and medium preference memories', async () => {

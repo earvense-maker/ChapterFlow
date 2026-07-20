@@ -1,5 +1,6 @@
 import * as storage from '../services/storageService.js';
 import { readStoryState } from '../services/storyStateService.js';
+import { dropLeadingTextToBoundary } from '../utils/textBoundary.js';
 import type { EpisodeRecord, GenerationRecord, ProjectId, SceneId, StoryState } from '../types/index.js';
 
 const DEFAULT_MAX_CHARS = 12000;
@@ -43,7 +44,7 @@ export async function getRecentContext(
 
   const joined = acceptedTexts.join('\n\n');
   if (joined.length <= maxChars) return joined;
-  return joined.slice(-maxChars);
+  return dropLeadingTextToBoundary(joined.slice(-maxChars));
 }
 
 // NOTE: variate / regenerate モード向け。現在シーンの「書き直し対象本文」を返す。

@@ -19,6 +19,12 @@ afterEach(async () => {
 });
 
 describe('project settings validation', () => {
+  it('uses 0.9 as the temperature default for new projects', async () => {
+    const project = await createTrackedProject();
+
+    expect(project.samplingConfig?.temperature).toBe(0.9);
+  });
+
   it('keeps the required narration default for consultation projects', async () => {
     const project = await projectService.createProject({
       title: 'Consultation without defaults',
@@ -172,7 +178,7 @@ describe('project settings validation', () => {
     expect(updated.samplingConfig).toEqual({
       frequencyPenalty: 0,
       presencePenalty: 1,
-      temperature: 0.7,
+      temperature: 0.9,
     });
   });
 
@@ -189,7 +195,7 @@ describe('project settings validation', () => {
     expect(updated.samplingConfig).toEqual({
       frequencyPenalty: 0.6,
       presencePenalty: 0.4,
-      temperature: 0.7,
+      temperature: 0.9,
     });
   });
 
@@ -208,7 +214,7 @@ describe('project settings validation', () => {
     expect(duplicate.samplingConfig).toEqual({
       frequencyPenalty: 0.3,
       presencePenalty: 0.5,
-      temperature: 0.7,
+      temperature: 0.9,
     });
   });
 

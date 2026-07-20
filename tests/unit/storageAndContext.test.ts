@@ -267,4 +267,35 @@ describe('getRecentContext', () => {
     expect(context).toContain('最新場面を読む');
     expect(context).not.toContain('古い場面');
   });
+
+  it('drops a partial leading paragraph after truncating recent context', async () => {
+    const sceneId = 'scene-boundary';
+    const generationId = 'gen-boundary';
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: '境界テスト',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: generationId,
+          draftGenerationIds: [],
+        },
+      ],
+    };
+    const responseText = `${'前'.repeat(100)}途中の文。\n段落の先頭から続く本文。`;
+
+    await storage.writeEpisodeRecord(projectId, episode);
+    await storage.appendGenerationLog(projectId, generation(generationId, sceneId, responseText));
+
+    const context = await getRecentContext(projectId, episodeId, sceneId, { maxChars: 40 });
+
+    expect(context).toBe('段落の先頭から続く本文。');
+  });
 });
