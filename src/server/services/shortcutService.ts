@@ -269,7 +269,9 @@ foreach ($path in $paths) {
   } catch {
   }
 }
-$outJson = @($rows) | ConvertTo-Json -Compress -Depth 3
+# NOTE: 空配列をパイプすると ConvertTo-Json が $null になり、GetBytes が失敗する。
+# ショートカットを1件も読み取れない場合も、呼び出し元へは必ず空配列を返す。
+$outJson = if ($rows.Count -eq 0) { '[]' } else { @($rows) | ConvertTo-Json -Compress -Depth 3 }
 [Console]::Out.Write([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($outJson)))
 `;
 
