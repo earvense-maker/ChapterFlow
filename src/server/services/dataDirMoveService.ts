@@ -1,12 +1,28 @@
-import { constants as fsConstants, promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, constants as fsConstants, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, DEFAULT_DATA_DIR } from '../config.js';
-import { readAppSettings, updateAppSettings } from './appSettingsService.js';
+import {
+  readAppSettings,
+  readAppSettingsStrict,
+  updateAppSettingsStrict,
+} from './appSettingsService.js';
 import {
   hasActiveDataDirWrites,
   markDataDirRestartPending,
   withDataDirLock,
 } from './dataDirLock.js';
+import {
+  acquireDataDirFileLock,
+  DATA_DIR_LOCK_FILE_NAME,
+  DataDirInUseError,
+} from './dataDirFileLock.js';
+import {
+  canonicalizePath,
+  findSymbolicLink,
+  isCanonicalPathInside,
+  sameCanonicalPath,
+} from '../utils/pathSafety.js';
 import type {
   DataDirApplyResponse,
   DataDirInfo,
@@ -19,6 +35,7 @@ import type {
 interface FileEntry {
   relativePath: string;
   size: number;
+  sha256: string;
 }
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
@@ -52,6 +69,13 @@ export async function getDataDirInfo(): Promise<DataDirInfo> {
 }
 
 export async function previewDataDirMove(targetPath: string): Promise<DataDirPreview> {
+  if (process.env.CHAPTERFLOW_DATA_DIR_SOURCE === 'external') {
+    throw new DataDirMoveError(
+      '環境変数で保存先が固定されているため、アプリから移動できません。',
+      409,
+      'data_dir_external'
+    );
+  }
   const resolved = await resolveTargetPath(targetPath);
   const estimatedSize = await getDirectorySize(DATA_DIR);
   const invalidReason = await validateResolvedTarget(resolved.resolvedPath, estimatedSize);
@@ -64,12 +88,19 @@ export async function previewDataDirMove(targetPath: string): Promise<DataDirPre
     targetIsEmpty: resolved.targetIsEmpty,
     hasFreeSpace,
     estimatedSize,
-    sameAsCurrentDir: samePath(resolved.resolvedPath, DATA_DIR),
+    sameAsCurrentDir: await pathsAreSame(resolved.resolvedPath, DATA_DIR),
     invalidReason: invalidReason ?? (!hasFreeSpace ? '同一ドライブでの空き容量不足' : undefined),
   };
 }
 
 export async function applyDataDirMove(targetPath: string): Promise<DataDirApplyResponse> {
+  if (process.env.CHAPTERFLOW_DATA_DIR_SOURCE === 'external') {
+    throw new DataDirMoveError(
+      '環境変数で保存先が固定されているため、アプリから移動できません。',
+      409,
+      'data_dir_external'
+    );
+  }
   if (hasActiveDataDirWrites()) {
     throw new DataDirMoveError(
       '生成や保存の処理中のため、データ移動を開始できません。完了後にもう一度お試しください。',
@@ -79,10 +110,26 @@ export async function applyDataDirMove(targetPath: string): Promise<DataDirApply
     );
   }
   return withDataDirLock(async () => {
+    await readSettingsForDataDirChange();
+    await rejectSymbolicLinks(DATA_DIR, '現在の保存先');
     const oldDataDir = DATA_DIR;
     const reusableTarget = await findReusableTarget(targetPath, oldDataDir);
     if (reusableTarget) {
-      return persistDataDirMoveSettings(reusableTarget, oldDataDir);
+      const releaseTargetLock = await acquireTargetLock(reusableTarget);
+      try {
+        if (!(await canReuseExistingCopy(oldDataDir, reusableTarget))) {
+          throw new DataDirMoveError(
+            '移動先の内容が確認後に変更されました。もう一度お試しください。',
+            409,
+            'data_dir_changed',
+            true
+          );
+        }
+        return await persistDataDirMoveSettings(reusableTarget, oldDataDir);
+      } catch (err) {
+        await releaseTargetLock();
+        throw err;
+      }
     }
 
     const preview = await previewDataDirMove(targetPath);
@@ -91,6 +138,8 @@ export async function applyDataDirMove(targetPath: string): Promise<DataDirApply
     }
 
     const newDataDir = preview.resolvedPath;
+    const releaseTargetLock = await acquireTargetLock(newDataDir);
+    let keepTargetLock = false;
     try {
       const existingRetry = await canReuseExistingCopy(oldDataDir, newDataDir);
       if (!existingRetry) {
@@ -100,7 +149,9 @@ export async function applyDataDirMove(targetPath: string): Promise<DataDirApply
             recursive: true,
             errorOnExist: false,
             force: true,
+            filter: (source) => path.basename(source) !== DATA_DIR_LOCK_FILE_NAME,
           });
+          await rejectSymbolicLinks(newDataDir, '新しい保存先');
           await verifyCopiedData(oldDataDir, newDataDir);
         } catch (err) {
           await rollbackNewDataDir(newDataDir, oldDataDir);
@@ -108,10 +159,14 @@ export async function applyDataDirMove(targetPath: string): Promise<DataDirApply
           throw new DataDirMoveError(err instanceof Error ? err.message : 'データ移動に失敗しました', 500);
         }
       }
-      return await persistDataDirMoveSettings(newDataDir, oldDataDir);
+      const result = await persistDataDirMoveSettings(newDataDir, oldDataDir);
+      keepTargetLock = true;
+      return result;
     } catch (err) {
       if (err instanceof DataDirMoveError) throw err;
       throw new DataDirMoveError(err instanceof Error ? err.message : 'データ移動に失敗しました', 500);
+    } finally {
+      if (!keepTargetLock) await releaseTargetLock();
     }
   });
 }
@@ -158,6 +213,13 @@ export async function previewDataDirSwitch(targetPath: string): Promise<DataDirS
     await fs.access(resolvedPath, fsConstants.R_OK | fsConstants.W_OK);
   } catch {
     return previewForResolvedPath('選択したフォルダを読み書きできません');
+  }
+
+  const linkedPath = await findSymbolicLink(resolvedPath);
+  if (linkedPath) {
+    return previewForResolvedPath(
+      `リンクを含む保存先は安全のため使用できません: ${path.relative(resolvedPath, linkedPath)}`
+    );
   }
 
   const projectsPath = path.join(resolvedPath, 'projects');
@@ -243,7 +305,7 @@ export async function applyDataDirSwitch(targetPath: string): Promise<DataDirSwi
   return withDataDirLock(async () => {
     let currentSettings;
     try {
-      currentSettings = await readAppSettings();
+      currentSettings = await readAppSettingsStrict();
     } catch {
       throw new DataDirMoveError(
         '現在の保存先設定を読み込めませんでした。設定ファイルを確認してから再試行してください。',
@@ -265,8 +327,14 @@ export async function applyDataDirSwitch(targetPath: string): Promise<DataDirSwi
       throw new DataDirMoveError(preview.invalidReason);
     }
 
+    const releaseTargetLock = await acquireTargetLock(preview.resolvedPath);
+    let keepTargetLock = false;
     try {
-      await updateAppSettings((settings) => {
+      const lockedPreview = await previewDataDirSwitch(preview.resolvedPath);
+      if (lockedPreview.invalidReason) {
+        throw new DataDirMoveError(lockedPreview.invalidReason, 409, 'data_dir_changed', true);
+      }
+      await updateAppSettingsStrict((settings) => {
         if (settings.pendingCleanup) {
           throw new DataDirMoveError(
             '以前の移動で残った旧データの整理が完了していません。アプリを再起動してからお試しください。',
@@ -276,13 +344,14 @@ export async function applyDataDirSwitch(targetPath: string): Promise<DataDirSwi
         }
         return {
           ...settings,
-          dataDir: preview.resolvedPath,
+          dataDir: lockedPreview.resolvedPath,
           previousDataDir: DATA_DIR,
         };
       });
       // NOTE: 設定保存後から再起動まで旧 DATA_DIR への新規書き込みを通すと、
       // 切り替え先に反映されず「保存が消えた」ように見えるため、終了まで拒否する。
       markDataDirRestartPending();
+      keepTargetLock = true;
     } catch (err) {
       if (err instanceof DataDirMoveError) throw err;
       throw new DataDirMoveError(
@@ -291,6 +360,8 @@ export async function applyDataDirSwitch(targetPath: string): Promise<DataDirSwi
         'settings_write_failed',
         true
       );
+    } finally {
+      if (!keepTargetLock) await releaseTargetLock();
     }
 
     return {
@@ -312,8 +383,13 @@ async function findReusableTarget(targetPath: string, oldDataDir: string): Promi
     path.join(target, 'Yumeweaving'),
   ];
   for (const candidate of candidates) {
-    if (samePath(candidate, oldDataDir)) continue;
-    if (isPathInside(candidate, oldDataDir) || isPathInside(oldDataDir, candidate)) continue;
+    const canonicalCandidate = await canonicalizePath(candidate);
+    const canonicalOld = await canonicalizePath(oldDataDir);
+    if (sameCanonicalPath(canonicalCandidate, canonicalOld)) continue;
+    if (
+      isCanonicalPathInside(canonicalCandidate, canonicalOld) ||
+      isCanonicalPathInside(canonicalOld, canonicalCandidate)
+    ) continue;
     if (await canReuseExistingCopy(oldDataDir, candidate)) return candidate;
   }
   return null;
@@ -324,11 +400,12 @@ async function persistDataDirMoveSettings(
   oldDataDir: string
 ): Promise<DataDirApplyResponse> {
   try {
-    await updateAppSettings((settings) => ({
+    await updateAppSettingsStrict((settings) => ({
       ...settings,
       dataDir: newDataDir,
       pendingCleanup: oldDataDir,
     }));
+    markDataDirRestartPending();
     return {
       ok: true,
       dataDir: newDataDir,
@@ -378,8 +455,13 @@ async function validateResolvedTarget(
   resolvedPath: string,
   estimatedSize: number
 ): Promise<string | undefined> {
-  if (samePath(resolvedPath, DATA_DIR)) return '現在の場所と同じです';
-  if (isPathInside(resolvedPath, DATA_DIR) || isPathInside(DATA_DIR, resolvedPath)) {
+  const canonicalResolved = await canonicalizePath(resolvedPath);
+  const canonicalCurrent = await canonicalizePath(DATA_DIR);
+  if (sameCanonicalPath(canonicalResolved, canonicalCurrent)) return '現在の場所と同じです';
+  if (
+    isCanonicalPathInside(canonicalResolved, canonicalCurrent) ||
+    isCanonicalPathInside(canonicalCurrent, canonicalResolved)
+  ) {
     return '現在の場所と親子関係にある場所は指定できません';
   }
 
@@ -414,7 +496,7 @@ export async function verifyManifestForCleanup(
   for (const file of files) {
     const copiedPath = path.join(newDataDir, file.relativePath);
     const stat = await statOrNull(copiedPath);
-    if (!stat?.isFile() || stat.size !== file.size) {
+    if (!stat?.isFile() || stat.size !== file.size || await hashFile(copiedPath) !== file.sha256) {
       missingInNew.push(file);
     }
   }
@@ -435,7 +517,12 @@ export async function copyMissingFiles(
 }
 
 async function rollbackNewDataDir(newDataDir: string, oldDataDir: string): Promise<void> {
-  if (samePath(newDataDir, oldDataDir) || isPathInside(oldDataDir, newDataDir)) return;
+  const canonicalNew = await canonicalizePath(newDataDir);
+  const canonicalOld = await canonicalizePath(oldDataDir);
+  if (
+    sameCanonicalPath(canonicalNew, canonicalOld) ||
+    isCanonicalPathInside(canonicalOld, canonicalNew)
+  ) return;
   await fs.rm(newDataDir, { recursive: true, force: true }).catch(() => undefined);
 }
 
@@ -444,7 +531,16 @@ async function listFiles(root: string): Promise<FileEntry[]> {
   async function walk(dir: string) {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.name === DATA_DIR_LOCK_FILE_NAME) continue;
       const fullPath = path.join(dir, entry.name);
+      const linkStat = await fs.lstat(fullPath);
+      if (linkStat.isSymbolicLink()) {
+        throw new DataDirMoveError(
+          `リンクを含む保存先は安全のため使用できません: ${path.relative(root, fullPath)}`,
+          400,
+          'data_dir_link_unsupported'
+        );
+      }
       if (entry.isDirectory()) {
         await walk(fullPath);
       } else if (entry.isFile()) {
@@ -452,6 +548,7 @@ async function listFiles(root: string): Promise<FileEntry[]> {
         files.push({
           relativePath: path.relative(root, fullPath),
           size: stat.size,
+          sha256: await hashFile(fullPath),
         });
       }
     }
@@ -468,7 +565,7 @@ async function getDirectorySize(root: string): Promise<number> {
 async function isDirectoryEmpty(dir: string): Promise<boolean> {
   try {
     const entries = await fs.readdir(dir);
-    return entries.length === 0;
+    return entries.every((entry) => entry === DATA_DIR_LOCK_FILE_NAME);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
     throw err;
@@ -528,4 +625,61 @@ function samePath(a: string, b: string): boolean {
 function isPathInside(child: string, parent: string): boolean {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function pathsAreSame(a: string, b: string): Promise<boolean> {
+  return sameCanonicalPath(await canonicalizePath(a), await canonicalizePath(b));
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = createReadStream(filePath);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+async function rejectSymbolicLinks(root: string, label: string): Promise<void> {
+  const linkedPath = await findSymbolicLink(root);
+  if (!linkedPath) return;
+  throw new DataDirMoveError(
+    `${label}にリンクが含まれているため、安全に処理できません: ${path.relative(root, linkedPath)}`,
+    400,
+    'data_dir_link_unsupported'
+  );
+}
+
+async function readSettingsForDataDirChange(): Promise<void> {
+  try {
+    const settings = await readAppSettingsStrict();
+    if (settings.pendingCleanup) {
+      throw new DataDirMoveError(
+        '以前の移動で残った旧データの整理が完了していません。アプリを再起動してからお試しください。',
+        409,
+        'pending_cleanup'
+      );
+    }
+  } catch (err) {
+    if (err instanceof DataDirMoveError) throw err;
+    throw new DataDirMoveError(
+      '現在の保存先設定を読み込めませんでした。設定ファイルを確認してから再試行してください。',
+      500,
+      'settings_read_failed',
+      true
+    );
+  }
+}
+
+async function acquireTargetLock(dataDir: string): Promise<() => Promise<void>> {
+  if (process.env.NODE_ENV === 'test') return async () => undefined;
+  try {
+    return await acquireDataDirFileLock(dataDir);
+  } catch (err) {
+    if (err instanceof DataDirInUseError) {
+      throw new DataDirMoveError(err.message, 409, 'data_dir_in_use', true);
+    }
+    throw err;
+  }
 }

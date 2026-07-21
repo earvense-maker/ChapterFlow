@@ -42,6 +42,9 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
 
   router.post('/system/data-dir/preview', async (req, res, next) => {
     try {
+      if (!process.versions.electron) {
+        return res.status(409).json({ error: '保存先の移動は Electron 版のアプリでのみ使えます' });
+      }
       const { targetPath } = req.body as { targetPath?: string };
       res.json(await previewDataDirMove(targetPath ?? ''));
     } catch (err) {
@@ -54,6 +57,9 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
 
   router.post('/system/data-dir/apply', async (req, res, next) => {
     try {
+      if (!process.versions.electron) {
+        return res.status(409).json({ error: '保存先の移動は Electron 版のアプリでのみ使えます' });
+      }
       const { targetPath } = req.body as { targetPath?: string };
       const result = await applyDataDirMove(targetPath ?? '');
       res.json(result);

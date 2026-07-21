@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   readAppSettings,
+  readAppSettingsStrict,
   updateAppSettings,
   writeAppSettings,
 } from '../../src/server/services/appSettingsService';
@@ -56,5 +57,12 @@ describe('appSettingsService', () => {
       dataDir: path.resolve(testDir, 'data'),
       setupModel: { provider: 'openai', modelName: 'gpt-test' },
     });
+  });
+
+  it('reports malformed JSON through the strict reader', async () => {
+    const settingsPath = process.env.CHAPTERFLOW_APP_SETTINGS_PATH!;
+    await fs.writeFile(settingsPath, '{broken');
+    await expect(readAppSettingsStrict()).rejects.toBeInstanceOf(SyntaxError);
+    await expect(fs.readFile(settingsPath, 'utf8')).resolves.toBe('{broken');
   });
 });

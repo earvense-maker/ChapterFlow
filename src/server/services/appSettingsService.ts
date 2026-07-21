@@ -46,6 +46,11 @@ export async function readAppSettings(): Promise<AppSettings> {
   }
 }
 
+export async function readAppSettingsStrict(): Promise<AppSettings> {
+  const settings = await readJsonFile<AppSettings>(getAppSettingsPath());
+  return normalizeAppSettings(settings);
+}
+
 export async function writeAppSettings(settings: AppSettings): Promise<void> {
   await safeWriteJson(getAppSettingsPath(), normalizeAppSettings(settings));
 }
@@ -53,9 +58,22 @@ export async function writeAppSettings(settings: AppSettings): Promise<void> {
 export async function updateAppSettings(
   update: (settings: AppSettings) => AppSettings | Promise<AppSettings>
 ): Promise<AppSettings> {
+  return updateAppSettingsWithReader(readAppSettings, update);
+}
+
+export async function updateAppSettingsStrict(
+  update: (settings: AppSettings) => AppSettings | Promise<AppSettings>
+): Promise<AppSettings> {
+  return updateAppSettingsWithReader(readAppSettingsStrict, update);
+}
+
+function updateAppSettingsWithReader(
+  read: () => Promise<AppSettings>,
+  update: (settings: AppSettings) => AppSettings | Promise<AppSettings>
+): Promise<AppSettings> {
   return withAppSettingsMutationLock(() =>
     withDataDirWrite(async () => {
-      const next = normalizeAppSettings(await update(await readAppSettings()));
+      const next = normalizeAppSettings(await update(await read()));
       await safeWriteJson(getAppSettingsPath(), next);
       return next;
     })

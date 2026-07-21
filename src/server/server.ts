@@ -9,6 +9,9 @@ import {
   isLanAuthRequiredForHost,
 } from './services/lanAuthService.js';
 import { ensureShortcutsDir } from './services/shortcutService.js';
+import {
+  acquireDataDirFileLock,
+} from './services/dataDirFileLock.js';
 
 export interface StartServerOptions {
   port?: number;
@@ -37,33 +40,47 @@ export async function startServer(options: StartServerOptions = {}): Promise<Run
   let actualPort: number | null = port > 0 ? port : null;
 
   await ensureDir(DATA_DIR);
-  await ensureShortcutsDir();
+  const releaseDataDirLock = process.env.NODE_ENV === 'test'
+    ? async () => undefined
+    : await acquireDataDirFileLock(DATA_DIR);
+  try {
+    await ensureShortcutsDir();
 
-  const app = createApp({
-    host,
-    port,
-    getActualPort: () => actualPort,
-    lanAuthToken,
-    onShutdownRequest: options.onShutdownRequest,
-    onRestartRequest: options.onRestartRequest,
-  });
-  const server = await listen(app.listen.bind(app), port, host);
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    if (options.onRuntimeError) {
-      options.onRuntimeError(err);
-      return;
-    }
-    console.error('ChapterFlow server runtime error:', err);
-  });
-  const address = server.address();
-  actualPort = typeof address === 'object' && address ? address.port : port;
+    const app = createApp({
+      host,
+      port,
+      getActualPort: () => actualPort,
+      lanAuthToken,
+      onShutdownRequest: options.onShutdownRequest,
+      onRestartRequest: options.onRestartRequest,
+    });
+    const server = await listen(app.listen.bind(app), port, host);
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (options.onRuntimeError) {
+        options.onRuntimeError(err);
+        return;
+      }
+      console.error('ChapterFlow server runtime error:', err);
+    });
+    const address = server.address();
+    actualPort = typeof address === 'object' && address ? address.port : port;
 
-  return {
-    port: actualPort,
-    host,
-    lanAuthToken,
-    close: (closeOptions) => closeServer(server, closeOptions),
-  };
+    return {
+      port: actualPort,
+      host,
+      lanAuthToken,
+      close: async (closeOptions) => {
+        try {
+          await closeServer(server, closeOptions);
+        } finally {
+          await releaseDataDirLock();
+        }
+      },
+    };
+  } catch (err) {
+    await releaseDataDirLock();
+    throw err;
+  }
 }
 
 export function listReachableUrls(host: string, port: number): string[] {

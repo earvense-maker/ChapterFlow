@@ -57,6 +57,19 @@ describe('dataDirMoveService preview', () => {
     expect(preview.targetIsEmpty).toBe(false);
     expect(preview.resolvedPath).toBe(path.join(target, 'ChapterFlow'));
   });
+
+  it('rejects an alias that resolves back into the current data directory', async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-current-alias-'));
+    const alias = path.join(parent, 'alias');
+    const sentinel = path.join(DATA_DIR, 'junction-alias-test.txt');
+    tempDirs.push(parent, sentinel);
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.writeFile(sentinel, 'test');
+    await fs.symlink(DATA_DIR, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+    const preview = await previewDataDirMove(alias);
+    expect(preview.invalidReason).toBe('現在の場所と親子関係にある場所は指定できません');
+  });
 });
 
 describe('dataDirMoveService cleanup manifest', () => {
@@ -77,6 +90,17 @@ describe('dataDirMoveService cleanup manifest', () => {
       fs.readFile(path.join(newDir, 'projects', 'proj-a', 'story-state.json'), 'utf8')
     ).resolves.toBe('{"ok":true}');
     await expect(verifyManifestForCleanup(oldDir, newDir)).resolves.toEqual({ missingInNew: [] });
+  });
+
+  it('detects same-size content changes before deleting the old directory', async () => {
+    const oldDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-old-hash-'));
+    const newDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-new-hash-'));
+    tempDirs.push(oldDir, newDir);
+    await fs.writeFile(path.join(oldDir, 'state.json'), 'AAAA');
+    await fs.writeFile(path.join(newDir, 'state.json'), 'BBBB');
+
+    const diff = await verifyManifestForCleanup(oldDir, newDir);
+    expect(diff.missingInNew.map((file) => file.relativePath)).toEqual(['state.json']);
   });
 });
 
@@ -103,7 +127,7 @@ describe('dataDirMoveService apply', () => {
     }
   });
 
-  it('keeps a verified copy when settings write fails and reuses it on retry', async () => {
+  it('does not copy or overwrite a broken settings file', async () => {
     const projectDir = path.join(DATA_DIR, 'projects', 'proj-data-dir-retry');
     tempDirs.push(projectDir);
     await fs.mkdir(projectDir, { recursive: true });
@@ -111,24 +135,16 @@ describe('dataDirMoveService apply', () => {
 
     const target = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-apply-target-'));
     const badSettingsPath = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-bad-settings-'));
-    const goodSettingsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-good-settings-'));
-    tempDirs.push(target, badSettingsPath, goodSettingsDir);
+    tempDirs.push(target, badSettingsPath);
 
-    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = badSettingsPath;
+    const brokenSettings = path.join(badSettingsPath, 'app-settings.json');
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = brokenSettings;
+    await fs.writeFile(brokenSettings, '{broken');
     await expect(applyDataDirMove(target)).rejects.toMatchObject({
-      code: 'settings_write_failed',
+      code: 'settings_read_failed',
     });
-    await expect(
-      fs.readFile(path.join(target, 'projects', 'proj-data-dir-retry', 'project.json'), 'utf8')
-    ).resolves.toBe('{"projectId":"proj-data-dir-retry"}');
-
-    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = path.join(goodSettingsDir, 'app-settings.json');
-    const result = await applyDataDirMove(target);
-    const settings = await readAppSettings();
-
-    expect(result.dataDir).toBe(target);
-    expect(settings.dataDir).toBe(target);
-    expect(settings.pendingCleanup).toBe(DATA_DIR);
+    await expect(fs.readFile(brokenSettings, 'utf8')).resolves.toBe('{broken');
+    await expect(fs.stat(path.join(target, 'projects'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 
@@ -189,6 +205,23 @@ describe('dataDirMoveService switch preview', () => {
       projectCount: 1,
       unreadableProjectIds: ['project-broken'],
       projects: [{ projectId: 'project-good', title: '読める作品' }],
+    });
+  });
+
+  it('rejects a target containing a directory junction or symbolic link', async () => {
+    const target = await createSwitchTarget('chapterflow-switch-link-', [
+      { projectId: 'project-good', title: 'リンク検証', updatedAt: '2026-07-20T02:00:00.000Z' },
+    ]);
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'chapterflow-switch-outside-'));
+    tempDirs.push(outside);
+    await fs.symlink(
+      outside,
+      path.join(target, 'projects', 'project-good', 'linked'),
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
+
+    await expect(previewDataDirSwitch(target)).resolves.toMatchObject({
+      invalidReason: expect.stringContaining('リンクを含む保存先'),
     });
   });
 });

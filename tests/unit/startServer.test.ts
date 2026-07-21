@@ -47,6 +47,19 @@ describe('startServer', () => {
     expect(body.runtime).toBe('server');
   });
 
+  it('rejects data-directory move APIs outside the Electron runtime', async () => {
+    const server = await track(startServer({ host: '127.0.0.1', port: 0 }));
+    const origin = `http://127.0.0.1:${server.port}`;
+    for (const route of ['preview', 'apply']) {
+      const res = await fetch(`${origin}/api/system/data-dir/${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetPath: 'C:\\temp' }),
+      });
+      expect(res.status).toBe(409);
+    }
+  });
+
   it('serves and validates the two-area world API shape', async () => {
     const server = await track(startServer({ host: '127.0.0.1', port: 0 }));
     const project = await projectService.createProject({ title: 'World API' });

@@ -5,7 +5,16 @@ import path from 'node:path';
 import type { RunningServer } from '../server/server.js';
 import { readAppSettings, writeAppSettings } from '../server/services/appSettingsService.js';
 import { readJsonFile, safeWriteJson } from '../server/utils/safeWrite.js';
+import {
+  canonicalizePath,
+  isCanonicalPathInside,
+  sameCanonicalPath,
+} from '../server/utils/pathSafety.js';
 import { resolveUserDataPath } from './userDataPath.js';
+import {
+  acquireDataDirFileLock,
+  releaseAllDataDirFileLocks,
+} from '../server/services/dataDirFileLock.js';
 
 interface ServerPortState {
   port: number;
@@ -29,6 +38,7 @@ let runningServer: RunningServer | null = null;
 let lastWindowState: WindowState | null = null;
 let closing = false;
 let regenerateShortcutsOnStartup = false;
+let releaseBootstrapDataDirLock: (() => Promise<void>) | null = null;
 
 configureUserDataPathForRename();
 const gotLock = app.requestSingleInstanceLock();
@@ -60,7 +70,7 @@ if (!gotLock) {
     }, 5000);
 
     mainWindow?.webContents.stop();
-    Promise.all([saveMainWindowState(), server.close({ force: true })])
+    Promise.all([saveMainWindowState(), closeServerAndReleaseLocks(server)])
       .then(() => {
         clearTimeout(timeout);
         app.exit(0);
@@ -77,7 +87,12 @@ async function bootstrap(): Promise<void> {
   Menu.setApplicationMenu(null);
   await prepareAppSettingsBeforeServer();
 
-  runningServer = await startServerWithPersistedPort();
+  try {
+    runningServer = await startServerWithPersistedPort();
+  } finally {
+    await releaseBootstrapDataDirLock?.();
+    releaseBootstrapDataDirLock = null;
+  }
   await writeServerPort(runningServer.port);
   if (regenerateShortcutsOnStartup) {
     const { regenerateAllShortcuts } = await import('../server/services/shortcutService.js');
@@ -105,6 +120,11 @@ async function prepareAppSettingsBeforeServer(): Promise<void> {
     process.env.CHAPTERFLOW_DATA_DIR_SOURCE = 'default';
   }
 
+  const selectedDataDir = process.env.CHAPTERFLOW_DATA_DIR;
+  if (selectedDataDir) {
+    releaseBootstrapDataDirLock = await acquireDataDirFileLock(selectedDataDir);
+  }
+
   if (!hadExternalDataDir && settings.dataDir && settings.pendingCleanup) {
     await cleanupPendingDataDir(settings.dataDir, settings.pendingCleanup);
     regenerateShortcutsOnStartup = true;
@@ -112,16 +132,20 @@ async function prepareAppSettingsBeforeServer(): Promise<void> {
 }
 
 async function cleanupPendingDataDir(dataDir: string, pendingCleanup: string): Promise<void> {
+  let releaseCleanupLock: (() => Promise<void>) | null = null;
   try {
     const stat = await fs.stat(dataDir);
     if (!stat.isDirectory()) return;
+    const canonicalDataDir = await canonicalizePath(dataDir);
+    const canonicalCleanup = await canonicalizePath(pendingCleanup);
     if (
-      samePath(dataDir, pendingCleanup) ||
-      isPathInside(dataDir, pendingCleanup) ||
-      isPathInside(pendingCleanup, dataDir)
+      sameCanonicalPath(canonicalDataDir, canonicalCleanup) ||
+      isCanonicalPathInside(canonicalDataDir, canonicalCleanup) ||
+      isCanonicalPathInside(canonicalCleanup, canonicalDataDir)
     ) {
       return;
     }
+    releaseCleanupLock = await acquireDataDirFileLock(pendingCleanup);
     const { copyMissingFiles, verifyManifestForCleanup } = await import(
       '../server/services/dataDirMoveService.js'
     );
@@ -129,11 +153,21 @@ async function cleanupPendingDataDir(dataDir: string, pendingCleanup: string): P
     if (diff.missingInNew.length > 0) {
       await copyMissingFiles(pendingCleanup, dataDir, diff.missingInNew);
     }
+    const remainingDiff = await verifyManifestForCleanup(pendingCleanup, dataDir);
+    if (remainingDiff.missingInNew.length > 0) {
+      throw new Error(
+        `旧保存先の最終検証に失敗しました: ${remainingDiff.missingInNew[0].relativePath}`
+      );
+    }
     await fs.rm(pendingCleanup, { recursive: true, force: true });
     const settings = await readAppSettings();
     await writeAppSettings({ ...settings, pendingCleanup: null });
   } catch (err) {
     console.warn('[electron] Pending data cleanup failed:', err);
+  } finally {
+    await releaseCleanupLock?.().catch((err) => {
+      console.warn('[electron] Failed to release cleanup lock:', err);
+    });
   }
 }
 
@@ -169,11 +203,33 @@ async function startServerWithPersistedPort(): Promise<RunningServer> {
 }
 
 function restartApp(): void {
+  if (closing) return;
   closing = true;
-  void saveMainWindowState().finally(() => {
+  const server = runningServer;
+  runningServer = null;
+  mainWindow?.webContents.stop();
+  const timeout = setTimeout(() => {
     app.relaunch();
-    app.exit(0);
-  });
+    app.exit(1);
+  }, 5000);
+  void Promise.all([
+    saveMainWindowState(),
+    server ? closeServerAndReleaseLocks(server) : releaseAllDataDirFileLocks(),
+  ])
+    .catch((err) => console.warn('[electron] Failed to close cleanly before restart:', err))
+    .finally(() => {
+      clearTimeout(timeout);
+      app.relaunch();
+      app.exit(0);
+    });
+}
+
+async function closeServerAndReleaseLocks(server: RunningServer): Promise<void> {
+  try {
+    await server.close({ force: true });
+  } finally {
+    await releaseAllDataDirFileLocks();
+  }
 }
 
 async function createMainWindow(serverPort: number): Promise<BrowserWindow> {
@@ -403,11 +459,6 @@ function isPortUnavailable(err: unknown): boolean {
 
 function samePath(a: string, b: string): boolean {
   return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
-}
-
-function isPathInside(child: string, parent: string): boolean {
-  const relative = path.relative(path.resolve(parent), path.resolve(child));
-  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 function showStartupError(err: unknown): void {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const projectRoot = process.cwd();
@@ -56,6 +56,43 @@ await writeFile(
 );
 
 console.log(`配布文書とSHA-256を作成しました: ${outputDir}`);
+
+const publishDir = path.join(projectRoot, 'release', `publish-v${version}`);
+await rm(publishDir, { recursive: true, force: true });
+await mkdir(publishDir, { recursive: true });
+const publishArtifacts = [
+  [`${productName} ${version}.exe`, `${productName}.${version}.exe`],
+  [`${productName} Setup ${version}.exe`, `${productName}.Setup.${version}.exe`],
+];
+for (const [sourceName, publishName] of publishArtifacts) {
+  await copyFile(path.join(outputDir, sourceName), path.join(publishDir, publishName));
+}
+await Promise.all([
+  copyFile(path.join(projectRoot, 'LICENSE'), path.join(publishDir, 'LICENSE')),
+  copyFile(
+    path.join(projectRoot, 'docs', '利用ガイド.md'),
+    path.join(publishDir, 'ChapterFlow-UserGuide-ja.md')
+  ),
+  ...[
+    'chapterflow-introduction.png',
+    'gemini-api-key-setup-guide.png',
+    'deepseek-paypal-api-key-setup-guide.png',
+  ].map((name) => copyFile(
+    path.join(projectRoot, 'docs', 'images', name),
+    path.join(publishDir, name)
+  )),
+]);
+const publishChecksumLines = await Promise.all(
+  publishArtifacts.map(async ([, publishName]) =>
+    `${await sha256(path.join(publishDir, publishName))}  ${publishName}`
+  )
+);
+await writeFile(
+  path.join(publishDir, 'SHA256SUMS.txt'),
+  `${publishChecksumLines.join('\n')}\n`,
+  'utf8'
+);
+console.log(`GitHub Release用アセットを作成しました: ${publishDir}`);
 
 function sha256(filePath) {
   return new Promise((resolve, reject) => {
