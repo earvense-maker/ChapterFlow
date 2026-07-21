@@ -58,6 +58,20 @@ function sseChunkBlock(text: string): string {
 }
 
 describe('OpenAIAdapter', () => {
+  it('uses an explicit maxOutputTokens value in the provider request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        choices: [{ message: { content: '本文' }, finish_reason: 'stop' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new OpenAIAdapter().generateText({ ...baseRequest, maxOutputTokens: 8192 });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.max_tokens).toBe(8192);
+  });
+
   it('sends frequency_penalty and presence_penalty when set', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({

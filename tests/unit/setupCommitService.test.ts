@@ -698,4 +698,78 @@ describe('setupCommitService', () => {
     expect(normalized.storyState.importantEvents[0].knownBy).toEqual(['char-a']);
     expect(normalized.storyState.importantEvents[0].explicitlyUnknownBy).toEqual([]);
   });
+
+  // NOTE: Track 1A: setup 経路でも LLM 出力の actor / recipient を正規化する。
+  it('normalizes actor and recipient in story events (Track 1A)', () => {
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        characters: [
+          { characterId: 'char-taro', name: '太郎', role: 'protagonist', description: '' },
+          { characterId: 'char-hanako', name: '花子', role: 'deuteragonist', description: '' },
+        ],
+        storyState: {
+          importantEvents: [
+            {
+              summary: '太郎が花子に告白した',
+              actor: 'char-taro',
+              recipient: 'char-hanako',
+            },
+            {
+              summary: '独白の場面',
+              actor: 'char-taro',
+              recipient: null,
+            },
+            {
+              summary: '主体不明で ID が誤っている',
+              actor: 'char-missing',
+              recipient: 'char-taro',
+            },
+          ],
+        },
+      },
+    });
+    const events = normalized.storyState.importantEvents;
+    expect(events[0].actor).toBe('char-taro');
+    expect(events[0].recipient).toBe('char-hanako');
+    expect(events[1].actor).toBe('char-taro');
+    expect(events[1].recipient).toBeNull();
+    // 存在しない ID は null に落ちる
+    expect(events[2].actor).toBeNull();
+    expect(events[2].recipient).toBe('char-taro');
+  });
+
+  // NOTE: Track 2A: setup 経路の explicitlyUnknownBy 上限を 4 → 12 に緩和したこと。
+  // NOTE: setup 経路の characters は 12 件に切り詰められるので、known 1 + unknown 12 の
+  // 計 13 IDs を検証するには LLM 出力側の characters を 12 件（0..11）に留める必要がある。
+  // 上限 12 の効き方は「12 の unknown が可能」を示せば十分。
+  it('accepts up to 12 explicitlyUnknownBy entries per event (Track 2A)', () => {
+    const characterList = Array.from({ length: 12 }, (_, i) => ({
+      characterId: `char-${i}`,
+      name: `人物${i}`,
+      role: 'supporting' as const,
+      description: '',
+    }));
+    const unknownIds = characterList.slice(0, 12).map((c) => c.characterId);
+    const normalized = normalizeSetupCommitData({
+      session: session(),
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        characters: characterList,
+        storyState: {
+          importantEvents: [
+            {
+              summary: 'A の秘密（誰も同席していない）',
+              knownBy: [],
+              explicitlyUnknownBy: unknownIds,
+            },
+          ],
+        },
+      },
+    });
+    expect(normalized.storyState.importantEvents[0].explicitlyUnknownBy?.length).toBe(12);
+  });
 });

@@ -20,6 +20,20 @@ afterEach(() => {
 });
 
 describe('GeminiAdapter', () => {
+  it('uses an explicit maxOutputTokens value in the provider request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: '本文' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({ ...baseRequest, maxOutputTokens: 8192 });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.generationConfig.maxOutputTokens).toBe(8192);
+  });
+
   it('sends generate requests with the API key header instead of a URL query', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({

@@ -21,6 +21,7 @@ import type {
   Memory,
   Project,
   ProjectState,
+  StoryEventRecord,
   StoryState,
 } from '../types/index.js';
 
@@ -139,11 +140,6 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     state.currentSceneId,
     { includeCurrentScene: !isRewriteMode }
   );
-  const frequentPhrases = selectFrequentPhrases(recentContext, characters, bannedExpressions);
-  const bannedSection = renderBannedExpressions(bannedExpressions, frequentPhrases);
-  if (bannedSection) {
-    parts.push(bannedSection);
-  }
 
   if (recentContext.trim()) {
     const heading = isRewriteMode
@@ -170,6 +166,15 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     }
   }
 
+  // NOTE: 頻出フレーズは直近本文（rewrite 時は書き直し対象場面）を根拠に選ばれるため、
+  // その直後に置いて文脈的近さを保つ。登録NGとは意味論が違う（強度の弱い soft caution）
+  // のでセクションも分ける。
+  const frequentPhrases = selectFrequentPhrases(recentContext, characters, bannedExpressions);
+  const frequentSection = renderFrequentPhraseNotice(frequentPhrases);
+  if (frequentSection) {
+    parts.push(frequentSection);
+  }
+
   if (project.styleSample?.trim()) {
     const styleSample = trimTrailingTextToSentenceBoundary(
       project.styleSample.trim().slice(0, 1000)
@@ -177,6 +182,14 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     parts.push(
       `【文体見本】\n以下は文体・リズム・描写の密度の見本である。内容・人物・出来事は本編と無関係であり、参照しないこと。書き方だけを参考にすること。\n文体・リズム・描写密度について文体設定と食い違う場合は見本を優先する。ただし、人称・視点人物・【出力形式】の指定は上書きしない。\n\n${styleSample}`
     );
+  }
+
+  // NOTE: 登録NGは末尾追従の効きを最大化するため、【今回の希望】の直前に置く。
+  // ロールプレイ側（roleplayPromptBuilder.ts）が scenario/summary/recent/banned/指示 の
+  // 順に組んでいるのと同じ配置意図。
+  const registeredBannedSection = renderRegisteredBannedExpressions(bannedExpressions);
+  if (registeredBannedSection) {
+    parts.push(registeredBannedSection);
   }
 
   // 今回の希望（末尾。優先順位と裁量段落を付加）
@@ -399,8 +412,10 @@ function renderImportantPast(
           const knownNames = (event.knownBy ?? [])
             .map((id) => characterNameForId(id, characters))
             .filter(Boolean);
+          const actorLabel = renderActorLine(event, characters);
           const meta = [
             event.importance !== 'medium' ? `重要度: ${event.importance}` : '',
+            actorLabel ? `主体: ${actorLabel}` : '',
             event.characters.length > 0 ? `関係人物: ${event.characters.join(' / ')}` : '',
             knownNames.length > 0
               ? `知っている人物: ${knownNames.join(' / ')}`
@@ -431,7 +446,12 @@ function renderPreferenceNotes(memories: Memory[]): string {
     parts.push(`【好み】\n${preferences.map((m) => `- ${m.content}`).join('\n')}`);
   }
   if (negatives.length > 0) {
-    parts.push(`【NG】\n${negatives.map((m) => `- ${m.content}`).join('\n')}`);
+    // NOTE: 手動登録の言い回し単位 NG は末尾の【使わない表現】側に集約されている。
+    // 本セクションの【NG】はプリファレンス寄り（「性描写を露骨に書かない」等の方向指示）
+    // なので、両者の使い分けを利用者と後任に示す注記を1行付ける。
+    parts.push(
+      `【NG】\n${negatives.map((m) => `- ${m.content}`).join('\n')}\n※言い回し単位で禁止したい語句は末尾の【使わない表現】に登録する。`
+    );
   }
   if (parts.length === 0) return '';
   return `【好み・NG】\n${parts.join('\n\n')}`;
@@ -476,10 +496,12 @@ function renderCharacterKnowledgeState(
 
   for (const character of orderedCharacters) {
     const known: string[] = [];
-    const unknown: string[] = [];
     const state = characterMatches.byCharacterId.get(character.characterId);
+    // NOTE: knowledge は末尾追加型（mergeKnowledgeList）で、末尾ほど新しい。
+    // 描画は先頭6件を取るため、そのまま push すると新規追加が押し出される。
+    // ここで末尾6件だけ取ったうえで、reverse して新しい方を先頭に置く。
     if (state?.knowledge.length) {
-      known.push(...state.knowledge);
+      known.push(...state.knowledge.slice(-6).reverse());
     }
     const knownEvents = events
       .filter((event) => (event.knownBy ?? []).includes(character.characterId))
@@ -491,17 +513,27 @@ function renderCharacterKnowledgeState(
       .slice(0, 6)
       .map((event) => event.summary);
     known.push(...knownEvents);
-    unknown.push(
-      ...events
-        .filter(
-          (event) =>
-            !(event.knownBy ?? []).includes(character.characterId) &&
-            (event.explicitlyUnknownBy ?? []).includes(character.characterId)
-        )
-        .map((event) => event.summary)
-    );
+    // NOTE: Track 2A: 反転運用で unknown 側が大量に膨らむため、known 側と同じ
+    // 並び順（importance 降順 → updatedAt 降順）と上限を適用する。
+    // 視点人物は 12 件、それ以外は 6 件まで。
+    const isViewpoint =
+      viewpointCharacter != null && character.characterId === viewpointCharacter.characterId;
+    const unknownCap = isViewpoint ? 12 : 6;
+    const unknownEvents = events
+      .filter(
+        (event) =>
+          !(event.knownBy ?? []).includes(character.characterId) &&
+          (event.explicitlyUnknownBy ?? []).includes(character.characterId)
+      )
+      .sort((a, b) => {
+        const importance = importanceRank(b.importance) - importanceRank(a.importance);
+        if (importance !== 0) return importance;
+        return b.updatedAt.localeCompare(a.updatedAt);
+      })
+      .slice(0, unknownCap)
+      .map((event) => event.summary);
     const knownLines = dedupeText(known).slice(0, 6);
-    const unknownLines = dedupeText(unknown);
+    const unknownLines = dedupeText(unknownEvents).slice(0, unknownCap);
     if (knownLines.length === 0 && unknownLines.length === 0) continue;
     const details = [`- ${character.name}`];
     if (knownLines.length > 0) details.push(`  知っている: ${knownLines.join(' / ')}`);
@@ -510,13 +542,14 @@ function renderCharacterKnowledgeState(
   }
 
   for (const state of characterMatches.unmatchedStates) {
-    const knownLines = dedupeText(state.knowledge).slice(0, 6);
+    // NOTE: 上と同じ理由で、末尾6件を新しい順に取る。
+    const knownLines = dedupeText(state.knowledge.slice(-6).reverse()).slice(0, 6);
     if (knownLines.length === 0) continue;
     rows.push(`- ${state.name || '（名前未設定）'}（未照合）\n  知っている: ${knownLines.join(' / ')}`);
   }
 
   if (rows.length === 0) return '';
-  return `【人物の情報状態】\n「まだ知らない」とされた事実は、その人物の台詞・内心・行動の根拠・その人物視点の地の文に出さない。\n\n${rows.join('\n')}`;
+  return `【人物の情報状態】\n「まだ知らない」とされた事実は、その人物の台詞・内心・行動の根拠・その人物視点の地の文に出さない。\nその人物が同席しない場面での噂話・比喩・伏線としても、既知であるかのように扱わない。\n\n${rows.join('\n')}`;
 }
 
 function dedupeText(values: string[]): string[] {
@@ -559,6 +592,20 @@ function characterNameForId(characterId: string, characters: Character[]): strin
   return characters.find((character) => character.characterId === characterId)?.name ?? null;
 }
 
+// NOTE: actor / recipient を「主体: 太郎 → 花子」の形にレンダリング。
+// - actor 未指定なら空文字（呼び元でメタ行から落とす）。
+// - recipient 未指定なら「主体: 太郎」のみ。
+// - 人物一覧に無い ID（削除済みなど）は ID をそのまま出す（フォールバック）。
+function renderActorLine(event: StoryEventRecord, characters: Character[]): string {
+  const actorId = event.actor ?? null;
+  if (!actorId) return '';
+  const actorName = characterNameForId(actorId, characters) ?? actorId;
+  const recipientId = event.recipient ?? null;
+  if (!recipientId) return actorName;
+  const recipientName = characterNameForId(recipientId, characters) ?? recipientId;
+  return `${actorName} → ${recipientName}`;
+}
+
 function selectFrequentPhrases(
   recentContext: string,
   characters: Character[],
@@ -591,28 +638,21 @@ function normalizeExpressionText(text: string): string {
     .toLocaleLowerCase();
 }
 
-function renderBannedExpressions(
-  expressions: string[] | undefined,
-  frequentPhrases: string[] = []
-): string {
+// NOTE: 手動登録の NG。プロンプトの最末尾（【今回の希望】の直前）に置く。
+// 末尾追従の強いモデルでも効くようにという配置意図。
+function renderRegisteredBannedExpressions(expressions: string[] | undefined): string {
   const manualItems = expressions?.filter((text) => text.trim().length > 0) ?? [];
-  if (manualItems.length === 0 && frequentPhrases.length === 0) return '';
+  if (manualItems.length === 0) return '';
+  const lines = manualItems.map((text) => `- 「${text.trim()}」`).join('\n');
+  return `【使わない表現】\n以下の言い回しは今回の本文に出さないこと。同じ意味は別の言い方で書く。\n引用符・括弧内・地の文の別を問わず、部分一致も避ける。\n${lines}`;
+}
 
-  const sections = ['【表現上の注意】'];
-  if (manualItems.length > 0) {
-    const lines = manualItems.map((text) => `- 「${text.trim()}」`).join('\n');
-    sections.push(
-      `【使わない表現】\n以下の言い回しは今回の本文では使わないこと。同じ意味は別の言い方で書くこと。\n${lines}`
-    );
-  }
-  if (frequentPhrases.length > 0) {
-    const lines = frequentPhrases.map((text) => `- 「${text}」`).join('\n');
-    sections.push(
-      `【直近本文で頻出した表現】\n以下の表現は直近の本文で繰り返し使われている。多用を避け、同じ意味は別の言い方で書くこと。\n${lines}`
-    );
-  }
-
-  return sections.join('\n\n');
+// NOTE: 直近本文の頻出フレーズ。soft caution。本文セクション直後に置く。
+// 登録NGとは意味論が違うため（あくまで「多用回避」の弱い指示）、セクションも分ける。
+function renderFrequentPhraseNotice(frequentPhrases: string[]): string {
+  if (frequentPhrases.length === 0) return '';
+  const lines = frequentPhrases.map((text) => `- 「${text}」`).join('\n');
+  return `【表現の重複を避ける】\n以下の表現は直近の本文で繰り返し使われている。多用を避け、同じ意味は別の言い方で書くこと。\n${lines}`;
 }
 
 function resolveWishLine(wish: string, mode: 'continue' | 'regenerate' | 'variate'): string {

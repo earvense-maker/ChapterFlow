@@ -33,6 +33,21 @@ export function estimateMaxOutputTokens(outputLength: number, maxTokens: number)
   return Math.min(maxTokens, Math.max(4096, estimated));
 }
 
+// NOTE: 呼び出し側が明示的な max_tokens を渡したらそれを優先する。指定なしなら
+// 従来通り outputLength から推定する。いずれもプロバイダーのハードキャップで
+// clamp する。JSON 抽出の initial/retry のように「本文向けの推定式だとキャップに
+// 張り付いて retry の headroom が消える」ケースの回避口。
+export function resolveMaxOutputTokens(
+  request: { outputLength: number; maxOutputTokens?: number },
+  providerCap: number
+): number {
+  const explicit = request.maxOutputTokens;
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
+    return Math.min(providerCap, Math.max(1, Math.floor(explicit)));
+  }
+  return estimateMaxOutputTokens(request.outputLength, providerCap);
+}
+
 function normalizeOutputLength(outputLength: number): number {
   if (!Number.isFinite(outputLength) || outputLength <= 0) return DEFAULT_OUTPUT_LENGTH;
   return Math.round(outputLength);

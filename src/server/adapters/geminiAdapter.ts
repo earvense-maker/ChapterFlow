@@ -7,7 +7,7 @@ import type {
   ModelConfig,
 } from '../types/index.js';
 import { ModelAdapter, ModelAdapterError } from './modelAdapter.js';
-import { estimateMaxOutputTokens } from '../utils/outputLength.js';
+import { resolveMaxOutputTokens } from '../utils/outputLength.js';
 import { readServerSentEvents } from '../utils/sse.js';
 
 const PROVIDER_NAME = 'gemini';
@@ -263,7 +263,7 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     safetySettings: CREATIVE_SAFETY_SETTINGS,
     generationConfig: {
       temperature: request.temperature,
-      maxOutputTokens: estimateMaxOutputTokens(request.outputLength, MAX_OUTPUT_TOKENS),
+      maxOutputTokens: resolveMaxOutputTokens(request, MAX_OUTPUT_TOKENS),
     },
   };
 

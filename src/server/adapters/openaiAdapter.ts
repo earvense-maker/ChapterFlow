@@ -7,7 +7,7 @@ import type {
   ModelConfig,
 } from '../types/index.js';
 import { ModelAdapter, ModelAdapterError } from './modelAdapter.js';
-import { estimateMaxOutputTokens } from '../utils/outputLength.js';
+import { resolveMaxOutputTokens } from '../utils/outputLength.js';
 import { readServerSentEvents } from '../utils/sse.js';
 
 const PROVIDER_NAME = 'openai';
@@ -77,7 +77,7 @@ export class OpenAIAdapter implements ModelAdapter {
             { role: 'user', content: request.userPrompt },
           ],
           temperature: request.temperature,
-          max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
+          max_tokens: resolveMaxOutputTokens(request, this.maxCompletionTokens),
           stream: true,
           ...(this.includeStreamOptions ? { stream_options: { include_usage: true } } : {}),
           ...(!this.omitPenaltyFields && request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
@@ -200,7 +200,7 @@ export class OpenAIAdapter implements ModelAdapter {
             { role: 'user', content: request.userPrompt },
           ],
           temperature: request.temperature,
-          max_tokens: estimateMaxOutputTokens(request.outputLength, this.maxCompletionTokens),
+          max_tokens: resolveMaxOutputTokens(request, this.maxCompletionTokens),
           ...(!this.omitPenaltyFields && request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
             ? { frequency_penalty: request.frequencyPenalty }
             : {}),

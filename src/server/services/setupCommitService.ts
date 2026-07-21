@@ -521,8 +521,13 @@ function normalizeStoryEvent(
   const summary = asString(value.summary);
   if (!summary) return null;
   const knownBy = normalizeCharacterIdList(value.knownBy, characters, 12);
-  const explicitlyUnknownBy = normalizeCharacterIdList(value.explicitlyUnknownBy, characters, 4)
+  // NOTE: Track 2A: 4 → 12 に緩和（storyStateService 側の MAX_EXPLICITLY_UNKNOWN と揃える）。
+  const explicitlyUnknownBy = normalizeCharacterIdList(value.explicitlyUnknownBy, characters, 12)
     .filter((id) => !knownBy.includes(id));
+  const hasActor = Object.prototype.hasOwnProperty.call(value, 'actor');
+  const hasRecipient = Object.prototype.hasOwnProperty.call(value, 'recipient');
+  const actor = hasActor ? normalizeSingleCharacterId(value.actor, characters) : undefined;
+  const recipient = hasRecipient ? normalizeSingleCharacterId(value.recipient, characters) : undefined;
   return {
     eventId: normalizeId(value.eventId, 'evt'),
     sceneId: asNullableString(value.sceneId),
@@ -531,6 +536,8 @@ function normalizeStoryEvent(
     visibility: asString(value.visibility),
     knownBy,
     explicitlyUnknownBy,
+    ...(actor !== undefined ? { actor } : {}),
+    ...(recipient !== undefined ? { recipient } : {}),
     importance: normalizeImportance(value.importance, 'medium'),
     status: normalizeStoryStatus(value.status),
     updatedAt: asString(value.updatedAt) || now,
@@ -690,6 +697,21 @@ function normalizeCharacterIdList(value: unknown, characters: Character[], limit
     if (result.length >= limit) break;
   }
   return result;
+}
+
+// NOTE: setup 経路の actor / recipient 用単数 ID 正規化。**strict**:
+//  - 人物一覧に無い ID は null（LLM 出力の混入防止）。
+//  - characters が空でも null。setup 経路は LLM からの初期値受け入れなので、
+//    人物一覧に無い任意文字列を通す必要はない。
+function normalizeSingleCharacterId(
+  value: unknown,
+  characters: Character[]
+): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const validIds = new Set(characters.map((character) => character.characterId));
+  return validIds.has(trimmed) ? trimmed : null;
 }
 
 function asArray(value: unknown): unknown[] {

@@ -210,6 +210,16 @@ export interface StoryEventRecord {
   visibility: string;
   knownBy?: CharacterId[];
   explicitlyUnknownBy?: CharacterId[];
+  // NOTE: 出来事の主体（発話者・行為者・宣言者）と受け手（宣告された相手・
+  // 告白された相手など）。差分パッチにおける挙動:
+  //  - キー不在: 既存値を保持（hasField 判定）
+  //  - 明示 null: 既存値を null に上書き（主体不明への訂正）
+  //  - characterId: 上書き。人物一覧に無い ID は正規化時に null に落とす
+  // knownBy / explicitlyUnknownBy とは独立に抽出・保存する。「actor は必ず
+  // knownBy に含まれる」といった自動包含はしない（背後からの攻撃・催眠中の
+  // 宣告などで recipient が actor を認識していないケースがあるため）。
+  actor?: CharacterId | null;
+  recipient?: CharacterId | null;
   importance: MemoryImportance;
   status: StoryItemStatus;
   updatedAt: string;
@@ -676,6 +686,12 @@ export interface AdapterGenerateRequest {
   abortSignal?: AbortSignal;
   frequencyPenalty?: number;
   presencePenalty?: number;
+  // NOTE: 明示的な最大出力トークン数。指定すると各アダプタは outputLength から
+  // estimateMaxOutputTokens で導出する既定挙動をスキップし、この値（プロバイダー
+  // ハードキャップで clamp）を使う。JSON 抽出のように「outputLength ベースの
+  // 推定（+ Gemini thinking 分の 2048）だとキャップに張り付いて再試行の headroom
+  // が消える」用途で使う。単位はトークン。指定しなければ従来通り。
+  maxOutputTokens?: number;
   // NOTE: 'application/json' を指定するとプロバイダー側で構造化 JSON 出力を
   // 有効化する（Gemini: responseMimeType、OpenAI/DeepSeek: response_format）。
   // これで前置き文やコードフェンスが混ざる事故を減らせる。JSON.parse で直接

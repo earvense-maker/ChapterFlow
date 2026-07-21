@@ -20,15 +20,29 @@ import type {
   StoryThreadRecord,
 } from '../types/index.js';
 
-const STORY_STATE_OUTPUT_LENGTH = 4000;
-const STORY_STATE_RETRY_OUTPUT_LENGTH = 6000;
+// NOTE: Track 2A/2B により応答 JSON に addUnknownBy / removeUnknownBy /
+// knowledge / removeKnowledge / actor / recipient が加わり、explicitlyUnknownBy が
+// 反転運用で大量付与される。initial 4000 だと finishReason==='length' で throw する
+// リスクが高いため、先んじて 6000 / retry 9000 に引き上げる。
+const STORY_STATE_OUTPUT_LENGTH = 6000;
+const STORY_STATE_RETRY_OUTPUT_LENGTH = 9000;
+// NOTE: 明示的な最大出力トークン数（アダプタの maxOutputTokens に直接渡す）。
+// state extraction は JSON なので、本文向けの estimateMaxOutputTokens（upper*3+2048）
+// で見積もると OpenAI/xAI/OpenRouter のハードキャップ 16384 に張り付き、initial と
+// retry が同じ枠になって retry の意味が消える（レビュー指摘 #3）。ここは JSON 前提
+// の実測に近い値で initial=8192、retry=15000 を渡し、retry の実質的な headroom を
+// 確保する（Gemini/DeepSeek はキャップに余裕があるのでそのまま通る）。
+const STORY_STATE_MAX_OUTPUT_TOKENS_INITIAL = 8192;
+const STORY_STATE_MAX_OUTPUT_TOKENS_RETRY = 15000;
 const STORY_STATE_TEMPERATURE = 0.15;
 const MAX_CURRENT_SITUATION = 12;
 const MAX_CHARACTER_STATES = 24;
 const MAX_IMPORTANT_EVENTS = 48;
 const MAX_OPEN_THREADS = 36;
 const MAX_AUTHOR_UNDECIDED = 12;
-const MAX_EXPLICITLY_UNKNOWN = 4;
+// NOTE: Track 2A: 4 → 12 に緩和。反転運用（同席していない主要人物を全員入れる）に
+// 見合う容量を確保する。MAX_EVENT_KNOWN_BY と揃える。
+const MAX_EXPLICITLY_UNKNOWN = 12;
 const MAX_EVENT_KNOWN_BY = 12;
 const MAX_DIFF_RECORDS = 20;
 const MAX_DIFF_SNAPSHOTS = 3;
@@ -69,12 +83,22 @@ export async function updateStoryStateFromAcceptedScene(input: {
   });
   let parsed: unknown | null = null;
 
-  const outputLengths = [STORY_STATE_OUTPUT_LENGTH, STORY_STATE_RETRY_OUTPUT_LENGTH];
-  for (const [attemptIndex, outputLength] of outputLengths.entries()) {
+  const attempts = [
+    {
+      outputLength: STORY_STATE_OUTPUT_LENGTH,
+      maxOutputTokens: STORY_STATE_MAX_OUTPUT_TOKENS_INITIAL,
+    },
+    {
+      outputLength: STORY_STATE_RETRY_OUTPUT_LENGTH,
+      maxOutputTokens: STORY_STATE_MAX_OUTPUT_TOKENS_RETRY,
+    },
+  ];
+  for (const [attemptIndex, attempt] of attempts.entries()) {
     const result = await input.adapter.generateText({
       systemInstructions: buildSystemInstructions(),
       userPrompt,
-      outputLength,
+      outputLength: attempt.outputLength,
+      maxOutputTokens: attempt.maxOutputTokens,
       temperature: STORY_STATE_TEMPERATURE,
       timeoutMs: attemptIndex === 0 ? input.timeoutMs : Math.max(5_000, Math.floor(input.timeoutMs / 2)),
       modelName: input.project.activeModelName,
@@ -96,7 +120,7 @@ export async function updateStoryStateFromAcceptedScene(input: {
 
     parsed = parseStoryStateJson(result.text);
     if (result.finishReason === 'length') {
-      if (attemptIndex === outputLengths.length - 1) {
+      if (attemptIndex === attempts.length - 1) {
         throw new Error('物語の状態JSONが出力上限で途中までになりました。再抽出してください。');
       }
       parsed = null;
@@ -178,11 +202,23 @@ function buildUpdatePrompt(input: {
       '- currentSituation には、次の場面開始時点の現在状況だけを短く入れる。',
       '- characterStates には、新規または更新が必要な人物だけを入れる。',
       '- 人物ヒントの initialState は開始時点の状態であり、出力キーとして模倣しない。現在状態は characterStates[].currentState に返す。',
-      '- characterStates の knowledge は更新対象ではないため出力しない。',
+      '- characterStates.knowledge には、今回の場面で当該人物が新たに得た小さな知識・観察・仮説を短文で追加する（1件30字以内推奨、1人物あたり今回追加は最大3件）。イベント化するほどでもないが「以降その人物の描写に効く」性質のもの。例: 「Bの好みが苦味に偏っていることに気づいた」「Cが左利きだと知った」「Dの職業を疑い始めた」。',
+      '- 既存の knowledge から取り消したい項目がある場合、characterStates.removeKnowledge に完全一致する文字列を並べる。誤抽出の巻き戻し用。',
+      '- 重複する内容や、importantEvents に既に載せた事件そのものは knowledge に書かない。',
       '- importantEvents には、新規または更新が必要な不可逆な出来事・約束・秘密の開示だけを入れる。',
       '- importantEvents の characters は出来事の当事者名、presentCharacters はその場に居合わせた人物のcharacterId、learnedBy は伝聞・立ち聞き・観察などでこの場面で新たに知った人物のcharacterId。',
-      '- knownBy / explicitlyUnknownBy には人物ヒントのcharacterIdだけを使う。本文中の呼び名・あだ名は aliases を参照して必ずcharacterIdへ解決する。',
-      '- explicitlyUnknownBy は通常0〜2名。知らないことが物語上の緊張や皮肉を生む人物だけを入れ、その場にいなかった人物を機械的に列挙しない。',
+      '- knownBy / addUnknownBy / removeUnknownBy には人物ヒントのcharacterIdだけを使う。本文中の呼び名・あだ名は aliases を参照して必ずcharacterIdへ解決する。',
+      '- explicitlyUnknownBy はパッチキーとしては使わない。代わりに addUnknownBy / removeUnknownBy を使う。',
+      '- addUnknownBy には、この場面終了時点で、その場に居合わせず、伝聞・立ち聞き・観察・記録の閲覧などによっても知り得ない人物のcharacterIdを入れる。原則として knownBy 以外の主要人物は全員入れる。',
+      '  - 判定は「この場面が終わった瞬間」で切る。次の場面で当人に伝えに行く予定があっても、この場面終了時点ではまだ知らないので addUnknownBy に入れる。実際に情報が伝わる場面の抽出で learnedBy 経由で knownBy へ移す。',
+      '  - 次の人物は含めない: 人物一覧に無い脇役、明かされること自体に意味のない情報（周知の日常的事実、天候など）。',
+      '- removeUnknownBy は、以前の抽出で誤って explicitlyUnknownBy に入れた人物を取り消したいときにcharacterIdを列挙する。既存イベントの誤抽出訂正専用。',
+      '- 主要人物とは、人物ヒントの role が protagonist / deuteragonist の人物、および当該場面直前の characterStates に登場する人物とする。',
+      '- actor は「その出来事の主体（発話者・行為者・宣言者）」のcharacterId。単独行為なら recipient は null。',
+      '- recipient は「その出来事の受け手・宛先（宣告された相手、告白された相手など）」のcharacterId。宛先が特定できない出来事（独白・情景・自然現象）では null にする。',
+      '- actor / recipient は当事者性が明確な場合にのみ埋める。誰が主体か本文から読み取れない場合は null にする（推測しない）。',
+      '- actor / recipient に指定する characterId は、人物ヒントに存在するIDに限る。名前一致で複数候補ある場合は null にする。',
+      '- actor / recipient は「主客の構造」を残すためのものであり、知識状態（knownBy / explicitlyUnknownBy）とは独立に扱う。actor だからといって自動で knownBy に含める、といった暗黙の連動はしない。知識状態は presentCharacters / learnedBy / knownBy / explicitlyUnknownBy 側で別途判断する。',
       '- openThreads には、作中で提示済みの謎・伏線だけを入れる。作者がまだ決めていない事項は authorUndecided であり、抽出・更新しない。解決済みは既存threadIdを使い status を resolved にする。',
       '- clock には場面終了時点の物語内時間を入れる。経過が読み取れない場合は既存値をそのまま返す。日をまたいだ描写があればdayを進める。',
       '- 既存項目を更新する場合は eventId/threadId/characterId を維持する。',
@@ -200,6 +236,8 @@ function buildUpdatePrompt(input: {
             name: '人物名',
             currentState: '今回更新が必要な現在状態',
             relationships: ['今回更新が必要な関係変化'],
+            knowledge: ['今回追加する知識・観察（各30字以内、最大3件）'],
+            removeKnowledge: ['既存knowledgeから削除する完全一致文字列'],
           },
         ],
         clock: {
@@ -216,7 +254,10 @@ function buildUpdatePrompt(input: {
             presentCharacters: ['char-id'],
             learnedBy: ['char-id'],
             knownBy: ['char-id'],
-            explicitlyUnknownBy: ['char-id'],
+            addUnknownBy: ['char-id'],
+            removeUnknownBy: ['char-id'],
+            actor: '主体のcharacterIdまたはnull',
+            recipient: '受け手のcharacterIdまたはnull',
             importance: 'high',
             status: 'active',
           },
@@ -315,7 +356,8 @@ export function mergeStoryState(
 export function normalizeStoryState(
   value: unknown,
   fallbackUpdatedAt = nowIso(),
-  characters: Character[] = []
+  characters: Character[] = [],
+  options: { strictActorRecipientIds?: boolean } = {}
 ): StoryState {
   if (!isRecord(value)) return createEmptyStoryState(fallbackUpdatedAt);
 
@@ -327,7 +369,14 @@ export function normalizeStoryState(
       .filter((item): item is StoryCharacterState => item !== null)
       .slice(0, MAX_CHARACTER_STATES),
     importantEvents: asArray(value.importantEvents)
-      .map((item) => normalizeEventRecord(item, fallbackUpdatedAt, characters))
+      .map((item) =>
+        normalizeEventRecord(
+          item,
+          fallbackUpdatedAt,
+          characters,
+          options.strictActorRecipientIds === true
+        )
+      )
       .filter((item): item is StoryEventRecord => item !== null)
       .slice(0, MAX_IMPORTANT_EVENTS),
     openThreads: asArray(value.openThreads)
@@ -444,16 +493,46 @@ function normalizeCharacterStatePatch(
     : existing?.currentState ?? '';
   if (!name && !currentState) return null;
 
+  // NOTE: Track 2B: knowledge を差分パッチで追加削除できるようにする。
+  // - knowledge: 追加する新規知識（1件30字は指示側で誘導、コード上限は3件/差分）。
+  // - removeKnowledge: 既存 knowledge から取り消す文字列（normalizeComparableText で照合）。
+  // 全体上限 12 件は既存 (normalizeCharacterState) と揃える。上限超過時は古いものから捨てる。
+  const knowledgeAdd = hasField(value, 'knowledge') ? asStringArray(value.knowledge, 3) : [];
+  const knowledgeRemove = hasField(value, 'removeKnowledge')
+    ? asStringArray(value.removeKnowledge, 12)
+    : [];
+  const knowledge = mergeKnowledgeList(existing?.knowledge ?? [], knowledgeAdd, knowledgeRemove);
+
   return {
     characterId,
     name: name || existing?.name || 'Unknown',
     currentState,
-    knowledge: existing?.knowledge ?? [],
+    knowledge,
     relationships: hasField(value, 'relationships')
       ? asStringArray(value.relationships, 12)
       : existing?.relationships ?? [],
     updatedAt: fallbackUpdatedAt,
   };
+}
+
+// NOTE: knowledge の追加削除ロジック。テスト容易性のためエクスポートする。
+// - まず remove を既存から取り除き、その後 add を末尾に append する。
+//   同一パッチで add と remove が同一項目を含むケースは、remove 済みの後に
+//   add が末尾に戻るので、結果的に add が勝つ（項目は残る）。
+// - normalizeComparableText で重複除去。
+// - 上限12件を超えたら古いものから切り捨て（末尾を優先して残す）。
+// 照合の限界: normalizeComparableText は NFKC + trim + 連続空白の1個化 + 小文字化。
+// 空白の有無自体は吸収しないため、removeKnowledge は既存 knowledge の空白位置と
+// 厳密に一致させる必要がある。
+export function mergeKnowledgeList(
+  existing: string[],
+  add: string[],
+  remove: string[]
+): string[] {
+  const removeKeys = new Set(remove.map(normalizeComparableText).filter(Boolean));
+  const filtered = existing.filter((text) => !removeKeys.has(normalizeComparableText(text)));
+  const combined = mergeUniqueStrings([...filtered, ...add]);
+  return combined.length > 12 ? combined.slice(combined.length - 12) : combined;
 }
 
 function findCharacterStateIndex(
@@ -485,7 +564,8 @@ function findCharacterStateIndex(
 function normalizeEventRecord(
   value: unknown,
   fallbackUpdatedAt: string,
-  characters: Character[] = []
+  characters: Character[] = [],
+  forceStrictActorRecipientIds = false
 ): StoryEventRecord | null {
   if (!isRecord(value)) return null;
 
@@ -497,6 +577,20 @@ function normalizeEventRecord(
     characters,
     MAX_EXPLICITLY_UNKNOWN
   ).filter((id) => !knownBy.includes(id));
+  // NOTE: 読み込み経路（characters が渡らないケース）では既に検証済みの ID を
+  // 破壊しないよう preserve を使う。書き込み経路（mergeEventRecords 経由の
+  // normalizeEventPatch）は strict な normalizeSingleCharacterId を使う。
+  const useStrict = forceStrictActorRecipientIds || characters.length > 0;
+  const actor = hasField(value, 'actor')
+    ? useStrict
+      ? normalizeSingleCharacterId(value.actor, characters)
+      : preserveStoredCharacterId(value.actor)
+    : undefined;
+  const recipient = hasField(value, 'recipient')
+    ? useStrict
+      ? normalizeSingleCharacterId(value.recipient, characters)
+      : preserveStoredCharacterId(value.recipient)
+    : undefined;
 
   return {
     eventId: normalizeId(value.eventId, 'evt'),
@@ -506,6 +600,8 @@ function normalizeEventRecord(
     visibility: asString(value.visibility),
     knownBy,
     explicitlyUnknownBy,
+    ...(actor !== undefined ? { actor } : {}),
+    ...(recipient !== undefined ? { recipient } : {}),
     importance: asImportance(value.importance, 'medium'),
     status: asStatus(value.status, 'active'),
     updatedAt: asString(value.updatedAt) || fallbackUpdatedAt,
@@ -560,14 +656,42 @@ function normalizeEventPatch(
     ...presentIds,
     ...learnedIds,
   ]).slice(0, MAX_EVENT_KNOWN_BY);
-  const explicitUnknownSource = hasField(value, 'explicitlyUnknownBy')
-    ? value.explicitlyUnknownBy
-    : existing?.explicitlyUnknownBy ?? [];
-  const explicitlyUnknownBy = normalizeCharacterIdList(
-    explicitUnknownSource,
+  // NOTE: Track 2A: explicitlyUnknownBy はパッチキーとして受け付けない。
+  // addUnknownBy（追加）/ removeUnknownBy（削除）で追加・削除操作に統一する。
+  // 旧形式 explicitlyUnknownBy キーが混入した場合は既存値を破壊しないよう無視し、
+  // warn ログを残す（LLM のプロンプト無視 or 古いクライアント経由の異常ケース検知用）。
+  if (hasField(value, 'explicitlyUnknownBy')) {
+    console.warn(
+      'StoryState patch contains legacy explicitlyUnknownBy key; ignoring. Use addUnknownBy / removeUnknownBy instead.'
+    );
+  }
+  const existingExplicitUnknown = normalizeCharacterIdList(
+    existing?.explicitlyUnknownBy ?? [],
     characters,
     MAX_EXPLICITLY_UNKNOWN
-  ).filter((id) => !knownBy.includes(id));
+  );
+  const addUnknownIds = normalizeCharacterIdList(
+    value.addUnknownBy,
+    characters,
+    MAX_EXPLICITLY_UNKNOWN
+  );
+  const removeUnknownIds = new Set(
+    normalizeCharacterIdList(value.removeUnknownBy, characters, MAX_EXPLICITLY_UNKNOWN)
+  );
+  const explicitlyUnknownBy = mergeUniqueStrings([
+    ...existingExplicitUnknown,
+    ...addUnknownIds,
+  ])
+    .filter((id) => !removeUnknownIds.has(id))
+    .filter((id) => !knownBy.includes(id))
+    .slice(0, MAX_EXPLICITLY_UNKNOWN);
+
+  const actor = hasField(value, 'actor')
+    ? normalizeSingleCharacterId(value.actor, characters)
+    : existing?.actor;
+  const recipient = hasField(value, 'recipient')
+    ? normalizeSingleCharacterId(value.recipient, characters)
+    : existing?.recipient;
 
   return {
     eventId: existing?.eventId ?? normalizeId(value.eventId, 'evt'),
@@ -581,6 +705,8 @@ function normalizeEventPatch(
     visibility: hasField(value, 'visibility') ? asString(value.visibility) : existing?.visibility ?? '',
     knownBy,
     explicitlyUnknownBy,
+    ...(actor !== undefined ? { actor } : {}),
+    ...(recipient !== undefined ? { recipient } : {}),
     importance: hasField(value, 'importance')
       ? asImportance(value.importance, existing?.importance ?? 'medium')
       : existing?.importance ?? 'medium',
@@ -721,6 +847,34 @@ function normalizeCharacterIdList(value: unknown, characters: Character[], maxIt
   return result;
 }
 
+// NOTE: actor / recipient 用の単数版。**strict**:
+//  - 人物一覧に無い ID は null に落とす（LLM 出力の混入防止）。
+//  - characters が空でも null（allowAny 分岐を継承しない）。
+//  - LLM パッチ経由（mergeEventRecords → normalizeEventPatch）で使う。
+// 読み込み経路（characters=[] で保存済みデータをそのまま復元する経路）は、
+// preserveStoredCharacterId を使う。両者を混同すると LLM が返した名前
+// （"太郎"、"nobody" 等）が actor/recipient として保存され得るため、
+// 関数ごと分けて別名にしている（引数フラグより誤用が起きにくい）。
+function normalizeSingleCharacterId(
+  value: unknown,
+  characters: Character[]
+): CharacterId | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const validIds = new Set(characters.map((character) => character.characterId));
+  return validIds.has(trimmed) ? trimmed : null;
+}
+
+// NOTE: 保存済み StoryState の読み込み専用。characters コンテキストなしで
+// normalizeStoryState → normalizeEventRecord に流れるとき、既に検証済みの
+// actor/recipient を破壊しないためだけの関数。書き込み経路で使ってはいけない。
+function preserveStoredCharacterId(value: unknown): CharacterId | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
 function mergeUniqueStrings(values: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -832,7 +986,11 @@ export async function replaceStoryState(input: {
 }): Promise<StoryState> {
   return withStoryStateLock(input.projectId, async () => {
     const existing = await readStoryState(input.projectId);
-    const normalized = normalizeStoryState(input.storyState, nowIso(), input.characters);
+    // NOTE: replace は保存済みデータの読み込みではなくユーザー入力の書き込み。
+    // 人物が0件でも actor / recipient の任意文字列を通さない。
+    const normalized = normalizeStoryState(input.storyState, nowIso(), input.characters, {
+      strictActorRecipientIds: true,
+    });
     const next: StoryState = {
       ...normalized,
       processedGenerationIds: existing.processedGenerationIds ?? [],

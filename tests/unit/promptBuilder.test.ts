@@ -593,7 +593,7 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('Legacy-only knowledge survives migration.');
   });
 
-  it('adds banned expressions section between output form and story text', async () => {
+  it('places registered banned expressions immediately before the wish section', async () => {
     const banned = Array.from({ length: 12 }, (_, i) => `NG表現${i + 1}`);
     const { userPrompt } = await buildPrompt({
       project: makeProject(),
@@ -605,18 +605,25 @@ describe('buildPrompt', () => {
       bannedExpressions: banned,
     });
     const outputIndex = userPrompt.indexOf('【出力形式】');
-    const bannedIndex = userPrompt.indexOf('【表現上の注意】');
+    const bannedIndex = userPrompt.indexOf('【使わない表現】');
     const wishIndex = userPrompt.indexOf('【今回の希望】');
     expect(outputIndex).toBeGreaterThanOrEqual(0);
     expect(bannedIndex).toBeGreaterThan(outputIndex);
+    // NOTE: 新仕様では【使わない表現】は【今回の希望】の直前配置。
+    // 他セクション（style sample など）が挟まらないことを、区切りが1つだけであることで確認する。
     expect(bannedIndex).toBeLessThan(wishIndex);
+    const between = userPrompt.slice(bannedIndex, wishIndex);
+    const separatorCount = between.split('\n\n---\n\n').length - 1;
+    expect(separatorCount).toBe(1);
+    // 旧セクション名（ラッパー見出し）は残さない
+    expect(userPrompt).not.toContain('【表現上の注意】');
     // NG 表現は上限（12件）分がすべて残る（黙って削らない）
     for (const text of banned) {
       expect(userPrompt).toContain(`「${text}」`);
     }
   });
 
-  it('omits banned expressions section when list is empty', async () => {
+  it('omits registered banned and frequent phrase sections when both are empty', async () => {
     const { userPrompt } = await buildPrompt({
       project: makeProject(),
       state: makeState(),
@@ -626,6 +633,8 @@ describe('buildPrompt', () => {
       worldText: '',
       bannedExpressions: [],
     });
+    expect(userPrompt).not.toContain('【使わない表現】');
+    expect(userPrompt).not.toContain('【表現の重複を避ける】');
     expect(userPrompt).not.toContain('【表現上の注意】');
   });
 
@@ -679,7 +688,7 @@ describe('buildPrompt', () => {
       worldText: '',
     };
     const automatic = await buildPrompt({ ...baseInput, characters: [] });
-    expect(automatic.userPrompt).toContain('【直近本文で頻出した表現】');
+    expect(automatic.userPrompt).toContain('【表現の重複を避ける】');
     expect(automatic.userPrompt).toContain(`「${repeatedPhrase}」`);
     expect(automatic.userPrompt).toContain('多用を避け');
 
@@ -693,7 +702,7 @@ describe('buildPrompt', () => {
         description: '名前が頻出表現に含まれる人物',
       }],
     });
-    expect(namedCharacter.userPrompt).not.toContain('【直近本文で頻出した表現】');
+    expect(namedCharacter.userPrompt).not.toContain('【表現の重複を避ける】');
 
     const manualDuplicate = await buildPrompt({
       ...baseInput,
@@ -701,8 +710,11 @@ describe('buildPrompt', () => {
       bannedExpressions: [` ${repeatedPhrase}。 `],
     });
     expect(manualDuplicate.userPrompt).toContain('【使わない表現】');
-    expect(manualDuplicate.userPrompt).not.toContain('【直近本文で頻出した表現】');
-    const manualSection = manualDuplicate.userPrompt.split('【表現上の注意】')[1]?.split('---')[0] ?? '';
+    expect(manualDuplicate.userPrompt).not.toContain('【表現の重複を避ける】');
+    // NOTE: 新仕様では【使わない表現】が末尾（【今回の希望】の直前）にあり、
+    // ここは手動NGの重複除去（頻出セクションを出さないこと）を検証する場所。
+    // 手動NG本文の出現回数を数えるので、split 先は【使わない表現】に置き換える。
+    const manualSection = manualDuplicate.userPrompt.split('【使わない表現】')[1]?.split('---')[0] ?? '';
     expect(manualSection.split(repeatedPhrase).length - 1).toBe(1);
   });
 
@@ -756,7 +768,7 @@ describe('buildPrompt', () => {
       characters: [],
       worldText: '',
     });
-    const automaticSection = userPrompt.split('【直近本文で頻出した表現】')[1]?.split('---')[0] ?? '';
+    const automaticSection = userPrompt.split('【表現の重複を避ける】')[1]?.split('---')[0] ?? '';
     expect((automaticSection.match(/^- 「/gm) ?? []).length).toBe(8);
   });
 
@@ -909,5 +921,377 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('RECENT_ACCEPTED_TEXT');
     expect(userPrompt).toContain('物語の現在地を示す事実メモ');
     expect(userPrompt).toContain('採用済み本文 ＞ 現在状態');
+  });
+
+  // NOTE: Track 3A の新配置スナップショット。
+  // continue モード: 【出力形式】→【これまでの作品本文（直近）】→【表現の重複を避ける】→【使わない表現】→【今回の希望】。
+  it('orders sections per Track 3A: registered banned expressions land right before the wish', async () => {
+    const project = makeProject(promptStateProjectId);
+    const episodeId = 'ep-order-3a';
+    const sceneId = 'scene-order-3a';
+    const generationId = 'gen-order-3a';
+    const repeatedPhrase = '揺れる灯りの下で';
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Order 3A',
+      order: 1,
+      createdAt: '2026-07-21T00:00:00Z',
+      updatedAt: '2026-07-21T00:00:00Z',
+      scenes: [{
+        sceneId,
+        episodeId,
+        order: 1,
+        createdAt: '2026-07-21T00:00:00Z',
+        updatedAt: '2026-07-21T00:00:00Z',
+        acceptedGenerationId: generationId,
+        draftGenerationIds: [],
+      }],
+    };
+    const generation: GenerationRecord = {
+      generationId,
+      sceneId,
+      episodeId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      responseText: `${repeatedPhrase}。`.repeat(3),
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'openai', modelName: 'gpt-4o-mini' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-21T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const state = { ...makeState(), currentEpisodeId: episodeId, currentSceneId: sceneId };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeEpisodeRecord(promptStateProjectId, episode);
+    await storage.appendGenerationLog(promptStateProjectId, generation);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state,
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: '',
+      bannedExpressions: ['禁止したい語'],
+    });
+
+    const order = [
+      '【出力形式】',
+      '【これまでの作品本文（直近）】',
+      '【表現の重複を避ける】',
+      '【使わない表現】',
+      '【今回の希望】',
+    ].map((marker) => userPrompt.indexOf(marker));
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  // NOTE: rewrite モード時の順序: 【これまでの作品本文…】→【今回書き直しの対象となる場面】→
+  // 【表現の重複を避ける】→【使わない表現】→【今回の希望】。
+  it('orders sections per Track 3A in rewrite mode with target scene between recent text and frequent phrases', async () => {
+    const project = makeProject(promptStateProjectId);
+    const episodeId = 'ep-order-3a-rewrite';
+    const sceneId = 'scene-order-3a-rewrite';
+    const generationId = 'gen-order-3a-rewrite';
+    const previousGenerationId = 'gen-order-3a-rewrite-prev';
+    const repeatedPhrase = '街の底を這う霧';
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Order 3A rewrite',
+      order: 1,
+      createdAt: '2026-07-21T00:00:00Z',
+      updatedAt: '2026-07-21T00:00:00Z',
+      scenes: [
+        {
+          sceneId: 'scene-prev',
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-21T00:00:00Z',
+          updatedAt: '2026-07-21T00:00:00Z',
+          acceptedGenerationId: previousGenerationId,
+          draftGenerationIds: [],
+        },
+        {
+          sceneId,
+          episodeId,
+          order: 2,
+          createdAt: '2026-07-21T00:00:00Z',
+          updatedAt: '2026-07-21T00:00:00Z',
+          acceptedGenerationId: generationId,
+          draftGenerationIds: [],
+        },
+      ],
+    };
+    const previous: GenerationRecord = {
+      generationId: previousGenerationId,
+      sceneId: 'scene-prev',
+      episodeId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      responseText: `${repeatedPhrase}。`.repeat(3),
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'openai', modelName: 'gpt-4o-mini' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-21T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const target: GenerationRecord = {
+      generationId,
+      sceneId,
+      episodeId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      responseText: '再構成の対象となる本文。',
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'openai', modelName: 'gpt-4o-mini' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-21T00:00:00Z',
+      parentGenerationId: null,
+    };
+    const state = { ...makeState(), currentEpisodeId: episodeId, currentSceneId: sceneId };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeEpisodeRecord(promptStateProjectId, episode);
+    await storage.appendGenerationLog(promptStateProjectId, previous);
+    await storage.appendGenerationLog(promptStateProjectId, target);
+
+    for (const [mode, targetHeading] of [
+      ['regenerate', '【今回書き直しの対象となる場面】'],
+      ['variate', '【今回別案を作る対象となる場面】'],
+    ] as const) {
+      const { userPrompt } = await buildPrompt({
+        project,
+        state,
+        wish: 'この場面を別の切り取り方で',
+        memories: [],
+        characters: [],
+        worldText: '',
+        bannedExpressions: ['禁止したい語'],
+        mode,
+      });
+
+      const order = [
+        '【これまでの作品本文（直近／今回書き直す場面より前まで）】',
+        targetHeading,
+        '【表現の重複を避ける】',
+        '【使わない表現】',
+        '【今回の希望】',
+      ].map((marker) => userPrompt.indexOf(marker));
+      expect(order.every((index) => index >= 0)).toBe(true);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+    }
+  });
+
+  // NOTE: 【好み・NG】直下に、末尾の【使わない表現】へ誘導する注記が出ることを検証する。
+  it('adds a pointer note under 好み・NG when negative memories exist', async () => {
+    const memories: Memory[] = [
+      {
+        memoryId: 'mem-neg-1',
+        type: 'negative',
+        content: '性描写を露骨に書かない',
+        importance: 'high',
+        relatedCharacters: [],
+        relatedEpisodes: [],
+        createdAt: '2026-07-21T00:00:00Z',
+        updatedAt: '2026-07-21T00:00:00Z',
+        sourceSceneId: null,
+        status: 'active',
+        source: 'manual',
+      },
+    ];
+    const { userPrompt } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '続き',
+      memories,
+      characters: [],
+      worldText: '',
+    });
+    expect(userPrompt).toContain('【好み・NG】');
+    expect(userPrompt).toContain('※言い回し単位で禁止したい語句は末尾の【使わない表現】に登録する。');
+  });
+
+  // NOTE: Track 1A: 重要イベントの主体行の描画。
+  it('renders actor and recipient in the important-events section (Track 1A)', async () => {
+    const project = makeProject(promptStateProjectId);
+    const characters: Character[] = [
+      { characterId: 'char-taro', name: '太郎', role: 'protagonist', description: '' },
+      { characterId: 'char-hanako', name: '花子', role: 'deuteragonist', description: '' },
+    ];
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: [
+        {
+          eventId: 'evt-actor-recipient',
+          sceneId: null,
+          summary: '太郎が花子に告白した',
+          characters: ['太郎', '花子'],
+          visibility: '',
+          knownBy: ['char-taro', 'char-hanako'],
+          actor: 'char-taro',
+          recipient: 'char-hanako',
+          importance: 'high',
+          status: 'active',
+          updatedAt: '2026-07-21T00:00:00Z',
+        },
+        {
+          eventId: 'evt-actor-only',
+          sceneId: null,
+          summary: '太郎が独白した',
+          characters: ['太郎'],
+          visibility: '',
+          knownBy: ['char-taro'],
+          actor: 'char-taro',
+          recipient: null,
+          importance: 'medium',
+          status: 'active',
+          updatedAt: '2026-07-21T00:00:00Z',
+        },
+        {
+          eventId: 'evt-no-actor',
+          sceneId: null,
+          summary: '嵐が街を襲った',
+          characters: [],
+          visibility: '',
+          importance: 'medium',
+          status: 'active',
+          updatedAt: '2026-07-21T00:00:00Z',
+        },
+      ],
+      openThreads: [],
+      updatedAt: '2026-07-21T00:00:00Z',
+    };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters,
+      worldText: '',
+    });
+
+    expect(userPrompt).toContain('主体: 太郎 → 花子');
+    // recipient null のとき「太郎 →」ではなく「太郎」だけになる
+    expect(userPrompt).toMatch(/太郎が独白した[^\n]*主体: 太郎[、）]/);
+    // actor 未指定の行には「主体:」が入らない
+    const stormLine = userPrompt.split('\n').find((line) => line.includes('嵐が街を襲った')) ?? '';
+    expect(stormLine).not.toContain('主体:');
+  });
+
+  // NOTE: レビュー #1: 新しく追加された knowledge が描画側で押し出されない挙動を検証。
+  // mergeKnowledgeList は末尾追加、描画は「新しい方から6件」を取るはず。
+  it('renders the newest knowledge entries even when the character already has 6 older entries (review #1)', async () => {
+    const project = makeProject(promptStateProjectId);
+    const characters: Character[] = [
+      { characterId: 'char-a', name: 'アリス', role: 'protagonist', description: '' },
+    ];
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [
+        {
+          characterId: 'char-a',
+          name: 'アリス',
+          currentState: '',
+          knowledge: [
+            '古い知識1',
+            '古い知識2',
+            '古い知識3',
+            '古い知識4',
+            '古い知識5',
+            '古い知識6',
+            'アリスは相棒の秘密を今日知った',
+          ],
+          relationships: [],
+          updatedAt: '2026-07-21T00:00:00Z',
+        },
+      ],
+      importantEvents: [],
+      openThreads: [],
+      updatedAt: '2026-07-21T00:00:00Z',
+    };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters,
+      worldText: '',
+    });
+
+    // 新規追加した末尾の知識が【人物の情報状態】に含まれることを確認
+    expect(userPrompt).toContain('アリスは相棒の秘密を今日知った');
+    // 先頭の古い知識は6件のうちに入りきらず、押し出される
+    expect(userPrompt).not.toContain('古い知識1');
+  });
+
+  // NOTE: Track 2A: 【人物の情報状態】unknown 側の視点優先ソート＋スライス。
+  // 視点人物は 12 件、他人物は 6 件に切り詰められる。
+  it('caps unknown events per character based on viewpoint (Track 2A)', async () => {
+    const project = makeProject(promptStateProjectId);
+    const characters: Character[] = [
+      { characterId: 'char-viewer', name: 'ビュー', role: 'protagonist', description: '' },
+      { characterId: 'char-other', name: 'アザー', role: 'supporting', description: '' },
+    ];
+    // 15 件のイベントを作り、両人物とも「まだ知らない」に列挙する
+    const buildEvents = () =>
+      Array.from({ length: 15 }, (_, i) => ({
+        eventId: `evt-${i}`,
+        sceneId: null,
+        summary: `重要イベント${i}`,
+        characters: [],
+        visibility: '',
+        knownBy: [] as string[],
+        explicitlyUnknownBy: ['char-viewer', 'char-other'],
+        importance: 'medium' as const,
+        status: 'active' as const,
+        updatedAt: `2026-07-21T00:00:${String(i).padStart(2, '0')}Z`,
+      }));
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: buildEvents(),
+      openThreads: [],
+      updatedAt: '2026-07-21T00:00:00Z',
+    };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: 'ビューの視点で続き',
+      memories: [],
+      characters,
+      worldText: '',
+    });
+
+    // 視点人物 ビュー の「まだ知らない」行を抽出
+    const viewerBlock = userPrompt.split('- ビュー\n')[1]?.split('- アザー')[0] ?? '';
+    const viewerUnknownLine = viewerBlock.split('\n').find((line) => line.includes('まだ知らない:')) ?? '';
+    const viewerUnknownCount = viewerUnknownLine.split('/').filter((s) => s.trim()).length;
+    expect(viewerUnknownCount).toBe(12);
+
+    // 他人物 アザー の「まだ知らない」行
+    const otherBlock = userPrompt.split('- アザー\n')[1] ?? '';
+    const otherUnknownLine = otherBlock.split('\n').find((line) => line.includes('まだ知らない:')) ?? '';
+    const otherUnknownCount = otherUnknownLine.split('/').filter((s) => s.trim()).length;
+    expect(otherUnknownCount).toBe(6);
+
+    // 否定制約の強化ワード
+    expect(userPrompt).toContain('その人物が同席しない場面での噂話・比喩・伏線としても、既知であるかのように扱わない。');
   });
 });
