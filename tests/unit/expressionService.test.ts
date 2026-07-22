@@ -1,10 +1,14 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import * as expressionService from '../../src/server/services/expressionService';
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
+import { CONFIG_DIR } from '../../src/server/config';
 import type { EpisodeRecord, GenerationRecord } from '../../src/server/types/index';
 
 const createdProjectIds: string[] = [];
+const globalExpressionsPath = path.join(CONFIG_DIR, 'global-expressions.json');
 
 async function createTrackedProject(): Promise<string> {
   const project = await projectService.createProject({ title: 'Expression Test' });
@@ -15,6 +19,7 @@ async function createTrackedProject(): Promise<string> {
 afterEach(async () => {
   await Promise.all(createdProjectIds.map((id) => storage.deleteProjectDir(id)));
   createdProjectIds.length = 0;
+  await fs.rm(globalExpressionsPath, { force: true });
 });
 
 async function writeAcceptedText(projectId: string, text: string): Promise<void> {
@@ -150,6 +155,50 @@ describe('expressionService banned expression resolution', () => {
     }
     const banned = await expressionService.resolveBannedExpressions(projectId);
     expect(banned.length).toBe(expressionService.BAN_LIMIT_TOTAL);
+  });
+
+  it('applies common NG expressions to every project while keeping project NG local', async () => {
+    const firstProjectId = await createTrackedProject();
+    const secondProjectId = await createTrackedProject();
+    await expressionService.createGlobalExpression({ text: '共通の言い回し' });
+    await expressionService.createExpression(firstProjectId, { text: '作品だけの言い回し' });
+
+    await expect(expressionService.resolveBannedExpressions(firstProjectId)).resolves.toEqual(
+      expect.arrayContaining(['共通の言い回し', '作品だけの言い回し'])
+    );
+    await expect(expressionService.resolveBannedExpressions(secondProjectId)).resolves.toEqual([
+      '共通の言い回し',
+    ]);
+  });
+
+  it('deduplicates normalized common and project expressions in the prompt result', async () => {
+    const projectId = await createTrackedProject();
+    await expressionService.createGlobalExpression({ text: '同じ  表現' });
+    await expressionService.createExpression(projectId, { text: '同じ 表現' });
+
+    await expect(expressionService.resolveBannedExpressions(projectId)).resolves.toEqual(['同じ 表現']);
+  });
+
+  it('serializes concurrent common NG updates without dropping any expression', async () => {
+    await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        expressionService.createGlobalExpression({ text: `共通-${index}` })
+      )
+    );
+
+    await expect(expressionService.getGlobalExpressions()).resolves.toHaveLength(12);
+  });
+
+  it('falls back to project NG expressions when the common file is corrupt', async () => {
+    const projectId = await createTrackedProject();
+    await expressionService.createExpression(projectId, { text: '作品NG' });
+    await fs.mkdir(CONFIG_DIR, { recursive: true });
+    await fs.writeFile(globalExpressionsPath, '{broken', 'utf8');
+
+    await expect(expressionService.getGlobalExpressions()).rejects.toThrow(
+      expressionService.GlobalExpressionsCorruptError
+    );
+    await expect(expressionService.resolveBannedExpressions(projectId)).resolves.toEqual(['作品NG']);
   });
 
 });

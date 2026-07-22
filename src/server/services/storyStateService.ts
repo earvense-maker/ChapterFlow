@@ -73,6 +73,7 @@ export async function updateStoryStateFromAcceptedScene(input: {
   characters: Character[];
   worldText: string;
   timeoutMs: number;
+  applyIfCurrent?: (apply: () => Promise<StoryState>) => Promise<StoryState | null>;
 }): Promise<StoryState | null> {
   const promptState = await readStoryState(input.project.projectId);
   const userPrompt = buildUpdatePrompt({
@@ -135,7 +136,7 @@ export async function updateStoryStateFromAcceptedScene(input: {
     throw new Error('モデルの応答が途中で切れたか、状態JSONとして読み取れませんでした。再抽出してください。');
   }
 
-  return withStoryStateLock(input.project.projectId, async () => {
+  const apply = () => withStoryStateLock(input.project.projectId, async () => {
     const previousState = await readStoryState(input.project.projectId);
     const appliedAt = nowIso();
     const nextState = mergeStoryState(previousState, parsed, appliedAt, input.characters);
@@ -157,6 +158,7 @@ export async function updateStoryStateFromAcceptedScene(input: {
     });
     return nextState;
   });
+  return input.applyIfCurrent ? input.applyIfCurrent(apply) : apply();
 }
 
 function buildSystemInstructions(): string {

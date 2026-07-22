@@ -546,10 +546,24 @@ export async function findGenerationRecord(
   projectId: string,
   generationId: string
 ): Promise<GenerationRecord | null> {
-  const text = await readTextFile(generationLogPath(projectId));
-  if (!text) return null;
+  const records = await findGenerationRecords(projectId, [generationId]);
+  return records.get(generationId) ?? null;
+}
 
-  let latestStatus: GenerationStatus | null = null;
+// NOTE: 生成ログは追記型なので、複数 ID を一度に解決する場合も後方から 1 回だけ
+// 走査する。各 ID の最新 status を先に拾い、その元レコードへ反映する。
+export async function findGenerationRecords(
+  projectId: string,
+  generationIds: Iterable<string>
+): Promise<Map<string, GenerationRecord>> {
+  const targets = new Set(generationIds);
+  if (targets.size === 0) return new Map();
+
+  const text = await readTextFile(generationLogPath(projectId));
+  if (!text) return new Map();
+
+  const latestStatuses = new Map<string, GenerationStatus>();
+  const records = new Map<string, GenerationRecord>();
   const lines = text.trim().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
@@ -557,20 +571,24 @@ export async function findGenerationRecord(
         entryType?: string;
         status?: GenerationStatus;
       };
-      if (entry.generationId !== generationId) continue;
+      if (!entry.generationId || !targets.has(entry.generationId)) continue;
       if (entry.entryType === 'status' && isGenerationStatus(entry.status)) {
-        latestStatus ??= entry.status;
+        if (!latestStatuses.has(entry.generationId)) {
+          latestStatuses.set(entry.generationId, entry.status);
+        }
         continue;
       }
-      if (typeof entry.responseText === 'string') {
+      if (typeof entry.responseText === 'string' && !records.has(entry.generationId)) {
         const record = entry as GenerationRecord;
-        return latestStatus ? { ...record, status: latestStatus } : record;
+        const latestStatus = latestStatuses.get(entry.generationId);
+        records.set(entry.generationId, latestStatus ? { ...record, status: latestStatus } : record);
+        if (records.size === targets.size) break;
       }
     } catch {
       // 破損行は無視
     }
   }
-  return null;
+  return records;
 }
 
 export async function readGenerationMarkdown(projectId: string, generationId: string): Promise<string> {

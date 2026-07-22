@@ -91,6 +91,22 @@ describe('generation markdown storage', () => {
       status: 'rejected',
     });
   });
+
+  it('resolves multiple generation records and their latest statuses in one lookup', async () => {
+    await storage.appendGenerationLog(projectId, generation('gen-batch-one', 'scene-one', '本文1'));
+    await storage.appendGenerationLog(projectId, generation('gen-batch-two', 'scene-two', '本文2'));
+    await storage.appendGenerationStatusLog(projectId, 'gen-batch-two', 'superseded');
+
+    const records = await storage.findGenerationRecords(projectId, [
+      'gen-batch-one',
+      'gen-batch-two',
+      'missing',
+    ]);
+
+    expect(records.get('gen-batch-one')).toMatchObject({ status: 'accepted', responseText: '本文1' });
+    expect(records.get('gen-batch-two')).toMatchObject({ status: 'superseded', responseText: '本文2' });
+    expect(records.has('missing')).toBe(false);
+  });
 });
 
 describe('character storage migration', () => {

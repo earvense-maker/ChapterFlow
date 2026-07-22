@@ -290,16 +290,6 @@ export default function TechSettingsTab({
         </button>
       </section>
 
-      <section className="settings-section">
-        <h2>全作品共通の設定</h2>
-        <p className="settings-help">
-          APIキーと作品データの保存先はアプリ全体で共有されます。変更はアプリ設定から行います。
-        </p>
-        <button type="button" onClick={() => onOpenAppSettings(provider)} disabled={loading}>
-          アプリ設定を開く
-        </button>
-      </section>
-
       {!isRoleplay && (
         <section className="settings-section">
           <h2>サンプリング</h2>
@@ -360,12 +350,18 @@ export default function TechSettingsTab({
       )}
 
       <section className="settings-section">
-        <h2>NG表現</h2>
+        <h2>この作品のNG表現</h2>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
           {isRoleplay
-            ? '会話でキャラに使わせたくない言い回しを登録します（1〜30字）。次のターンから反映されます。'
-            : '生成時に避けさせたい言い回しを登録します（1〜30字）。'}
+            ? 'この会話だけでキャラに使わせたくない言い回しを登録します（1〜30字）。次のターンから反映されます。'
+            : 'この作品だけで生成時に避けさせたい言い回しを登録します（1〜30字）。'}
         </p>
+        <p className="settings-help">
+          アプリ設定の共通NG表現も併用されます。共通＋作品固有の新しい順で最大12件が生成に使われます。
+        </p>
+        <button type="button" onClick={() => onOpenAppSettings(provider)} disabled={loading}>
+          アプリ設定を開く
+        </button>
         <div className="ng-expression-form">
           <input
             type="text"

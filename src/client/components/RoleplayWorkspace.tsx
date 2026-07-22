@@ -530,14 +530,14 @@ export default function RoleplayWorkspace({
   const handleRegisterSelectedNg = useCallback(async () => {
     if (!selectedText) return;
     try {
-      await api.createExpression(projectId, { text: selectedText, source: 'selection' });
+      await api.createGlobalExpression({ text: selectedText, source: 'selection' });
       if (!mountedRef.current || projectIdRef.current !== projectId) return;
-      showStopNotice(`「${selectedText}」をNG表現に登録しました。次のターンから反映されます。`);
+      showStopNotice(`「${selectedText}」を共通NG表現に登録しました。次のターンから反映されます。`);
       setSelectionButtonPosition(null);
       setSelectedText('');
       window.getSelection()?.removeAllRanges();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'NG表現の登録に失敗しました');
+      setError(err instanceof Error ? err.message : '共通NG表現の登録に失敗しました');
     }
   }, [projectId, selectedText, showStopNotice]);
 
@@ -785,7 +785,7 @@ export default function RoleplayWorkspace({
             boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
           }}
         >
-          「{selectedText}」を NG に登録
+          「{selectedText}」を共通NGに登録
         </button>
       )}
 

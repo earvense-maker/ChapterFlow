@@ -10,6 +10,9 @@ vi.mock('../../src/client/clientApi', () => ({
     updateDefaultModelSettings: vi.fn(),
     saveCredential: vi.fn(),
     getSystemVersion: vi.fn(),
+    getGlobalExpressions: vi.fn(),
+    createGlobalExpression: vi.fn(),
+    archiveGlobalExpression: vi.fn(),
   },
 }));
 
@@ -55,6 +58,16 @@ describe('AppSettingsPanel', () => {
     vi.mocked(api.getSystemVersion).mockResolvedValue({ version: '0.1.0', runtime: 'server' });
     vi.mocked(api.saveCredential).mockResolvedValue({ ok: true });
     vi.mocked(api.updateDefaultModelSettings).mockImplementation(async (body) => body);
+    vi.mocked(api.getGlobalExpressions).mockResolvedValue({ ngExpressions: [] });
+    vi.mocked(api.createGlobalExpression).mockResolvedValue({
+      id: 'ngx-common',
+      text: '共通表現',
+      source: 'manual',
+      status: 'active',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      updatedAt: '2026-07-22T00:00:00.000Z',
+    });
+    vi.mocked(api.archiveGlobalExpression).mockResolvedValue({ ok: true });
   });
 
   it('saves the API key and selected provider as the model for new consultations', async () => {
@@ -95,5 +108,33 @@ describe('AppSettingsPanel', () => {
     });
     expect(api.updateDefaultModelSettings).not.toHaveBeenCalled();
     expect(await screen.findByText('DeepSeek のAPIキーを保存しました。')).toBeVisible();
+  });
+
+  it('manages common NG expressions without coupling a read failure to model settings', async () => {
+    vi.mocked(api.getGlobalExpressions)
+      .mockResolvedValueOnce({ ngExpressions: [] })
+      .mockResolvedValueOnce({
+        ngExpressions: [
+          {
+            id: 'ngx-common',
+            text: '共通表現',
+            source: 'manual',
+            status: 'active',
+            createdAt: '2026-07-22T00:00:00.000Z',
+            updatedAt: '2026-07-22T00:00:00.000Z',
+          },
+        ],
+      });
+    render(<AppSettingsPanel onBack={() => undefined} />);
+
+    const input = await screen.findByPlaceholderText('例：息を呑んだ');
+    fireEvent.change(input, { target: { value: '共通表現' } });
+    fireEvent.click(screen.getByRole('button', { name: '追加' }));
+
+    await waitFor(() => {
+      expect(api.createGlobalExpression).toHaveBeenCalledWith({ text: '共通表現', source: 'manual' });
+    });
+    expect(await screen.findByText('「共通表現」')).toBeVisible();
+    expect(screen.getByText(/すべての作品とロールプレイで避けたい表現/)).toBeVisible();
   });
 });

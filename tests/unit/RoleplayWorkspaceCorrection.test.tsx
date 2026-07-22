@@ -11,6 +11,7 @@ import type {
 const apiMock = vi.hoisted(() => ({
   archiveRoleplaySession: vi.fn(),
   createExpression: vi.fn(),
+  createGlobalExpression: vi.fn(),
   createRoleplaySession: vi.fn(),
   getCharacters: vi.fn(),
   getProject: vi.fn(),
@@ -29,6 +30,14 @@ describe('RoleplayWorkspace correction send', () => {
     apiMock.getProject.mockResolvedValue(project());
     apiMock.getCharacters.mockResolvedValue([character()]);
     apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [sessionSummary()] });
+    apiMock.createGlobalExpression.mockResolvedValue({
+      id: 'ngx-common',
+      text: 'こんにちは。',
+      source: 'selection',
+      status: 'active',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      updatedAt: '2026-07-22T00:00:00.000Z',
+    });
   });
 
   it('restores the stopped text and replaces the unanswered user message on resend', async () => {
@@ -282,6 +291,41 @@ describe('RoleplayWorkspace correction send', () => {
     expect(await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })).toBeVisible();
     expect(screen.queryByRole('button', { name: '訂正して送信' })).toBeNull();
     expect(screen.getByRole('textbox')).toHaveValue('');
+  });
+
+  it('registers a selected character phrase through the common NG API only', async () => {
+    apiMock.getRoleplaySession.mockResolvedValueOnce({ session: session() });
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector('[data-roleplay-character-bubble="true"]')).not.toBeNull()
+    );
+    const message = document.querySelector('[data-roleplay-character-bubble="true"]')!;
+    const range = document.createRange();
+    range.selectNodeContents(message);
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => new DOMRect(10, 10, 80, 16),
+    });
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(message);
+
+    fireEvent.click(await screen.findByRole('button', { name: '「こんにちは。」を共通NGに登録' }));
+    await waitFor(() => {
+      expect(apiMock.createGlobalExpression).toHaveBeenCalledWith({
+        text: 'こんにちは。',
+        source: 'selection',
+      });
+    });
+    expect(apiMock.createExpression).not.toHaveBeenCalled();
   });
 });
 

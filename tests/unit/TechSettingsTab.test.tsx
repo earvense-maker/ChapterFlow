@@ -66,6 +66,25 @@ describe('TechSettingsTab Gemini sampling settings', () => {
     expect(getTemperatureSlider()).toBeDisabled();
     expect(screen.getByText(/このGeminiモデルではTemperatureが廃止/)).toBeVisible();
   });
+
+  it('keeps project NG expressions separate and links to common NG settings', async () => {
+    const onOpenAppSettings = vi.fn();
+    render(
+      <TechSettingsTab
+        projectId={baseProject.projectId}
+        project={baseProject}
+        onProjectUpdated={() => undefined}
+        onError={() => undefined}
+        onFlashMessage={() => undefined}
+        onOpenAppSettings={onOpenAppSettings}
+      />
+    );
+
+    expect(await screen.findByRole('heading', { name: 'この作品のNG表現' })).toBeVisible();
+    expect(screen.getByText(/共通＋作品固有の新しい順で最大12件/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'アプリ設定を開く' }));
+    expect(onOpenAppSettings).toHaveBeenCalledWith('gemini');
+  });
 });
 
 function renderSettings(project: Project) {

@@ -2,12 +2,15 @@ import { fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Reader from '../../src/client/components/Reader';
 import { api } from '../../src/client/clientApi';
+import { ConfirmProvider } from '../../src/client/components/ConfirmDialog';
 import type { GenerationRecord, ReaderState } from '../../src/shared/types';
 
 vi.mock('../../src/client/clientApi', () => ({
   api: {
     generate: vi.fn(),
     generateStream: vi.fn(),
+    createExpression: vi.fn(),
+    createGlobalExpression: vi.fn(),
     getReaderState: vi.fn(),
     getKnowledge: vi.fn(),
     updateState: vi.fn(),
@@ -18,6 +21,8 @@ vi.mock('../../src/client/clientApi', () => ({
 
 const generate = vi.mocked(api.generate);
 const generateStream = vi.mocked(api.generateStream);
+const createExpression = vi.mocked(api.createExpression);
+const createGlobalExpression = vi.mocked(api.createGlobalExpression);
 const getReaderState = vi.mocked(api.getReaderState);
 const getKnowledge = vi.mocked(api.getKnowledge);
 const navigateDraft = vi.mocked(api.navigateDraft);
@@ -28,6 +33,15 @@ describe('Reader interactions', () => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     generate.mockReset();
     generateStream.mockReset();
+    createExpression.mockReset();
+    createGlobalExpression.mockReset().mockResolvedValue({
+      id: 'ngx-common',
+      text: 'Draft scene text',
+      source: 'selection',
+      status: 'active',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      updatedAt: '2026-07-22T00:00:00.000Z',
+    });
     getReaderState.mockReset();
     getKnowledge.mockReset();
     navigateDraft.mockReset();
@@ -67,6 +81,104 @@ describe('Reader interactions', () => {
     );
   });
 
+  it('blocks every generation trigger while story-state extraction is within the pending grace period', async () => {
+    const state = readerState();
+    state.state.storyStateRefresh = {
+      status: 'pending',
+      generationId: 'gen-pending',
+      updatedAt: new Date().toISOString(),
+    };
+    getReaderState.mockResolvedValue(state);
+
+    const { container, findByRole } = render(
+      <Reader
+        projectId="proj-reader-interaction"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+        onOpenMemories={vi.fn()}
+      />
+    );
+
+    await findByRole('button', { name: '生成' });
+    const generateButton = await findByRole('button', { name: '生成' });
+    expect(generateButton).toBeDisabled();
+    const textarea = container.querySelector('.wish-input textarea')!;
+    fireEvent.submit(textarea.closest('form')!);
+    fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+
+    await Promise.resolve();
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('asks before a delayed pending generation and preserves the request when cancelled', async () => {
+    const state = readerState();
+    state.state.storyStateRefresh = {
+      status: 'pending',
+      generationId: 'gen-delayed',
+      updatedAt: new Date(Date.now() - 61_000).toISOString(),
+    };
+    getReaderState.mockResolvedValue(state);
+
+    const { container, findByRole } = render(
+      <ConfirmProvider>
+        <Reader
+          projectId="proj-reader-interaction"
+          onBack={vi.fn()}
+          onOpenWorkSettings={vi.fn()}
+          onOpenTechSettings={vi.fn()}
+          onOpenMemories={vi.fn()}
+        />
+      </ConfirmProvider>
+    );
+
+    const textarea = container.querySelector('.wish-input textarea')!;
+    fireEvent.change(textarea, { target: { value: '確認付きで生成' } });
+    fireEvent.click(await findByRole('button', { name: '生成' }));
+    expect(await findByRole('dialog')).toBeVisible();
+    const cancel = await findByRole('button', { name: '戻る' });
+    await waitFor(() => expect(document.activeElement).toBe(cancel));
+    fireEvent.click(cancel);
+
+    await Promise.resolve();
+    expect(generate).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue('確認付きで生成');
+  });
+
+  it('continues exactly once after confirming a stale story-state warning', async () => {
+    const state = readerState();
+    state.state.storyStateRefresh = {
+      status: 'stale',
+      generationId: 'gen-stale',
+      updatedAt: new Date().toISOString(),
+    };
+    getReaderState.mockResolvedValue(state);
+    generate.mockResolvedValue(generationRecord());
+
+    const { findByRole } = render(
+      <ConfirmProvider>
+        <Reader
+          projectId="proj-reader-interaction"
+          onBack={vi.fn()}
+          onOpenWorkSettings={vi.fn()}
+          onOpenTechSettings={vi.fn()}
+          onOpenMemories={vi.fn()}
+        />
+      </ConfirmProvider>
+    );
+
+    fireEvent.click(await findByRole('button', { name: '生成' }));
+    fireEvent.click(await findByRole('button', { name: 'このまま生成' }));
+
+    await waitFor(() =>
+      expect(generate).toHaveBeenCalledWith('proj-reader-interaction', {
+        wish: '',
+        mode: 'continue',
+      })
+    );
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
   it('stops a streaming generation without showing an error', async () => {
     getReaderState.mockResolvedValue(readerState({ streamingEnabled: true }));
     let generationSignal: AbortSignal | undefined;
@@ -98,6 +210,39 @@ describe('Reader interactions', () => {
     expect(generationSignal?.aborted).toBe(true);
     expect(queryByText('途中までの生成文')).toBeNull();
     expect(await findByRole('button', { name: '生成' })).toBeEnabled();
+  });
+
+  it('registers a selected reader phrase through the common NG API only', async () => {
+    getReaderState.mockResolvedValue(readerStateWithDraft());
+    const { findByText, findByRole } = render(
+      <Reader
+        projectId="proj-reader-interaction"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+        onOpenMemories={vi.fn()}
+      />
+    );
+
+    const article = await findByText('Draft scene text');
+    const range = document.createRange();
+    range.selectNodeContents(article);
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      value: () => new DOMRect(10, 10, 80, 16),
+    });
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(article);
+
+    fireEvent.click(await findByRole('button', { name: '共通NGに登録' }));
+    await waitFor(() => {
+      expect(createGlobalExpression).toHaveBeenCalledWith({
+        text: 'Draft scene text',
+        source: 'selection',
+      });
+    });
+    expect(createExpression).not.toHaveBeenCalled();
   });
 
   it('shows draft and scene metadata before navigation and uses the simplified options menu', async () => {

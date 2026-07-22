@@ -160,6 +160,14 @@ export default function RefineChatPanel({
       `対象: ${formatFindingTarget(finding.target)}`,
       `気づき: ${finding.message}`,
       finding.detail ? `詳しく: ${finding.detail}` : '',
+      ...(finding.evidence?.length
+        ? [
+            '根拠（採用本文）:',
+            ...finding.evidence.map(
+              (evidence) => `場面 ${evidence.sceneId}: 「${evidence.quote}」`
+            ),
+          ]
+        : []),
       finding.suggestedFix ? `提案: ${finding.suggestedFix}` : '',
     ]
       .filter(Boolean)
@@ -350,6 +358,16 @@ function RefineFindingsView({
               <summary>詳しく</summary>
               <p>{f.detail}</p>
             </details>
+          )}
+          {(f.evidence?.length ?? 0) > 0 && (
+            <div className="refine-finding-evidence">
+              <strong>根拠（採用本文）</strong>
+              {f.evidence.map((evidence) => (
+                <p key={`${evidence.generationId}-${evidence.sceneId}-${evidence.quote}`}>
+                  場面 {evidence.sceneId}: 「{evidence.quote}」
+                </p>
+              ))}
+            </div>
           )}
           {f.suggestedFix && (
             <p className="refine-finding-suggestion">

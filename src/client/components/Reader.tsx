@@ -27,6 +27,14 @@ interface Props {
 // NOTE: 文脈警告バッジを出す使用率のしきい値。0.7=70%。
 const CONTEXT_WARNING_THRESHOLD = 0.7;
 const WISH_TEXTAREA_MAX_HEIGHT = 240;
+const STORY_STATE_PENDING_GRACE_MS = 60_000;
+
+function isDelayedStoryStatePending(updatedAt: string | undefined): boolean {
+  if (!updatedAt) return true;
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return true;
+  return Date.now() - timestamp >= STORY_STATE_PENDING_GRACE_MS;
+}
 
 export default function Reader({
   projectId,
@@ -208,6 +216,28 @@ export default function Reader({
     if (generationRunRef.current) return;
     const runId = Symbol('generation');
     generationRunRef.current = runId;
+    const releaseRun = () => {
+      if (generationRunRef.current === runId) {
+        generationRunRef.current = null;
+      }
+    };
+
+    if (blocksGeneration) {
+      releaseRun();
+      return;
+    }
+
+    if (needsStoryStateConfirmation) {
+      const confirmed = await confirmAction(
+        '物語の状態に未反映の場面があります。\nこのまま生成すると、直前の出来事や人物の知識状態が反映されないことがあります。\n先に画面上部の「再抽出」を実行することをおすすめします。',
+        { confirmLabel: 'このまま生成', cancelLabel: '戻る' }
+      );
+      if (!confirmed) {
+        releaseRun();
+        return;
+      }
+    }
+
     // NOTE: 生成失敗時に元の画面へ戻すためのスナップショット。ストリーミングは
     // 途中経過で text を上書きするが、エラー時の部分テキストはサーバーに保存されて
     // いないため、表示に残すと「見えているのに採用できない本文」になる。
@@ -299,9 +329,7 @@ export default function Reader({
       if (generationAbortRef.current === abortController) {
         generationAbortRef.current = null;
       }
-      if (generationRunRef.current === runId) {
-        generationRunRef.current = null;
-      }
+      releaseRun();
       if (mountedRef.current && projectIdRef.current === generationProjectId) {
         setIsGeneratingStream(false);
         setLoading(false);
@@ -453,14 +481,14 @@ export default function Reader({
     try {
       setLoading(true);
       setError(null);
-      await api.createExpression(projectId, { text: selectedText, source: 'selection' });
-      setNotice(`「${selectedText}」をNG表現に登録しました`);
+      await api.createGlobalExpression({ text: selectedText, source: 'selection' });
+      setNotice(`「${selectedText}」を共通NG表現に登録しました`);
       setTimeout(() => setNotice(null), 2000);
       setSelectionButtonPosition(null);
       setSelectedText('');
       window.getSelection()?.removeAllRanges();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '登録に失敗しました');
+      setError(err instanceof Error ? err.message : '共通NG表現の登録に失敗しました');
     } finally {
       setLoading(false);
     }
@@ -512,8 +540,19 @@ export default function Reader({
 
   const isDraft = status === 'draft';
   const hasText = text.length > 0;
-  const storyStateIsStale = storyStateRefresh?.status === 'stale' || storyStateBacklogCount > 0;
   const storyStateIsPending = storyStateRefresh?.status === 'pending';
+  const isDelayedPending =
+    storyStateIsPending && isDelayedStoryStatePending(storyStateRefresh?.updatedAt);
+  const blocksGeneration = storyStateIsPending && !isDelayedPending;
+  const needsStoryStateConfirmation =
+    isDelayedPending ||
+    (!storyStateIsPending &&
+      (storyStateRefresh?.status === 'stale' || storyStateBacklogCount > 0));
+  const canRetryExtraction = !storyStateIsPending || isDelayedPending;
+  const storyStateIsStale =
+    !blocksGeneration &&
+    (isDelayedPending || storyStateRefresh?.status === 'stale' || storyStateBacklogCount > 0);
+  const storyStateNeedsAttention = storyStateIsPending || storyStateIsStale;
 
   const draftIds = currentScene?.draftGenerationIds ?? [];
   const totalDrafts = draftIds.length;
@@ -712,26 +751,30 @@ export default function Reader({
             {notice}
           </div>
         )}
-        {(storyStateIsStale || storyStateIsPending) && (
+        {storyStateNeedsAttention && (
           <div className={`story-state-alert ${storyStateIsStale ? 'stale' : 'pending'}`}>
             <div>
               <strong>
-                {storyStateIsPending
+                {blocksGeneration
                   ? '続きに反映する情報を整理しています'
+                  : isDelayedPending
+                    ? '物語の状態整理に時間がかかっています'
                   : storyStateBacklogCount > 0
                     ? `物語の状態: ${storyStateBacklogCount}場面未反映`
                     : '物語の状態を更新できませんでした'}
               </strong>
               <p>
-                {storyStateIsPending
+                {blocksGeneration
                   ? '採用した場面から人物の状況や伏線を読み取り、次の場面に反映する準備をしています。'
+                  : isDelayedPending
+                    ? '処理が続いている可能性があります。再抽出するか、未反映であることを確認して生成できます。'
                   : storyStateBacklogCount > 0
                     ? '採用済み本文から、次回生成で使う人物状態や伏線を再抽出してください。'
-                  : storyStateRefresh?.errorMessage ||
-                    '採用済み本文から物語の状態を再抽出してください。'}
+                    : storyStateRefresh?.errorMessage ||
+                      '採用済み本文から物語の状態を再抽出してください。'}
               </p>
             </div>
-            {storyStateIsStale && (
+            {canRetryExtraction && (
               <button type="button" onClick={handleRefreshStoryState} disabled={loading}>
                 再抽出
               </button>
@@ -750,7 +793,7 @@ export default function Reader({
             onClick={handleRegisterSelectedExpression}
             disabled={loading}
           >
-            この表現をNGに登録
+            共通NGに登録
           </button>
         )}
 
@@ -836,7 +879,7 @@ export default function Reader({
               生成を停止
             </button>
           ) : (
-            <button type="submit" className="primary" disabled={loading}>
+            <button type="submit" className="primary" disabled={loading || blocksGeneration}>
               {loading ? <GeneratingLabel /> : '生成'}
             </button>
           )}
@@ -883,7 +926,7 @@ export default function Reader({
                     生成を停止
                   </button>
                 ) : (
-                  <button type="submit" className="primary" disabled={loading}>
+                  <button type="submit" className="primary" disabled={loading || blocksGeneration}>
                     {loading ? <GeneratingLabel /> : 'この指示で書き直す'}
                   </button>
                 )}

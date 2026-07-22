@@ -69,6 +69,16 @@ const SUMMARY_CHUNK_CHARS = 20_000;
 
 const projectWriteMutexes = new Map<string, Promise<void>>();
 
+interface StoryStateRefreshJob {
+  promise: Promise<void>;
+  generationId: string;
+  queuedGenerationIds: string[];
+}
+
+// NOTE: これは二重抽出を防ぐプロセス内キューであり、物語状態の正本ではない。
+// 再起動後は永続化された pending を readStoryStateBacklog から手動回復できる。
+const storyStateRefreshJobs = new Map<string, StoryStateRefreshJob>();
+
 export interface GenerateOptions {
   wish: string;
   mode: 'continue' | 'regenerate' | 'variate';
@@ -684,13 +694,11 @@ async function acceptGenerationUnlocked(
 }
 
 function startStoryStateRefreshAfterAcceptance(projectId: string, generationId: string): void {
-  runOutsideDataDirWrite(() => {
-    void refreshStoryStateAfterAcceptance(projectId).catch((err) => {
-      console.warn('Story state refresh failed', {
-        projectId,
-        generationId,
-        error: err instanceof Error ? err.message : String(err),
-      });
+  void startStoryStateRefreshJob(projectId, generationId).catch((err) => {
+    console.warn('Story state refresh failed', {
+      projectId,
+      generationId,
+      error: err instanceof Error ? err.message : String(err),
     });
   });
 }
@@ -758,108 +766,165 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
   return generation;
 }
 
-async function refreshStoryStateAfterAcceptance(projectId: string): Promise<void> {
-  await withDataDirWrite(async () => {
-    const status = await drainStoryStateBacklog(projectId, {
-      lockRefreshStatusWrites: true,
-    });
-    if (status.status === 'stale') {
-      console.warn('Story state refresh produced no update', {
-        projectId,
-        generationId: status.generationId,
-        error: status.errorMessage,
-      });
-    }
-  });
-}
-
 export async function refreshStoryState(projectId: string): Promise<ReaderState> {
-  return refreshStoryStateUnlocked(projectId);
-}
+  const refreshRequest = await withProjectWriteLock(projectId, async () => {
+    // NOTE: check と job 登録を同じプロジェクトロックで行う。連打した手動再抽出が
+    // calculateStoryStateBacklog の await 境界で別々のモデル呼び出しへ分かれないようにする。
+    const activeJob = storyStateRefreshJobs.get(projectId);
+    if (activeJob) {
+      // NOTE: 完了処理の state.json 置換と ReaderState 読取りを同じロックで直列化する。
+      return { job: null, readerState: await getReaderState(projectId) };
+    }
 
-async function refreshStoryStateUnlocked(projectId: string): Promise<ReaderState> {
-  const backlog = await calculateStoryStateBacklog(projectId);
-  if (backlog.length === 0) {
-    await writeStoryStateRefresh(projectId, buildStoryStateRefreshStatus('fresh', null));
-    return getReaderState(projectId);
-  }
-  await writeStoryStateRefresh(projectId, buildStoryStateRefreshStatus('pending', backlog[0].generationId));
-  await drainStoryStateBacklog(projectId, {
-    lockRefreshStatusWrites: true,
-    maxItems: 1,
+    const backlog = await calculateStoryStateBacklog(projectId);
+    if (backlog.length === 0) {
+      await writeStoryStateRefreshUnlocked(projectId, buildStoryStateRefreshStatus('fresh', null));
+      return { job: null, readerState: null };
+    }
+
+    const generationId = backlog[0].generationId;
+    await writeStoryStateRefreshUnlocked(
+      projectId,
+      buildStoryStateRefreshStatus('pending', generationId)
+    );
+    return { job: startStoryStateRefreshJob(projectId, generationId), readerState: null };
   });
+  const job = refreshRequest.job;
+  if (!job) return refreshRequest.readerState ?? getReaderState(projectId);
+
+  await job;
   return getReaderState(projectId);
 }
 
-async function drainStoryStateBacklog(
-  projectId: string,
-  options: { lockRefreshStatusWrites?: boolean; maxItems?: number } = {}
-): Promise<StoryStateRefreshStatus> {
-  const writeRefreshStatus = options.lockRefreshStatusWrites
-    ? writeStoryStateRefresh
-    : writeStoryStateRefreshUnlocked;
-
-  try {
-    const backlog = await calculateStoryStateBacklog(projectId);
-    const firstGenerationId = backlog[0]?.generationId ?? null;
-    if (backlog.length === 0) {
-      return writeRefreshStatus(projectId, buildStoryStateRefreshStatus('fresh', null));
+function startStoryStateRefreshJob(projectId: string, generationId: string): Promise<void> {
+  const existing = storyStateRefreshJobs.get(projectId);
+  if (existing) {
+    if (
+      existing.generationId !== generationId &&
+      !existing.queuedGenerationIds.includes(generationId)
+    ) {
+      existing.queuedGenerationIds.push(generationId);
     }
-
-    // NOTE: モデル呼び出しを直列に積むと手動再抽出も採用後更新も長時間
-    // ブロックするため、1回の処理は1場面に限定する。残りは状態表示から再実行できる。
-    const limit = backlog.slice(0, options.maxItems ?? 1);
-    let processed = 0;
-    let currentGenerationId = firstGenerationId;
-    for (const item of limit) {
-      currentGenerationId = item.generationId;
-      const generation = await findGeneration(projectId, item.generationId);
-      if (!generation || generation.status !== 'accepted') {
-        return writeRefreshStatus(
-          projectId,
-          buildStoryStateRefreshStatus('stale', item.generationId, '未反映の採用済み本文が見つかりません。')
-        );
-      }
-      const status = await refreshStoryStateForGeneration(projectId, generation, {
-        lockRefreshStatusWrites: options.lockRefreshStatusWrites,
-        skipRefreshStatusWrite: true,
-      });
-      if (status.status === 'stale') {
-        return writeRefreshStatus(projectId, status);
-      }
-      processed += 1;
-    }
-
-    const remaining = Math.max(0, backlog.length - processed);
-    return writeRefreshStatus(
-      projectId,
-      buildStoryStateRefreshStatus(
-        remaining > 0 ? 'stale' : 'fresh',
-        currentGenerationId,
-        remaining > 0 ? `物語の状態に未反映の場面があと${remaining}件あります。` : undefined
-      )
-    );
-  } catch (err) {
-    return writeRefreshStatus(
-      projectId,
-      buildStoryStateRefreshStatus(
-        'stale',
-        null,
-        storyStateErrorMessage(err)
-      )
-    );
+    return existing.promise;
   }
+
+  const job: StoryStateRefreshJob = {
+    promise: Promise.resolve(),
+    generationId,
+    queuedGenerationIds: [],
+  };
+  // NOTE: 背景抽出は採用時の AsyncLocalStorage 書込みスコープを継承させない。
+  // ただし実行中はデータディレクトリの切替・削除と競合しないよう、job 全体を
+  // 独立した書込みスコープとして保持する。
+  const promise = runOutsideDataDirWrite(() =>
+    withDataDirWrite(() => runStoryStateRefreshJob(projectId, job))
+  );
+  job.promise = promise;
+  storyStateRefreshJobs.set(projectId, job);
+  void promise.then(
+    () => {
+      if (storyStateRefreshJobs.get(projectId) === job) {
+        storyStateRefreshJobs.delete(projectId);
+      }
+    },
+    () => {
+      if (storyStateRefreshJobs.get(projectId) === job) {
+        storyStateRefreshJobs.delete(projectId);
+      }
+    }
+  );
+  return promise;
+}
+
+async function runStoryStateRefreshJob(projectId: string, job: StoryStateRefreshJob): Promise<void> {
+  // NOTE: クライアントの ReaderState 再取得より先にモデルが応答しても、旧データの
+  // processedGenerationIds 移行を確定してから新しい採用本文を追加する。
+  await calculateStoryStateBacklog(projectId);
+
+  while (true) {
+    const generationId = job.generationId;
+    const backlog = await readStoryStateBacklog(projectId);
+    const backlogItem = backlog.find((item) => item.generationId === generationId);
+
+    if (backlogItem) {
+      const generation = await findGeneration(projectId, generationId);
+      const refreshStatus =
+        !generation || generation.status !== 'accepted'
+          ? buildStoryStateRefreshStatus(
+              'stale',
+              generationId,
+              '未反映の採用済み本文が見つかりません。'
+            )
+          : await refreshStoryStateForGeneration(projectId, generation, {
+              skipRefreshStatusWrite: true,
+            });
+
+      if (refreshStatus.status === 'stale') {
+        const wroteOwnedStatus = await writeStoryStateRefreshIfOwned(
+          projectId,
+          generationId,
+          refreshStatus
+        );
+        if (!wroteOwnedStatus) {
+          await writeQueuedStoryStateRefreshStale(projectId, job);
+        }
+        if (refreshStatus.errorMessage) {
+          console.warn('Story state refresh produced no update', {
+            projectId,
+            generationId,
+            error: refreshStatus.errorMessage,
+          });
+        }
+        return;
+      }
+    }
+
+    const remaining = await readStoryStateBacklog(projectId);
+    const nextGenerationId = takeQueuedBacklogGenerationId(job, remaining);
+    if (nextGenerationId) {
+      job.generationId = nextGenerationId;
+      continue;
+    }
+
+    const terminalStatus = buildStoryStateRefreshStatus(
+      remaining.length > 0 ? 'stale' : 'fresh',
+      generationId,
+      remaining.length > 0
+        ? `物語の状態に未反映の場面があと${remaining.length}件あります。`
+        : undefined
+    );
+    await writeStoryStateRefreshIfOwned(projectId, generationId, terminalStatus);
+    if (terminalStatus.status === 'stale') {
+      if (terminalStatus.errorMessage) {
+        console.warn('Story state refresh produced no update', {
+          projectId,
+          generationId,
+          error: terminalStatus.errorMessage,
+        });
+      }
+      return;
+    }
+    return;
+  }
+}
+
+function takeQueuedBacklogGenerationId(
+  job: StoryStateRefreshJob,
+  backlog: AcceptedGenerationRef[]
+): string | null {
+  const currentBacklogIds = new Set(backlog.map((item) => item.generationId));
+  while (job.queuedGenerationIds.length > 0) {
+    const generationId = job.queuedGenerationIds.shift();
+    if (generationId && currentBacklogIds.has(generationId)) return generationId;
+  }
+  return null;
 }
 
 async function refreshStoryStateForGeneration(
   projectId: string,
   generation: GenerationRecord,
-  options: { lockRefreshStatusWrites?: boolean; skipRefreshStatusWrite?: boolean } = {}
+  options: { skipRefreshStatusWrite?: boolean } = {}
 ): Promise<StoryStateRefreshStatus> {
-  const writeRefreshStatus = options.lockRefreshStatusWrites
-    ? writeStoryStateRefresh
-    : writeStoryStateRefreshUnlocked;
-
   try {
     await reloadCredentials();
 
@@ -881,22 +946,25 @@ async function refreshStoryStateForGeneration(
       characters,
       worldText,
       timeoutMs: STORY_STATE_TIMEOUT_MS,
+      applyIfCurrent: (apply) =>
+        withProjectWriteLock(projectId, async () => {
+          if (!(await isCurrentAcceptedGeneration(projectId, generation))) return null;
+          return apply();
+        }),
     });
 
     if (!updated) {
-      const stale = buildStoryStateRefreshStatus(
-        'stale',
-        generation.generationId,
-        '物語の状態を更新できませんでした。設定を確認して再抽出してください。'
-      );
-      return options.skipRefreshStatusWrite ? stale : writeRefreshStatus(projectId, stale);
+      // 差し替え採用により、モデル応答待ちの間に対象が現在の採用本文でなくなった。
+      // runStoryStateRefreshJob が待機列と最新 backlog を見て次の採用本文へ進む。
+      const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
+      return options.skipRefreshStatusWrite ? fresh : writeStoryStateRefresh(projectId, fresh);
     }
 
     const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
-    return options.skipRefreshStatusWrite ? fresh : writeRefreshStatus(projectId, fresh);
+    return options.skipRefreshStatusWrite ? fresh : writeStoryStateRefresh(projectId, fresh);
   } catch (err) {
     const stale = buildStoryStateRefreshStatus('stale', generation.generationId, storyStateErrorMessage(err));
-    return options.skipRefreshStatusWrite ? stale : writeRefreshStatus(projectId, stale);
+    return options.skipRefreshStatusWrite ? stale : writeStoryStateRefresh(projectId, stale);
   }
 }
 
@@ -1111,30 +1179,71 @@ type AcceptedGenerationRef = {
 };
 
 export async function calculateStoryStateBacklog(projectId: string): Promise<AcceptedGenerationRef[]> {
-  const accepted = await listAcceptedGenerationRefs(projectId);
-  const state = await storage.readState(projectId);
+  const [accepted, state] = await Promise.all([
+    listAcceptedGenerationRefs(projectId),
+    storage.readState(projectId),
+  ]);
   const pendingGenerationId =
-    state?.storyStateRefresh?.status === 'pending'
-      ? state.storyStateRefresh.generationId
-      : null;
-  const processedIds = await withStoryStateLock(projectId, async () => {
+    state?.storyStateRefresh?.status === 'pending' ? state.storyStateRefresh.generationId : null;
+  const activeJob = storyStateRefreshJobs.get(projectId);
+  const protectedGenerationIds = new Set<string>(
+    [pendingGenerationId, activeJob?.generationId, ...(activeJob?.queuedGenerationIds ?? [])].filter(
+      (generationId): generationId is string => Boolean(generationId)
+    )
+  );
+
+  await withStoryStateLock(projectId, async () => {
     const rawStoryState = await storage.readStoryState(projectId);
-    const hadProcessedIds =
-      isRecord(rawStoryState) && Array.isArray(rawStoryState.processedGenerationIds);
+    const hadProcessedIds = Array.isArray(rawStoryState?.processedGenerationIds);
+    if (hadProcessedIds) return;
+
+    // NOTE: 旧データは pending の採用本文だけを未処理として引き継ぐ。通常の
+    // Reader 読み込みではこの移行を書き込むが、レビューは read-only query を使う。
     const storyState = normalizeStoryState(rawStoryState ?? undefined);
-
-    if (!hadProcessedIds) {
-      storyState.processedGenerationIds = accepted
-        .map((item) => item.generationId)
-        .filter((generationId) => generationId !== pendingGenerationId);
-      await storage.writeStoryState(projectId, storyState);
-    }
-
-    return storyState.processedGenerationIds ?? [];
+    storyState.processedGenerationIds = accepted
+      .map((item) => item.generationId)
+      .filter((generationId) => !protectedGenerationIds.has(generationId));
+    await storage.writeStoryState(projectId, storyState);
   });
+
+  return readStoryStateBacklog(projectId);
+}
+
+// NOTE: レビューや進行中ジョブが安全に利用できる、書き込みを行わない backlog query。
+// processedGenerationIds を持たない旧データは、現行移行規則と同じく pending の採用
+// generation だけを未抽出扱いにする。
+export async function readStoryStateBacklog(projectId: string): Promise<AcceptedGenerationRef[]> {
+  const [accepted, state, storyState] = await Promise.all([
+    listAcceptedGenerationRefs(projectId),
+    storage.readState(projectId),
+    storage.readStoryState(projectId),
+  ]);
+  const pendingGenerationId =
+    state?.storyStateRefresh?.status === 'pending' ? state.storyStateRefresh.generationId : null;
+  const processedIds = storyState?.processedGenerationIds;
+
+  if (!Array.isArray(processedIds)) {
+    return pendingGenerationId
+      ? accepted.filter((item) => item.generationId === pendingGenerationId)
+      : [];
+  }
 
   const processed = new Set(processedIds);
   return accepted.filter((item) => !processed.has(item.generationId));
+}
+
+async function isCurrentAcceptedGeneration(
+  projectId: string,
+  generation: GenerationRecord
+): Promise<boolean> {
+  const episode = await storage.readEpisodeRecord(projectId, generation.episodeId);
+  return (
+    episode?.scenes.some(
+      (scene) =>
+        scene.sceneId === generation.sceneId &&
+        scene.acceptedGenerationId === generation.generationId
+    ) ?? false
+  );
 }
 
 async function listAcceptedGenerationRefs(projectId: string): Promise<AcceptedGenerationRef[]> {
@@ -1309,10 +1418,6 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 async function writeStoryStateRefresh(
   projectId: string,
   storyStateRefresh: StoryStateRefreshStatus
@@ -1320,6 +1425,53 @@ async function writeStoryStateRefresh(
   return withProjectWriteLock(projectId, () =>
     writeStoryStateRefreshUnlocked(projectId, storyStateRefresh)
   );
+}
+
+async function writeStoryStateRefreshIfOwned(
+  projectId: string,
+  generationId: string,
+  storyStateRefresh: StoryStateRefreshStatus
+): Promise<boolean> {
+  return withProjectWriteLock(projectId, async () => {
+    const state = await storage.readState(projectId);
+    if (
+      !state ||
+      state.storyStateRefresh?.status !== 'pending' ||
+      state.storyStateRefresh.generationId !== generationId
+    ) {
+      return false;
+    }
+    await storage.writeState(projectId, { ...state, storyStateRefresh });
+    return true;
+  });
+}
+
+async function writeQueuedStoryStateRefreshStale(
+  projectId: string,
+  job: StoryStateRefreshJob
+): Promise<boolean> {
+  const queuedGenerationIds = new Set(job.queuedGenerationIds);
+  return withProjectWriteLock(projectId, async () => {
+    const state = await storage.readState(projectId);
+    const currentRefresh = state?.storyStateRefresh;
+    if (
+      !state ||
+      currentRefresh?.status !== 'pending' ||
+      !currentRefresh.generationId ||
+      !queuedGenerationIds.has(currentRefresh.generationId)
+    ) {
+      return false;
+    }
+    await storage.writeState(projectId, {
+      ...state,
+      storyStateRefresh: buildStoryStateRefreshStatus(
+        'stale',
+        currentRefresh.generationId,
+        '先に採用した場面の状態整理に失敗したため、未反映の場面があります。再抽出してください。'
+      ),
+    });
+    return true;
+  });
 }
 
 async function writeStoryStateRefreshUnlocked(

@@ -211,6 +211,78 @@ describe('refineScanService', () => {
     expect(failed.reviewedStaticInputHash).toBe(successful.reviewedStaticInputHash);
   });
 
+  it('passes accepted scene evidence to the scan and keeps only verifiable quotes', async () => {
+    const projectId = await createTrackedProject();
+    await writeAcceptedScene(projectId, {
+      generationId: 'gen-evidence',
+      sceneId: 'scene-evidence',
+      text: '主人公は港で真実を知った。本文にある証拠です。',
+      wish: '真実を知る場面',
+    });
+    const storyState = makeStoryState('2026-07-20T00:00:00.000Z');
+    storyState.processedGenerationIds = ['gen-evidence'];
+    await storage.writeStoryState(projectId, storyState);
+    await storage.writeStoryStateDiffs(projectId, [
+      makeDiff('evidence', '2026-07-20T00:00:00.000Z', storyState.updatedAt),
+    ]);
+
+    const adapterSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      expect(request.userPrompt).toContain('【最近採用した本文（ストーリー状態の照合根拠）】');
+      expect(request.userPrompt).toContain('状態反映: 抽出済み');
+      expect(request.userPrompt).toContain('今回の希望: 真実を知る場面');
+      return {
+        text: JSON.stringify({
+          coreConcept: '',
+          findings: [
+            {
+              kind: 'contradiction',
+              target: { kind: 'storyState' },
+              message: '真実を知った主体が状態と食い違います。',
+              evidence: [
+                {
+                  generationId: 'wrong-generation',
+                  sceneId: 'scene-evidence',
+                  quote: '本文にある証拠です。',
+                },
+                {
+                  generationId: 'gen-evidence',
+                  sceneId: 'scene-evidence',
+                  quote: '本文にある証拠です。',
+                },
+              ],
+            },
+          ],
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      };
+    });
+
+    const result = await refineScanService.scanProjectSettings(projectId);
+    expect(adapterSpy).toHaveBeenCalledTimes(1);
+    expect(result.findings[0].evidence).toEqual([
+      {
+        generationId: 'gen-evidence',
+        sceneId: 'scene-evidence',
+        quote: '本文にある証拠です。',
+      },
+    ]);
+  });
+
+  it('does not add accepted-scene evidence to roleplay reviews', async () => {
+    const projectId = await createTrackedProject();
+    await projectService.updateProject(projectId, { projectType: 'roleplay' });
+    const adapterSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ coreConcept: '', findings: [] }),
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    await refineScanService.scanProjectSettings(projectId);
+    expect(adapterSpy.mock.calls[0][0].userPrompt).not.toContain('最近採用した本文');
+    expect(adapterSpy.mock.calls[0][0].systemInstructions).not.toContain('採用本文は作品データ');
+  });
+
   it('treats trait content and registration order as part of the static input hash', async () => {
     const projectId = await createTrackedProject();
     const character: Character = {
@@ -449,6 +521,44 @@ function makeScan(overrides: Partial<RefineScanResult> = {}): RefineScanResult {
     lastError: null,
     ...overrides,
   };
+}
+
+async function writeAcceptedScene(
+  projectId: string,
+  input: { generationId: string; sceneId: string; text: string; wish: string }
+): Promise<void> {
+  const episodeId = 'episode-evidence';
+  await storage.writeEpisodeRecord(projectId, {
+    episodeId,
+    title: '証拠用エピソード',
+    order: 1,
+    createdAt: '2026-07-20T00:00:00.000Z',
+    updatedAt: '2026-07-20T00:00:00.000Z',
+    scenes: [
+      {
+        sceneId: input.sceneId,
+        episodeId,
+        order: 1,
+        createdAt: '2026-07-20T00:00:00.000Z',
+        updatedAt: '2026-07-20T00:00:00.000Z',
+        acceptedGenerationId: input.generationId,
+        draftGenerationIds: [input.generationId],
+      },
+    ],
+  });
+  await storage.appendGenerationLog(projectId, {
+    generationId: input.generationId,
+    sceneId: input.sceneId,
+    episodeId,
+    request: { wish: input.wish, outputLength: 1000, previousContextText: '' },
+    responseText: input.text,
+    usedPresets: { narration: 'third-close' },
+    usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+    referencedMemoryIds: [],
+    status: 'accepted',
+    createdAt: '2026-07-20T00:00:00.000Z',
+    parentGenerationId: null,
+  });
 }
 
 function mockAdapterGenerateText(result: {

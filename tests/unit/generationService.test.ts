@@ -72,6 +72,116 @@ async function writeAcceptedScene(projectId: string, text: string): Promise<void
   }
 }
 
+async function writePendingRefreshScenario(
+  project: Project,
+  mode: 'next-scene' | 'replacement'
+): Promise<{ firstGenerationId: string; secondGenerationId: string }> {
+  const episodeId = 'ep-pending-refresh';
+  const firstGenerationId = 'gen-pending-a';
+  const secondGenerationId = 'gen-pending-b';
+  const firstSceneId = 'scene-pending-a';
+  const secondSceneId = mode === 'replacement' ? firstSceneId : 'scene-pending-b';
+  const scenes: EpisodeRecord['scenes'] =
+    mode === 'replacement'
+      ? [
+          {
+            sceneId: firstSceneId,
+            episodeId,
+            order: 1,
+            createdAt: '2026-07-02T00:00:00Z',
+            updatedAt: '2026-07-02T00:00:00Z',
+            acceptedGenerationId: firstGenerationId,
+            draftGenerationIds: [firstGenerationId, secondGenerationId],
+          },
+        ]
+      : [
+          {
+            sceneId: firstSceneId,
+            episodeId,
+            order: 1,
+            createdAt: '2026-07-02T00:00:00Z',
+            updatedAt: '2026-07-02T00:00:00Z',
+            acceptedGenerationId: firstGenerationId,
+            draftGenerationIds: [firstGenerationId],
+          },
+          {
+            sceneId: secondSceneId,
+            episodeId,
+            order: 2,
+            createdAt: '2026-07-02T00:01:00Z',
+            updatedAt: '2026-07-02T00:01:00Z',
+            acceptedGenerationId: null,
+            draftGenerationIds: [secondGenerationId],
+          },
+        ];
+  const episode: EpisodeRecord = {
+    episodeId,
+    title: 'Pending refresh',
+    order: 1,
+    createdAt: '2026-07-02T00:00:00Z',
+    updatedAt: '2026-07-02T00:00:00Z',
+    scenes,
+  };
+  const generations: GenerationRecord[] = [
+    {
+      generationId: firstGenerationId,
+      sceneId: firstSceneId,
+      episodeId,
+      request: { wish: 'first', outputLength: 1000, previousContextText: '' },
+      responseText: 'first accepted text',
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-02T00:00:00Z',
+      parentGenerationId: null,
+    },
+    {
+      generationId: secondGenerationId,
+      sceneId: secondSceneId,
+      episodeId,
+      request: { wish: 'second', outputLength: 1000, previousContextText: '' },
+      responseText: 'second accepted text',
+      usedPresets: project.activePresetIds,
+      usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+      referencedMemoryIds: [],
+      status: 'draft',
+      createdAt: '2026-07-02T00:01:00Z',
+      parentGenerationId: mode === 'replacement' ? firstGenerationId : null,
+    },
+  ];
+
+  await storage.writeEpisodeRecord(project.projectId, episode);
+  for (const generation of generations) {
+    await storage.appendGenerationLog(project.projectId, generation);
+  }
+  await storage.writeStoryState(project.projectId, {
+    schemaVersion: 1,
+    currentSituation: [],
+    characterStates: [],
+    importantEvents: [],
+    openThreads: [],
+    processedGenerationIds: [],
+    updatedAt: '2026-07-02T00:00:00Z',
+  } as StoryState);
+  const state = await storage.readState(project.projectId);
+  if (!state) throw new Error('state missing');
+  await storage.writeState(project.projectId, {
+    ...state,
+    currentEpisodeId: episodeId,
+    currentSceneId: secondSceneId,
+    selectedDraftGenerationId: firstGenerationId,
+    lastAcceptedGenerationId: firstGenerationId,
+    storyStateRefresh: {
+      status: 'pending',
+      generationId: firstGenerationId,
+      updatedAt: '2026-07-02T00:00:00Z',
+    },
+  });
+
+  return { firstGenerationId, secondGenerationId };
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(createdProjectIds.map((id) => storage.deleteProjectDir(id)));
@@ -370,6 +480,257 @@ describe('generationService state operations', () => {
     });
   });
 
+  it('keeps the read-only backlog query from initializing legacy processed ids', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '未抽出の本文');
+    await storage.writeStoryState(project.projectId, {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: [],
+      openThreads: [],
+      updatedAt: '2026-07-02T00:00:00Z',
+    } as StoryState);
+    const state = await storage.readState(project.projectId);
+    await storage.writeState(project.projectId, {
+      ...state!,
+      storyStateRefresh: {
+        status: 'pending',
+        generationId: 'gen-1',
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    });
+
+    await expect(generationService.readStoryStateBacklog(project.projectId)).resolves.toEqual([
+      expect.objectContaining({ generationId: 'gen-1' }),
+    ]);
+    await expect(storage.readStoryState(project.projectId)).resolves.not.toMatchObject({
+      processedGenerationIds: expect.anything(),
+    });
+  });
+
+  it('seeds legacy processed ids before an acceptance-triggered refresh applies', async () => {
+    const project = await createTrackedProject();
+    const episodeId = 'ep-legacy-refresh';
+    const oldGenerationId = 'gen-legacy-old';
+    const newGenerationId = 'gen-legacy-new';
+    await storage.writeEpisodeRecord(project.projectId, {
+      episodeId,
+      title: 'Legacy refresh',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:01:00Z',
+      scenes: [
+        {
+          sceneId: 'scene-legacy-old',
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: oldGenerationId,
+          draftGenerationIds: [oldGenerationId],
+        },
+        {
+          sceneId: 'scene-legacy-new',
+          episodeId,
+          order: 2,
+          createdAt: '2026-07-02T00:01:00Z',
+          updatedAt: '2026-07-02T00:01:00Z',
+          acceptedGenerationId: null,
+          draftGenerationIds: [newGenerationId],
+        },
+      ],
+    });
+    const generations: GenerationRecord[] = [
+      {
+        generationId: oldGenerationId,
+        sceneId: 'scene-legacy-old',
+        episodeId,
+        request: { wish: 'old', outputLength: 1000, previousContextText: '' },
+        responseText: 'legacy accepted text',
+        usedPresets: project.activePresetIds,
+        usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+        referencedMemoryIds: [],
+        status: 'accepted',
+        createdAt: '2026-07-02T00:00:00Z',
+        parentGenerationId: null,
+      },
+      {
+        generationId: newGenerationId,
+        sceneId: 'scene-legacy-new',
+        episodeId,
+        request: { wish: 'new', outputLength: 1000, previousContextText: '' },
+        responseText: 'new draft text',
+        usedPresets: project.activePresetIds,
+        usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+        referencedMemoryIds: [],
+        status: 'draft',
+        createdAt: '2026-07-02T00:01:00Z',
+        parentGenerationId: null,
+      },
+    ];
+    for (const generation of generations) {
+      await storage.appendGenerationLog(project.projectId, generation);
+    }
+    await storage.writeStoryState(project.projectId, {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: [],
+      openThreads: [],
+      updatedAt: '2026-07-02T00:00:00Z',
+    } as StoryState);
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+    await storage.writeState(project.projectId, {
+      ...state,
+      currentEpisodeId: episodeId,
+      currentSceneId: 'scene-legacy-new',
+      selectedDraftGenerationId: newGenerationId,
+      lastAcceptedGenerationId: oldGenerationId,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    await generationService.acceptGeneration(project.projectId, newGenerationId);
+    await withDataDirLock(async () => undefined);
+
+    await expect(storage.readStoryState(project.projectId)).resolves.toMatchObject({
+      processedGenerationIds: [oldGenerationId, newGenerationId],
+    });
+    await expect(generationService.readStoryStateBacklog(project.projectId)).resolves.toEqual([]);
+  });
+
+  it('coalesces simultaneous manual story-state refreshes into one extraction job', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '再抽出対象の本文');
+    const state = await storage.readState(project.projectId);
+    await storage.writeState(project.projectId, {
+      ...state!,
+      storyStateRefresh: {
+        status: 'pending',
+        generationId: 'gen-1',
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    });
+
+    const adapterResult = deferred<{ text: string; finishReason: 'stop'; retryable: false }>();
+    const adapterSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockReturnValue(adapterResult.promise);
+    const first = generationService.refreshStoryState(project.projectId);
+    await waitForCondition(() => adapterSpy.mock.calls.length === 1);
+    const second = generationService.refreshStoryState(project.projectId);
+
+    adapterResult.resolve({ text: '{}', finishReason: 'stop', retryable: false });
+    await Promise.all([first, second]);
+
+    expect(adapterSpy).toHaveBeenCalledTimes(1);
+    await expect(storage.readState(project.projectId)).resolves.toMatchObject({
+      storyStateRefresh: { status: 'fresh', generationId: 'gen-1' },
+    });
+  });
+
+  it('processes accepted scenes queued while an active refresh succeeds', async () => {
+    const project = await createTrackedProject();
+    const { secondGenerationId } = await writePendingRefreshScenario(project, 'next-scene');
+    const firstResult = deferred<{ text: string; finishReason: 'stop'; retryable: false }>();
+    const secondResult = deferred<{ text: string; finishReason: 'stop'; retryable: false }>();
+    const adapterSpy = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockReturnValueOnce(firstResult.promise)
+      .mockReturnValueOnce(secondResult.promise);
+
+    const refresh = generationService.refreshStoryState(project.projectId);
+    await waitForCondition(() => adapterSpy.mock.calls.length === 1);
+    await generationService.acceptGeneration(project.projectId, secondGenerationId);
+
+    firstResult.resolve({ text: '{}', finishReason: 'stop', retryable: false });
+    await waitForCondition(() => adapterSpy.mock.calls.length === 2);
+    secondResult.resolve({ text: '{}', finishReason: 'stop', retryable: false });
+    await refresh;
+
+    expect(adapterSpy).toHaveBeenCalledTimes(2);
+    await expect(storage.readState(project.projectId)).resolves.toMatchObject({
+      storyStateRefresh: { status: 'fresh', generationId: secondGenerationId },
+    });
+    await expect(storage.readStoryState(project.projectId)).resolves.toMatchObject({
+      processedGenerationIds: ['gen-pending-a', secondGenerationId],
+    });
+  });
+
+  it('marks the queued owner stale when an earlier active refresh fails', async () => {
+    const project = await createTrackedProject();
+    const { firstGenerationId, secondGenerationId } = await writePendingRefreshScenario(
+      project,
+      'next-scene'
+    );
+    const firstResult = deferred<{
+      text: string;
+      finishReason: 'error';
+      retryable: false;
+      errorMessage: string;
+    }>();
+    const adapterSpy = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockReturnValue(firstResult.promise);
+
+    const refresh = generationService.refreshStoryState(project.projectId);
+    await waitForCondition(() => adapterSpy.mock.calls.length === 1);
+    await generationService.acceptGeneration(project.projectId, secondGenerationId);
+
+    firstResult.resolve({
+      text: '',
+      finishReason: 'error',
+      retryable: false,
+      errorMessage: 'extraction failed',
+    });
+    await refresh;
+
+    expect(adapterSpy).toHaveBeenCalledTimes(1);
+    await expect(storage.readState(project.projectId)).resolves.toMatchObject({
+      storyStateRefresh: {
+        status: 'stale',
+        generationId: secondGenerationId,
+      },
+    });
+    await expect(generationService.readStoryStateBacklog(project.projectId)).resolves.toEqual([
+      expect.objectContaining({ generationId: firstGenerationId }),
+      expect.objectContaining({ generationId: secondGenerationId }),
+    ]);
+  });
+
+  it('skips a superseded scene when its active extraction finishes', async () => {
+    const project = await createTrackedProject();
+    const { firstGenerationId, secondGenerationId } = await writePendingRefreshScenario(
+      project,
+      'replacement'
+    );
+    const firstResult = deferred<{ text: string; finishReason: 'stop'; retryable: false }>();
+    const secondResult = deferred<{ text: string; finishReason: 'stop'; retryable: false }>();
+    const adapterSpy = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockReturnValueOnce(firstResult.promise)
+      .mockReturnValueOnce(secondResult.promise);
+
+    const refresh = generationService.refreshStoryState(project.projectId);
+    await waitForCondition(() => adapterSpy.mock.calls.length === 1);
+    await generationService.acceptGeneration(project.projectId, secondGenerationId);
+
+    firstResult.resolve({ text: '{}', finishReason: 'stop', retryable: false });
+    await waitForCondition(() => adapterSpy.mock.calls.length === 2);
+    secondResult.resolve({ text: '{}', finishReason: 'stop', retryable: false });
+    await refresh;
+
+    await expect(storage.readStoryState(project.projectId)).resolves.toMatchObject({
+      processedGenerationIds: [secondGenerationId],
+    });
+    await expect(generationService.findGeneration(project.projectId, firstGenerationId)).resolves.toMatchObject({
+      status: 'accepted',
+    });
+  });
+
   it('accepts the selected draft, supersedes alternatives, and rebuilds the episode text', async () => {
     const project = await createTrackedProject();
     let callCount = 0;
@@ -527,4 +888,12 @@ async function waitForCondition(condition: () => boolean, timeoutMs = 1_000): Pr
     }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }

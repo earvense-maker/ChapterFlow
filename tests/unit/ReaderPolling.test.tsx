@@ -109,7 +109,7 @@ function readerState(status: 'pending' | 'fresh'): ReaderState {
       storyStateRefresh: {
         status,
         generationId: 'gen-reader-poll',
-        updatedAt: '2026-07-04T12:00:00.000Z',
+        updatedAt: new Date().toISOString(),
       },
       uiState: {
         readingPosition: 0,

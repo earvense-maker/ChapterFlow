@@ -302,6 +302,11 @@ export const api = {
     request<NgExpression>(`/projects/${id}/expressions`, { method: 'POST', body: JSON.stringify(body) }),
   archiveExpression: (id: string, expressionId: string) =>
     request<{ ok: true }>(`/projects/${id}/expressions/${expressionId}`, { method: 'DELETE' }),
+  getGlobalExpressions: () => request<NgExpressionsResponse>('/expressions/global'),
+  createGlobalExpression: (body: { text: string; source?: NgExpressionSource }) =>
+    request<NgExpression>('/expressions/global', { method: 'POST', body: JSON.stringify(body) }),
+  archiveGlobalExpression: (expressionId: string) =>
+    request<{ ok: true }>(`/expressions/global/${expressionId}`, { method: 'DELETE' }),
 
   getRefineScan: (id: string) =>
     request<RefineScanResult | null>(`/projects/${id}/refine/scan`),

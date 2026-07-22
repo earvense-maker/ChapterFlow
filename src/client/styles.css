@@ -2374,6 +2374,20 @@ button:disabled:has(.generating-label) {
   white-space: pre-wrap;
 }
 
+.refine-finding-evidence {
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.55rem;
+  border-left: 2px solid var(--accent);
+  background: rgba(107, 142, 159, 0.08);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.refine-finding-evidence p {
+  margin: 0.2rem 0 0;
+  white-space: pre-wrap;
+}
+
 .refine-finding-suggestion {
   margin: 0.4rem 0 0;
   padding: 0.35rem 0.55rem;

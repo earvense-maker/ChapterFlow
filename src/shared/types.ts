@@ -950,6 +950,12 @@ export type RefineFindingTarget =
   | { kind: 'storyState' }
   | { kind: 'other'; label: string };
 
+export interface RefineFindingEvidence {
+  generationId: GenerationId;
+  sceneId: SceneId;
+  quote: string;
+}
+
 export interface RefineFinding {
   id: string;
   kind: RefineFindingKind;
@@ -958,6 +964,7 @@ export interface RefineFinding {
   detail?: string;
   // NOTE: Phase 3 でチャット雛形の初期値として使う。Phase 2 では表示のみ。
   suggestedFix?: string;
+  evidence?: RefineFindingEvidence[];
 }
 
 export interface RefineScanResult {

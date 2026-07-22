@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import { DEFAULT_GEMINI_MODEL } from '@shared/defaults';
 import DataDirSettingsSection from './DataDirSettingsSection';
-import type { ModelProviderInfo } from '@shared/types';
+import type { ModelProviderInfo, NgExpression } from '@shared/types';
 
 interface Props {
   onBack: () => void;
@@ -18,6 +18,11 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
   const [appVersion, setAppVersion] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [globalExpressions, setGlobalExpressions] = useState<NgExpression[]>([]);
+  const [newGlobalExpression, setNewGlobalExpression] = useState('');
+  const [globalLoading, setGlobalLoading] = useState(true);
+  const [globalSaving, setGlobalSaving] = useState(false);
+  const [globalError, setGlobalError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,7 +59,22 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
         if (!cancelled) setLoading(false);
       }
     }
+    async function loadGlobalExpressions() {
+      try {
+        setGlobalLoading(true);
+        setGlobalError(null);
+        const data = await api.getGlobalExpressions();
+        if (!cancelled) setGlobalExpressions(data.ngExpressions);
+      } catch (err) {
+        if (!cancelled) {
+          setGlobalError(err instanceof Error ? err.message : '共通NG表現の読み込みに失敗しました');
+        }
+      } finally {
+        if (!cancelled) setGlobalLoading(false);
+      }
+    }
     void load();
+    void loadGlobalExpressions();
     return () => {
       cancelled = true;
     };
@@ -63,6 +83,11 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
   async function refreshProviders() {
     const providerList = await api.getModelProviders();
     setProviders(providerList);
+  }
+
+  async function reloadGlobalExpressions() {
+    const data = await api.getGlobalExpressions();
+    setGlobalExpressions(data.ngExpressions);
   }
 
   async function saveModelSettings() {
@@ -123,6 +148,37 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
       setError(err instanceof Error ? err.message : 'APIキーの保存に失敗しました');
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function addGlobalExpression() {
+    const text = newGlobalExpression.trim();
+    if (!text) return;
+    try {
+      setGlobalSaving(true);
+      setGlobalError(null);
+      await api.createGlobalExpression({ text, source: 'manual' });
+      await reloadGlobalExpressions();
+      setNewGlobalExpression('');
+      showMessage('共通NG表現を登録しました。');
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '共通NG表現の登録に失敗しました');
+    } finally {
+      setGlobalSaving(false);
+    }
+  }
+
+  async function archiveGlobalExpression(expressionId: string) {
+    try {
+      setGlobalSaving(true);
+      setGlobalError(null);
+      await api.archiveGlobalExpression(expressionId);
+      await reloadGlobalExpressions();
+      showMessage('共通NG表現を削除しました。');
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '共通NG表現の削除に失敗しました');
+    } finally {
+      setGlobalSaving(false);
     }
   }
 
@@ -225,6 +281,64 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
           </div>
         </section>
       )}
+      <section className="settings-section">
+        <h2>共通NG表現</h2>
+        <p className="settings-help">
+          すべての作品とロールプレイで避けたい表現を登録します。作品だけで避けたい表現は、その作品の設定で登録してください。
+        </p>
+        <p className="settings-help">
+          共通＋作品固有の新しい順で最大12件が生成に使われます。
+        </p>
+        {globalError && <div className="refine-scan-error">{globalError}</div>}
+        {globalLoading ? (
+          <div className="loading">共通NG表現を読み込み中…</div>
+        ) : (
+          <>
+            <div className="ng-expression-form">
+              <input
+                type="text"
+                value={newGlobalExpression}
+                onChange={(event) => setNewGlobalExpression(event.target.value)}
+                placeholder="例：息を呑んだ"
+                maxLength={30}
+                disabled={dataDirBusy || globalSaving}
+              />
+              <button
+                type="button"
+                onClick={addGlobalExpression}
+                disabled={dataDirBusy || globalSaving || !newGlobalExpression.trim()}
+              >
+                追加
+              </button>
+            </div>
+            {globalExpressions.length >= 45 && (
+              <p style={{ color: 'var(--danger)', fontSize: '0.85rem' }}>
+                共通NG表現が上限（50件）に近づいています。
+              </p>
+            )}
+            <ul className="ng-expression-list">
+              {globalExpressions.map((expression) => (
+                <li key={expression.id} className="ng-expression-item">
+                  <span>「{expression.text}」</span>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => archiveGlobalExpression(expression.id)}
+                    disabled={dataDirBusy || globalSaving}
+                  >
+                    削除
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {globalExpressions.length === 0 && !globalError && (
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                登録された共通NG表現はありません。
+              </p>
+            )}
+          </>
+        )}
+      </section>
       <DataDirSettingsSection onBusyChange={setDataDirBusy} />
       {appVersion && (
         <section className="settings-section">
