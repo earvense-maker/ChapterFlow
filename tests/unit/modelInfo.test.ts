@@ -28,6 +28,7 @@ describe('modelInfoService', () => {
       'xai',
       'openrouter',
     ]);
+    expect(defaultModelForProvider('gemini')).toBe('gemini-3.6-flash');
     expect(defaultModelForProvider('deepseek')).toBe('deepseek-v4-pro');
     expect(defaultModelForProvider('xai')).toBe('grok-4.3');
     expect(defaultModelForProvider('openrouter')).toBe('google/gemma-4-31b-it:free');

@@ -21,7 +21,7 @@ const providers = [
   {
     name: 'gemini',
     label: 'Gemini',
-    defaultModel: 'gemini-3.5-flash',
+    defaultModel: 'gemini-3.6-flash',
     apiKeyPlaceholder: 'gemini-key',
     apiKeyHelp: 'Gemini help',
     hasApiKey: false,
@@ -50,7 +50,7 @@ describe('AppSettingsPanel', () => {
     vi.mocked(api.getModelProviders).mockResolvedValue(providers);
     vi.mocked(api.getDefaultModelSettings).mockResolvedValue({
       provider: 'gemini',
-      modelName: 'gemini-3.5-flash',
+      modelName: 'gemini-3.6-flash',
     });
     vi.mocked(api.getSystemVersion).mockResolvedValue({ version: '0.1.0', runtime: 'server' });
     vi.mocked(api.saveCredential).mockResolvedValue({ ok: true });

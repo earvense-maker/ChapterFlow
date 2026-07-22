@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import {
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
+  DEFAULT_GEMINI_MODEL,
   ROLEPLAY_LIMITS,
+  geminiOmitsSamplingParameters,
   normalizeProjectType,
 } from '@shared/defaults';
 import type {
@@ -61,6 +63,12 @@ export default function TechSettingsTab({
   const [ngExpressions, setNgExpressions] = useState<NgExpression[]>([]);
   const [newNgText, setNewNgText] = useState('');
   const [loading, setLoading] = useState(false);
+  const effectiveModelName =
+    modelName.trim() ||
+    providers.find((candidate) => candidate.name === provider)?.defaultModel ||
+    DEFAULT_GEMINI_MODEL;
+  const temperatureUnsupported =
+    provider === 'gemini' && geminiOmitsSamplingParameters(effectiveModelName);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,7 +107,7 @@ export default function TechSettingsTab({
               activeModelName:
                 modelName.trim() ||
                 providers.find((p) => p.name === provider)?.defaultModel ||
-                'gemini-3.5-flash',
+                DEFAULT_GEMINI_MODEL,
               roleplayOutputChars,
             }
           : {
@@ -109,7 +117,7 @@ export default function TechSettingsTab({
               activeModelName:
                 modelName.trim() ||
                 providers.find((p) => p.name === provider)?.defaultModel ||
-                'gemini-3.5-flash',
+                DEFAULT_GEMINI_MODEL,
             }
       );
       onProjectUpdated(updatedProject);
@@ -261,7 +269,7 @@ export default function TechSettingsTab({
             type="text"
             value={modelName}
             onChange={(e) => setModelName(e.target.value)}
-            placeholder={activeProvider?.defaultModel ?? 'gemini-3.5-flash'}
+            placeholder={activeProvider?.defaultModel ?? DEFAULT_GEMINI_MODEL}
           />
         </label>
         {isRoleplay && (
@@ -296,8 +304,9 @@ export default function TechSettingsTab({
         <section className="settings-section">
           <h2>サンプリング</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            Temperature を上げると発想が広がり、下げると堅実になります。
-            目安: 堅く 0.5 / 標準 0.9 / 冒険 1.0〜1.2。
+            {temperatureUnsupported
+              ? 'このGeminiモデルではTemperatureが廃止されたため、設定はモデルへ送信されません。'
+              : 'Temperature を上げると発想が広がり、下げると堅実になります。目安: 堅く 0.5 / 標準 0.9 / 冒険 1.0〜1.2。'}
           </p>
           <label>
             Temperature（発想の広がり）
@@ -308,6 +317,7 @@ export default function TechSettingsTab({
               step={0.05}
               value={temperature}
               onChange={(e) => setTemperature(Number(e.target.value))}
+              disabled={loading || temperatureUnsupported}
             />
             <span>{temperature.toFixed(2)}</span>
           </label>

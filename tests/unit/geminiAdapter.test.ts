@@ -89,7 +89,7 @@ describe('GeminiAdapter', () => {
 
     await new GeminiAdapter().generateText({
       ...baseRequest,
-      modelName: 'gemini-3.5-flash',
+      modelName: 'gemini-3.6-flash',
     });
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
@@ -99,6 +99,54 @@ describe('GeminiAdapter', () => {
       includeThoughts: false,
     });
     expect(body.generationConfig.thinkingConfig).not.toHaveProperty('thinkingBudget');
+  });
+
+  it.each([
+    'gemini-3.5-flash-lite',
+    'gemini-3.6-flash',
+    'gemini-4-flash',
+    'gemini-flash-latest',
+  ])(
+    'omits deprecated sampling parameters for %s',
+    async (modelName) => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        jsonResponse({
+          candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        })
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await new GeminiAdapter().generateText({
+        ...baseRequest,
+        modelName,
+        temperature: 0.7,
+      });
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string);
+
+      expect(body.generationConfig).not.toHaveProperty('temperature');
+      expect(body.generationConfig).not.toHaveProperty('topP');
+      expect(body.generationConfig).not.toHaveProperty('topK');
+    }
+  );
+
+  it('keeps temperature for older Gemini models', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({
+      ...baseRequest,
+      modelName: 'gemini-3.5-flash',
+      temperature: 0.7,
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+
+    expect(body.generationConfig.temperature).toBe(0.7);
   });
 
   it('omits thinkingConfig for Gemini 2.5 models', async () => {

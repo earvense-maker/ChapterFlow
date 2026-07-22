@@ -4,6 +4,7 @@ import type {
   TokenCountSource,
   TokenLimitSource,
 } from '../types/index.js';
+import { DEFAULT_GEMINI_MODEL } from '../../shared/defaults.js';
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const MODEL_LIMIT_CACHE_MS = 10 * 60 * 1000;
@@ -24,7 +25,7 @@ const PROVIDERS: ModelProviderInfo[] = [
   {
     name: 'gemini',
     label: 'Gemini',
-    defaultModel: 'gemini-3.5-flash',
+    defaultModel: DEFAULT_GEMINI_MODEL,
     apiKeyPlaceholder: 'AIzaSy...',
     apiKeyHelp: 'Gemini APIキーを保存します。保存後は文脈上限と入力トークン数をAPIから取得できます。',
   },

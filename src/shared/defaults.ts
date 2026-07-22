@@ -4,6 +4,21 @@ export const DEFAULT_ACTIVE_PRESET_IDS = {
   narration: 'third-close',
 } satisfies ActivePresets;
 
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
+
+export function geminiOmitsSamplingParameters(modelName: string): boolean {
+  const normalized = modelName.trim().toLowerCase().replace(/^models\//, '');
+  // NOTE: latest alias は破壊的変更の予告後に新モデルへ追従するため、新仕様側に倒す。
+  if (/^gemini-.+-latest$/.test(normalized)) return true;
+  if (/^gemini-3\.5-flash-lite(?:[.-]|$)/.test(normalized)) return true;
+
+  const version = normalized.match(/^gemini-(\d+)(?:\.(\d+))?(?:[.-]|$)/);
+  if (!version) return false;
+  const major = Number(version[1]);
+  const minor = Number(version[2] ?? 0);
+  return major > 3 || (major === 3 && minor >= 6);
+}
+
 // NOTE: 保存データが未指定のときの正規化先。全 API 境界で共通化する。
 export const DEFAULT_PROJECT_TYPE: ProjectType = 'novel';
 export const DEFAULT_SETUP_PURPOSE: SetupPurpose = 'novel';

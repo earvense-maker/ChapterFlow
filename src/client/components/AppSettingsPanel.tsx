@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import { DEFAULT_GEMINI_MODEL } from '@shared/defaults';
 import DataDirSettingsSection from './DataDirSettingsSection';
 import type { ModelProviderInfo } from '@shared/types';
 
@@ -185,7 +186,7 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
               type="text"
               value={modelName}
               onChange={(e) => setModelName(e.target.value)}
-              placeholder={activeProvider?.defaultModel ?? 'gemini-3.5-flash'}
+              placeholder={activeProvider?.defaultModel ?? DEFAULT_GEMINI_MODEL}
               disabled={busy || !hasProviders}
             />
           </label>

@@ -9,10 +9,13 @@ import type {
 import { ModelAdapter, ModelAdapterError } from './modelAdapter.js';
 import { resolveMaxOutputTokens } from '../utils/outputLength.js';
 import { readServerSentEvents } from '../utils/sse.js';
+import {
+  DEFAULT_GEMINI_MODEL,
+  geminiOmitsSamplingParameters,
+} from '../../shared/defaults.js';
 
 const PROVIDER_NAME = 'gemini';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
-const DEFAULT_MODEL = 'gemini-3.5-flash';
 const MAX_OUTPUT_TOKENS = 65_536;
 
 export class GeminiAdapter implements ModelAdapter {
@@ -40,7 +43,7 @@ export class GeminiAdapter implements ModelAdapter {
     request.abortSignal?.addEventListener('abort', handleAbort, { once: true });
 
     try {
-      const modelName = normalizeModelName(request.modelName || DEFAULT_MODEL);
+      const modelName = normalizeModelName(request.modelName || DEFAULT_GEMINI_MODEL);
       const res = await fetch(
         `${API_BASE}/models/${modelName}:streamGenerateContent?alt=sse`,
         {
@@ -137,7 +140,7 @@ export class GeminiAdapter implements ModelAdapter {
     const timeout = setTimeout(() => controller.abort(), request.timeoutMs);
 
     try {
-      const modelName = normalizeModelName(request.modelName || DEFAULT_MODEL);
+      const modelName = normalizeModelName(request.modelName || DEFAULT_GEMINI_MODEL);
       const res = await fetch(
         `${API_BASE}/models/${modelName}:generateContent`,
         {
@@ -253,7 +256,7 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     systemInstruction?: { parts: Array<{ text: string }> };
     safetySettings: typeof CREATIVE_SAFETY_SETTINGS;
     generationConfig: {
-      temperature: number;
+      temperature?: number;
       maxOutputTokens: number;
       thinkingConfig?: { thinkingLevel: 'high'; includeThoughts?: boolean };
       responseMimeType?: string;
@@ -262,14 +265,20 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     contents: [{ role: 'user', parts: [{ text: request.userPrompt }] }],
     safetySettings: CREATIVE_SAFETY_SETTINGS,
     generationConfig: {
-      temperature: request.temperature,
       maxOutputTokens: resolveMaxOutputTokens(request, MAX_OUTPUT_TOKENS),
     },
   };
 
+  const modelName = normalizeModelName(request.modelName || DEFAULT_GEMINI_MODEL);
+  // NOTE: Gemini 3.6 Flash以降では sampling parameters が deprecated で、将来の
+  // モデルでは400になるため送らない。旧モデルには従来どおり temperature を送る。
+  if (!geminiOmitsSamplingParameters(modelName)) {
+    body.generationConfig.temperature = request.temperature;
+  }
+
   // NOTE: Gemini 3.xでは数値のthinkingBudgetではなくthinkingLevelを使う。
   // 2.5系はthinkingLevel非対応なので設定を省略し、モデル既定のthinkingに任せる。
-  if (/^gemini-3(?:[.-]|$)/i.test(normalizeModelName(request.modelName))) {
+  if (/^gemini-3(?:[.-]|$)/i.test(modelName)) {
     body.generationConfig.thinkingConfig = {
       thinkingLevel: 'high',
       includeThoughts: false,

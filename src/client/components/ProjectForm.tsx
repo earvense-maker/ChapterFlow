@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import { DEFAULT_ACTIVE_PRESET_IDS } from '@shared/defaults';
+import { DEFAULT_ACTIVE_PRESET_IDS, DEFAULT_GEMINI_MODEL } from '@shared/defaults';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import type { ActivePresets, Character, ModelProviderInfo, WorldContent } from '@shared/types';
 
@@ -23,7 +23,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
   const [outputLength, setOutputLength] = useState(6000);
   const [streamingEnabled, setStreamingEnabled] = useState(false);
   const [provider, setProvider] = useState('gemini');
-  const [modelName, setModelName] = useState('gemini-3.5-flash');
+  const [modelName, setModelName] = useState(DEFAULT_GEMINI_MODEL);
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
   const [customSystemPrompt, setCustomSystemPrompt] = useState('');
   const [world, setWorld] = useState<WorldContent>({ foundation: '', initialSituation: '' });
@@ -185,7 +185,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
               type="text"
               value={modelName}
               onChange={(e) => setModelName(e.target.value)}
-              placeholder={currentProvider(providers, provider)?.defaultModel ?? 'gemini-3.5-flash'}
+              placeholder={currentProvider(providers, provider)?.defaultModel ?? DEFAULT_GEMINI_MODEL}
             />
           </label>
           <div className="project-api-key-field">
