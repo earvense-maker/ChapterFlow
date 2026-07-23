@@ -5,10 +5,12 @@ import { GeneratingLabel } from './GeneratingLabel';
 import LightMarkdown from './LightMarkdown';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import CharacterTraitsEditor from './CharacterTraitsEditor';
+import { useNotificationCenter } from './NotificationCenter';
 import type {
   ActivePresets,
   CharacterRole,
   CharacterTrait,
+  GenerationNotificationSettings,
   ModelProviderInfo,
   SetupCommitPlan,
   SetupDraft,
@@ -106,6 +108,10 @@ const PREVIEW_STYLE_HINTS = ['もっと軽く', 'しっとり', '会話多め'];
 
 export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel, onOpenSettings }: Props) {
   const confirmAction = useConfirm();
+  const notificationCenter = useNotificationCenter();
+  const [notificationSettings, setNotificationSettings] = useState<GenerationNotificationSettings | null>(
+    null
+  );
   const [session, setSession] = useState<SetupSession | null>(null);
   const [message, setMessage] = useState('');
   const [suggestedActions, setSuggestedActions] = useState<SetupSuggestedAction[]>([]);
@@ -287,6 +293,22 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     };
   }, []);
 
+  // NOTE: 通知設定はアプリ全体設定なので一度だけ取得する。
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getNotificationSettings()
+      .then((settings) => {
+        if (!cancelled) setNotificationSettings(settings);
+      })
+      .catch(() => {
+        // 取得失敗時は通知を出さないだけに留める。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (purpose !== 'novel') return;
     let ignore = false;
@@ -447,6 +469,19 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     setStreamingMessage('');
     const abortController = new AbortController();
     sendAbortController.current = abortController;
+    const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let firstChunkFired = false;
+    const notifyClickTarget = { kind: 'setup' as const };
+    const notifyCompleted = (dedupeKey: string) => {
+      if (!notificationSettings) return;
+      notificationCenter.notify(notificationSettings, {
+        eventType: 'completed',
+        dedupeKey,
+        title: '相談の返答が完了しました',
+        body: '',
+        clickTarget: notifyClickTarget,
+      });
+    };
 
     try {
       await api.sendSetupMessageStream(
@@ -455,11 +490,22 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         {
           onDelta: (delta) => {
             if (!mountedRef.current) return;
+            if (!firstChunkFired && delta.trim() && notificationSettings) {
+              firstChunkFired = true;
+              notificationCenter.notify(notificationSettings, {
+                eventType: 'firstOutput',
+                dedupeKey: `firstOutput:${clientRequestId}`,
+                title: '相談の返答が始まりました',
+                body: '',
+                clickTarget: notifyClickTarget,
+              });
+            }
             setIsStreaming(true);
             setStreamingMessage((current) => current + delta);
           },
           onResult: (response) => {
             if (!mountedRef.current) return;
+            notifyCompleted(`completed:${response.session.sessionId}:${response.session.revision}`);
             applySessionWithDraftChanges(session, response.session);
             setDirtyDraftEditKeys(new Set());
             rememberSetupSession(response.session.sessionId, purpose);
@@ -504,6 +550,9 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                 message: trimmed,
                 revision: session.revision,
               });
+        // NOTE: streamが切れて非streamにfallbackした場合も、利用者から見た結果は
+        // 成功なので completed 扱いにする（failed にはしない）。
+        notifyCompleted(`completed:${result.session.sessionId}:${result.session.revision}`);
         applySessionWithDraftChanges(session, result.session);
         setDirtyDraftEditKeys(new Set());
         rememberSetupSession(result.session.sessionId, purpose);
@@ -513,6 +562,15 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         setStreamingMessage('');
       } catch (fallbackErr) {
         setError(fallbackErr instanceof Error ? fallbackErr.message : '送信に失敗しました');
+        if (notificationSettings) {
+          notificationCenter.notify(notificationSettings, {
+            eventType: 'failed',
+            dedupeKey: `failed:${clientRequestId}`,
+            title: '相談の送信に失敗しました',
+            body: fallbackErr instanceof Error ? fallbackErr.message : '',
+            clickTarget: notifyClickTarget,
+          });
+        }
         const latest = await reloadLatestSession(session.sessionId, true);
         const lastMessage = latest?.messages[latest.messages.length - 1];
         setShowRetry(lastMessage?.role === 'user');
@@ -549,6 +607,15 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       setError(null);
       setPreviewText('');
       const result = await api.retrySetupMessage(session.sessionId, {});
+      if (notificationSettings) {
+        notificationCenter.notify(notificationSettings, {
+          eventType: 'completed',
+          dedupeKey: `completed:${result.session.sessionId}:${result.session.revision}`,
+          title: '相談の返答が完了しました',
+          body: '',
+          clickTarget: { kind: 'setup' },
+        });
+      }
       applySessionWithDraftChanges(session, result.session);
       setDirtyDraftEditKeys(new Set());
       rememberSetupSession(result.session.sessionId, purpose);
@@ -556,6 +623,15 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       setShowRetry(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '再試行に失敗しました');
+      if (notificationSettings) {
+        notificationCenter.notify(notificationSettings, {
+          eventType: 'failed',
+          dedupeKey: `failed:retry-${session.sessionId}-${Date.now()}`,
+          title: '相談の再試行に失敗しました',
+          body: err instanceof Error ? err.message : '',
+          clickTarget: { kind: 'setup' },
+        });
+      }
       const latest = await reloadLatestSession(session.sessionId, true);
       const lastMessage = latest?.messages[latest.messages.length - 1];
       setShowRetry(lastMessage?.role === 'user');

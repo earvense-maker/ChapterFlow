@@ -3,6 +3,9 @@ import { api } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import type {
   Character,
+  RefineAutomationMode,
+  RefineAutomationRun,
+  RefineEvidenceScope,
   RefineFinding,
   RefineFindingKind,
   RefineFindingTarget,
@@ -12,6 +15,7 @@ import type {
   RefinePatchStatus,
   RefineScanResult,
   RefineSession,
+  SettingsFocusTarget,
 } from '@shared/types';
 
 interface Props {
@@ -22,6 +26,8 @@ interface Props {
   scanError: string | null;
   onScanRefine: () => void | Promise<void>;
   onSettingsChanged: () => void;
+  focusTarget?: SettingsFocusTarget | null;
+  onFocusTargetConsumed?: () => void;
 }
 
 type RefineTab = 'findings' | 'history';
@@ -34,16 +40,29 @@ export default function RefineChatPanel({
   scanError,
   onScanRefine,
   onSettingsChanged,
+  focusTarget,
+  onFocusTargetConsumed,
 }: Props) {
   const confirmAction = useConfirm();
   const [session, setSession] = useState<RefineSession | null>(null);
+  const [runs, setRuns] = useState<RefineAutomationRun[]>([]);
   const [input, setInput] = useState('');
   const [activeTab, setActiveTab] = useState<RefineTab>('findings');
   const [sending, setSending] = useState(false);
   const [busyPatchId, setBusyPatchId] = useState<string | null>(null);
+  const [revertingRunId, setRevertingRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  async function loadRuns() {
+    try {
+      const list = await api.getRefineAutomationRuns(projectId);
+      setRuns(list);
+    } catch {
+      // NOTE: run 履歴の取得失敗は相談欄自体の利用を妨げないよう、静かに諦める。
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -60,10 +79,34 @@ export default function RefineChatPanel({
       }
     }
     load();
+    void loadRuns();
     return () => {
       cancelled = true;
     };
   }, [projectId]);
+
+  useEffect(() => {
+    if (!focusTarget) return;
+    setActiveTab('history');
+    const targetId = focusTarget.automationRunId
+      ? `automation-run-${focusTarget.automationRunId}`
+      : focusTarget.patchId
+        ? `refine-patch-${focusTarget.patchId}`
+        : null;
+    const timer = window.setTimeout(() => {
+      if (targetId) {
+        const el = document.getElementById(targetId);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('refine-focus-highlight');
+          window.setTimeout(() => el.classList.remove('refine-focus-highlight'), 2000);
+        }
+      }
+      onFocusTargetConsumed?.();
+    }, 80);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTarget]);
 
   useEffect(() => {
     // NOTE: メッセージが増えたら末尾へ自動スクロール。
@@ -127,6 +170,44 @@ export default function RefineChatPanel({
     }
   }
 
+  async function handleAcknowledgeRun(runId: string) {
+    if (revertingRunId || busyPatchId) return;
+    try {
+      setRevertingRunId(runId);
+      setError(null);
+      await api.acknowledgeRefineAutomationRun(projectId, runId);
+      await loadRuns();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '確認できませんでした');
+      await loadRuns();
+    } finally {
+      setRevertingRunId(null);
+    }
+  }
+
+  async function handleRevertRun(runId: string) {
+    if (revertingRunId || busyPatchId) return;
+    if (
+      !(await confirmAction(
+        'この自動更新を取り消しますか？世界設定・人物設定が更新前の状態へ戻ります。',
+        { confirmLabel: '取り消す', danger: true }
+      ))
+    )
+      return;
+    try {
+      setRevertingRunId(runId);
+      setError(null);
+      await api.revertRefineAutomationRun(projectId, runId);
+      await Promise.all([reloadSessionQuietly(), loadRuns()]);
+      onSettingsChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '取り消しに失敗しました');
+      await loadRuns();
+    } finally {
+      setRevertingRunId(null);
+    }
+  }
+
   async function handleReset() {
     if (busyPatchId) return;
     if (
@@ -176,12 +257,45 @@ export default function RefineChatPanel({
   }
 
   const patchesByMessageId = new Map<string, RefinePatch[]>();
+  const patchesByAutomationRunId = new Map<string, RefinePatch[]>();
   if (session) {
     for (const patch of session.patches) {
       const list = patchesByMessageId.get(patch.sourceMessageId) ?? [];
       list.push(patch);
       patchesByMessageId.set(patch.sourceMessageId, list);
+      if (patch.automationRunId) {
+        const runList = patchesByAutomationRunId.get(patch.automationRunId) ?? [];
+        runList.push(patch);
+        patchesByAutomationRunId.set(patch.automationRunId, runList);
+      }
     }
+  }
+  const runsByRunId = new Map<string, RefineAutomationRun>(runs.map((run) => [run.runId, run]));
+
+  // NOTE: run はsession.messagesの24件上限で消えても refineAutomation.json には残る。
+  // messageと結び付けて描画する既存経路 + それに含まれない run を単独描画する経路の
+  // 2本立てにする。単独描画 run は最新→古い順で相談履歴の先頭にまとめる。
+  const messageAutomationRunIds = new Set(
+    (session?.messages ?? [])
+      .map((m) => m.automationRunId)
+      .filter((id): id is string => typeof id === 'string')
+  );
+  const orphanRuns = runs.filter((r) => !messageAutomationRunIds.has(r.runId));
+  // NOTE: revert 可否は「実適用パッチを持ち、resultStaticHash が現在と一致する最新run」。
+  // クライアントでは resultStaticHash と currentHash を比較できないため、サーバー側の
+  // 判定に委ねる意味で「appliedPatchIds を持ち、その後で他の実適用runが無い」= 最新の
+  // 実適用run を候補として表示するに留める。実際の判定はサーバーが 409 で拒否する。
+  const latestAppliedRun = runs.find(
+    (r) =>
+      r.appliedPatchIds.length > 0 &&
+      r.status !== 'failed' &&
+      r.acknowledgement !== 'reverted' &&
+      r.beforeSnapshot !== undefined
+  );
+
+  function computeIsRevertible(run: RefineAutomationRun | undefined): boolean {
+    if (!run) return false;
+    return latestAppliedRun?.runId === run.runId;
   }
 
   if (loading) return <div className="loading">相談セッションを読み込んでいます…</div>;
@@ -252,28 +366,77 @@ export default function RefineChatPanel({
 
       {activeTab === 'history' && (
         <div className="refine-chat-scroll refine-chat-messages" ref={scrollRef} role="tabpanel">
+          {runs.length === 0 && (
+            <p className="refine-automation-empty">自動レビューの実行履歴はまだありません。</p>
+          )}
+          {orphanRuns.length > 0 && (
+            <div className="refine-automation-orphan-runs">
+              <p className="refine-automation-orphan-heading">
+                過去の自動レビュー履歴（相談チャットの上限を超えたため単独表示）
+              </p>
+              {orphanRuns.map((run) => {
+                const runPatches = patchesByAutomationRunId.get(run.runId) ?? [];
+                return (
+                  <div key={run.runId}>
+                    <AutomationRunSummary
+                      run={run}
+                      isLatestRevertible={computeIsRevertible(run)}
+                      busy={revertingRunId === run.runId}
+                      onAcknowledge={() => handleAcknowledgeRun(run.runId)}
+                      onRevert={() => handleRevertRun(run.runId)}
+                    />
+                    {runPatches.map((patch) => (
+                      <PatchCard
+                        key={patch.patchId}
+                        patch={patch}
+                        characters={characters}
+                        busy={busyPatchId === patch.patchId}
+                        disabled={patchActionDisabled}
+                        onApply={() => handleApply(patch.patchId)}
+                        onReject={() => handleReject(patch.patchId)}
+                        automationRun={run}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {(!session || session.messages.length === 0) && (
             <p className="summary-empty">
               例：「望月の年齢を28歳に設定して」「世界設定に長崎の描写を追加したい」など、
               変えたい・足したい点を話しかけてください。
             </p>
           )}
-          {session?.messages.map((msg) => (
-            <div key={msg.messageId}>
-              <ChatBubble message={msg} />
-              {(patchesByMessageId.get(msg.messageId) ?? []).map((patch) => (
-                <PatchCard
-                  key={patch.patchId}
-                  patch={patch}
-                  characters={characters}
-                  busy={busyPatchId === patch.patchId}
-                  disabled={patchActionDisabled}
-                  onApply={() => handleApply(patch.patchId)}
-                  onReject={() => handleReject(patch.patchId)}
-                />
-              ))}
-            </div>
-          ))}
+          {session?.messages.map((msg) => {
+            const run = msg.automationRunId ? runsByRunId.get(msg.automationRunId) : undefined;
+            return (
+              <div key={msg.messageId}>
+                <ChatBubble message={msg} />
+                {run && (
+                  <AutomationRunSummary
+                    run={run}
+                    isLatestRevertible={computeIsRevertible(run)}
+                    busy={revertingRunId === run.runId}
+                    onAcknowledge={() => handleAcknowledgeRun(run.runId)}
+                    onRevert={() => handleRevertRun(run.runId)}
+                  />
+                )}
+                {(patchesByMessageId.get(msg.messageId) ?? []).map((patch) => (
+                  <PatchCard
+                    key={patch.patchId}
+                    patch={patch}
+                    characters={characters}
+                    busy={busyPatchId === patch.patchId}
+                    disabled={patchActionDisabled}
+                    onApply={() => handleApply(patch.patchId)}
+                    onReject={() => handleReject(patch.patchId)}
+                    automationRun={run}
+                  />
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -396,6 +559,41 @@ function ChatBubble({ message }: { message: RefineMessage }) {
   );
 }
 
+function AutomationRunSummary({
+  run,
+  isLatestRevertible,
+  busy,
+  onAcknowledge,
+  onRevert,
+}: {
+  run: RefineAutomationRun;
+  isLatestRevertible: boolean;
+  busy: boolean;
+  onAcknowledge: () => void;
+  onRevert: () => void;
+}) {
+  return (
+    <div id={`automation-run-${run.runId}`} className="automation-run-summary">
+      <span className="settings-badge">自動レビュー: {modeLabel(run.mode)}</span>
+      <span className="automation-run-time">{formatDateTime(run.createdAt)}</span>
+      {run.acknowledgement === 'pending' && (
+        <span className="settings-badge warn">要確認</span>
+      )}
+      {run.acknowledgement === 'reverted' && <span className="settings-badge">取り消し済み</span>}
+      {run.acknowledgement === 'pending' && (
+        <button type="button" onClick={onAcknowledge} disabled={busy}>
+          {busy ? '処理中…' : '確認した'}
+        </button>
+      )}
+      {isLatestRevertible && (
+        <button type="button" className="danger" onClick={onRevert} disabled={busy}>
+          {busy ? '取り消し中…' : 'この更新を取り消す'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function PatchCard({
   patch,
   characters,
@@ -403,6 +601,7 @@ function PatchCard({
   disabled,
   onApply,
   onReject,
+  automationRun,
 }: {
   patch: RefinePatch;
   characters: Character[];
@@ -410,16 +609,27 @@ function PatchCard({
   disabled: boolean;
   onApply: () => void;
   onReject: () => void;
+  automationRun?: RefineAutomationRun;
 }) {
   const isActionable = patch.status === 'pending';
+  const riskLevel = patch.riskLevel;
   return (
-    <div className={`refine-patch-card status-${patch.status}`}>
+    <div id={`refine-patch-${patch.patchId}`} className={`refine-patch-card status-${patch.status}`}>
       <div className="refine-patch-header">
         <span className={`refine-patch-status status-${patch.status}`}>
           {statusLabel(patch.status)}
         </span>
+        {riskLevel === 'review' && <span className="settings-badge warn">要確認</span>}
         <span className="refine-patch-summary">{patch.summary}</span>
       </div>
+      {automationRun && (
+        <div className="refine-patch-meta">
+          <span>根拠: {evidenceScopeLabel(patch.evidenceScope)}</span>
+          {patch.riskReasons && patch.riskReasons.length > 0 && (
+            <span>{patch.riskReasons.join(' / ')}</span>
+          )}
+        </div>
+      )}
       <ul className="refine-patch-ops">
         {patch.operations.map((op, idx) => (
           <li key={idx}>
@@ -532,6 +742,46 @@ function statusLabel(status: RefinePatchStatus): string {
     case 'stale':
       return '古い提案';
   }
+}
+
+function modeLabel(mode: RefineAutomationMode): string {
+  switch (mode) {
+    case 'off':
+      return 'オフ';
+    case 'suggest':
+      return '提案だけ作る';
+    case 'safe':
+      return '安全な提案を自動適用';
+    case 'all':
+      return 'すべて自動適用';
+  }
+}
+
+function evidenceScopeLabel(scope: RefineEvidenceScope | undefined): string {
+  switch (scope) {
+    case 'static':
+      return '既存設定';
+    case 'accepted':
+      return '採用済み本文';
+    case 'draft':
+      return '下書き（未採用）';
+    case 'mixed':
+      return '複合';
+    default:
+      return '不明';
+  }
+}
+
+function formatDateTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString('ja-JP', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function kindLabel(kind: RefineFindingKind): string {

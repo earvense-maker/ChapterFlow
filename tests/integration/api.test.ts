@@ -326,6 +326,79 @@ describe('generation API', () => {
       await storage.deleteProjectDir(project.projectId);
     }
   });
+
+  it('rejects /generate with a 409 while a maintenance phase blocks generation', async () => {
+    const project = await projectService.createProject({ title: 'Maintenance Guard API Test' });
+    try {
+      const state = await storage.readState(project.projectId);
+      if (!state) throw new Error('state missing');
+      await storage.writeState(project.projectId, {
+        ...state,
+        refineMaintenance: {
+          runId: 'autorun-api-test',
+          generationId: 'gen-api-test',
+          phase: 'applying',
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          appliedPatchIds: [],
+          pendingPatchIds: [],
+          reviewPatchIds: [],
+        },
+      });
+
+      const response = await fetch(`${baseUrl}/api/projects/${project.projectId}/generate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ wish: '', mode: 'continue' }),
+      });
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'post_generation_maintenance_in_progress',
+        retryable: true,
+      });
+    } finally {
+      await storage.deleteProjectDir(project.projectId);
+    }
+  });
+
+  it('preflights /generate-stream with a plain JSON 409 before sending SSE headers', async () => {
+    const project = await projectService.createProject({ title: 'Maintenance Guard Stream API Test' });
+    try {
+      const state = await storage.readState(project.projectId);
+      if (!state) throw new Error('state missing');
+      await storage.writeState(project.projectId, {
+        ...state,
+        refineMaintenance: {
+          runId: 'autorun-api-stream-test',
+          generationId: 'gen-api-stream-test',
+          phase: 'scanning',
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          appliedPatchIds: [],
+          pendingPatchIds: [],
+          reviewPatchIds: [],
+        },
+      });
+
+      const response = await fetch(`${baseUrl}/api/projects/${project.projectId}/generate-stream`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ wish: '', mode: 'continue' }),
+      });
+      // NOTE: preflight は res.writeHead より前に走るため、SSE ではなく通常の
+      // HTTP 409 JSON が返る（設計書 4.2）。
+      expect(response.status).toBe(409);
+      expect(response.headers.get('content-type')).toContain('application/json');
+      await expect(response.json()).resolves.toMatchObject({
+        code: 'post_generation_maintenance_in_progress',
+        retryable: true,
+      });
+    } finally {
+      await storage.deleteProjectDir(project.projectId);
+    }
+  });
 });
 
 describe('memories API', () => {

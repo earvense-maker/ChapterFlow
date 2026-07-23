@@ -2,6 +2,7 @@ import { Router } from 'express';
 import * as generationService from '../services/generationService.js';
 import * as storage from '../services/storageService.js';
 import * as storyStateService from '../services/storyStateService.js';
+import * as refineAutomationService from '../services/refineAutomationService.js';
 import { DataDirLockedError } from '../services/dataDirLock.js';
 import { GENERATION_WISH_MAX_CHARS } from '../types/index.js';
 import type { GenerateRequestBody, SceneNavigationDirection } from '../types/index.js';
@@ -19,6 +20,9 @@ router.post('/projects/:id/generate', async (req, res, next) => {
   } catch (err) {
     if (err instanceof GenerateRequestValidationError) {
       return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
+    if (err instanceof refineAutomationService.RefineAutomationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
     }
     if (err instanceof generationService.GenerateError) {
       console.warn('Generation failed', {
@@ -47,6 +51,28 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
     res.status(400).json({ error: message, code: 'invalid_generate_request' });
     return;
   }
+
+  // NOTE: SSE ヘッダー送信前に preflight する。ヘッダー送信後は HTTP ステータスを
+  // 返せないため、通常はここで 409 を返す。ヘッダー送信後の狭い競合窓でサービス層が
+  // 拒否した場合だけ、下の catch で同じ code の SSE error イベントへ縮退する。
+  try {
+    await refineAutomationService.assertGenerationNotBlockedByMaintenance(req.params.id);
+  } catch (err) {
+    if (err instanceof refineAutomationService.RefineAutomationError) {
+      res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
+      return;
+    }
+    // NOTE: このハンドラは next を受け取らない（既存のSSE経路と同じ設計）。ヘッダー
+    // 送信前なので通常のJSON 500で返す。
+    console.error('Maintenance preflight check failed', { projectId: req.params.id, error: err });
+    res.status(500).json({
+      error: err instanceof Error ? err.message : '生成に失敗しました',
+      code: 'generation_failed',
+      retryable: false,
+    });
+    return;
+  }
+
   const abortController = new AbortController();
   let completed = false;
 
@@ -89,6 +115,14 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
         code: 'data_dir_moving',
         retryable: true,
       });
+    } else if (err instanceof refineAutomationService.RefineAutomationError) {
+      // NOTE: preflight 後・ヘッダー送信後の狭い競合窓でサービス層側のガードが拒否した
+      // 場合だけここに来る。通常は上の preflight が先に拒否する。
+      send('error', {
+        error: err.message,
+        code: err.code,
+        retryable: err.retryable,
+      });
     } else if (err instanceof generationService.GenerateError) {
       console.warn('Streaming generation failed', {
         projectId: req.params.id,
@@ -128,6 +162,9 @@ router.post('/projects/:id/regenerate', async (req, res, next) => {
     if (err instanceof GenerateRequestValidationError) {
       return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
     }
+    if (err instanceof refineAutomationService.RefineAutomationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
+    }
     if (err instanceof generationService.GenerateError) {
       return res.status(503).json({
         error: err.message,
@@ -150,6 +187,9 @@ router.post('/projects/:id/variate', async (req, res, next) => {
   } catch (err) {
     if (err instanceof GenerateRequestValidationError) {
       return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
+    if (err instanceof refineAutomationService.RefineAutomationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
     }
     if (err instanceof generationService.GenerateError) {
       return res.status(503).json({

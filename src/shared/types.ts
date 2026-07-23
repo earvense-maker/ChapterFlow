@@ -56,6 +56,9 @@ export interface Project {
   // NOTE: ロールプレイ 1 応答の目安字数（プロンプトの outputLength に流し、hard cap も
   // ここから派生）。未指定なら DEFAULT_ROLEPLAY_OUTPUT_CHARS を使う。range 100〜500。
   roleplayOutputChars?: number;
+  // NOTE: 生成後の自動設定レビュー設定。undefined は「未保存」（ガード上は off 扱い、
+  // 設定画面では safe/when-needed をプレビュー選択として提示）。
+  refineAutomation?: RefineAutomationSettings;
 }
 
 export interface WorldContent {
@@ -72,6 +75,9 @@ export interface ProjectState {
   pendingMemoryCandidateIds: MemoryId[];
   storyStateRefresh?: StoryStateRefreshStatus;
   storyStateBacklogCount?: number;
+  // NOTE: 生成後自動レビューの進行状況。scanning/applying/reverting のみ新規生成を
+  // ブロックする（refineAutomationService.maintenanceBlocksGeneration）。
+  refineMaintenance?: RefineMaintenanceStatus;
   uiState: {
     readingPosition: number;
     fontSize: number;
@@ -676,6 +682,33 @@ export interface AppModelSettings {
   modelName: string;
 }
 
+// ===== 生成通知（アプリ全体設定） =====
+
+export interface GenerationNotificationEvents {
+  firstOutput: boolean;
+  completed: boolean;
+  failed: boolean;
+  settingsUpdated: boolean;
+  reviewRequired: boolean;
+}
+
+export interface GenerationNotificationSettings {
+  soundEnabled: boolean;
+  systemPopupEnabled: boolean;
+  onlyWhenUnfocused: boolean;
+  events: GenerationNotificationEvents;
+}
+
+export type NotificationEventType = keyof GenerationNotificationEvents;
+
+// NOTE: URL router が無いため、通知クリック時の遷移先を state として明示的に運ぶ。
+// 現状は作品設定 → 作品設定相談 → 履歴 の1箇所のみが対象。
+export interface SettingsFocusTarget {
+  section: 'refine-history';
+  automationRunId?: string;
+  patchId?: string;
+}
+
 export interface AdapterGenerateRequest {
   systemInstructions: string;
   userPrompt: string;
@@ -1010,6 +1043,9 @@ export interface RefineMessage {
   // NOTE: assistant メッセージがパッチを提案した場合、この配列にパッチ ID を
   // 記録。UI 側で対応するパッチカードを描画する。
   patchIds?: string[];
+  // NOTE: 自動レビュー run が合成したシステムメッセージにのみ設定。通知クリック時に
+  // 該当run/messageへスクロールするための参照。
+  automationRunId?: string;
 }
 
 // NOTE: world.md への「アンカー置換」オペレーション。anchor は world 本文中に
@@ -1047,6 +1083,13 @@ export type RefinePatchOperation =
 
 export type RefinePatchStatus = 'pending' | 'applied' | 'rejected' | 'stale';
 
+// NOTE: 自動レビュー機能の監査メタデータ。すべて optional — 既存パッチには存在しない。
+// 欠損時は origin='manual-chat' / riskLevel='review' として扱う
+// (refineRiskPolicy.effectivePatchOrigin / effectivePatchRiskLevel を参照)。
+export type RefineRiskLevel = 'safe' | 'review';
+export type RefineEvidenceScope = 'static' | 'accepted' | 'draft' | 'mixed';
+export type RefinePatchOrigin = 'manual-chat' | 'manual-scan' | 'auto-scan';
+
 export interface RefinePatch {
   patchId: string;
   createdAt: string;
@@ -1058,6 +1101,18 @@ export interface RefinePatch {
   // NOTE: apply 失敗時の理由（アンカー未一致など）。ユーザーに表示する。
   applyError?: string;
   appliedAt?: string;
+  origin?: RefinePatchOrigin;
+  automationRunId?: string;
+  sourceGenerationId?: GenerationId;
+  riskLevel?: RefineRiskLevel;
+  riskReasons?: string[];
+  evidenceScope?: RefineEvidenceScope;
+  // NOTE: 自動レビューが safe 判定に使った引用文の原文。retry や 監査UI から
+  // 再照合するためにサーバーが保存する（本文自体は sourceGenerationId から解決するので
+  // ここでは quote 文字列だけを持つ）。
+  evidenceQuote?: string;
+  sourceStaticHash?: string;
+  sourceStoryStateUpdatedAt?: string | null;
 }
 
 export interface RefineSession {
@@ -1082,6 +1137,100 @@ export interface RefineChatResponse {
 export interface RefineApplyResponse {
   session: RefineSession;
   patch: RefinePatch;
+}
+
+// ===== 自動設定レビュー（生成後の自動走査・自動適用の監査基盤） =====
+//
+// NOTE: 本フェーズ (Phase A+B) では、下記の型・保存・ガード・UI は実装するが、
+// 生成完了後に実際に走査を自動起動する配線（Phase C）は含めない。そのため
+// RefineMaintenanceStatus / RefineAutomationRun は本フェーズの間、テストが
+// 直接構築する場合を除き実データが生成されない。
+
+export type RefineAutomationMode = 'off' | 'suggest' | 'safe' | 'all';
+export type RefineAutomationScanPolicy = 'when-needed' | 'always';
+
+export interface RefineAutomationSettings {
+  mode: RefineAutomationMode;
+  scanPolicy: RefineAutomationScanPolicy;
+}
+
+export type RefineMaintenancePhase =
+  | 'scanning'
+  | 'awaitingAcceptance'
+  | 'applying'
+  | 'reverting'
+  | 'complete'
+  | 'needsReview'
+  | 'stale'
+  | 'failed';
+
+export interface RefineMaintenanceStatus {
+  runId: string;
+  generationId: GenerationId;
+  phase: RefineMaintenancePhase;
+  startedAt: string;
+  updatedAt: string;
+  leaseExpiresAt: string;
+  appliedPatchIds: string[];
+  pendingPatchIds: string[];
+  reviewPatchIds: string[];
+  postAcceptanceContinuation?: {
+    generationId: GenerationId;
+    action: 'story-state-refresh';
+    owner: 'maintenance';
+    requestedAt: string;
+  };
+  errorMessage?: string;
+}
+
+export const AUTOMATION_SCHEMA_VERSION = 1;
+
+export interface RefineAutomationRun {
+  schemaVersion: 1;
+  runId: string;
+  generationId: GenerationId;
+  status: RefineMaintenancePhase;
+  mode: RefineAutomationMode;
+  usedModel: { provider: string; modelName: string };
+  createdAt: string;
+  completedAt?: string;
+  sourceStaticHash: string;
+  sourceStoryStateUpdatedAt?: string | null;
+  sourceAcceptedGenerationCount: number;
+  patchIds: string[];
+  appliedPatchIds: string[];
+  pendingPatchIds: string[];
+  reviewPatchIds: string[];
+  highRiskAppliedPatchIds: string[];
+  acknowledgement?: 'pending' | 'acknowledged' | 'reverted';
+  revertedAt?: string;
+  revertError?: string;
+  beforeSnapshot?: { worldText: string; characters: Character[] };
+  resultStaticHash?: string;
+}
+
+export interface RefineAutomationStore {
+  schemaVersion: 1;
+  runs: RefineAutomationRun[]; // newest-first
+  // NOTE: ロールバック自体が失敗した場合の「ハードストップ」フラグ。設定されている間、
+  // explicitConfirmation なしでは runRefineAutomationPipeline が新規runを拒否する。
+  confirmationRequired?: { reason: string; sinceRunId: string; setAt: string };
+}
+
+export interface RefineAutomationSettingsResponse {
+  settings: RefineAutomationSettings | null; // null = 未保存（off として扱う）
+  status: RefineMaintenanceStatus | null;
+}
+
+export interface UpdateRefineAutomationSettingsBody {
+  mode: RefineAutomationMode;
+  scanPolicy: RefineAutomationScanPolicy;
+}
+
+export interface RevertRefineAutomationRunResponse {
+  run: RefineAutomationRun;
+  world: WorldContent;
+  characters: Character[];
 }
 
 // ===== ロールプレイモード =====

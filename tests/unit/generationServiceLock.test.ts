@@ -260,6 +260,106 @@ describe('generationService project write lock', () => {
   });
 });
 
+describe('generationService post-generation maintenance guard', () => {
+  async function createProjectWithMaintenancePhase(
+    phase: import('../../src/server/types/index').RefineMaintenancePhase | undefined
+  ): Promise<string> {
+    const project = await projectService.createProject({
+      title: 'Maintenance Guard Test',
+      activeModelProvider: 'openai',
+      activeModelName: 'gpt-test',
+    });
+    createdProjectIds.push(project.projectId);
+    if (phase) {
+      const state = await storage.readState(project.projectId);
+      if (!state) throw new Error('state missing');
+      await storage.writeState(project.projectId, {
+        ...state,
+        refineMaintenance: {
+          runId: 'autorun-guard-test',
+          generationId: 'gen-guard-test',
+          phase,
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          // NOTE: 60秒後まで有効な lease にする。ガードが期限切れとして failed に
+          // 正規化しないよう、生きた blocking レコードを模す。
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          appliedPatchIds: [],
+          pendingPatchIds: [],
+          reviewPatchIds: [],
+        },
+      });
+    }
+    return project.projectId;
+  }
+
+  it.each(['scanning', 'applying', 'reverting'] as const)(
+    'rejects generateScene with a 409-shaped error while phase is %s',
+    async (phase) => {
+      const projectId = await createProjectWithMaintenancePhase(phase);
+      await expect(
+        generationService.generateScene(projectId, { wish: '', mode: 'continue' })
+      ).rejects.toMatchObject({ code: 'post_generation_maintenance_in_progress', status: 409 });
+    }
+  );
+
+  it.each(['awaitingAcceptance', 'complete', 'needsReview', 'stale', 'failed', undefined] as const)(
+    'does not block generateScene while phase is %s',
+    async (phase) => {
+      const projectId = await createProjectWithMaintenancePhase(phase);
+      await expect(
+        withTimeout(generationService.generateScene(projectId, { wish: '', mode: 'continue' }), 1000)
+      ).resolves.toMatchObject({ status: 'draft' });
+    }
+  );
+
+  it('rejects generateSceneStream the same way while phase is scanning', async () => {
+    const projectId = await createProjectWithMaintenancePhase('scanning');
+    const chunks: string[] = [];
+    await expect(
+      generationService.generateSceneStream(projectId, { wish: '', mode: 'continue' }, (chunk) =>
+        chunks.push(chunk)
+      )
+    ).rejects.toMatchObject({ code: 'post_generation_maintenance_in_progress', status: 409 });
+    expect(chunks).toEqual([]);
+  });
+
+  it('lets non-streaming generateScene proceed after normalizing an expired blocking-phase lease to failed', async () => {
+    // P1-1 の回帰テスト。generateScene が期限切れ lease を failed へ正規化してから
+    // 通常生成に入ることを確認する。過去には generateSceneUnlocked 側で直接
+    // phase を見るだけで正規化していなかったため、恒久的にブロックされ得た。
+    const project = await projectService.createProject({
+      title: 'Non-Stream Lease Recovery Test',
+      activeModelProvider: 'openai',
+      activeModelName: 'gpt-test',
+    });
+    createdProjectIds.push(project.projectId);
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+    await storage.writeState(project.projectId, {
+      ...state,
+      refineMaintenance: {
+        runId: 'autorun-expired-nonstream',
+        generationId: 'gen-expired-nonstream',
+        phase: 'applying',
+        startedAt: new Date(Date.now() - 300_000).toISOString(),
+        updatedAt: new Date(Date.now() - 300_000).toISOString(),
+        leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+        appliedPatchIds: [],
+        pendingPatchIds: [],
+        reviewPatchIds: [],
+      },
+    });
+
+    await expect(
+      withTimeout(generationService.generateScene(project.projectId, { wish: '', mode: 'continue' }), 1500)
+    ).resolves.toMatchObject({ status: 'draft' });
+
+    const afterState = await storage.readState(project.projectId);
+    expect(afterState?.refineMaintenance?.phase).toBe('failed');
+  });
+});
+
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

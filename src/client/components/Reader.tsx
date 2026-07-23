@@ -3,9 +3,11 @@ import { api } from '../clientApi';
 import { useTheme } from '../hooks/useTheme';
 import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
+import { useNotificationCenter } from './NotificationCenter';
 import { GENERATION_WISH_MAX_CHARS, KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import type {
   ContextUsageEstimate,
+  GenerationNotificationSettings,
   GenerationRecord,
   KnowledgeListItem,
   Project,
@@ -28,6 +30,9 @@ interface Props {
 const CONTEXT_WARNING_THRESHOLD = 0.7;
 const WISH_TEXTAREA_MAX_HEIGHT = 240;
 const STORY_STATE_PENDING_GRACE_MS = 60_000;
+// NOTE: これ以外の phase (scanning/applying/reverting/awaitingAcceptance) の間は
+// App 全体の監視対象へ残す。Phase B では実際にこれらへ遷移するトリガーがまだ無い。
+const MAINTENANCE_TERMINAL_PHASES = new Set(['complete', 'needsReview', 'stale', 'failed']);
 
 function isDelayedStoryStatePending(updatedAt: string | undefined): boolean {
   if (!updatedAt) return true;
@@ -44,6 +49,10 @@ export default function Reader({
   onOpenMemories,
 }: Props) {
   const confirmAction = useConfirm();
+  const notificationCenter = useNotificationCenter();
+  const [notificationSettings, setNotificationSettings] = useState<GenerationNotificationSettings | null>(
+    null
+  );
   const [project, setProject] = useState<Project | null>(null);
   const [text, setText] = useState('');
   const [generationId, setGenerationId] = useState<string | null>(null);
@@ -133,6 +142,12 @@ export default function Reader({
     setKnowledgeItems(state.knowledgeFiles);
     setStoryStateRefresh(state.state.storyStateRefresh ?? null);
     setStoryStateBacklogCount(state.storyStateBacklogCount ?? state.state.storyStateBacklogCount ?? 0);
+    const maintenancePhase = state.state.refineMaintenance?.phase;
+    if (maintenancePhase && !MAINTENANCE_TERMINAL_PHASES.has(maintenancePhase)) {
+      notificationCenter.addMaintenanceWatch(projectId);
+    } else {
+      notificationCenter.removeMaintenanceWatch(projectId);
+    }
     if (
       !initialWishPrefilledRef.current &&
       state.state.lastAcceptedGenerationId === null &&
@@ -175,6 +190,22 @@ export default function Reader({
       mountedRef.current = false;
       loadRequestIdRef.current += 1;
       generationAbortRef.current?.abort();
+    };
+  }, []);
+
+  // NOTE: 通知設定はアプリ全体設定なので projectId に依存せず一度だけ取得する。
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getNotificationSettings()
+      .then((settings) => {
+        if (!cancelled) setNotificationSettings(settings);
+      })
+      .catch(() => {
+        // NOTE: 取得失敗時は通知を出さないだけに留め、Reader 自体は使えるようにする。
+      });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -243,6 +274,10 @@ export default function Reader({
     // いないため、表示に残すと「見えているのに採用できない本文」になる。
     const previous = { text, generationId, status };
     const generationProjectId = projectId;
+    // NOTE: firstOutput はサーバー採番の generation ID が無い時点で発火するため、
+    // クライアント側で作る一時IDで重複防止する（設計書 6.1）。
+    const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let firstChunkFired = false;
     let abortController: AbortController | null = null;
     try {
       setLoading(true);
@@ -273,6 +308,18 @@ export default function Reader({
                 ) {
                   return;
                 }
+                if (!firstChunkFired && chunk.trim()) {
+                  firstChunkFired = true;
+                  if (notificationSettings) {
+                    notificationCenter.notify(notificationSettings, {
+                      eventType: 'firstOutput',
+                      dedupeKey: `firstOutput:${clientRequestId}`,
+                      title: '本文の生成が始まりました',
+                      body: project?.title ?? '',
+                      clickTarget: { kind: 'project', projectId: generationProjectId, projectType: 'novel' },
+                    });
+                  }
+                }
                 streamedText += chunk;
                 setText(streamedText);
               };
@@ -287,6 +334,15 @@ export default function Reader({
         projectIdRef.current !== generationProjectId
       ) {
         return;
+      }
+      if (notificationSettings) {
+        notificationCenter.notify(notificationSettings, {
+          eventType: 'completed',
+          dedupeKey: `completed:${record.generationId}`,
+          title: '生成が完了しました',
+          body: project?.title ?? '',
+          clickTarget: { kind: 'project', projectId: generationProjectId, projectType: 'novel' },
+        });
       }
       setText(record.responseText);
       setGenerationId(record.generationId);
@@ -324,6 +380,15 @@ export default function Reader({
         setNotice('生成を停止しました');
       } else {
         setError(err instanceof Error ? err.message : '生成に失敗しました');
+        if (notificationSettings) {
+          notificationCenter.notify(notificationSettings, {
+            eventType: 'failed',
+            dedupeKey: `failed:${clientRequestId}`,
+            title: '生成に失敗しました',
+            body: err instanceof Error ? err.message : project?.title ?? '',
+            clickTarget: { kind: 'project', projectId: generationProjectId, projectType: 'novel' },
+          });
+        }
       }
     } finally {
       if (generationAbortRef.current === abortController) {

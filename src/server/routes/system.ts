@@ -10,6 +10,11 @@ import {
   previewDataDirSwitch,
   previewDataDirMove,
 } from '../services/dataDirMoveService.js';
+import { readAppSettings, updateAppSettings } from '../services/appSettingsService.js';
+import {
+  DEFAULT_GENERATION_NOTIFICATION_SETTINGS,
+  normalizeGenerationNotificationSettings,
+} from '../types/index.js';
 
 export interface SystemRouterOptions {
   onShutdownRequest?: () => void;
@@ -27,6 +32,25 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
         version: await readPackageVersion(),
         runtime: process.versions.electron ? 'electron' : 'server',
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/system/notification-settings', async (_req, res, next) => {
+    try {
+      const settings = await readAppSettings();
+      res.json(settings.generationNotifications ?? DEFAULT_GENERATION_NOTIFICATION_SETTINGS);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.put('/system/notification-settings', async (req, res, next) => {
+    try {
+      const normalized = normalizeGenerationNotificationSettings(req.body);
+      await updateAppSettings((settings) => ({ ...settings, generationNotifications: normalized }));
+      res.json(normalized);
     } catch (err) {
       next(err);
     }

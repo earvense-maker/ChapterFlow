@@ -14,6 +14,7 @@ import type {
   DataDirSwitchResponse,
   AppModelSettings,
   GenerateRequestBody,
+  GenerationNotificationSettings,
   GenerationRecord,
   KnowledgeContentResponse,
   KnowledgeFile,
@@ -29,10 +30,14 @@ import type {
   ProjectSummary,
   ReaderState,
   RefineApplyResponse,
+  RefineAutomationRun,
+  RefineAutomationSettingsResponse,
   RefineChatResponse,
   RefineReviewStatus,
   RefineScanResult,
   RefineSession,
+  RevertRefineAutomationRunResponse,
+  UpdateRefineAutomationSettingsBody,
   RegenerateRoleplayBody,
   RoleplaySessionListResponse,
   RoleplaySessionResponse,
@@ -331,6 +336,36 @@ export const api = {
     request<RefineApplyResponse>(`/projects/${id}/refine/patches/${patchId}/reject`, {
       method: 'POST',
     }),
+
+  getNotificationSettings: () =>
+    request<GenerationNotificationSettings>('/system/notification-settings'),
+  updateNotificationSettings: (body: GenerationNotificationSettings) =>
+    request<GenerationNotificationSettings>('/system/notification-settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  getRefineAutomationSettings: (id: string) =>
+    request<RefineAutomationSettingsResponse>(`/projects/${id}/refine/automation`),
+  updateRefineAutomationSettings: (id: string, body: UpdateRefineAutomationSettingsBody) =>
+    request<RefineAutomationSettingsResponse['settings']>(`/projects/${id}/refine/automation`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  retryRefineAutomation: (id: string) =>
+    request<RefineAutomationRun>(`/projects/${id}/refine/automation/retry`, { method: 'POST' }),
+  getRefineAutomationRuns: (id: string) =>
+    request<RefineAutomationRun[]>(`/projects/${id}/refine/automation/runs`),
+  acknowledgeRefineAutomationRun: (id: string, runId: string) =>
+    request<RefineAutomationRun>(
+      `/projects/${id}/refine/automation/runs/${runId}/acknowledge`,
+      { method: 'POST' }
+    ),
+  revertRefineAutomationRun: (id: string, runId: string) =>
+    request<RevertRefineAutomationRunResponse>(
+      `/projects/${id}/refine/automation/runs/${runId}/revert`,
+      { method: 'POST' }
+    ),
 
   generate: (id: string, body: { wish: string; mode: 'continue' | 'regenerate' | 'variate' }) =>
     request<GenerationRecord>(`/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),

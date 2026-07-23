@@ -20,9 +20,11 @@ import {
   DEFAULT_ACTIVE_PRESET_IDS,
   DEFAULT_PROJECT_TYPE,
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
+  NEW_PROJECT_REFINE_AUTOMATION_SETTINGS,
   ROLEPLAY_LIMITS,
   SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
   normalizeProjectType,
+  normalizeRefineAutomationSettings,
 } from '../types/index.js';
 import type {
   ActivePresets,
@@ -33,6 +35,7 @@ import type {
   ProjectState,
   ProjectSummary,
   ProjectType,
+  RefineAutomationSettings,
   SamplingConfig,
   UpdateProjectBody,
   WorldContent,
@@ -228,6 +231,10 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     projectType: roleplayFields.projectType,
     scenarioSeeds: roleplayFields.scenarioSeeds,
     roleplayOutputChars: roleplayFields.roleplayOutputChars,
+    // NOTE: 複製時は複製元の自動レビュー設定を引き継がず、既存作品同様「未保存」
+    // （実効的に off）として扱う。新規作成時だけ safe/when-needed を既定保存する
+    // （設計書 5.2 の移行方針）。
+    refineAutomation: body.duplicateFrom ? undefined : NEW_PROJECT_REFINE_AUTOMATION_SETTINGS,
   };
 
   const state: ProjectState = {
@@ -298,11 +305,14 @@ export async function getProject(projectId: string): Promise<Project | null> {
   const project = await storage.readProject(projectId);
   if (!project) return null;
   // NOTE: API 境界で projectType を必ず正規化して返す。UI 側の遷移振り分けが
-  // undefined を扱わなくて済む。
+  // undefined を扱わなくて済む。refineAutomation は未保存(undefined)と壊れた値を
+  // 区別する必要があるため、normalizeRefineAutomationSettings で undefined はそのまま
+  // 通す（実効既定は effectiveRefineAutomationMode 側で 'off' に解釈する）。
   return {
     ...project,
     activePresetIds: normalizeActivePresetIds(project.activePresetIds),
     projectType: normalizeProjectType(project.projectType),
+    refineAutomation: normalizeRefineAutomationSettings(project.refineAutomation),
   };
 }
 
@@ -520,7 +530,25 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
     normalized.roleplayOutputChars = normalizeRoleplayOutputChars(updates.roleplayOutputChars);
   }
 
+  if ('refineAutomation' in updates && updates.refineAutomation !== undefined) {
+    normalized.refineAutomation = validateRefineAutomationSettings(updates.refineAutomation);
+  }
+
   return normalized;
+}
+
+function validateRefineAutomationSettings(value: unknown): RefineAutomationSettings {
+  if (typeof value !== 'object' || value === null) {
+    throw new ProjectValidationError('refineAutomation must be an object');
+  }
+  const raw = value as { mode?: unknown; scanPolicy?: unknown };
+  if (raw.mode !== 'off' && raw.mode !== 'suggest' && raw.mode !== 'safe' && raw.mode !== 'all') {
+    throw new ProjectValidationError("refineAutomation.mode must be 'off' | 'suggest' | 'safe' | 'all'");
+  }
+  if (raw.scanPolicy !== 'when-needed' && raw.scanPolicy !== 'always') {
+    throw new ProjectValidationError("refineAutomation.scanPolicy must be 'when-needed' | 'always'");
+  }
+  return { mode: raw.mode, scanPolicy: raw.scanPolicy };
 }
 
 function normalizeOptionalText(value: unknown, maxChars: number): string | undefined {

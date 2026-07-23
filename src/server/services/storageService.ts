@@ -21,6 +21,7 @@ import type {
   PresetsFile,
   Project,
   ProjectState,
+  RefineAutomationStore,
   RefineScanResult,
   RefineSession,
   RoleplaySession,
@@ -144,6 +145,12 @@ export function roleplaySessionJsonPath(projectId: string, sessionId: string): s
 
 export function refineSessionJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'refineSession.json');
+}
+
+// NOTE: 自動レビュー run の監査記録・取り消し用 snapshot 専用ファイル。
+// refineSession.json へ埋め込まず、画面表示時に合成する（設計書 5.5）。
+export function refineAutomationJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'refineAutomation.json');
 }
 
 export function episodesDir(projectId: string): string {
@@ -444,6 +451,21 @@ export async function writeRefineSession(
 
 export async function deleteRefineSession(projectId: string): Promise<void> {
   await removeDataPath(refineSessionJsonPath(projectId), { force: true });
+}
+
+export async function readRefineAutomation(projectId: string): Promise<RefineAutomationStore | null> {
+  return readJsonFile<RefineAutomationStore>(refineAutomationJsonPath(projectId));
+}
+
+export async function writeRefineAutomation(
+  projectId: string,
+  store: RefineAutomationStore
+): Promise<void> {
+  await safeWriteJson(refineAutomationJsonPath(projectId), store);
+}
+
+export async function deleteRefineAutomation(projectId: string): Promise<void> {
+  await removeDataPath(refineAutomationJsonPath(projectId), { force: true });
 }
 
 export async function readWorld(projectId: string): Promise<WorldContent> {

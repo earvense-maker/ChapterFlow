@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import type { Project } from '@shared/types';
+import type { Project, SettingsFocusTarget } from '@shared/types';
 import WorkSettingsTab from './WorkSettingsTab';
 import TechSettingsTab from './TechSettingsTab';
 import MemoryEditor from './MemoryEditor';
@@ -10,6 +10,10 @@ interface Props {
   onBack: () => void;
   onOpenAppSettings: (provider?: string) => void;
   initialTab?: Tab;
+  // NOTE: 通知クリックで作品設定相談の該当履歴へ飛ぶための遷移先。設定されている間は
+  // work タブを強制する（refine-history は work タブにしか存在しないため）。
+  focusTarget?: SettingsFocusTarget | null;
+  onFocusTargetConsumed?: () => void;
 }
 
 // NOTE: 作品ページ内から開いた場合の設定。プリセット再選択 UI は出さず、
@@ -17,12 +21,23 @@ interface Props {
 // サンプリング・NG 表現）」と「記憶」の 3 タブに分ける。
 type Tab = 'work' | 'tech' | 'memory';
 
-export default function SettingPanel({ projectId, onBack, onOpenAppSettings, initialTab }: Props) {
+export default function SettingPanel({
+  projectId,
+  onBack,
+  onOpenAppSettings,
+  initialTab,
+  focusTarget,
+  onFocusTargetConsumed,
+}: Props) {
   const [project, setProject] = useState<Project | null>(null);
-  const [tab, setTab] = useState<Tab>(initialTab ?? 'work');
+  const [tab, setTab] = useState<Tab>(focusTarget ? 'work' : initialTab ?? 'work');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const navigationLocked = false;
+
+  useEffect(() => {
+    if (focusTarget) setTab('work');
+  }, [focusTarget]);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,6 +112,8 @@ export default function SettingPanel({ projectId, onBack, onOpenAppSettings, ini
           onError={showError}
           onFlashMessage={flashMessage}
           onProjectUpdated={setProject}
+          focusTarget={focusTarget}
+          onFocusTargetConsumed={onFocusTargetConsumed}
         />
       )}
       {project && tab === 'tech' && (

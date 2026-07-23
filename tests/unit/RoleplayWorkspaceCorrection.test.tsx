@@ -14,6 +14,7 @@ const apiMock = vi.hoisted(() => ({
   createGlobalExpression: vi.fn(),
   createRoleplaySession: vi.fn(),
   getCharacters: vi.fn(),
+  getNotificationSettings: vi.fn(),
   getProject: vi.fn(),
   getRoleplaySession: vi.fn(),
   listRoleplaySessions: vi.fn(),
@@ -30,6 +31,7 @@ describe('RoleplayWorkspace correction send', () => {
     apiMock.getProject.mockResolvedValue(project());
     apiMock.getCharacters.mockResolvedValue([character()]);
     apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [sessionSummary()] });
+    apiMock.getNotificationSettings.mockResolvedValue(null);
     apiMock.createGlobalExpression.mockResolvedValue({
       id: 'ngx-common',
       text: 'こんにちは。',

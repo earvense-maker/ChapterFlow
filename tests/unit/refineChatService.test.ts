@@ -545,6 +545,177 @@ describe('refineChatService applyRefinePatch', () => {
   });
 });
 
+describe('refineChatService.resetRefineSession preserves auto-scan audit trail', () => {
+  it('drops manual-chat history but keeps auto-scan patches and their system messages', async () => {
+    const projectId = await createTrackedProject();
+    const session = await refineChatService.getOrCreateRefineSession(projectId);
+    await storage.writeRefineSession(projectId, {
+      ...session,
+      messages: [
+        { messageId: 'msg-user', role: 'user', content: '手動チャット', createdAt: '2026-07-22T00:00:00.000Z' },
+        {
+          messageId: 'msg-auto-sys',
+          role: 'system',
+          content: '自動レビュー結果',
+          createdAt: '2026-07-22T00:01:00.000Z',
+          automationRunId: 'autorun-preserve',
+        },
+      ],
+      patches: [
+        {
+          patchId: 'patch-manual',
+          createdAt: '2026-07-22T00:00:30.000Z',
+          sourceMessageId: 'msg-user',
+          summary: '手動 patch',
+          operations: [],
+          status: 'pending',
+        },
+        {
+          patchId: 'patch-auto',
+          createdAt: '2026-07-22T00:01:00.000Z',
+          sourceMessageId: 'msg-auto-sys',
+          summary: '自動 patch',
+          operations: [],
+          status: 'applied',
+          origin: 'auto-scan',
+          automationRunId: 'autorun-preserve',
+        },
+      ],
+    });
+
+    const reset = await refineChatService.resetRefineSession(projectId);
+    // 手動 patch と手動 message は消え、auto-scan の patch と対応 system message は残る。
+    expect(reset.patches.map((p) => p.patchId)).toEqual(['patch-auto']);
+    expect(reset.messages.map((m) => m.messageId)).toEqual(['msg-auto-sys']);
+  });
+
+  it('keeps the previous session intact when the replacement write fails', async () => {
+    const projectId = await createTrackedProject();
+    const session = await refineChatService.getOrCreateRefineSession(projectId);
+    const existing = {
+      ...session,
+      messages: [
+        {
+          messageId: 'msg-existing',
+          role: 'user' as const,
+          content: '保存しておく相談',
+          createdAt: '2026-07-22T00:00:00.000Z',
+        },
+      ],
+    };
+    await storage.writeRefineSession(projectId, existing);
+    const writeSpy = vi
+      .spyOn(storage, 'writeRefineSession')
+      .mockRejectedValueOnce(new Error('simulated write failure'));
+
+    await expect(refineChatService.resetRefineSession(projectId)).rejects.toThrow(
+      'simulated write failure'
+    );
+    writeSpy.mockRestore();
+
+    const after = await storage.readRefineSession(projectId);
+    expect(after?.sessionId).toBe(existing.sessionId);
+    expect(after?.messages.map((message) => message.messageId)).toEqual(['msg-existing']);
+  });
+});
+
+describe('refineChatService applyRefinePatch — draft-only auto-scan guard', () => {
+  it('rejects manual apply when the source generation is not accepted', async () => {
+    const projectId = await createTrackedProject();
+    const character: Character = {
+      characterId: 'char-draft',
+      name: 'D',
+      role: 'protagonist',
+      description: 'desc',
+    };
+    await storage.writeCharacters(projectId, [character]);
+    // draft-only auto-scan patch を直接 session へ埋め込み、source generation を
+    // draft のまま置く（accept していない）。
+    const draftGen = {
+      generationId: 'gen-still-draft',
+      sceneId: 'sc',
+      episodeId: 'ep',
+      request: { wish: '', outputLength: 0, previousContextText: '' },
+      responseText: '未採用の下書き。',
+      usedPresets: {} as never,
+      usedModel: { provider: 'gemini', modelName: 'test' },
+      referencedMemoryIds: [],
+      status: 'draft' as const,
+      createdAt: '2026-07-22T00:00:00.000Z',
+      parentGenerationId: null,
+    };
+    await storage.appendGenerationLog(projectId, draftGen);
+    const session = await refineChatService.getOrCreateRefineSession(projectId);
+    await storage.writeRefineSession(projectId, {
+      ...session,
+      patches: [
+        {
+          patchId: 'patch-draft-1',
+          createdAt: '2026-07-22T00:01:00.000Z',
+          sourceMessageId: 'msg-x',
+          summary: '下書き根拠の補完',
+          operations: [
+            { kind: 'character-update', characterId: 'char-draft', fields: { speechStyle: '静か' } },
+          ],
+          status: 'pending',
+          origin: 'auto-scan',
+          evidenceScope: 'draft',
+          sourceGenerationId: 'gen-still-draft',
+        },
+      ],
+    });
+
+    await expect(refineChatService.applyRefinePatch(projectId, 'patch-draft-1')).rejects.toMatchObject({
+      code: 'patch_source_generation_not_accepted',
+    });
+    // 状態は変化していない。
+    expect((await storage.readCharacters(projectId))[0].speechStyle).toBeUndefined();
+  });
+
+  it('allows manual apply once the source generation becomes accepted', async () => {
+    const projectId = await createTrackedProject();
+    await storage.writeCharacters(projectId, [
+      { characterId: 'char-draft2', name: 'D2', role: 'protagonist', description: 'desc' },
+    ]);
+    await storage.appendGenerationLog(projectId, {
+      generationId: 'gen-now-accepted',
+      sceneId: 'sc',
+      episodeId: 'ep',
+      request: { wish: '', outputLength: 0, previousContextText: '' },
+      responseText: '採用済みの本文。',
+      usedPresets: {} as never,
+      usedModel: { provider: 'gemini', modelName: 'test' },
+      referencedMemoryIds: [],
+      status: 'draft',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      parentGenerationId: null,
+    });
+    await storage.appendGenerationStatusLog(projectId, 'gen-now-accepted', 'accepted');
+    const session = await refineChatService.getOrCreateRefineSession(projectId);
+    await storage.writeRefineSession(projectId, {
+      ...session,
+      patches: [
+        {
+          patchId: 'patch-draft-2',
+          createdAt: '2026-07-22T00:01:00.000Z',
+          sourceMessageId: 'msg-y',
+          summary: '採用済み下書き根拠の補完',
+          operations: [
+            { kind: 'character-update', characterId: 'char-draft2', fields: { speechStyle: '静か' } },
+          ],
+          status: 'pending',
+          origin: 'auto-scan',
+          evidenceScope: 'draft',
+          sourceGenerationId: 'gen-now-accepted',
+        },
+      ],
+    });
+
+    const result = await refineChatService.applyRefinePatch(projectId, 'patch-draft-2');
+    expect(result.patch.status).toBe('applied');
+  });
+});
+
 interface AssistantPayload {
   visibleReply: string;
   patches: Array<Record<string, unknown>>;

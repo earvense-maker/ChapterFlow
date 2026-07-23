@@ -7,6 +7,7 @@ import {
   SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
 } from '@shared/types';
 import RefineChatPanel from './RefineChatPanel';
+import RefineAutomationSettingsCard from './RefineAutomationSettingsCard';
 import CharacterTraitsEditor from './CharacterTraitsEditor';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import type {
@@ -16,6 +17,7 @@ import type {
   Project,
   RefineReviewStatus,
   RefineScanResult,
+  SettingsFocusTarget,
   StoryState,
   StoryStateDiffRecord,
   StyleSamplePreset,
@@ -30,6 +32,8 @@ interface Props {
   onError: (msg: string | null) => void;
   onFlashMessage: (msg: string) => void;
   onProjectUpdated: (project: Project) => void;
+  focusTarget?: SettingsFocusTarget | null;
+  onFocusTargetConsumed?: () => void;
 }
 
 type DetailSettingsTab = 'basic' | 'style' | 'world' | 'characters' | 'story' | 'knowledge';
@@ -64,6 +68,8 @@ export default function WorkSettingsTab({
   onError,
   onFlashMessage,
   onProjectUpdated,
+  focusTarget,
+  onFocusTargetConsumed,
 }: Props) {
   const confirmAction = useConfirm();
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
@@ -885,7 +891,17 @@ export default function WorkSettingsTab({
           void refreshWorldAndCharacters();
           void refreshRefineReviewStatus();
         }}
+        focusTarget={focusTarget}
+        onFocusTargetConsumed={onFocusTargetConsumed}
       />
+      {project.projectType !== 'roleplay' && (
+        <RefineAutomationSettingsCard
+          projectId={projectId}
+          project={project}
+          onError={onError}
+          onFlashMessage={onFlashMessage}
+        />
+      )}
 
       <section className="summary-card detail-settings-card">
         <header className="summary-card-header">

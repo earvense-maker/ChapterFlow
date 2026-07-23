@@ -16,6 +16,7 @@ vi.mock('../../src/client/clientApi', () => ({
     updateState: vi.fn(),
     navigateDraft: vi.fn(),
     shutdown: vi.fn(),
+    getNotificationSettings: vi.fn().mockResolvedValue(null),
   },
 }));
 

@@ -9,6 +9,7 @@ vi.mock('../../src/client/clientApi', () => ({
     getReaderState: vi.fn(),
     getKnowledge: vi.fn(),
     updateState: vi.fn(),
+    getNotificationSettings: vi.fn().mockResolvedValue(null),
   },
 }));
 

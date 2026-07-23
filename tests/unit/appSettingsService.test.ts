@@ -65,4 +65,94 @@ describe('appSettingsService', () => {
     await expect(readAppSettingsStrict()).rejects.toBeInstanceOf(SyntaxError);
     await expect(fs.readFile(settingsPath, 'utf8')).resolves.toBe('{broken');
   });
+
+  it('has no generationNotifications until explicitly saved', async () => {
+    expect((await readAppSettings()).generationNotifications).toBeUndefined();
+  });
+
+  it('persists a saved generationNotifications value across reads', async () => {
+    const saved = await updateAppSettings((settings) => ({
+      ...settings,
+      generationNotifications: {
+        soundEnabled: true,
+        systemPopupEnabled: false,
+        onlyWhenUnfocused: false,
+        events: {
+          firstOutput: false,
+          completed: true,
+          failed: true,
+          settingsUpdated: false,
+          reviewRequired: true,
+        },
+      },
+    }));
+    expect(saved.generationNotifications).toEqual({
+      soundEnabled: true,
+      systemPopupEnabled: false,
+      onlyWhenUnfocused: false,
+      events: {
+        firstOutput: false,
+        completed: true,
+        failed: true,
+        settingsUpdated: false,
+        reviewRequired: true,
+      },
+    });
+    expect((await readAppSettings()).generationNotifications).toEqual(saved.generationNotifications);
+  });
+
+  it('normalizes a corrupt generationNotifications value to the safe default rather than throwing', async () => {
+    const saved = await updateAppSettings((settings) => ({
+      ...settings,
+      generationNotifications: 'not-an-object' as never,
+    }));
+    expect(saved.generationNotifications).toEqual({
+      soundEnabled: false,
+      systemPopupEnabled: false,
+      onlyWhenUnfocused: true,
+      events: {
+        firstOutput: true,
+        completed: false,
+        failed: true,
+        settingsUpdated: true,
+        reviewRequired: true,
+      },
+    });
+  });
+
+  it('updating setupModel alone does not drop a previously saved generationNotifications', async () => {
+    await updateAppSettings((settings) => ({
+      ...settings,
+      generationNotifications: {
+        soundEnabled: true,
+        systemPopupEnabled: true,
+        onlyWhenUnfocused: true,
+        events: { firstOutput: true, completed: true, failed: true, settingsUpdated: true, reviewRequired: true },
+      },
+    }));
+    const afterModelUpdate = await updateAppSettings((settings) => ({
+      ...settings,
+      setupModel: { provider: 'gemini', modelName: 'gemini-3.6-flash' },
+    }));
+    expect(afterModelUpdate.generationNotifications?.soundEnabled).toBe(true);
+    expect(afterModelUpdate.setupModel).toEqual({ provider: 'gemini', modelName: 'gemini-3.6-flash' });
+  });
+
+  it('updating generationNotifications alone does not drop a previously saved setupModel', async () => {
+    await updateAppSettings((settings) => ({
+      ...settings,
+      setupModel: { provider: 'gemini', modelName: 'gemini-3.6-flash' },
+    }));
+    const afterNotificationUpdate = await updateAppSettings((settings) => ({
+      ...settings,
+      generationNotifications: {
+        soundEnabled: true,
+        systemPopupEnabled: false,
+        onlyWhenUnfocused: true,
+        events: { firstOutput: true, completed: false, failed: true, settingsUpdated: true, reviewRequired: true },
+      },
+    }));
+    expect(afterNotificationUpdate.setupModel).toEqual({ provider: 'gemini', modelName: 'gemini-3.6-flash' });
+    expect(afterNotificationUpdate.generationNotifications?.soundEnabled).toBe(true);
+  });
 });

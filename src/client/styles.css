@@ -977,6 +977,67 @@ legend {
   margin-top: 1.25rem;
 }
 
+/* NotificationCenter */
+.notification-toast-stack {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 2500;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(100%, 22rem);
+  max-width: calc(100vw - 2rem);
+}
+
+.notification-toast {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 0.75rem 1.75rem rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.notification-toast.persistent {
+  border-color: var(--accent);
+}
+
+.notification-toast-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  padding: 0.65rem 0.75rem;
+  background: transparent;
+  color: inherit;
+  min-height: unset;
+}
+
+.notification-toast-body strong {
+  font-size: 0.9rem;
+}
+
+.notification-toast-body span {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.notification-toast-dismiss {
+  padding: 0 0.6rem;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1rem;
+  min-height: unset;
+}
+
+.notification-toast-dismiss:hover {
+  color: var(--text);
+}
+
 /* Reader */
 .reader {
   display: flex;
@@ -1389,6 +1450,57 @@ button:disabled:has(.generating-label) {
 .theme-toggle button.active {
   background: var(--accent);
   color: #fff;
+}
+
+/* RefineAutomationSettingsCard: 縦積みの radiogroup。.theme-toggle は横並びの
+   セグメントコントロールなので、説明文と両立する縦積み専用のスタイルを用意する。 */
+.automation-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.5rem 0;
+}
+
+.automation-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.92rem;
+  min-height: unset;
+}
+
+.automation-mode-option:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.automation-mode-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.automation-mode-option-dot {
+  flex: none;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+}
+
+.automation-mode-option.active {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.automation-mode-option.active .automation-mode-option-dot {
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
 .reader-subheader {
@@ -2553,6 +2665,54 @@ button:disabled:has(.generating-label) {
 
 .refine-patch-summary {
   font-weight: 500;
+}
+
+.refine-patch-meta {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+/* NOTE: 自動レビュー run のサマリー行。チャット吹き出しの合成システムメッセージ
+   直後、パッチカードの直前に挟む（設計書 7.5）。 */
+.automation-run-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.35rem 1.5rem 0.35rem 0;
+  font-size: 0.82rem;
+}
+
+.automation-run-time {
+  color: var(--text-muted);
+}
+
+.refine-automation-empty {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0 0 0.5rem;
+}
+
+.refine-automation-orphan-runs {
+  border-bottom: 1px dashed var(--border);
+  margin: 0 0 0.75rem;
+  padding: 0 0 0.5rem;
+}
+
+.refine-automation-orphan-heading {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin: 0 0 0.5rem;
+}
+
+/* 通知クリックからのスクロール到達を短く強調する。 */
+.refine-focus-highlight {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .refine-patch-ops {

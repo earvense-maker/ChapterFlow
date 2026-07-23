@@ -1,4 +1,13 @@
-import type { ActivePresets, ProjectType, SetupPurpose } from './types.js';
+import type {
+  ActivePresets,
+  GenerationNotificationEvents,
+  GenerationNotificationSettings,
+  ProjectType,
+  RefineAutomationMode,
+  RefineAutomationScanPolicy,
+  RefineAutomationSettings,
+  SetupPurpose,
+} from './types.js';
 
 export const DEFAULT_ACTIVE_PRESET_IDS = {
   narration: 'third-close',
@@ -46,3 +55,76 @@ export const ROLEPLAY_LIMITS = {
 } as const;
 
 export const DEFAULT_ROLEPLAY_OUTPUT_CHARS = 250;
+
+// NOTE: 既存利用者へ突然音・OS通知を出さないよう、sound/popup は既定 false。
+// firstOutput/failed/settingsUpdated/reviewRequired は有用性が高いため既定 true、
+// completed のみ「毎回鳴る」を避けるため既定 false（設計書 5.1）。
+export const DEFAULT_GENERATION_NOTIFICATION_SETTINGS: GenerationNotificationSettings = {
+  soundEnabled: false,
+  systemPopupEnabled: false,
+  onlyWhenUnfocused: true,
+  events: {
+    firstOutput: true,
+    completed: false,
+    failed: true,
+    settingsUpdated: true,
+    reviewRequired: true,
+  },
+};
+
+export function normalizeGenerationNotificationSettings(value: unknown): GenerationNotificationSettings {
+  const defaults = DEFAULT_GENERATION_NOTIFICATION_SETTINGS;
+  if (typeof value !== 'object' || value === null) {
+    return defaults;
+  }
+  const raw = value as Partial<GenerationNotificationSettings> & {
+    events?: Partial<GenerationNotificationEvents> | null;
+  };
+  const rawEvents: Partial<GenerationNotificationEvents> =
+    typeof raw.events === 'object' && raw.events !== null ? raw.events : {};
+  const bool = (input: unknown, fallback: boolean): boolean => (typeof input === 'boolean' ? input : fallback);
+  return {
+    soundEnabled: bool(raw.soundEnabled, defaults.soundEnabled),
+    systemPopupEnabled: bool(raw.systemPopupEnabled, defaults.systemPopupEnabled),
+    onlyWhenUnfocused: bool(raw.onlyWhenUnfocused, defaults.onlyWhenUnfocused),
+    events: {
+      firstOutput: bool(rawEvents.firstOutput, defaults.events.firstOutput),
+      completed: bool(rawEvents.completed, defaults.events.completed),
+      failed: bool(rawEvents.failed, defaults.events.failed),
+      settingsUpdated: bool(rawEvents.settingsUpdated, defaults.events.settingsUpdated),
+      reviewRequired: bool(rawEvents.reviewRequired, defaults.events.reviewRequired),
+    },
+  };
+}
+
+// NOTE: 新規プロジェクトの既定値。既存プロジェクトで refineAutomation が未保存の場合は
+// undefined のままとし、ガード側は effectiveRefineAutomationMode で 'off' と解釈する
+// （設計書 5.2 の移行方針: 明示保存されるまで有効化しない）。
+export const NEW_PROJECT_REFINE_AUTOMATION_SETTINGS: RefineAutomationSettings = {
+  mode: 'safe',
+  scanPolicy: 'when-needed',
+};
+
+const REFINE_AUTOMATION_MODES: readonly RefineAutomationMode[] = ['off', 'suggest', 'safe', 'all'];
+const REFINE_AUTOMATION_SCAN_POLICIES: readonly RefineAutomationScanPolicy[] = ['when-needed', 'always'];
+
+export function normalizeRefineAutomationSettings(value: unknown): RefineAutomationSettings | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null) {
+    return { mode: 'off', scanPolicy: 'when-needed' };
+  }
+  const raw = value as { mode?: unknown; scanPolicy?: unknown };
+  const mode = REFINE_AUTOMATION_MODES.includes(raw.mode as RefineAutomationMode)
+    ? (raw.mode as RefineAutomationMode)
+    : 'off';
+  const scanPolicy = REFINE_AUTOMATION_SCAN_POLICIES.includes(raw.scanPolicy as RefineAutomationScanPolicy)
+    ? (raw.scanPolicy as RefineAutomationScanPolicy)
+    : 'when-needed';
+  return { mode, scanPolicy };
+}
+
+// NOTE: 「未保存 = off」の解釈を1箇所に集約する。生成ガード・パイプライン・UI は
+// すべてここを経由し、`settings?.mode ?? 'off'` を各所へ書き散らさない。
+export function effectiveRefineAutomationMode(settings: RefineAutomationSettings | undefined): RefineAutomationMode {
+  return settings?.mode ?? 'off';
+}

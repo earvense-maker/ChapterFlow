@@ -22,6 +22,7 @@ import type {
   RefinePatch,
   RefinePatchOperation,
   RefineSession,
+  WorldAppendOp,
   WorldReplaceOp,
 } from '../types/index.js';
 
@@ -55,19 +56,12 @@ export class RefineChatError extends Error {
   }
 }
 
-export async function getOrCreateRefineSession(projectId: string): Promise<RefineSession> {
-  const existing = await storage.readRefineSession(projectId);
-  if (existing) return migrateRefineSession(existing);
-
-  const project = await storage.readProject(projectId);
-  if (!project) {
-    throw new RefineChatError('作品が見つかりません。', 'project_not_found', false, 404);
-  }
+function createFreshRefineSession(project: Project): RefineSession {
   const now = nowIso();
-  const session: RefineSession = {
+  return {
     schemaVersion: 2,
     sessionId: generateTimestampId('refsess'),
-    projectId,
+    projectId: project.projectId,
     usedModel: {
       provider: project.activeModelProvider,
       modelName: project.activeModelName,
@@ -79,6 +73,17 @@ export async function getOrCreateRefineSession(projectId: string): Promise<Refin
     updatedAt: now,
     lastError: null,
   };
+}
+
+export async function getOrCreateRefineSession(projectId: string): Promise<RefineSession> {
+  const existing = await storage.readRefineSession(projectId);
+  if (existing) return migrateRefineSession(existing);
+
+  const project = await storage.readProject(projectId);
+  if (!project) {
+    throw new RefineChatError('作品が見つかりません。', 'project_not_found', false, 404);
+  }
+  const session = createFreshRefineSession(project);
   await storage.writeRefineSession(projectId, session);
   return session;
 }
@@ -108,8 +113,42 @@ async function migrateRefineSession(session: RefineSession): Promise<RefineSessi
 
 export async function resetRefineSession(projectId: string): Promise<RefineSession> {
   return withSessionLock(projectId, async () => {
-    await storage.deleteRefineSession(projectId);
-    return getOrCreateRefineSession(projectId);
+    // NOTE: 自動レビュー由来の patch (origin='auto-scan') は監査履歴の一部として
+    // refineAutomation.json 側の run 記録と対で扱われる。chat 履歴をリセットしても
+    // 監査を消してはいけないので、これらだけは新しい session へ引き継ぐ。
+    // 参照する自動レビュー run の side に relate する system message も併せて残す
+    // ことで、UI 側の orphan-run 描画が過去の履歴を失わずに済む。
+    const [existing, project] = await Promise.all([
+      storage.readRefineSession(projectId),
+      storage.readProject(projectId),
+    ]);
+    if (!project) {
+      throw new RefineChatError('作品が見つかりません。', 'project_not_found', false, 404);
+    }
+    const preservedPatches = existing
+      ? existing.patches.filter((patch) => patch.origin === 'auto-scan')
+      : [];
+    const preservedRunIds = new Set(
+      preservedPatches
+        .map((p) => p.automationRunId)
+        .filter((id): id is string => typeof id === 'string')
+    );
+    const preservedMessages = existing
+      ? existing.messages.filter(
+          (msg) => msg.automationRunId && preservedRunIds.has(msg.automationRunId)
+        )
+      : [];
+    const fresh = createFreshRefineSession(project);
+    const merged: RefineSession = {
+      ...fresh,
+      messages: preservedMessages,
+      patches: preservedPatches,
+      revision: preservedPatches.length > 0 || preservedMessages.length > 0 ? 1 : 0,
+    };
+    // NOTE: delete→create の二段階にすると、2回目の保存失敗時に旧監査履歴まで失う。
+    // safeWriteJson の置換を1回だけ行い、失敗時は既存sessionをそのまま残す。
+    await storage.writeRefineSession(projectId, merged);
+    return merged;
   });
 }
 
@@ -318,97 +357,40 @@ async function applyRefinePatchUnlocked(
     );
   }
 
+  // NOTE: 自動レビューが draft 根拠で作った pending patch は、対応する生成案が
+  // 採用されるまで手動 apply でも通さない（設計書 1.2 / 7.4）。sourceGenerationId が
+  // 空なら根拠不明として拒否する。
+  if (patch.origin === 'auto-scan' && patch.evidenceScope === 'draft') {
+    if (!patch.sourceGenerationId) {
+      throw new RefineChatError(
+        '根拠となる生成案が特定できないため、このパッチは適用できません。',
+        'patch_source_generation_missing',
+        false,
+        409
+      );
+    }
+    const sourceGeneration = await storage.findGenerationRecord(projectId, patch.sourceGenerationId);
+    if (!sourceGeneration || sourceGeneration.status !== 'accepted') {
+      throw new RefineChatError(
+        '根拠となる生成案がまだ採用されていません。採用後にもう一度お試しください。',
+        'patch_source_generation_not_accepted',
+        false,
+        409
+      );
+    }
+  }
+
   const [originalWorldText, characters] = await Promise.all([
     storage.readWorldText(projectId),
     storage.readCharacters(projectId),
   ]);
-  const world = parseWorldMd(originalWorldText);
 
-  // NOTE: 全 operation を先に検証し、1 つでも失敗すれば全体を rollback（何も
-  // 書かない）。中途半端に適用した状態を残さないため。
-  let nextWorldText = originalWorldText;
-  let nextCharacters = [...characters];
-  let charactersChanged = false;
-
-  for (const op of patch.operations) {
-    switch (op.kind) {
-      case 'world-replace': {
-        const applied = applyWorldReplace(nextWorldText, op.op);
-        if (!applied.ok) {
-          return recordApplyError(session, patchIndex, applied.error);
-        }
-        nextWorldText = applied.text;
-        break;
-      }
-      case 'world-append': {
-        const suffix = op.op.text.trim();
-        if (!suffix) break;
-        nextWorldText = nextWorldText.trim()
-          ? `${nextWorldText.trimEnd()}\n\n${suffix}\n`
-          : suffix;
-        break;
-      }
-      case 'character-update': {
-        const idx = nextCharacters.findIndex((c) => c.characterId === op.characterId);
-        if (idx < 0) {
-          return recordApplyError(
-            session,
-            patchIndex,
-            `人物が見つかりません: ${op.characterId}`
-          );
-        }
-        nextCharacters[idx] = { ...nextCharacters[idx], ...op.fields };
-        charactersChanged = true;
-        break;
-      }
-      case 'character-add': {
-        if (nextCharacters.some((c) => c.characterId === op.character.characterId)) {
-          return recordApplyError(
-            session,
-            patchIndex,
-            `同じ ID の人物が既にいます: ${op.character.characterId}`
-          );
-        }
-        nextCharacters = [...nextCharacters, op.character];
-        charactersChanged = true;
-        break;
-      }
-      case 'character-remove': {
-        const before = nextCharacters.length;
-        nextCharacters = nextCharacters.filter((c) => c.characterId !== op.characterId);
-        if (nextCharacters.length === before) {
-          return recordApplyError(
-            session,
-            patchIndex,
-            `削除対象の人物が見つかりません: ${op.characterId}`
-          );
-        }
-        charactersChanged = true;
-        break;
-      }
-    }
+  const applied = applyPatchOperationsToSnapshot(originalWorldText, characters, patch.operations);
+  if (!applied.ok) {
+    return recordApplyError(session, patchIndex, applied.error);
   }
-
-  const worldChanged = nextWorldText !== originalWorldText;
-  let nextWorld = world;
-  if (worldChanged) {
-    if (
-      hasCompleteCanonicalWorldStructure(originalWorldText) &&
-      !hasCompleteCanonicalWorldStructure(nextWorldText)
-    ) {
-      return recordApplyError(
-        session,
-        patchIndex,
-        'world パッチ適用でカノニカル見出しが壊れました。anchor を見直してください。'
-      );
-    }
-    nextWorld = parseWorldMd(nextWorldText);
-  }
-  // NOTE: 全書き込み境界で共通正規化を通す（review §5.4）。ここを迂回すると
-  // roleplay 型プロジェクトで greeting/dialogueExamples の上限が保証されない。
-  const normalizedCharacters = charactersChanged
-    ? normalizeCharactersForStorage(nextCharacters)
-    : characters;
+  const { worldText: nextWorldText, characters: normalizedCharacters, worldChanged, charactersChanged } =
+    applied;
 
   const nowStr = nowIso();
   const appliedPatch: RefinePatch = {
@@ -427,7 +409,7 @@ async function applyRefinePatchUnlocked(
     lastError: null,
   };
   try {
-    if (worldChanged) await storage.writeWorld(projectId, nextWorld);
+    if (worldChanged) await storage.writeWorld(projectId, parseWorldMd(nextWorldText));
     if (charactersChanged) await storage.writeCharacters(projectId, normalizedCharacters);
     await storage.writeRefineSession(projectId, nextSession);
   } catch (error) {
@@ -554,6 +536,107 @@ export function applyWorldReplace(
   };
 }
 
+export function applyWorldAppend(worldText: string, op: WorldAppendOp): string {
+  const suffix = op.text.trim();
+  if (!suffix) return worldText;
+  return worldText.trim() ? `${worldText.trimEnd()}\n\n${suffix}\n` : suffix;
+}
+
+export interface ApplyOperationsResult {
+  ok: true;
+  worldText: string;
+  characters: Character[];
+  worldChanged: boolean;
+  charactersChanged: boolean;
+}
+export interface ApplyOperationsFailure {
+  ok: false;
+  error: string;
+}
+
+// NOTE: 手動チャットの patch 適用 (applyRefinePatchUnlocked) と自動レビュー
+// (refineAutomationService) の両方から呼ばれる共有ロジック。副作用（I/O・throw）を
+// 持たない純粋関数とし、失敗は例外ではなく ok:false で返す。アンカー0/複数マッチ・
+// 対象人物不在・カノニカル世界構造の破壊は、ここが正本の検出場所。
+export function applyPatchOperationsToSnapshot(
+  worldText: string,
+  characters: Character[],
+  operations: RefinePatchOperation[]
+): ApplyOperationsResult | ApplyOperationsFailure {
+  let nextWorldText = worldText;
+  let nextCharacters = [...characters];
+  let charactersChanged = false;
+
+  for (const op of operations) {
+    switch (op.kind) {
+      case 'world-replace': {
+        const applied = applyWorldReplace(nextWorldText, op.op);
+        if (!applied.ok) {
+          return { ok: false, error: applied.error };
+        }
+        nextWorldText = applied.text;
+        break;
+      }
+      case 'world-append': {
+        nextWorldText = applyWorldAppend(nextWorldText, op.op);
+        break;
+      }
+      case 'character-update': {
+        const idx = nextCharacters.findIndex((c) => c.characterId === op.characterId);
+        if (idx < 0) {
+          return { ok: false, error: `人物が見つかりません: ${op.characterId}` };
+        }
+        nextCharacters[idx] = { ...nextCharacters[idx], ...op.fields };
+        charactersChanged = true;
+        break;
+      }
+      case 'character-add': {
+        if (nextCharacters.some((c) => c.characterId === op.character.characterId)) {
+          return { ok: false, error: `同じ ID の人物が既にいます: ${op.character.characterId}` };
+        }
+        nextCharacters = [...nextCharacters, op.character];
+        charactersChanged = true;
+        break;
+      }
+      case 'character-remove': {
+        const before = nextCharacters.length;
+        nextCharacters = nextCharacters.filter((c) => c.characterId !== op.characterId);
+        if (nextCharacters.length === before) {
+          return { ok: false, error: `削除対象の人物が見つかりません: ${op.characterId}` };
+        }
+        charactersChanged = true;
+        break;
+      }
+    }
+  }
+
+  const worldChanged = nextWorldText !== worldText;
+  if (worldChanged) {
+    if (
+      hasCompleteCanonicalWorldStructure(worldText) &&
+      !hasCompleteCanonicalWorldStructure(nextWorldText)
+    ) {
+      return {
+        ok: false,
+        error: 'world パッチ適用でカノニカル見出しが壊れました。anchor を見直してください。',
+      };
+    }
+  }
+  // NOTE: 全書き込み境界で共通正規化を通す（review §5.4）。ここを迂回すると
+  // roleplay 型プロジェクトで greeting/dialogueExamples の上限が保証されない。
+  const normalizedCharacters = charactersChanged
+    ? normalizeCharactersForStorage(nextCharacters)
+    : characters;
+
+  return {
+    ok: true,
+    worldText: nextWorldText,
+    characters: normalizedCharacters,
+    worldChanged,
+    charactersChanged,
+  };
+}
+
 async function writeSessionError(session: RefineSession, err: unknown): Promise<RefineSession> {
   const nextSession: RefineSession = {
     ...session,
@@ -565,7 +648,8 @@ async function writeSessionError(session: RefineSession, err: unknown): Promise<
   return nextSession;
 }
 
-function truncateHistory(messages: RefineMessage[]): RefineMessage[] {
+// NOTE: refineAutomationService も同じ 24 件上限を適用するため export する。
+export function truncateHistory(messages: RefineMessage[]): RefineMessage[] {
   if (messages.length <= MAX_HISTORY) return messages;
   return messages.slice(-MAX_HISTORY);
 }
@@ -877,7 +961,10 @@ function buildChatParseFailureMessage(
 
 // ---------- ロック ----------
 
-async function withSessionLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
+// NOTE: refineAutomationService もこの mutex を再利用する（session lock → project lock
+// の順序で自動 run を直列化するため）。export はそのためだけの最小限の変更で、
+// ロック自体の挙動は変えない。
+export async function withSessionLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
   const previous = sessionMutexes.get(projectId) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => {

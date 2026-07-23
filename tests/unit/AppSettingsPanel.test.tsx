@@ -13,6 +13,8 @@ vi.mock('../../src/client/clientApi', () => ({
     getGlobalExpressions: vi.fn(),
     createGlobalExpression: vi.fn(),
     archiveGlobalExpression: vi.fn(),
+    getNotificationSettings: vi.fn().mockResolvedValue(null),
+    updateNotificationSettings: vi.fn(),
   },
 }));
 

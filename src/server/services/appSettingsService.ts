@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import { readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
 import { readEnvWithLegacyFallback } from '../utils/env.js';
 import { withDataDirWrite } from './dataDirLock.js';
+import { normalizeGenerationNotificationSettings } from '../types/index.js';
+import type { GenerationNotificationSettings } from '../types/index.js';
 
 let appSettingsMutationTail: Promise<void> = Promise.resolve();
 
@@ -15,6 +17,7 @@ export interface AppSettings {
     provider?: string;
     modelName?: string;
   };
+  generationNotifications?: GenerationNotificationSettings;
 }
 
 export function getAppSettingsPath(): string {
@@ -123,6 +126,11 @@ function normalizeAppSettings(settings: AppSettings | null): AppSettings {
     if (setupModel.provider || setupModel.modelName) {
       normalized.setupModel = setupModel;
     }
+  }
+  if (settings.generationNotifications !== undefined) {
+    normalized.generationNotifications = normalizeGenerationNotificationSettings(
+      settings.generationNotifications
+    );
   }
   return normalized;
 }

@@ -21,6 +21,9 @@ import {
 } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
 import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
+import { withProjectWriteLock } from './projectLock.js';
+export { withProjectWriteLock } from './projectLock.js';
+import { assertGenerationNotBlockedByMaintenance } from './refineAutomationGuard.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
@@ -67,7 +70,6 @@ const TIMEOUT_MS = 120_000;
 const STORY_STATE_TIMEOUT_MS = 30_000;
 const SUMMARY_CHUNK_CHARS = 20_000;
 
-const projectWriteMutexes = new Map<string, Promise<void>>();
 
 interface StoryStateRefreshJob {
   promise: Promise<void>;
@@ -92,6 +94,13 @@ export async function generateScene(
   projectId: string,
   options: GenerateOptions
 ): Promise<GenerationRecord> {
+  // NOTE: 期限切れ lease の failed 正規化はロック取得を伴うため、
+  // withProjectWriteLock の外側で行う必要がある（ガード内で再度 withProjectWriteLock
+  // に入るとデッドロックする）。ここで先に guard を通しておけば、maintenance state を
+  // 書き換える他の経路（pipeline/revert）も同じ project lock を経由するため、
+  // 次の withProjectWriteLock 取得時までに blocking phase が復活しても、ロック取得後の
+  // 実処理は正常に直列化される（pipeline は自分のロック内で完結してから離す）。
+  await assertGenerationNotBlockedByMaintenance(projectId);
   return withProjectWriteLock(projectId, () => generateSceneUnlocked(projectId, options));
 }
 
@@ -236,6 +245,10 @@ export async function generateSceneStream(
   options: GenerateStreamOptions,
   onChunk: (chunk: string) => void
 ): Promise<GenerationRecord> {
+  // NOTE: 非ストリーム側と同じく、期限切れ lease の failed 正規化のためロック外で
+  // guard を通す。route 側にも preflight があるが、直接呼び出し（テスト等）でも
+  // 同じ挙動を保証する。
+  await assertGenerationNotBlockedByMaintenance(projectId);
   return withProjectWriteLock(projectId, () =>
     generateSceneStreamUnlocked(projectId, options, onChunk)
   );
@@ -1507,31 +1520,8 @@ function storyStateErrorMessage(err: unknown): string {
   return '物語の状態更新に失敗しました。';
 }
 
-// NOTE: 他サービス（refineChatService の apply 等）も同じロックを使いたいので
-// export。ロック粒度は「プロジェクトごとの書き込み排他」で、生成と設定編集が
-// 同時に走らないことを保証する。
-export async function withProjectWriteLock<T>(
-  projectId: string,
-  task: () => Promise<T>
-): Promise<T> {
-  const previous = projectWriteMutexes.get(projectId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  projectWriteMutexes.set(projectId, next);
-
-  await previous.catch(() => undefined);
-  try {
-    return await withDataDirWrite(task);
-  } finally {
-    release();
-    if (projectWriteMutexes.get(projectId) === next) {
-      projectWriteMutexes.delete(projectId);
-    }
-  }
-}
+// NOTE: withProjectWriteLock は projectLock.ts から re-export。移設理由の詳細は
+// projectLock.ts のコメント参照（refineAutomationGuard との循環 import 回避）。
 
 function buildNavigationState(
   episode: EpisodeRecord | null,

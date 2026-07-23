@@ -11,8 +11,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type RoleplayStreamHandlers } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
+import { useNotificationCenter } from './NotificationCenter';
 import type {
   Character,
+  GenerationNotificationSettings,
   Project,
   RoleplaySessionSummary,
   RoleplaySessionView,
@@ -37,6 +39,10 @@ export default function RoleplayWorkspace({
   onOpenTechSettings,
 }: Props) {
   const confirmAction = useConfirm();
+  const notificationCenter = useNotificationCenter();
+  const [notificationSettings, setNotificationSettings] = useState<GenerationNotificationSettings | null>(
+    null
+  );
   const [project, setProject] = useState<Project | null>(null);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [sessions, setSessions] = useState<RoleplaySessionSummary[]>([]);
@@ -125,6 +131,22 @@ export default function RoleplayWorkspace({
   useEffect(() => {
     void loadInitial();
   }, [loadInitial]);
+
+  // NOTE: 通知設定はアプリ全体設定なので一度だけ取得する。
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getNotificationSettings()
+      .then((settings) => {
+        if (!cancelled) setNotificationSettings(settings);
+      })
+      .catch(() => {
+        // 取得失敗時は通知を出さないだけに留める。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (autoScrollRef.current && messagesEndRef.current) {
@@ -226,6 +248,9 @@ export default function RoleplayWorkspace({
     autoScrollRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
+    const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let firstChunkFired = false;
+    const notifyClickTarget = { kind: 'project' as const, projectId, projectType: 'roleplay' as const };
 
     const handlers: RoleplayStreamHandlers = {
       onChunk: (chunk) => {
@@ -234,11 +259,30 @@ export default function RoleplayWorkspace({
           projectIdRef.current === projectId &&
           !stopRequestedRef.current
         ) {
+          if (!firstChunkFired && chunk.trim() && notificationSettings) {
+            firstChunkFired = true;
+            notificationCenter.notify(notificationSettings, {
+              eventType: 'firstOutput',
+              dedupeKey: `firstOutput:${clientRequestId}`,
+              title: '応答の生成が始まりました',
+              body: project?.title ?? '',
+              clickTarget: notifyClickTarget,
+            });
+          }
           setStreamingText((prev) => prev + chunk);
         }
       },
       onDone: async (session) => {
         if (!mountedRef.current || projectIdRef.current !== projectId) return;
+        if (notificationSettings) {
+          notificationCenter.notify(notificationSettings, {
+            eventType: 'completed',
+            dedupeKey: `completed:${session.sessionId}:${session.revision}`,
+            title: '応答が完了しました',
+            body: project?.title ?? '',
+            clickTarget: notifyClickTarget,
+          });
+        }
         const sentText = sentMessageRef.current;
         const stopWasRequested = stopRequestedRef.current;
         if (stopWasRequested) {
@@ -264,6 +308,15 @@ export default function RoleplayWorkspace({
           setError(null);
         } else {
           setError(err.error);
+          if (notificationSettings) {
+            notificationCenter.notify(notificationSettings, {
+              eventType: 'failed',
+              dedupeKey: `failed:${clientRequestId}`,
+              title: '応答の生成に失敗しました',
+              body: err.error,
+              clickTarget: notifyClickTarget,
+            });
+          }
         }
         // NOTE: エラー時は GET で最新セッションに再同期して revision ズレを吸収し、
         // 末尾が未応答 user なら明示的な訂正送信へ移る。単なる入力欄の解放では
@@ -317,6 +370,9 @@ export default function RoleplayWorkspace({
     projectId,
     resetStreamState,
     showStopNotice,
+    notificationCenter,
+    notificationSettings,
+    project,
   ]);
 
   const canRegenerate = useMemo(() => {
@@ -362,6 +418,9 @@ export default function RoleplayWorkspace({
     autoScrollRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
+    const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let firstChunkFired = false;
+    const notifyClickTarget = { kind: 'project' as const, projectId, projectType: 'roleplay' as const };
 
     const handlers: RoleplayStreamHandlers = {
       onChunk: (chunk) => {
@@ -370,11 +429,30 @@ export default function RoleplayWorkspace({
           projectIdRef.current === projectId &&
           !stopRequestedRef.current
         ) {
+          if (!firstChunkFired && chunk.trim() && notificationSettings) {
+            firstChunkFired = true;
+            notificationCenter.notify(notificationSettings, {
+              eventType: 'firstOutput',
+              dedupeKey: `firstOutput:${clientRequestId}`,
+              title: '応答の生成が始まりました',
+              body: project?.title ?? '',
+              clickTarget: notifyClickTarget,
+            });
+          }
           setStreamingText((prev) => prev + chunk);
         }
       },
       onDone: async (session) => {
         if (!mountedRef.current || projectIdRef.current !== projectId) return;
+        if (notificationSettings) {
+          notificationCenter.notify(notificationSettings, {
+            eventType: 'completed',
+            dedupeKey: `completed:${session.sessionId}:${session.revision}`,
+            title: '応答が完了しました',
+            body: project?.title ?? '',
+            clickTarget: notifyClickTarget,
+          });
+        }
         setActiveSession(session);
         setPendingReplaceMessageId(null);
         resetStreamState();
@@ -390,6 +468,15 @@ export default function RoleplayWorkspace({
           setError(null);
         } else {
           setError(err.error);
+          if (notificationSettings) {
+            notificationCenter.notify(notificationSettings, {
+              eventType: 'failed',
+              dedupeKey: `failed:${clientRequestId}`,
+              title: '応答の生成に失敗しました',
+              body: err.error,
+              clickTarget: notifyClickTarget,
+            });
+          }
         }
         try {
           const res = await api.getRoleplaySession(projectId, activeSession.sessionId);
@@ -421,6 +508,9 @@ export default function RoleplayWorkspace({
     projectId,
     resetStreamState,
     showStopNotice,
+    notificationCenter,
+    notificationSettings,
+    project,
   ]);
 
   const handleStop = useCallback(() => {
