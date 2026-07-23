@@ -1,0 +1,1285 @@
+/* MemoryEditor */
+.memory-editor {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.memory-form {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.memory-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.memory-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.memory-item p {
+  margin: 0 0 0.5rem;
+}
+
+.memory-item .meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* SettingsPanel */
+.settings-panel {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0 0 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  padding: 0.5rem 1rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 0.95rem;
+}
+
+.settings-tab:hover {
+  color: var(--text);
+}
+
+.settings-tab.active {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+  position: relative;
+  top: 1px;
+}
+
+.summary-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  margin-bottom: 1rem;
+}
+
+.summary-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.6rem;
+}
+
+.summary-card-header h2 {
+  font-size: 1rem;
+  font-family: var(--font-body);
+  font-weight: normal;
+  margin: 0;
+}
+
+.summary-card-badges {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.summary-card-actions {
+  margin-top: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* NOTE: カード右上に置く共通の編集ボタン。primary の塗り(=保存)と区別するため、
+   輪郭+アクセント色の細身ピル。ホバーで薄い塗りに変わる二段階目の目立たせ方。 */
+.summary-card-edit {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.summary-card-edit:hover:not(:disabled) {
+  background: rgba(107, 142, 159, 0.14);
+  border-color: var(--accent);
+}
+.summary-card-edit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 基本タブ用の擬似ヘッダー。カードヘッダーがタブ一覧と兼用のため、
+   タブパネル側にもタイトル+編集ボタンを持たせる。 */
+.detail-settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+}
+.detail-settings-panel-header h3 {
+  font-size: 0.95rem;
+  font-family: var(--font-body);
+  font-weight: normal;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* JSON生編集モードの警告バナー。目立つ黄色系で「危険操作」を訴える。 */
+.warning-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.75rem 0.95rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid rgba(217, 158, 42, 0.55);
+  background: rgba(217, 158, 42, 0.12);
+  border-radius: var(--radius);
+  color: var(--text);
+}
+.warning-banner strong {
+  font-size: 0.95rem;
+}
+.warning-banner p {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.detail-settings-card {
+  margin-bottom: 0.6rem;
+}
+
+.detail-settings-panel-card {
+  border-top-color: rgba(107, 142, 159, 0.35);
+}
+
+.detail-settings-tabs {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  padding-top: 0.2rem;
+  border-top: 1px solid var(--border);
+}
+
+.detail-settings-tabs button {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.8rem;
+  font-size: 0.9rem;
+}
+
+.detail-settings-tabs button.active {
+  background: rgba(107, 142, 159, 0.12);
+  border-color: rgba(107, 142, 159, 0.36);
+  color: var(--text);
+}
+
+.detail-settings-panel {
+  margin-top: 0.85rem;
+}
+
+.summary-excerpt {
+  color: var(--text);
+  white-space: pre-wrap;
+  margin: 0 0 0.35rem;
+  line-height: 1.6;
+}
+
+.summary-empty {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.summary-prewrap {
+  white-space: pre-wrap;
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0.35rem 0 0;
+  color: var(--text);
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.75rem;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.summary-prewrap-inline {
+  white-space: pre-wrap;
+}
+
+.summary-details {
+  margin-top: 0.5rem;
+}
+
+.summary-details summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.summary-link-button {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0.25rem 0;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
+.summary-link-button:hover {
+  color: var(--text);
+}
+
+/* NOTE: 折りたたみ操作は本文や補助文に埋もれやすいため、既存のアクセント色と
+   点線下線を共通の操作サインにする。ホバー時だけ実線へ変えてリンクとは区別する。 */
+:is(
+  .settings-section-collapsible > summary,
+  .setup-model-bar summary,
+  .summary-details summary,
+  .refine-finding-detail summary,
+  .summary-link-button
+) {
+  color: var(--accent);
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+
+:is(
+  .settings-section-collapsible > summary,
+  .setup-model-bar summary,
+  .summary-details summary,
+  .refine-finding-detail summary,
+  .summary-link-button
+):hover {
+  color: var(--accent-hover);
+  text-decoration-style: solid;
+}
+
+:is(
+  .settings-section-collapsible > summary,
+  .setup-model-bar summary,
+  .summary-details summary,
+  .refine-finding-detail summary,
+  .summary-link-button
+):focus-visible {
+  color: var(--accent-hover);
+  text-decoration-style: solid;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.settings-section-collapsible > summary::after {
+  color: var(--accent);
+}
+
+.settings-section-collapsible > summary:hover::after {
+  color: var(--accent-hover);
+}
+
+.settings-badge {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border: 1px solid transparent;
+}
+
+.settings-badge.preset {
+  background: rgba(107, 142, 159, 0.15);
+  border-color: rgba(107, 142, 159, 0.4);
+  color: var(--text);
+}
+
+.settings-badge.custom {
+  background: rgba(180, 130, 200, 0.18);
+  border-color: rgba(180, 130, 200, 0.5);
+  color: #6a4383;
+}
+
+.settings-badge.warn {
+  background: rgba(220, 170, 70, 0.2);
+  border-color: rgba(220, 170, 70, 0.5);
+  color: #7a5410;
+}
+
+.settings-meta {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.data-dir-current {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.data-dir-current code,
+.data-dir-preview code {
+  display: block;
+  margin-top: 0.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-ui);
+  color: var(--text);
+}
+
+.data-dir-target-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.data-dir-target-row button {
+  white-space: nowrap;
+}
+
+.data-dir-preview-panel {
+  margin-top: 1rem;
+}
+
+.data-dir-preview-panel h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.data-dir-preview {
+  display: grid;
+  grid-template-columns: 8rem minmax(0, 1fr);
+  gap: 0.5rem 0.75rem;
+  margin: 0 0 1rem;
+}
+
+.data-dir-preview dt {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.data-dir-preview dd {
+  margin: 0;
+}
+
+.data-dir-switch-details {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.data-dir-switch-details summary {
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.data-dir-switch-details > .settings-meta {
+  display: block;
+  margin: 0.65rem 0 1rem;
+}
+
+.data-dir-switch-projects {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.data-dir-switch-projects li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.data-dir-switch-projects time {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.data-dir-switch-projects li span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.style-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 0.5rem;
+}
+
+.style-tag {
+  background: rgba(107, 142, 159, 0.12);
+  border: 1px solid rgba(107, 142, 159, 0.3);
+  border-radius: 999px;
+  padding: 0.15rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.character-summary-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.character-summary-item {
+  padding: 0.6rem 0.75rem;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.character-summary-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.4rem;
+}
+
+.character-role-badge {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+}
+
+.character-summary-fields {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.character-summary-fields > div {
+  display: grid;
+  grid-template-columns: 4rem 1fr;
+  gap: 0.5rem;
+}
+
+.character-summary-fields dt {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  padding-top: 0.05rem;
+}
+
+.character-summary-fields dd {
+  margin: 0;
+}
+
+.summary-field-missing {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.knowledge-drop-zone {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+}
+
+.knowledge-file-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.4rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.knowledge-file-button input {
+  display: none;
+}
+
+.knowledge-warning {
+  margin: 0 0 0.75rem;
+  color: #a97300;
+  font-size: 0.85rem;
+}
+
+[data-theme='dark'] .knowledge-warning {
+  color: #e0b667;
+}
+
+.knowledge-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.knowledge-item {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.knowledge-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.knowledge-title-button {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.knowledge-title-button:hover {
+  background: transparent;
+  color: var(--accent);
+}
+
+.knowledge-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.knowledge-row-actions button {
+  min-height: 2rem;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.82rem;
+}
+
+.knowledge-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.settings-stack {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.settings-stack label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.settings-stack input[type='range'] {
+  width: min(100%, 28rem);
+}
+
+.knowledge-editor {
+  margin-top: 0.65rem;
+}
+
+.knowledge-editor label {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.refine-scan-button {
+  padding: 0.35rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.refine-review-nudge {
+  margin: 0 0 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(183, 140, 42, 0.5);
+  border-radius: var(--radius);
+  background: rgba(220, 170, 70, 0.14);
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.refine-scan-error {
+  background: rgba(200, 90, 90, 0.15);
+  border: 1px solid rgba(200, 90, 90, 0.4);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+  color: #7a2f2f;
+  font-size: 0.85rem;
+  margin: 0.5rem 0;
+  /* NOTE: lastError には診断情報や応答の一部が改行込みで載るので改行を残す。 */
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.refine-findings-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.refine-finding {
+  padding: 0.7rem 0.85rem;
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-left-width: 3px;
+}
+
+.refine-finding.kind-contradiction {
+  border-left-color: #c86b3d;
+}
+
+.refine-finding.kind-undefined {
+  border-left-color: #b78c2a;
+}
+
+.refine-finding.kind-suggestion {
+  border-left-color: #6b8e9f;
+}
+
+.refine-finding-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0 0 0.35rem;
+}
+
+.refine-finding-badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.refine-finding-badge.kind-contradiction {
+  background: rgba(200, 107, 61, 0.18);
+  color: #8a4020;
+  border: 1px solid rgba(200, 107, 61, 0.45);
+}
+
+.refine-finding-badge.kind-undefined {
+  background: rgba(220, 170, 70, 0.2);
+  color: #7a5410;
+  border: 1px solid rgba(220, 170, 70, 0.5);
+}
+
+.refine-finding-badge.kind-suggestion {
+  background: rgba(107, 142, 159, 0.18);
+  color: #395361;
+  border: 1px solid rgba(107, 142, 159, 0.45);
+}
+
+.refine-finding-target {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.refine-finding-message {
+  margin: 0;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.refine-finding-detail {
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.refine-finding-detail summary {
+  cursor: pointer;
+}
+
+.refine-finding-detail p {
+  margin: 0.3rem 0 0;
+  white-space: pre-wrap;
+}
+
+.refine-finding-evidence {
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.55rem;
+  border-left: 2px solid var(--accent);
+  background: rgba(107, 142, 159, 0.08);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.refine-finding-evidence p {
+  margin: 0.2rem 0 0;
+  white-space: pre-wrap;
+}
+
+.refine-finding-suggestion {
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.55rem;
+  background: rgba(107, 142, 159, 0.1);
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.refine-finding-actions {
+  margin-top: 0.5rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.refine-finding-actions button {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+.refine-chat-card {
+  border-color: rgba(107, 142, 159, 0.35);
+}
+
+.refine-chat-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 0.55rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.refine-chat-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--text-muted);
+  padding: 0.45rem 0.75rem;
+  font-size: 0.88rem;
+}
+
+.refine-chat-tabs button.active {
+  background: rgba(107, 142, 159, 0.08);
+  border-color: var(--border);
+  color: var(--text);
+  position: relative;
+  top: 1px;
+}
+
+.refine-chat-tabs span {
+  min-width: 1.45rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.05);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.refine-chat-scroll {
+  max-height: clamp(260px, 42vh, 520px);
+  overflow-y: auto;
+  padding: 0.6rem;
+  margin: 0 0 0.75rem;
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: rgba(0, 0, 0, 0.015);
+}
+
+.refine-findings-scroll .refine-findings-list {
+  margin-top: 0;
+}
+
+.refine-chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.refine-chat-bubble {
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.75rem;
+}
+
+.refine-chat-bubble.role-user {
+  background: rgba(107, 142, 159, 0.1);
+  border-color: rgba(107, 142, 159, 0.3);
+  margin-left: 1.5rem;
+}
+
+.refine-chat-bubble.role-assistant {
+  margin-right: 1.5rem;
+}
+
+.refine-chat-role {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+}
+
+.refine-chat-content {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.refine-patch-card {
+  margin: 0.35rem 1.5rem 0.35rem 0;
+  padding: 0.55rem 0.7rem;
+  background: rgba(180, 130, 200, 0.06);
+  border: 1px solid rgba(180, 130, 200, 0.4);
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+}
+
+.refine-patch-card.status-applied {
+  background: rgba(90, 170, 120, 0.08);
+  border-color: rgba(90, 170, 120, 0.4);
+}
+
+.refine-patch-card.status-rejected,
+.refine-patch-card.status-stale {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.refine-patch-header {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.35rem;
+}
+
+.refine-patch-status {
+  font-size: 0.72rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-weight: 600;
+  background: rgba(180, 130, 200, 0.2);
+  border: 1px solid rgba(180, 130, 200, 0.5);
+  color: #6a4383;
+}
+
+.refine-patch-status.status-applied {
+  background: rgba(90, 170, 120, 0.22);
+  border-color: rgba(90, 170, 120, 0.55);
+  color: #2f6a44;
+}
+
+.refine-patch-status.status-rejected,
+.refine-patch-status.status-stale {
+  background: rgba(120, 120, 120, 0.15);
+  border-color: rgba(120, 120, 120, 0.4);
+  color: var(--text-muted);
+}
+
+.refine-patch-summary {
+  font-weight: 500;
+}
+
+.refine-patch-meta {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 0.35rem;
+}
+
+/* NOTE: 自動レビュー run のサマリー行。チャット吹き出しの合成システムメッセージ
+   直後、パッチカードの直前に挟む（設計書 7.5）。 */
+.automation-run-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin: 0.35rem 1.5rem 0.35rem 0;
+  font-size: 0.82rem;
+}
+
+.automation-run-time {
+  color: var(--text-muted);
+}
+
+.refine-automation-empty {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0 0 0.5rem;
+}
+
+.refine-automation-orphan-runs {
+  border-bottom: 1px dashed var(--border);
+  margin: 0 0 0.75rem;
+  padding: 0 0 0.5rem;
+}
+
+.refine-automation-orphan-heading {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin: 0 0 0.5rem;
+}
+
+/* 通知クリックからのスクロール到達を短く強調する。 */
+.refine-focus-highlight {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.refine-patch-ops {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.refine-patch-diff {
+  padding: 0.35rem 0.5rem;
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.refine-patch-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+}
+
+.refine-patch-old {
+  color: #7a2f2f;
+  white-space: pre-wrap;
+  font-family: var(--font-ui);
+}
+
+.refine-patch-new {
+  color: #2f6a44;
+  white-space: pre-wrap;
+  font-family: var(--font-ui);
+}
+
+.refine-patch-field {
+  margin-top: 0.25rem;
+}
+
+.refine-patch-field-key {
+  display: inline-block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  margin-bottom: 0.15rem;
+}
+
+.refine-patch-error {
+  color: #7a2f2f;
+  font-size: 0.8rem;
+  margin-top: 0.35rem;
+}
+
+.refine-patch-actions {
+  margin-top: 0.4rem;
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.refine-chat-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  margin-top: 0.5rem;
+}
+
+.refine-chat-input textarea {
+  flex: 1;
+  resize: vertical;
+}
+
+.refine-chat-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0.2rem 0 0;
+}
+
+.settings-section {
+  margin-bottom: 1.5rem;
+}
+
+.settings-section h2 {
+  font-size: 1.1rem;
+  font-family: var(--font-body);
+  font-weight: normal;
+  margin: 0 0 0.75rem;
+}
+
+.settings-section label {
+  display: block;
+  margin: 0 0 0.75rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+}
+
+.prompt-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.system-prompt-preset-library {
+  display: grid;
+  gap: 0.65rem;
+  margin-bottom: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(107, 142, 159, 0.06);
+}
+
+.system-prompt-preset-library .settings-help {
+  margin: 0;
+}
+
+.system-prompt-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.system-prompt-preset-row select,
+.system-prompt-preset-row input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.system-prompt-preset-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.prompt-status {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.system-prompt-editor {
+  min-height: 320px;
+  font-family: var(--font-ui);
+  line-height: 1.55;
+}
+
+.character-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.character-form-fields {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.character-traits-editor {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.character-traits-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-weight: 600;
+}
+
+.character-traits-editor .field-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.character-trait-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(220px, 2fr) auto;
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.character-trait-label-field,
+.character-trait-text-field {
+  display: grid;
+  gap: 0.2rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.character-trait-text-field textarea {
+  min-height: 58px;
+}
+
+.character-trait-remove {
+  align-self: end;
+}
+
+/* NOTE: 種メモ欄はPC画面でも右カラムとして狭いため、人物の軸は縦に並べる。 */
+.setup-draft-panel .character-trait-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.setup-draft-panel .character-trait-remove {
+  justify-self: end;
+}
+
+.character-initial-state-field {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.ng-expression-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.ng-expression-form input {
+  flex: 1;
+}
+
+.ng-expression-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.ng-expression-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ng-expression-item button {
+  min-height: 2rem;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.reader-body {
+  position: relative;
+}
+
+.ng-expression-float-button {
+  position: absolute;
+  z-index: 20;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--accent);
+  color: #fff;
+}
+
+.ng-expression-float-button:hover {
+  background: var(--accent-hover);
+}

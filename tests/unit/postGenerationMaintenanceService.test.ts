@@ -174,6 +174,14 @@ describe('post-generation maintenance', () => {
       const state = await storage.readState(project.projectId);
       return state?.refineMaintenance?.phase === 'needsReview';
     });
+    // NOTE: needsReview は設定レビュー側の終端だが、その直後に採用本文の
+    // story-state 更新がバックグラウンドで続く。完了を待ってからテスト用
+    // ディレクトリを削除し、Windows の ENOTEMPTY 競合を防ぐ。
+    await waitForCondition(async () => {
+      const state = await storage.readState(project.projectId);
+      const status = state?.storyStateRefresh?.status;
+      return status === 'fresh' || status === 'stale';
+    });
     expect((await storage.readCharacters(project.projectId))[0].speechStyle).toBeUndefined();
   });
 

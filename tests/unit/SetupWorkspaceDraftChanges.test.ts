@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectDraftChanges } from '../../src/client/components/SetupWorkspace';
+import { collectDraftChanges } from '../../src/client/components/setupWorkspace/draftChanges';
 import type { SetupDraft } from '../../src/shared/types';
 
 function draft(patch: Partial<SetupDraft> = {}): SetupDraft {

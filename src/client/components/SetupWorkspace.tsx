@@ -6,6 +6,25 @@ import LightMarkdown from './LightMarkdown';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import CharacterTraitsEditor from './CharacterTraitsEditor';
 import { useNotificationCenter } from './NotificationCenter';
+import {
+  collectDraftChanges,
+  DRAFT_STRING_SECTION_LABELS,
+  draftChangeKindLabel,
+  draftItemChangeKey,
+  draftStringChangeKey,
+  ROLE_LABELS,
+  type DraftChangeKind,
+  type DraftChanges,
+  type DraftChangeSummary,
+  type StringDraftSection,
+} from './setupWorkspace/draftChanges';
+import {
+  forgetSetupSession,
+  readStoredSetupSessionId,
+  rememberSetupSession,
+} from './setupWorkspace/sessionStorage';
+import { hasMeaningfulSetupContent } from '@shared/setupContent';
+import { normalizeActivePresetIds } from '@shared/presetMigration';
 import type {
   ActivePresets,
   CharacterRole,
@@ -23,6 +42,8 @@ import type {
   SetupSuggestedAction,
 } from '@shared/types';
 
+export { collectDraftChanges } from './setupWorkspace/draftChanges';
+
 interface Props {
   purpose?: 'novel' | 'roleplay';
   onCreated: (projectId: string) => void;
@@ -30,41 +51,8 @@ interface Props {
   onOpenSettings: () => void;
 }
 
-type StringDraftSection =
-  | 'relationshipSeeds'
-  | 'world'
-  | 'tone'
-  | 'ng'
-  | 'openingSeeds'
-  | 'scenarioSeeds';
-type DraftItemSection = 'confirmed' | 'candidates' | 'undecided' | 'characters';
-type DraftChangeKind = 'added' | 'updated' | 'archived';
-type DraftChanges = Record<string, DraftChangeKind>;
-
-interface DraftChangeSummary {
-  key: string;
-  kind: DraftChangeKind;
-  text: string;
-}
-
 interface PendingDescriptor {
   id: string;
-}
-
-const SETUP_SESSION_STORAGE_KEY_BASE = 'chapterflow:lastSetupSessionId';
-const LEGACY_SETUP_SESSION_STORAGE_KEY_BASE = 'yumeweaving:lastSetupSessionId';
-// NOTE: purpose 別に localStorage キーを分ける。roleplay 入口から novel の未commit
-// セッションを誤復元しないための境界（設計書 1.5）。
-function setupSessionStorageKey(purpose: 'novel' | 'roleplay'): string {
-  return purpose === 'roleplay'
-    ? `${SETUP_SESSION_STORAGE_KEY_BASE}:roleplay`
-    : `${SETUP_SESSION_STORAGE_KEY_BASE}:novel`;
-}
-
-function legacySetupSessionStorageKey(purpose: 'novel' | 'roleplay'): string {
-  return purpose === 'roleplay'
-    ? `${LEGACY_SETUP_SESSION_STORAGE_KEY_BASE}:roleplay`
-    : `${LEGACY_SETUP_SESSION_STORAGE_KEY_BASE}:novel`;
 }
 
 const DEFAULT_PROJECT_SETTINGS = {
@@ -72,22 +60,6 @@ const DEFAULT_PROJECT_SETTINGS = {
   streamingEnabled: false,
   activePresetIds: {},
 };
-
-const ROLE_LABELS: Record<CharacterRole, string> = {
-  protagonist: '主人公',
-  deuteragonist: '相手役',
-  supporting: '脇役',
-  other: 'その他',
-};
-
-const DRAFT_STRING_SECTION_LABELS = {
-  relationshipSeeds: '関係性',
-  world: '世界観',
-  tone: '好み・文体',
-  ng: 'NG',
-  openingSeeds: '冒頭候補',
-  scenarioSeeds: 'シナリオ（会話の舞台）',
-} satisfies Record<StringDraftSection, string>;
 
 const COLD_START_ACTIONS: SetupSuggestedAction[] = [
   {
@@ -1007,7 +979,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             {presetCategories ? (
               <PresetSelector
                 categories={presetCategories}
-                value={session.projectSettings.activePresetIds}
+                value={normalizeActivePresetIds(session.projectSettings.activePresetIds)}
                 onChange={(value) => void saveStyleSettings(value)}
                 disabled={busy}
                 namePrefix="setup-style"
@@ -2854,301 +2826,6 @@ function EditableStringRow({
   );
 }
 
-export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): DraftChangeSummary[] {
-  const summary: DraftChangeSummary[] = [];
-
-  if (previous.coreConcept.trim() !== next.coreConcept.trim()) {
-    recordDraftChange(summary, 'coreConcept', previous.coreConcept.trim() ? 'updated' : 'added', '作品の核');
-  }
-
-  collectItemChanges(
-    summary,
-    'confirmed',
-    previous.confirmed,
-    next.confirmed,
-    (item) => JSON.stringify([item.text, item.reason ?? '', item.status]),
-    (item) => `決まってきたこと「${shortenDraftChangeText(item.text)}」`
-  );
-  collectItemChanges(
-    summary,
-    'candidates',
-    previous.candidates,
-    next.candidates,
-    (item) => JSON.stringify([item.title, item.summary, item.status]),
-    (item) => `候補「${shortenDraftChangeText(item.title || item.summary)}」`
-  );
-  collectItemChanges(
-    summary,
-    'undecided',
-    previous.undecided,
-    next.undecided,
-    (item) => JSON.stringify([item.text, item.reason ?? '', item.status]),
-    (item) => `未確定「${shortenDraftChangeText(item.text)}」`
-  );
-  collectItemChanges(
-    summary,
-    'characters',
-    previous.characters,
-    next.characters,
-    (item) =>
-      JSON.stringify([
-        item.role,
-        item.name,
-        item.label,
-        item.description,
-        item.speechStyle ?? '',
-        item.relationshipNotes ?? '',
-        item.traits ?? [],
-        item.secrets ?? '',
-        item.status,
-      ]),
-    (item) => `人物「${shortenDraftChangeText(item.label || item.name || ROLE_LABELS[item.role])}」`
-  );
-
-  for (const section of Object.keys(DRAFT_STRING_SECTION_LABELS) as StringDraftSection[]) {
-    // NOTE: 古いテスト・保存データが scenarioSeeds を持たない場合の後方互換。
-    // previous/next のいずれかが undefined でも空配列として扱う。
-    collectStringChanges(summary, section, previous[section] ?? [], next[section] ?? []);
-  }
-
-  return summary;
-}
-
-function collectItemChanges<T extends { id: string; status: string }>(
-  summary: DraftChangeSummary[],
-  section: DraftItemSection,
-  previous: T[],
-  next: T[],
-  signature: (item: T) => string,
-  label: (item: T) => string
-) {
-  const previousById = new Map(previous.map((item) => [item.id, item]));
-  const nextById = new Map(next.map((item) => [item.id, item]));
-
-  for (const item of previous) {
-    const nextItem = nextById.get(item.id);
-    if (item.status === 'active' && (!nextItem || nextItem.status !== 'active')) {
-      recordDraftChange(summary, draftItemChangeKey(section, item.id), 'archived', label(item));
-    }
-  }
-
-  for (const item of next) {
-    const previousItem = previousById.get(item.id);
-    if (!previousItem && item.status === 'active') {
-      recordDraftChange(summary, draftItemChangeKey(section, item.id), 'added', label(item));
-    } else if (previousItem?.status === 'active' && item.status !== 'active') {
-      continue;
-    } else if (previousItem && item.status === 'active' && signature(previousItem) !== signature(item)) {
-      recordDraftChange(summary, draftItemChangeKey(section, item.id), 'updated', label(item));
-    }
-  }
-}
-
-function collectStringChanges(
-  summary: DraftChangeSummary[],
-  section: StringDraftSection,
-  previousValues: string[],
-  nextValues: string[]
-) {
-  const matchingPairs = findLongestCommonStringPairs(previousValues, nextValues);
-  const movedPairs = collectMovedStringPairs(previousValues, nextValues, matchingPairs);
-  const movedPreviousIndexes = new Set(movedPairs.map(([previousIndex]) => previousIndex));
-  const movedNextIndexes = new Set(movedPairs.map(([, nextIndex]) => nextIndex));
-  const sectionLabel = DRAFT_STRING_SECTION_LABELS[section];
-
-  for (const [, nextIndex] of movedPairs.sort((a, b) => a[1] - b[1])) {
-    const nextValue = nextValues[nextIndex];
-    recordDraftChange(
-      summary,
-      draftStringChangeKey(section, nextIndex),
-      'updated',
-      `${sectionLabel}「${shortenDraftChangeText(nextValue)}」`,
-      `${sectionLabel}「${shortenDraftChangeText(nextValue)}」の順番を変更`
-    );
-  }
-
-  let previousStart = 0;
-  let nextStart = 0;
-
-  for (let pairIndex = 0; pairIndex <= matchingPairs.length; pairIndex += 1) {
-    const [previousEnd, nextEnd] =
-      matchingPairs[pairIndex] ?? [previousValues.length, nextValues.length];
-    collectStringChangeSegment(
-      summary,
-      section,
-      previousValues,
-      nextValues,
-      previousStart,
-      previousEnd,
-      nextStart,
-      nextEnd,
-      movedPreviousIndexes,
-      movedNextIndexes
-    );
-    previousStart = previousEnd + 1;
-    nextStart = nextEnd + 1;
-  }
-}
-
-function collectStringChangeSegment(
-  summary: DraftChangeSummary[],
-  section: StringDraftSection,
-  previousValues: string[],
-  nextValues: string[],
-  previousStart: number,
-  previousEnd: number,
-  nextStart: number,
-  nextEnd: number,
-  movedPreviousIndexes: ReadonlySet<number>,
-  movedNextIndexes: ReadonlySet<number>
-) {
-  const sectionLabel = DRAFT_STRING_SECTION_LABELS[section];
-  const previousSegmentIndexes = rangeIndexes(previousStart, previousEnd).filter(
-    (index) => !movedPreviousIndexes.has(index)
-  );
-  const nextSegmentIndexes = rangeIndexes(nextStart, nextEnd).filter((index) => !movedNextIndexes.has(index));
-  const replacementCount = Math.min(previousSegmentIndexes.length, nextSegmentIndexes.length);
-
-  for (let offset = 0; offset < replacementCount; offset += 1) {
-    const previousIndex = previousSegmentIndexes[offset];
-    const nextIndex = nextSegmentIndexes[offset];
-    const previousValue = previousValues[previousIndex];
-    const nextValue = nextValues[nextIndex];
-    if (normalizeDraftString(previousValue) === normalizeDraftString(nextValue)) continue;
-    recordDraftChange(
-      summary,
-      draftStringChangeKey(section, nextIndex),
-      'updated',
-      `${sectionLabel}「${shortenDraftChangeText(nextValue)}」`,
-      `${sectionLabel}「${shortenDraftChangeText(previousValue)}」を「${shortenDraftChangeText(nextValue)}」に更新`
-    );
-  }
-
-  for (let offset = replacementCount; offset < nextSegmentIndexes.length; offset += 1) {
-    const nextIndex = nextSegmentIndexes[offset];
-    recordDraftChange(
-      summary,
-      draftStringChangeKey(section, nextIndex),
-      'added',
-      `${sectionLabel}「${shortenDraftChangeText(nextValues[nextIndex])}」`
-    );
-  }
-
-  for (let offset = replacementCount; offset < previousSegmentIndexes.length; offset += 1) {
-    const previousIndex = previousSegmentIndexes[offset];
-    recordDraftChange(
-      summary,
-      draftStringRemovedChangeKey(section, previousIndex),
-      'archived',
-      `${sectionLabel}「${shortenDraftChangeText(previousValues[previousIndex])}」`
-    );
-  }
-}
-
-function collectMovedStringPairs(
-  previousValues: string[],
-  nextValues: string[],
-  matchingPairs: Array<[number, number]>
-): Array<[number, number]> {
-  const matchedPreviousIndexes = new Set(matchingPairs.map(([previousIndex]) => previousIndex));
-  const matchedNextIndexes = new Set(matchingPairs.map(([, nextIndex]) => nextIndex));
-  const unmatchedNextByText = new Map<string, number[]>();
-
-  for (let nextIndex = 0; nextIndex < nextValues.length; nextIndex += 1) {
-    if (matchedNextIndexes.has(nextIndex)) continue;
-    const normalized = normalizeDraftString(nextValues[nextIndex]);
-    if (!normalized) continue;
-    const indexes = unmatchedNextByText.get(normalized) ?? [];
-    indexes.push(nextIndex);
-    unmatchedNextByText.set(normalized, indexes);
-  }
-
-  const movedPairs: Array<[number, number]> = [];
-  for (let previousIndex = 0; previousIndex < previousValues.length; previousIndex += 1) {
-    if (matchedPreviousIndexes.has(previousIndex)) continue;
-    const normalized = normalizeDraftString(previousValues[previousIndex]);
-    if (!normalized) continue;
-    const nextIndexes = unmatchedNextByText.get(normalized);
-    const nextIndex = nextIndexes?.shift();
-    if (nextIndex === undefined || nextIndex === previousIndex) continue;
-    movedPairs.push([previousIndex, nextIndex]);
-  }
-  return movedPairs;
-}
-
-function findLongestCommonStringPairs(previousValues: string[], nextValues: string[]): Array<[number, number]> {
-  const lengths = Array.from(
-    { length: previousValues.length + 1 },
-    () => Array<number>(nextValues.length + 1).fill(0)
-  );
-
-  for (let previousIndex = previousValues.length - 1; previousIndex >= 0; previousIndex -= 1) {
-    for (let nextIndex = nextValues.length - 1; nextIndex >= 0; nextIndex -= 1) {
-      lengths[previousIndex][nextIndex] =
-        normalizeDraftString(previousValues[previousIndex]) === normalizeDraftString(nextValues[nextIndex])
-          ? lengths[previousIndex + 1][nextIndex + 1] + 1
-          : Math.max(lengths[previousIndex + 1][nextIndex], lengths[previousIndex][nextIndex + 1]);
-    }
-  }
-
-  const pairs: Array<[number, number]> = [];
-  let previousIndex = 0;
-  let nextIndex = 0;
-  while (previousIndex < previousValues.length && nextIndex < nextValues.length) {
-    if (normalizeDraftString(previousValues[previousIndex]) === normalizeDraftString(nextValues[nextIndex])) {
-      pairs.push([previousIndex, nextIndex]);
-      previousIndex += 1;
-      nextIndex += 1;
-    } else if (lengths[previousIndex + 1][nextIndex] >= lengths[previousIndex][nextIndex + 1]) {
-      previousIndex += 1;
-    } else {
-      nextIndex += 1;
-    }
-  }
-  return pairs;
-}
-
-function rangeIndexes(start: number, end: number): number[] {
-  return Array.from({ length: end - start }, (_, offset) => start + offset);
-}
-
-function recordDraftChange(
-  summary: DraftChangeSummary[],
-  key: string,
-  kind: DraftChangeKind,
-  label: string,
-  text = `${label}を${draftChangeKindLabel(kind)}`
-) {
-  summary.push({ key, kind, text });
-}
-
-function draftChangeKindLabel(kind: DraftChangeKind): string {
-  if (kind === 'added') return '追加';
-  if (kind === 'archived') return '削除';
-  return '更新';
-}
-
-function draftItemChangeKey(section: DraftItemSection, id: string): string {
-  return `${section}:${id}`;
-}
-
-function draftStringChangeKey(section: StringDraftSection, index: number): string {
-  return `${section}:${index}`;
-}
-
-function draftStringRemovedChangeKey(section: StringDraftSection, index: number): string {
-  return `${section}:removed:${index}`;
-}
-
-function normalizeDraftString(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function shortenDraftChangeText(value: string, maxLength = 36): string {
-  const trimmed = value.trim() || '内容なし';
-  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
-}
-
 async function createDefaultSetupSession(
   knownProviders?: ModelProviderInfo[],
   purpose: 'novel' | 'roleplay' = 'novel'
@@ -3229,30 +2906,6 @@ function cloneDraft(draft: SetupDraft): SetupDraft {
   return JSON.parse(JSON.stringify(draft)) as SetupDraft;
 }
 
-function hasMeaningfulSetupContent(session: SetupSession): boolean {
-  const draft = session.draft;
-  return Boolean(
-    session.messages.some((entry) => entry.role === 'user' && entry.content.trim()) ||
-      draft.coreConcept.trim() ||
-      draft.confirmed.some((item) => item.status === 'active' && item.text.trim()) ||
-      draft.candidates.some(
-        (item) => item.status === 'active' && (item.title.trim() || item.summary.trim())
-      ) ||
-      draft.undecided.some((item) => item.status === 'active' && item.text.trim()) ||
-      draft.characters.some(
-        (item) =>
-          item.status === 'active' &&
-          (item.name.trim() || item.label.trim() || item.description.trim())
-      ) ||
-      draft.relationshipSeeds.some((item) => item.trim()) ||
-      draft.world.some((item) => item.trim()) ||
-      draft.tone.some((item) => item.trim()) ||
-      draft.ng.some((item) => item.trim()) ||
-      draft.openingSeeds.some((item) => item.trim()) ||
-      (draft.scenarioSeeds ?? []).some((item) => item.trim())
-  );
-}
-
 function archiveById<T extends { id: string; status: 'active' | 'archived'; updatedAt: string }>(
   items: T[],
   id: string
@@ -3265,42 +2918,4 @@ function archiveById<T extends { id: string; status: 'active' | 'archived'; upda
 
 function directLocks(locks: SetupLock[], path: string): SetupLock[] {
   return locks.filter((lock) => lock.path === path);
-}
-
-function readStoredSetupSessionId(purpose: 'novel' | 'roleplay' = 'novel'): string | null {
-  try {
-    const key = setupSessionStorageKey(purpose);
-    const current = window.localStorage.getItem(key);
-    if (current) return current;
-    const legacyKey = legacySetupSessionStorageKey(purpose);
-    const legacy = window.localStorage.getItem(legacyKey);
-    if (legacy) {
-      window.localStorage.setItem(key, legacy);
-      window.localStorage.removeItem(legacyKey);
-    }
-    return legacy;
-  } catch {
-    return null;
-  }
-}
-
-function rememberSetupSession(sessionId: string, purpose: 'novel' | 'roleplay' = 'novel'): void {
-  try {
-    window.localStorage.setItem(setupSessionStorageKey(purpose), sessionId);
-  } catch {
-    // localStorageが使えない環境では、サーバ側の一覧復帰に任せる
-  }
-}
-
-function forgetSetupSession(sessionId?: string, purpose: 'novel' | 'roleplay' = 'novel'): void {
-  try {
-    for (const key of [setupSessionStorageKey(purpose), legacySetupSessionStorageKey(purpose)]) {
-      const current = window.localStorage.getItem(key);
-      if (!sessionId || current === sessionId) {
-        window.localStorage.removeItem(key);
-      }
-    }
-  } catch {
-    // localStorageが使えない環境では何もしない
-  }
 }

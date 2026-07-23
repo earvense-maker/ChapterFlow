@@ -25,6 +25,7 @@ import {
 import { normalizeSetupPurpose } from '../types/index.js';
 import { DEFAULT_ACTIVE_PRESET_IDS } from '../../shared/defaults.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
+import { hasMeaningfulSetupContent } from '../../shared/setupContent.js';
 import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
@@ -902,30 +903,6 @@ export async function createSetupCommitPlan(
     await storage.writeSetupSession(nextSession);
     return { plan, session: nextSession, revision: nextSession.revision };
   });
-}
-
-function hasMeaningfulSetupContent(session: SetupSession): boolean {
-  const draft = session.draft;
-  return Boolean(
-    session.messages.some((message) => message.role === 'user' && message.content.trim()) ||
-      draft.coreConcept.trim() ||
-      draft.confirmed.some((item) => item.status === 'active' && item.text.trim()) ||
-      draft.candidates.some(
-        (item) => item.status === 'active' && (item.title.trim() || item.summary.trim())
-      ) ||
-      draft.undecided.some((item) => item.status === 'active' && item.text.trim()) ||
-      draft.characters.some(
-        (item) =>
-          item.status === 'active' &&
-          (item.name.trim() || item.label.trim() || item.description.trim())
-      ) ||
-      draft.relationshipSeeds.some((item) => item.trim()) ||
-      draft.world.some((item) => item.trim()) ||
-      draft.tone.some((item) => item.trim()) ||
-      draft.ng.some((item) => item.trim()) ||
-      draft.openingSeeds.some((item) => item.trim()) ||
-      (draft.scenarioSeeds ?? []).some((item) => item.trim())
-  );
 }
 
 async function resolveAutoStyleSample(session: SetupSession): Promise<string> {

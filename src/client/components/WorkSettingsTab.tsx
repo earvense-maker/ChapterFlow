@@ -11,6 +11,16 @@ import RefineAutomationSettingsCard from './RefineAutomationSettingsCard';
 import StyleVariationSettingsCard from './StyleVariationSettingsCard';
 import CharacterTraitsEditor from './CharacterTraitsEditor';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
+import {
+  buildRefineNudgeMessage,
+  clearRemovedPresetValues,
+  deriveStyleTags,
+  extractExcerpt,
+  formatRelativeTime,
+  formatStoryDiffSummary,
+  summarizeStoryStateReduction,
+} from './workSettings/workSettingsHelpers';
+import { decodeKnowledgeFile } from './workSettings/knowledgeFile';
 import type {
   Character,
   KnowledgeListItem,
@@ -50,18 +60,6 @@ const roleOptions: { value: Character['role']; label: string }[] = [
 const roleLabelMap: Record<Character['role'], string> = Object.fromEntries(
   roleOptions.map((r) => [r.value, r.label])
 ) as Record<Character['role'], string>;
-
-// NOTE: プリセットカテゴリ ID → タグに使う短い日本語名。作品像サマリーに
-// 「三人称一元 / 現代口語」のように出すため、preset ラベルの方を参照する
-// 一方でカテゴリ側は既知キーだけ扱う。
-const styleTagCategoryOrder = [
-  'narration',
-  'aftertaste',
-  'emotionDisplay',
-  'sceneProgression',
-  'chapterEnding',
-  'painLevel',
-] as const;
 
 export default function WorkSettingsTab({
   projectId,
@@ -1944,26 +1942,6 @@ export default function WorkSettingsTab({
   );
 }
 
-async function decodeKnowledgeFile(file: File): Promise<string> {
-  const lower = file.name.toLowerCase();
-  if (!lower.endsWith('.md') && !lower.endsWith('.txt')) {
-    throw new Error(`${file.name}: md / txt のみ追加できます`);
-  }
-  const buffer = await file.arrayBuffer();
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
-  } catch {
-    const decoded = new TextDecoder('shift_jis').decode(buffer);
-    const chars = [...decoded];
-    const replacementCount = chars.filter((char) => char === '\uFFFD').length;
-    const ratio = chars.length === 0 ? 0 : replacementCount / chars.length;
-    if (ratio > 0.005) {
-      throw new Error(`${file.name}: 文字コードを判定できませんでした`);
-    }
-    return decoded;
-  }
-}
-
 // NOTE: 各カードのヘッダー右上に置く「編集」ボタン。summary-card-badges の隣に並ぶ。
 // カード末尾の目立たない編集ボタンを廃止して、視線の起点であるヘッダーに集約する。
 function CardEditButton({
@@ -1980,115 +1958,4 @@ function CardEditButton({
       ✎ {label}
     </button>
   );
-}
-
-// NOTE: 物語状態の主要な active 配列について、before → after で「減った件数」を
-// ラベル付きで列挙する。increase / no-change は返さない。JSON 生編集時の事故予防
-// ダイアログで、何が失われるかをユーザーに具体的に見せるために使う。
-function summarizeStoryStateReduction(before: StoryState, after: StoryState): string[] {
-  const activeCount = <T extends { status?: string }>(items: T[] | undefined): number =>
-    (items ?? []).filter((item) => (item.status ?? 'active') !== 'archived').length;
-
-  const rows: Array<{ label: string; before: number; after: number }> = [
-    { label: '現在の状況', before: (before.currentSituation ?? []).length, after: (after.currentSituation ?? []).length },
-    { label: '重要イベント', before: activeCount(before.importantEvents), after: activeCount(after.importantEvents) },
-    { label: '未解決の糸', before: activeCount(before.openThreads), after: activeCount(after.openThreads) },
-    { label: '未確定事項', before: activeCount(before.authorUndecided), after: activeCount(after.authorUndecided) },
-    { label: 'キャラ状態', before: (before.characterStates ?? []).length, after: (after.characterStates ?? []).length },
-  ];
-
-  return rows
-    .filter((row) => row.after < row.before)
-    .map((row) => `${row.label}: ${row.before}件 → ${row.after}件（-${row.before - row.after}件）`);
-}
-
-// NOTE: world 冒頭を要約代わりに使う。段落境界と maxChars で切り詰める。
-function extractExcerpt(text: string, maxChars: number): string {
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  if (trimmed.length <= maxChars) return trimmed;
-  const cut = trimmed.slice(0, maxChars);
-  const lastBreak = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('\n'));
-  if (lastBreak > maxChars * 0.5) return cut.slice(0, lastBreak + 1) + '…';
-  return cut + '…';
-}
-
-// NOTE: activePresetIds からラベル文字列を引き、「三人称一元 / 現代口語」の
-// ようなタグ列を作る。カスタム化されている場合は呼び出し元でスキップする。
-function deriveStyleTags(
-  activePresetIds: Project['activePresetIds'],
-  categories: Record<string, PresetCategory> | null
-): string[] {
-  if (!categories) return [];
-  const tags: string[] = [];
-  for (const categoryKey of styleTagCategoryOrder) {
-    const category = categories[categoryKey];
-    if (!category) continue;
-    const selected = activePresetIds[categoryKey];
-    const presetIds = Array.isArray(selected) ? selected : selected ? [selected] : [];
-    for (const presetId of presetIds) {
-      const item = Object.values(category.items).find((it) => it.id === presetId);
-      if (item) tags.push(item.label);
-    }
-  }
-  return tags;
-}
-
-function clearRemovedPresetValues(
-  current: Project['activePresetIds'],
-  next: Project['activePresetIds']
-): Partial<Project['activePresetIds']> {
-  const cleared: Record<string, string | string[]> = {};
-  if (current.aftertaste && !next.aftertaste) cleared.aftertaste = [];
-  for (const key of [
-    'emotionDisplay',
-    'sceneProgression',
-    'chapterEnding',
-    'painLevel',
-    'intimacy',
-  ] as const) {
-    if (current[key] && !next[key]) cleared[key] = '';
-  }
-  return cleared as Partial<Project['activePresetIds']>;
-}
-
-function formatStoryDiffSummary(diff: StoryStateDiffRecord): string {
-  const parts = [
-    diff.summary.addedEvents.length ? `イベント+${diff.summary.addedEvents.length}` : '',
-    diff.summary.updatedEvents.length ? `イベント更新${diff.summary.updatedEvents.length}` : '',
-    diff.summary.addedThreads.length ? `未解決+${diff.summary.addedThreads.length}` : '',
-    diff.summary.resolvedThreads.length ? `解決${diff.summary.resolvedThreads.length}` : '',
-    diff.summary.updatedCharacters.length ? `人物${diff.summary.updatedCharacters.length}名` : '',
-    diff.summary.clockChanged ? '時間更新' : '',
-  ].filter(Boolean);
-  return parts.join(' / ') || `自動更新 ${diff.generationId}`;
-}
-
-function buildRefineNudgeMessage(status: RefineReviewStatus): string {
-  if (status.reasons.includes('settings_changed')) {
-    return '設定が前回のレビューから変更されています。設定と物語の整合性を確認しますか？';
-  }
-  if (status.reasons.includes('story_state_edited')) {
-    return '物語の状態が手動で変更されています。設定と現状のずれを確認しますか？';
-  }
-  if (status.reasons.includes('history_truncated')) {
-    return '前回のレビュー時点の履歴が保持上限を超えています。設定と現状のずれを確認しますか？';
-  }
-  return '前回のレビューから本文が進んでいます。設定と現状のずれを確認しますか？';
-}
-
-// NOTE: 「3日前」「5分前」等の相対時刻表示。
-function formatRelativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return '';
-  const diffSec = Math.floor((Date.now() - then) / 1000);
-  if (diffSec < 60) return 'たった今';
-  const min = Math.floor(diffSec / 60);
-  if (min < 60) return `${min}分前`;
-  const hour = Math.floor(min / 60);
-  if (hour < 24) return `${hour}時間前`;
-  const day = Math.floor(hour / 24);
-  if (day < 30) return `${day}日前`;
-  const month = Math.floor(day / 30);
-  return `${month}ヶ月前`;
 }

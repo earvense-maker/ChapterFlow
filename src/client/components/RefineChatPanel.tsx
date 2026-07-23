@@ -580,7 +580,7 @@ function RefineFindingsView({
           {(f.evidence?.length ?? 0) > 0 && (
             <div className="refine-finding-evidence">
               <strong>根拠（採用本文）</strong>
-              {f.evidence.map((evidence) => (
+              {f.evidence?.map((evidence) => (
                 <p key={`${evidence.generationId}-${evidence.sceneId}-${evidence.quote}`}>
                   場面 {evidence.sceneId}: 「{evidence.quote}」
                 </p>

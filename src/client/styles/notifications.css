@@ -1,0 +1,60 @@
+/* NotificationCenter */
+.notification-toast-stack {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 2500;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(100%, 22rem);
+  max-width: calc(100vw - 2rem);
+}
+
+.notification-toast {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 0.75rem 1.75rem rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.notification-toast.persistent {
+  border-color: var(--accent);
+}
+
+.notification-toast-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  padding: 0.65rem 0.75rem;
+  background: transparent;
+  color: inherit;
+  min-height: unset;
+}
+
+.notification-toast-body strong {
+  font-size: 0.9rem;
+}
+
+.notification-toast-body span {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.notification-toast-dismiss {
+  padding: 0 0.6rem;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1rem;
+  min-height: unset;
+}
+
+.notification-toast-dismiss:hover {
+  color: var(--text);
+}
