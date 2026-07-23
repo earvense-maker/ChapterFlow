@@ -34,6 +34,74 @@ export interface SamplingConfig {
 // 後方互換で 'novel' 扱い。API 境界では必ず正規化して返す。
 export type ProjectType = 'novel' | 'roleplay';
 
+export type StyleAxis =
+  | 'visual'
+  | 'auditory'
+  | 'somatic'
+  | 'introspective'
+  | 'kinetic'
+  | 'dialogic'
+  | 'temporal';
+
+export type StyleVariationIntensity = 'subtle' | 'balanced';
+
+export interface StyleVariationSettings {
+  enabled: boolean;
+  intensity: StyleVariationIntensity;
+  axisWeights: Partial<Record<StyleAxis, number>>;
+  surfaceDecayEnabled: boolean;
+  patternDecayEnabled: boolean;
+  // NOTE: 反復自体が作品モチーフや人物性である語句・型は、減衰候補から除外する。
+  // UI では1行1項目で編集し、保存時に空行・重複を除く。
+  motifExclusions: string[];
+}
+
+export const STYLE_PROFILE_SCHEMA_VERSION = 1;
+
+export interface GenerationStyleProfile {
+  schemaVersion: 1;
+  seed: string;
+  primaryAxis: StyleAxis;
+  secondaryAxis?: StyleAxis;
+  entryChannel?: 'visual' | 'pressure' | 'temperature' | 'sound' | 'distance';
+  attenuatedPatterns: string[];
+  intensity: StyleVariationIntensity;
+}
+
+export interface GenerationStyleTrace {
+  generationId: GenerationId;
+  openingChannel?: string;
+  dominantAxes: StyleAxis[];
+  endingPattern?: string;
+  metaphorCores: string[];
+  reactionPatterns: string[];
+  rhythmSummary?: string;
+  createdAt: string;
+}
+
+export interface StyleTraceAnalysisRecord {
+  generationId: GenerationId;
+  status: 'completed' | 'failed';
+  usedModel: {
+    provider: string;
+    modelName: string;
+  };
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  usage?: AdapterGenerateResult['rawUsage'];
+  // NOTE: 必須6カテゴリのうち、妥当な値を抽出できた割合。モデルやprompt変更後の
+  // 品質比較に使う監査値であり、本文の自動採否には使わない。
+  qualityScore?: number;
+  errorMessage?: string;
+}
+
+export interface GenerationStyleTraceStore {
+  schemaVersion: 1;
+  traces: GenerationStyleTrace[];
+  analyses: StyleTraceAnalysisRecord[];
+}
+
 export interface Project {
   schemaVersion: number;
   projectId: ProjectId;
@@ -59,6 +127,9 @@ export interface Project {
   // NOTE: 生成後の自動設定レビュー設定。undefined は「未保存」（ガード上は off 扱い、
   // 設定画面では safe/when-needed をプレビュー選択として提示）。
   refineAutomation?: RefineAutomationSettings;
+  // NOTE: 既存作品では undefined を disabled と解釈する。本文生成の互換性を守るため、
+  // 明示的に有効化されるまでpromptへ文体レンズを追加しない。
+  styleVariation?: StyleVariationSettings;
 }
 
 export interface WorldContent {
@@ -657,6 +728,7 @@ export interface GenerationRecord {
   bannedExpressions?: string[];
   // NOTE: 'length' の場合は本文を失わず下書きとして残しつつ、UIで上限到達を通知する。
   finishReason?: FinishReason;
+  styleProfile?: GenerationStyleProfile;
 }
 
 export interface ModelConfig {
@@ -838,6 +910,7 @@ export interface CreateProjectBody {
   projectType?: ProjectType;
   scenarioSeeds?: string[];
   roleplayOutputChars?: number;
+  styleVariation?: StyleVariationSettings;
 }
 
 export interface UpdateProjectBody {
@@ -855,6 +928,7 @@ export interface UpdateProjectBody {
   // ロールプレイ型プロジェクトで会話開始時のチップを追加編集するために更新可能。
   scenarioSeeds?: string[];
   roleplayOutputChars?: number;
+  styleVariation?: StyleVariationSettings;
 }
 
 export type RuntimeKind = 'electron' | 'server';

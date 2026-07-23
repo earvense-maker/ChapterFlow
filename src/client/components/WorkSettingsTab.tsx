@@ -8,6 +8,7 @@ import {
 } from '@shared/types';
 import RefineChatPanel from './RefineChatPanel';
 import RefineAutomationSettingsCard from './RefineAutomationSettingsCard';
+import StyleVariationSettingsCard from './StyleVariationSettingsCard';
 import CharacterTraitsEditor from './CharacterTraitsEditor';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import type {
@@ -1031,6 +1032,15 @@ export default function WorkSettingsTab({
           </div>
         )}
       </section>
+
+      {detailSettingsTab === 'style' && project.projectType !== 'roleplay' && (
+      <StyleVariationSettingsCard
+        project={project}
+        onProjectUpdated={onProjectUpdated}
+        onError={onError}
+        onFlashMessage={onFlashMessage}
+      />
+      )}
 
       {detailSettingsTab === 'style' && (
       <section className="summary-card detail-settings-panel-card">

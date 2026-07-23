@@ -20,11 +20,13 @@ import {
   DEFAULT_ACTIVE_PRESET_IDS,
   DEFAULT_PROJECT_TYPE,
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
+  DEFAULT_STYLE_VARIATION_SETTINGS,
   NEW_PROJECT_REFINE_AUTOMATION_SETTINGS,
   ROLEPLAY_LIMITS,
   SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
   normalizeProjectType,
   normalizeRefineAutomationSettings,
+  normalizeStyleVariationSettings,
 } from '../types/index.js';
 import type {
   ActivePresets,
@@ -37,6 +39,7 @@ import type {
   ProjectType,
   RefineAutomationSettings,
   SamplingConfig,
+  StyleVariationSettings,
   UpdateProjectBody,
   WorldContent,
 } from '../types/index.js';
@@ -131,6 +134,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     coreConcept: body.coreConcept,
     firstWishSuggestion: body.firstWishSuggestion,
     styleSample: body.styleSample,
+    styleVariation: body.styleVariation,
   });
   const customSystemPromptInput = normalizeInitialSystemPrompt(body.customSystemPrompt);
   if (
@@ -235,6 +239,13 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     // （実効的に off）として扱う。新規作成時だけ safe/when-needed を既定保存する
     // （設計書 5.2 の移行方針）。
     refineAutomation: body.duplicateFrom ? undefined : NEW_PROJECT_REFINE_AUTOMATION_SETTINGS,
+    styleVariation: body.duplicateFrom
+      ? normalizeStyleVariationSettings(sourceProject?.styleVariation)
+      : validatedInput.styleVariation ?? {
+          ...DEFAULT_STYLE_VARIATION_SETTINGS,
+          axisWeights: { ...DEFAULT_STYLE_VARIATION_SETTINGS.axisWeights },
+          motifExclusions: [],
+        },
   };
 
   const state: ProjectState = {
@@ -313,6 +324,7 @@ export async function getProject(projectId: string): Promise<Project | null> {
     activePresetIds: normalizeActivePresetIds(project.activePresetIds),
     projectType: normalizeProjectType(project.projectType),
     refineAutomation: normalizeRefineAutomationSettings(project.refineAutomation),
+    styleVariation: normalizeStyleVariationSettings(project.styleVariation),
   };
 }
 
@@ -533,6 +545,9 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
   if ('refineAutomation' in updates && updates.refineAutomation !== undefined) {
     normalized.refineAutomation = validateRefineAutomationSettings(updates.refineAutomation);
   }
+  if ('styleVariation' in updates && updates.styleVariation !== undefined) {
+    normalized.styleVariation = validateStyleVariationSettings(updates.styleVariation);
+  }
 
   return normalized;
 }
@@ -549,6 +564,44 @@ function validateRefineAutomationSettings(value: unknown): RefineAutomationSetti
     throw new ProjectValidationError("refineAutomation.scanPolicy must be 'when-needed' | 'always'");
   }
   return { mode: raw.mode, scanPolicy: raw.scanPolicy };
+}
+
+function validateStyleVariationSettings(value: unknown): StyleVariationSettings {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ProjectValidationError('styleVariation must be an object');
+  }
+  const raw = value as {
+    enabled?: unknown;
+    intensity?: unknown;
+    axisWeights?: unknown;
+    surfaceDecayEnabled?: unknown;
+    patternDecayEnabled?: unknown;
+    motifExclusions?: unknown;
+  };
+  if (typeof raw.enabled !== 'boolean') {
+    throw new ProjectValidationError('styleVariation.enabled must be a boolean');
+  }
+  if (raw.intensity !== 'subtle' && raw.intensity !== 'balanced') {
+    throw new ProjectValidationError("styleVariation.intensity must be 'subtle' | 'balanced'");
+  }
+  if (typeof raw.surfaceDecayEnabled !== 'boolean' || typeof raw.patternDecayEnabled !== 'boolean') {
+    throw new ProjectValidationError('styleVariation decay flags must be booleans');
+  }
+  if (
+    typeof raw.axisWeights !== 'object' ||
+    raw.axisWeights === null ||
+    Array.isArray(raw.axisWeights)
+  ) {
+    throw new ProjectValidationError('styleVariation.axisWeights must be an object');
+  }
+  if (
+    raw.motifExclusions !== undefined &&
+    (!Array.isArray(raw.motifExclusions) ||
+      !raw.motifExclusions.every((item) => typeof item === 'string'))
+  ) {
+    throw new ProjectValidationError('styleVariation.motifExclusions must be a string array');
+  }
+  return normalizeStyleVariationSettings(value)!;
 }
 
 function normalizeOptionalText(value: unknown, maxChars: number): string | undefined {

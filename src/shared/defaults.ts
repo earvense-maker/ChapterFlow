@@ -1,5 +1,7 @@
+import { STYLE_PROFILE_SCHEMA_VERSION } from './types.js';
 import type {
   ActivePresets,
+  GenerationStyleProfile,
   GenerationNotificationEvents,
   GenerationNotificationSettings,
   ProjectType,
@@ -7,6 +9,8 @@ import type {
   RefineAutomationScanPolicy,
   RefineAutomationSettings,
   SetupPurpose,
+  StyleAxis,
+  StyleVariationSettings,
 } from './types.js';
 
 export const DEFAULT_ACTIVE_PRESET_IDS = {
@@ -127,4 +131,139 @@ export function normalizeRefineAutomationSettings(value: unknown): RefineAutomat
 // すべてここを経由し、`settings?.mode ?? 'off'` を各所へ書き散らさない。
 export function effectiveRefineAutomationMode(settings: RefineAutomationSettings | undefined): RefineAutomationMode {
   return settings?.mode ?? 'off';
+}
+
+export const STYLE_AXES: readonly StyleAxis[] = [
+  'visual',
+  'auditory',
+  'somatic',
+  'introspective',
+  'kinetic',
+  'dialogic',
+  'temporal',
+];
+
+export const STYLE_ENTRY_CHANNELS = [
+  'visual',
+  'pressure',
+  'temperature',
+  'sound',
+  'distance',
+] as const;
+
+const DEFAULT_STYLE_AXIS_WEIGHTS = Object.fromEntries(
+  STYLE_AXES.map((axis) => [axis, 0.5])
+) as Record<StyleAxis, number>;
+
+export const DEFAULT_STYLE_VARIATION_SETTINGS: StyleVariationSettings = {
+  enabled: false,
+  intensity: 'subtle',
+  axisWeights: DEFAULT_STYLE_AXIS_WEIGHTS,
+  surfaceDecayEnabled: true,
+  patternDecayEnabled: true,
+  motifExclusions: [],
+};
+
+export function normalizeStyleVariationSettings(value: unknown): StyleVariationSettings | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {
+      ...DEFAULT_STYLE_VARIATION_SETTINGS,
+      axisWeights: { ...DEFAULT_STYLE_AXIS_WEIGHTS },
+      motifExclusions: [],
+    };
+  }
+
+  const raw = value as {
+    enabled?: unknown;
+    intensity?: unknown;
+    axisWeights?: unknown;
+    surfaceDecayEnabled?: unknown;
+    patternDecayEnabled?: unknown;
+    motifExclusions?: unknown;
+  };
+  const rawWeights =
+    typeof raw.axisWeights === 'object' && raw.axisWeights !== null && !Array.isArray(raw.axisWeights)
+      ? (raw.axisWeights as Record<string, unknown>)
+      : {};
+  const hasValidCore =
+    typeof raw.enabled === 'boolean' &&
+    (raw.intensity === 'subtle' || raw.intensity === 'balanced') &&
+    typeof raw.surfaceDecayEnabled === 'boolean' &&
+    typeof raw.patternDecayEnabled === 'boolean' &&
+    typeof raw.axisWeights === 'object' &&
+    raw.axisWeights !== null &&
+    !Array.isArray(raw.axisWeights);
+  const axisWeights = Object.fromEntries(
+    STYLE_AXES.map((axis) => {
+      const candidate = rawWeights[axis];
+      const weight =
+        typeof candidate === 'number' && Number.isFinite(candidate)
+          ? Math.min(1, Math.max(0, candidate))
+          : DEFAULT_STYLE_AXIS_WEIGHTS[axis];
+      return [axis, weight];
+    })
+  ) as Record<StyleAxis, number>;
+  const allZero = STYLE_AXES.every((axis) => axisWeights[axis] === 0);
+
+  const motifExclusions = Array.isArray(raw.motifExclusions)
+    ? [...new Set(
+        raw.motifExclusions
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim().slice(0, 100))
+          .filter(Boolean)
+      )].slice(0, 30)
+    : [];
+
+  return {
+    enabled: hasValidCore && raw.enabled === true,
+    intensity: raw.intensity === 'balanced' ? 'balanced' : 'subtle',
+    axisWeights: allZero ? { ...DEFAULT_STYLE_AXIS_WEIGHTS } : axisWeights,
+    surfaceDecayEnabled:
+      typeof raw.surfaceDecayEnabled === 'boolean' ? raw.surfaceDecayEnabled : true,
+    patternDecayEnabled:
+      typeof raw.patternDecayEnabled === 'boolean' ? raw.patternDecayEnabled : true,
+    motifExclusions,
+  };
+}
+
+export function normalizeGenerationStyleProfile(
+  value: unknown
+): GenerationStyleProfile | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const raw = value as Partial<GenerationStyleProfile>;
+  if (
+    raw.schemaVersion !== STYLE_PROFILE_SCHEMA_VERSION ||
+    typeof raw.seed !== 'string' ||
+    !STYLE_AXES.includes(raw.primaryAxis as StyleAxis) ||
+    (raw.secondaryAxis !== undefined && !STYLE_AXES.includes(raw.secondaryAxis as StyleAxis)) ||
+    (raw.intensity !== 'subtle' && raw.intensity !== 'balanced')
+  ) {
+    return undefined;
+  }
+  const entryChannel = STYLE_ENTRY_CHANNELS.includes(
+    raw.entryChannel as (typeof STYLE_ENTRY_CHANNELS)[number]
+  )
+    ? raw.entryChannel
+    : undefined;
+  const secondaryAxis =
+    raw.intensity === 'balanced' && raw.secondaryAxis
+      ? (raw.secondaryAxis as StyleAxis)
+      : undefined;
+
+  return {
+    schemaVersion: STYLE_PROFILE_SCHEMA_VERSION,
+    seed: raw.seed,
+    primaryAxis: raw.primaryAxis as StyleAxis,
+    ...(secondaryAxis ? { secondaryAxis } : {}),
+    ...(entryChannel ? { entryChannel } : {}),
+    attenuatedPatterns: Array.isArray(raw.attenuatedPatterns)
+      ? raw.attenuatedPatterns
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim().slice(0, 100))
+          .filter(Boolean)
+          .slice(0, 3)
+      : [],
+    intensity: raw.intensity,
+  };
 }

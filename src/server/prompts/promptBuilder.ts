@@ -16,8 +16,11 @@ import {
 } from '../utils/worldMd.js';
 import { trimTrailingTextToSentenceBoundary } from '../utils/textBoundary.js';
 import { extractFrequentPhrases } from '../utils/phraseFrequency.js';
+import { renderStyleLensPrompt } from '../services/styleVariationService.js';
+import { normalizeStyleVariationSettings } from '../../shared/defaults.js';
 import type {
   Character,
+  GenerationStyleProfile,
   Memory,
   Project,
   ProjectState,
@@ -40,6 +43,7 @@ export interface BuildPromptInput {
   // 未指定なら continue 扱い。regenerate/variate では現在シーンの採用済み本文を
   // 文脈から除外して「同じ場面の別案」を書かせる。
   mode?: 'continue' | 'regenerate' | 'variate';
+  styleProfile?: GenerationStyleProfile;
 }
 
 export async function buildPrompt(input: BuildPromptInput): Promise<{
@@ -58,6 +62,7 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     bannedExpressions,
     knowledgeTexts,
     mode = 'continue',
+    styleProfile,
   } = input;
   const isRewriteMode = mode === 'regenerate' || mode === 'variate';
 
@@ -169,10 +174,25 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
   // NOTE: 頻出フレーズは直近本文（rewrite 時は書き直し対象場面）を根拠に選ばれるため、
   // その直後に置いて文脈的近さを保つ。登録NGとは意味論が違う（強度の弱い soft caution）
   // のでセクションも分ける。
-  const frequentPhrases = selectFrequentPhrases(recentContext, characters, bannedExpressions);
-  const frequentSection = renderFrequentPhraseNotice(frequentPhrases);
-  if (frequentSection) {
-    parts.push(frequentSection);
+  const styleVariation = normalizeStyleVariationSettings(project.styleVariation);
+  const variationEnabled = styleVariation?.enabled === true;
+  const surfaceDecayEnabled = variationEnabled ? styleVariation.surfaceDecayEnabled : true;
+  if (surfaceDecayEnabled) {
+    const frequentPhrases = selectFrequentPhrases(
+      recentContext,
+      characters,
+      bannedExpressions,
+      variationEnabled ? styleVariation.motifExclusions : undefined
+    );
+    const frequentSection = renderFrequentPhraseNotice(frequentPhrases);
+    if (frequentSection) {
+      parts.push(frequentSection);
+    }
+  }
+
+  const styleLensSection = variationEnabled ? renderStyleLensPrompt(styleProfile) : '';
+  if (styleLensSection) {
+    parts.push(styleLensSection);
   }
 
   if (project.styleSample?.trim()) {
@@ -609,7 +629,8 @@ function renderActorLine(event: StoryEventRecord, characters: Character[]): stri
 function selectFrequentPhrases(
   recentContext: string,
   characters: Character[],
-  bannedExpressions: string[] | undefined
+  bannedExpressions: string[] | undefined,
+  motifExclusions: string[] | undefined
 ): string[] {
   if (!recentContext.trim()) return [];
 
@@ -620,12 +641,16 @@ function selectFrequentPhrases(
   const banned = new Set(
     (bannedExpressions ?? []).map(normalizeExpressionText).filter(Boolean)
   );
+  const excludedMotifs = (motifExclusions ?? [])
+    .map(normalizeExpressionText)
+    .filter(Boolean);
 
   return extractFrequentPhrases(recentContext)
     .map((item) => item.text)
     .filter((text) => {
       const normalized = normalizeExpressionText(text);
       if (!normalized || banned.has(normalized)) return false;
+      if (excludedMotifs.some((motif) => normalized.includes(motif))) return false;
       return !characterTokens.some((token) => normalized.includes(token));
     })
     .slice(0, 8);

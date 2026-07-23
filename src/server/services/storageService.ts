@@ -14,6 +14,8 @@ import type {
   EpisodeRecord,
   ExpressionsFile,
   GenerationRecord,
+  GenerationStyleProfile,
+  GenerationStyleTraceStore,
   GenerationStatus,
   KnowledgeExtension,
   KnowledgeIndexFile,
@@ -39,6 +41,7 @@ import {
   normalizeCharactersForStorage,
   type LegacyCharacterInput,
 } from '../../shared/characterSchema.js';
+import { normalizeGenerationStyleProfile } from '../../shared/defaults.js';
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
@@ -183,6 +186,10 @@ export function generationMdPath(projectId: string, generationId: string): strin
 export function generationPromptPath(projectId: string, generationId: string): string {
   assertSafePathSegment(generationId, 'generationId');
   return path.join(generationsDir(projectId), `${generationId}.prompt.txt`);
+}
+
+export function generationStyleTraceStorePath(projectId: string): string {
+  return path.join(generationsDir(projectId), 'style-traces.json');
 }
 
 export async function createProjectDir(projectId: string): Promise<void> {
@@ -564,6 +571,27 @@ export async function appendGenerationStatusLog(
   });
 }
 
+// NOTE: legacy generation の regenerate で初めて選んだprofileを追記する。元レコードを
+// 書き換えず、読込時に最新メタデータを合成することで追記型ログの監査性を保つ。
+export async function appendGenerationStyleProfileLog(
+  projectId: string,
+  generationId: string,
+  styleProfile: GenerationStyleProfile
+): Promise<void> {
+  const logPath = generationLogPath(projectId);
+  await withDataDirWrite(async () => {
+    await ensureDir(generationsDir(projectId));
+    const line =
+      JSON.stringify({
+        entryType: 'style-profile',
+        generationId,
+        styleProfile,
+        updatedAt: new Date().toISOString(),
+      }) + '\n';
+    await fs.appendFile(logPath, line, 'utf-8');
+  });
+}
+
 export async function findGenerationRecord(
   projectId: string,
   generationId: string
@@ -585,6 +613,7 @@ export async function findGenerationRecords(
   if (!text) return new Map();
 
   const latestStatuses = new Map<string, GenerationStatus>();
+  const latestStyleProfiles = new Map<string, GenerationStyleProfile>();
   const records = new Map<string, GenerationRecord>();
   const lines = text.trim().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -600,10 +629,22 @@ export async function findGenerationRecords(
         }
         continue;
       }
+      if (entry.entryType === 'style-profile' && entry.styleProfile) {
+        const normalizedProfile = normalizeGenerationStyleProfile(entry.styleProfile);
+        if (normalizedProfile && !latestStyleProfiles.has(entry.generationId)) {
+          latestStyleProfiles.set(entry.generationId, normalizedProfile);
+        }
+        continue;
+      }
       if (typeof entry.responseText === 'string' && !records.has(entry.generationId)) {
         const record = entry as GenerationRecord;
         const latestStatus = latestStatuses.get(entry.generationId);
-        records.set(entry.generationId, latestStatus ? { ...record, status: latestStatus } : record);
+        const latestStyleProfile = latestStyleProfiles.get(entry.generationId);
+        records.set(entry.generationId, {
+          ...record,
+          ...(latestStatus ? { status: latestStatus } : {}),
+          ...(latestStyleProfile ? { styleProfile: latestStyleProfile } : {}),
+        });
         if (records.size === targets.size) break;
       }
     } catch {
@@ -611,6 +652,19 @@ export async function findGenerationRecords(
     }
   }
   return records;
+}
+
+export async function readGenerationStyleTraceStore(
+  projectId: string
+): Promise<GenerationStyleTraceStore | null> {
+  return readJsonFile<GenerationStyleTraceStore>(generationStyleTraceStorePath(projectId));
+}
+
+export async function writeGenerationStyleTraceStore(
+  projectId: string,
+  store: GenerationStyleTraceStore
+): Promise<void> {
+  await safeWriteJson(generationStyleTraceStorePath(projectId), store);
 }
 
 export async function readGenerationMarkdown(projectId: string, generationId: string): Promise<string> {

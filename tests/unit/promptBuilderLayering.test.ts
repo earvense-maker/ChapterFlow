@@ -78,6 +78,130 @@ async function prompt(characters: Character[], worldText = ''): Promise<string> 
 }
 
 describe('設定レイヤー分離 prompt rendering', () => {
+  it.each([
+    {
+      label: 'disabled settings with motif exclusions',
+      styleVariation: {
+        enabled: false,
+        intensity: 'subtle' as const,
+        axisWeights: { visual: 0.5 },
+        surfaceDecayEnabled: false,
+        patternDecayEnabled: true,
+        motifExclusions: ['反復フレーズ'],
+      },
+    },
+    {
+      label: 'corrupt settings that normalize to disabled',
+      styleVariation: {
+        enabled: true,
+        intensity: 'broken',
+        axisWeights: { visual: 0.5 },
+        surfaceDecayEnabled: false,
+        patternDecayEnabled: true,
+        motifExclusions: ['反復フレーズ'],
+      } as unknown as Project['styleVariation'],
+    },
+  ])('keeps the legacy frequent-phrase prompt for $label', async ({ styleVariation }) => {
+    await storage.createProjectDir(projectId);
+    const episodeId = 'ep-disabled-style';
+    const sceneId = 'scene-disabled-style';
+    const generationId = 'gen-disabled-style';
+    await storage.writeEpisodeRecord(projectId, {
+      episodeId,
+      title: '既存prompt',
+      order: 1,
+      createdAt: '2026-07-23T00:00:00.000Z',
+      updatedAt: '2026-07-23T00:00:00.000Z',
+      scenes: [
+        {
+          sceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-23T00:00:00.000Z',
+          updatedAt: '2026-07-23T00:00:00.000Z',
+          acceptedGenerationId: generationId,
+          draftGenerationIds: [generationId],
+        },
+      ],
+    });
+    await storage.appendGenerationLog(projectId, {
+      generationId,
+      episodeId,
+      sceneId,
+      request: { wish: '', outputLength: 3000, previousContextText: '' },
+      responseText: '反復フレーズ。反復フレーズ。反復フレーズ。',
+      usedPresets: { narration: 'third-close' },
+      usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-23T00:00:00.000Z',
+      parentGenerationId: null,
+    });
+    const currentState = {
+      ...state(),
+      currentEpisodeId: episodeId,
+      currentSceneId: sceneId,
+      lastAcceptedGenerationId: generationId,
+    };
+    const userPrompt = (
+      await buildPrompt({
+        project: { ...project(), styleVariation },
+        state: currentState,
+        wish: '続き',
+        memories: [],
+        characters: [],
+        worldText: '',
+      })
+    ).userPrompt;
+
+    expect(userPrompt).toContain('【表現の重複を避ける】');
+    expect(userPrompt).toContain('反復フレーズ');
+    expect(userPrompt).not.toContain('【今回の文体レンズ】');
+  });
+
+  it('places the soft style lens before style DNA, registered NG, and the current wish', async () => {
+    const styledProject = {
+      ...project(),
+      styleSample: '静かな文体見本。',
+      styleVariation: {
+        enabled: true,
+        intensity: 'subtle' as const,
+        axisWeights: { auditory: 1 },
+        surfaceDecayEnabled: true,
+        patternDecayEnabled: true,
+        motifExclusions: [],
+      },
+    };
+    const userPrompt = (
+      await buildPrompt({
+        project: styledProject,
+        state: state(),
+        wish: '雨の夜を描く',
+        memories: [],
+        characters: [],
+        worldText: '',
+        bannedExpressions: ['息を呑む'],
+        styleProfile: {
+          schemaVersion: 1,
+          seed: 'seed',
+          primaryAxis: 'auditory',
+          entryChannel: 'sound',
+          attenuatedPatterns: [],
+          intensity: 'subtle',
+        },
+      })
+    ).userPrompt;
+
+    const lens = userPrompt.indexOf('【今回の文体レンズ】');
+    const sample = userPrompt.indexOf('【文体見本】');
+    const banned = userPrompt.indexOf('【使わない表現】');
+    const wish = userPrompt.indexOf('【今回の希望】');
+    expect(lens).toBeGreaterThanOrEqual(0);
+    expect(lens).toBeLessThan(sample);
+    expect(sample).toBeLessThan(banned);
+    expect(banned).toBeLessThan(wish);
+  });
+
   it('adds the temporal note only when work settings are present', async () => {
     const noSettings = await prompt([]);
     const withSettings = await prompt([], '王国には魔法がある。');

@@ -8,6 +8,7 @@ import * as knowledgeService from './knowledgeService.js';
 import {
   buildEpisodeMarkdown,
   getContextSummary,
+  getCurrentSceneReferenceGenerationId,
   getRecentContext,
 } from '../prompts/contextAssembler.js';
 import { adapterMap } from '../adapters/index.js';
@@ -32,6 +33,10 @@ import {
 } from './refineAutomationGuard.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
+import {
+  queueAcceptedGenerationStyleAnalysis,
+  selectGenerationStyleProfile,
+} from './styleVariationService.js';
 import type {
   AdapterGenerateResult,
   AdapterGenerateStreamEvent,
@@ -101,6 +106,30 @@ interface GeneratedSceneResult {
   maintenanceRunId?: string;
 }
 
+async function resolveStyleProfileForGeneration(
+  project: Project,
+  options: GenerateOptions,
+  rewriteTargetGenerationId: string | null
+) {
+  try {
+    return await selectGenerationStyleProfile({
+      project,
+      mode: options.mode,
+      targetGenerationId: rewriteTargetGenerationId,
+      wish: options.wish,
+    });
+  } catch (error) {
+    // NOTE: 文体変調は本文生成を止めない補助機能。破損した旧profileやtraceの
+    // 読込失敗時も、レンズなしの既存生成経路へ縮退する。
+    console.warn('Style profile selection failed; continuing without style variation', {
+      projectId: project.projectId,
+      mode: options.mode,
+      error,
+    });
+    return undefined;
+  }
+}
+
 export async function generateScene(
   projectId: string,
   options: GenerateOptions
@@ -148,6 +177,20 @@ async function generateSceneUnlocked(
     expressionService.resolveBannedExpressions(projectId),
     knowledgeService.getEnabledKnowledgeTexts(projectId),
   ]);
+  const rewriteTargetGenerationId =
+    options.mode === 'continue'
+      ? null
+      : await getCurrentSceneReferenceGenerationId(
+          projectId,
+          state.currentEpisodeId,
+          state.currentSceneId,
+          state.selectedDraftGenerationId
+        );
+  const styleProfile = await resolveStyleProfileForGeneration(
+    project,
+    options,
+    rewriteTargetGenerationId
+  );
 
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,
@@ -161,6 +204,7 @@ async function generateSceneUnlocked(
     bannedExpressions,
     knowledgeTexts,
     mode: options.mode,
+    styleProfile,
   });
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
@@ -238,6 +282,7 @@ async function generateSceneUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason: result.finishReason,
+    ...(styleProfile ? { styleProfile } : {}),
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -327,6 +372,20 @@ async function generateSceneStreamUnlocked(
     expressionService.resolveBannedExpressions(projectId),
     knowledgeService.getEnabledKnowledgeTexts(projectId),
   ]);
+  const rewriteTargetGenerationId =
+    options.mode === 'continue'
+      ? null
+      : await getCurrentSceneReferenceGenerationId(
+          projectId,
+          state.currentEpisodeId,
+          state.currentSceneId,
+          state.selectedDraftGenerationId
+        );
+  const styleProfile = await resolveStyleProfileForGeneration(
+    project,
+    options,
+    rewriteTargetGenerationId
+  );
 
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,
@@ -340,6 +399,7 @@ async function generateSceneStreamUnlocked(
     bannedExpressions,
     knowledgeTexts,
     mode: options.mode,
+    styleProfile,
   });
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
@@ -439,6 +499,7 @@ async function generateSceneStreamUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason,
+    ...(styleProfile ? { styleProfile } : {}),
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -724,6 +785,7 @@ async function persistTargetScene(
 interface AcceptGenerationResult {
   record: GenerationRecord;
   refreshStoryState: boolean;
+  newlyAccepted: boolean;
   maintenanceContinuationRunId?: string;
 }
 
@@ -749,6 +811,13 @@ export async function acceptGeneration(projectId: string, generationId?: string)
       });
   } else if (result.refreshStoryState) {
     startStoryStateRefreshAfterAcceptance(projectId, result.record.generationId);
+  }
+  const project = result.newlyAccepted ? await storage.readProject(projectId) : null;
+  if (project) {
+    // NOTE: trace解析はプロセス内キューで非同期実行する。解析中にプロセスが終了した
+    // 場合は記録なしで失われるため、将来の明示retry導線は「trace/analysisともにない
+    // accepted generation」も対象に含める必要がある。
+    queueAcceptedGenerationStyleAnalysis(project, result.record);
   }
   return result.record;
 }
@@ -779,6 +848,7 @@ async function acceptGenerationUnlocked(
     return {
       record: generation,
       refreshStoryState: false,
+      newlyAccepted: false,
       ...(continuation?.owner === 'maintenance' && continuation.generationId === generation.generationId
         ? { maintenanceContinuationRunId: state.refineMaintenance?.runId }
         : {}),
@@ -861,6 +931,7 @@ async function acceptGenerationUnlocked(
   return {
     record: generation,
     refreshStoryState: maintenanceContinuationRunId === undefined,
+    newlyAccepted: true,
     maintenanceContinuationRunId,
   };
 }

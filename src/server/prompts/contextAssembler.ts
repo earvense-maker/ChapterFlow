@@ -55,17 +55,33 @@ export async function getCurrentSceneReferenceText(
   currentSceneId: SceneId | null,
   selectedDraftGenerationId: string | null
 ): Promise<string> {
-  if (!currentEpisodeId || !currentSceneId) return '';
-  const episode = await storage.readEpisodeRecord(projectId, currentEpisodeId);
-  if (!episode) return '';
-  const scene = episode.scenes.find((s) => s.sceneId === currentSceneId);
-  if (!scene) return '';
-
-  const targetGenId = scene.acceptedGenerationId ?? selectedDraftGenerationId;
+  const targetGenId = await getCurrentSceneReferenceGenerationId(
+    projectId,
+    currentEpisodeId,
+    currentSceneId,
+    selectedDraftGenerationId
+  );
   if (!targetGenId) return '';
 
   const generation = await findGeneration(projectId, targetGenId);
   return generation?.responseText ?? '';
+}
+
+// NOTE: 本文参照と文体profile再生が別のgenerationを見ないよう、rewrite対象IDの
+// accepted優先規則を1箇所に集約する。
+export async function getCurrentSceneReferenceGenerationId(
+  projectId: ProjectId,
+  currentEpisodeId: string | null,
+  currentSceneId: SceneId | null,
+  selectedDraftGenerationId: string | null
+): Promise<string | null> {
+  if (!currentEpisodeId || !currentSceneId) return null;
+  const episode = await storage.readEpisodeRecord(projectId, currentEpisodeId);
+  if (!episode) return null;
+  const scene = episode.scenes.find((s) => s.sceneId === currentSceneId);
+  if (!scene) return null;
+
+  return scene.acceptedGenerationId ?? selectedDraftGenerationId;
 }
 
 export async function getContextSummary(projectId: ProjectId): Promise<string> {

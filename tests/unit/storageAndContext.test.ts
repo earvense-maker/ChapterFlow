@@ -92,6 +92,55 @@ describe('generation markdown storage', () => {
     });
   });
 
+  it('merges the newest style profile metadata into an append-only generation record', async () => {
+    await storage.appendGenerationLog(
+      projectId,
+      generation('gen-style-profile', 'scene-style', '本文')
+    );
+    const styleProfile = {
+      schemaVersion: 1 as const,
+      seed: 'fallback-seed',
+      primaryAxis: 'auditory' as const,
+      entryChannel: 'sound' as const,
+      attenuatedPatterns: ['沈黙で閉じる'],
+      intensity: 'subtle' as const,
+    };
+    await storage.appendGenerationStyleProfileLog(
+      projectId,
+      'gen-style-profile',
+      styleProfile
+    );
+
+    await expect(storage.findGenerationRecord(projectId, 'gen-style-profile')).resolves.toMatchObject({
+      generationId: 'gen-style-profile',
+      styleProfile,
+    });
+  });
+
+  it('ignores an invalid style-profile metadata entry instead of replacing a valid profile', async () => {
+    const validProfile = {
+      schemaVersion: 1 as const,
+      seed: 'valid-seed',
+      primaryAxis: 'somatic' as const,
+      entryChannel: 'pressure' as const,
+      attenuatedPatterns: [],
+      intensity: 'subtle' as const,
+    };
+    await storage.appendGenerationLog(projectId, {
+      ...generation('gen-invalid-style-profile', 'scene-style-invalid', '本文'),
+      styleProfile: validProfile,
+    });
+    await storage.appendGenerationStyleProfileLog(
+      projectId,
+      'gen-invalid-style-profile',
+      { schemaVersion: 99, seed: '', primaryAxis: 'unknown' } as never
+    );
+
+    await expect(
+      storage.findGenerationRecord(projectId, 'gen-invalid-style-profile')
+    ).resolves.toMatchObject({ styleProfile: validProfile });
+  });
+
   it('resolves multiple generation records and their latest statuses in one lookup', async () => {
     await storage.appendGenerationLog(projectId, generation('gen-batch-one', 'scene-one', '本文1'));
     await storage.appendGenerationLog(projectId, generation('gen-batch-two', 'scene-two', '本文2'));

@@ -193,6 +193,152 @@ afterEach(async () => {
 });
 
 describe('generationService generation', () => {
+  it('persists style profiles, reuses them for regenerate, and redraws them for variate', async () => {
+    const created = await createTrackedProject();
+    await projectService.updateProject(created.projectId, {
+      styleVariation: {
+        enabled: true,
+        intensity: 'balanced',
+        axisWeights: {
+          visual: 0.5,
+          auditory: 0.5,
+          somatic: 0.5,
+          introspective: 0.5,
+          kinetic: 0.5,
+          dialogic: 0.5,
+          temporal: 0.5,
+        },
+        surfaceDecayEnabled: true,
+        patternDecayEnabled: false,
+        motifExclusions: [],
+      },
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({ text: '最初の案', finishReason: 'stop', retryable: false })
+      .mockResolvedValueOnce({ text: '書き直し', finishReason: 'stop', retryable: false })
+      .mockResolvedValueOnce({ text: '別案', finishReason: 'stop', retryable: false });
+
+    const first = await generationService.generateScene(created.projectId, {
+      wish: '雨の場面',
+      mode: 'continue',
+    });
+    const regenerated = await generationService.generateScene(created.projectId, {
+      wish: '同じ内容を書き直す',
+      mode: 'regenerate',
+    });
+    const varied = await generationService.generateScene(created.projectId, {
+      wish: '別の切り取り方',
+      mode: 'variate',
+    });
+
+    expect(first.styleProfile).toBeDefined();
+    expect(regenerated.styleProfile).toEqual(first.styleProfile);
+    expect(varied.styleProfile).toBeDefined();
+    expect(varied.styleProfile?.seed).not.toBe(first.styleProfile?.seed);
+  });
+
+  it('reuses the accepted reference profile when another draft is currently selected', async () => {
+    const created = await createTrackedProject();
+    await projectService.updateProject(created.projectId, {
+      styleVariation: {
+        enabled: true,
+        intensity: 'subtle',
+        axisWeights: {
+          visual: 0.5,
+          auditory: 0.5,
+          somatic: 0.5,
+          introspective: 0.5,
+          kinetic: 0.5,
+          dialogic: 0.5,
+          temporal: 0.5,
+        },
+        surfaceDecayEnabled: true,
+        patternDecayEnabled: false,
+        motifExclusions: [],
+      },
+    });
+    const episodeId = 'ep-style-reference';
+    const sceneId = 'scene-style-reference';
+    const acceptedProfile = {
+      schemaVersion: 1 as const,
+      seed: 'accepted-seed',
+      primaryAxis: 'auditory' as const,
+      entryChannel: 'sound' as const,
+      attenuatedPatterns: [],
+      intensity: 'subtle' as const,
+    };
+    const selectedDraftProfile = {
+      ...acceptedProfile,
+      seed: 'draft-seed',
+      primaryAxis: 'visual' as const,
+      entryChannel: 'visual' as const,
+    };
+    await storage.writeEpisodeRecord(created.projectId, {
+      episodeId,
+      title: '参照対象',
+      order: 1,
+      createdAt: '2026-07-23T00:00:00.000Z',
+      updatedAt: '2026-07-23T00:00:00.000Z',
+      scenes: [
+        {
+          sceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-23T00:00:00.000Z',
+          updatedAt: '2026-07-23T00:00:00.000Z',
+          acceptedGenerationId: 'gen-accepted-reference',
+          draftGenerationIds: ['gen-accepted-reference', 'gen-selected-draft'],
+        },
+      ],
+    });
+    for (const record of [
+      {
+        generationId: 'gen-accepted-reference',
+        status: 'accepted' as const,
+        responseText: '採用済み本文',
+        styleProfile: acceptedProfile,
+      },
+      {
+        generationId: 'gen-selected-draft',
+        status: 'draft' as const,
+        responseText: '選択中の別ドラフト',
+        styleProfile: selectedDraftProfile,
+      },
+    ]) {
+      await storage.appendGenerationLog(created.projectId, {
+        ...record,
+        sceneId,
+        episodeId,
+        request: { wish: '', outputLength: 3000, previousContextText: '' },
+        usedPresets: created.activePresetIds,
+        usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+        referencedMemoryIds: [],
+        createdAt: '2026-07-23T00:00:00.000Z',
+        parentGenerationId: null,
+      });
+    }
+    const state = await storage.readState(created.projectId);
+    await storage.writeState(created.projectId, {
+      ...state!,
+      currentEpisodeId: episodeId,
+      currentSceneId: sceneId,
+      selectedDraftGenerationId: 'gen-selected-draft',
+      lastAcceptedGenerationId: 'gen-accepted-reference',
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '採用済み本文の書き直し',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    const regenerated = await generationService.generateScene(created.projectId, {
+      wish: '書き直す',
+      mode: 'regenerate',
+    });
+
+    expect(regenerated.styleProfile).toEqual(acceptedProfile);
+  });
+
   it('records bannedExpressions in GenerationRecord', async () => {
     const project = await createTrackedProject();
     await expressionService.createExpression(project.projectId, { text: '避けたい表現' });
