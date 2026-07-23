@@ -208,6 +208,9 @@ router.post('/projects/:id/accept', async (req, res, next) => {
     const record = await generationService.acceptGeneration(req.params.id, generationId);
     res.json(record);
   } catch (err) {
+    if (err instanceof refineAutomationService.RefineAutomationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
+    }
     next(err);
   }
 });

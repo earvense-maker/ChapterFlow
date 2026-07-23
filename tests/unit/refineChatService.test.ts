@@ -672,6 +672,54 @@ describe('refineChatService applyRefinePatch — draft-only auto-scan guard', ()
     expect((await storage.readCharacters(projectId))[0].speechStyle).toBeUndefined();
   });
 
+  it('also rejects a mixed auto-scan patch tied to an unaccepted draft', async () => {
+    const projectId = await createTrackedProject();
+    await storage.writeCharacters(projectId, [
+      { characterId: 'char-mixed-draft', name: 'Mixed', role: 'protagonist', description: 'desc' },
+    ]);
+    await storage.appendGenerationLog(projectId, {
+      generationId: 'gen-mixed-draft',
+      sceneId: 'sc',
+      episodeId: 'ep',
+      request: { wish: '', outputLength: 0, previousContextText: '' },
+      responseText: 'An unaccepted draft with mixed evidence.',
+      usedPresets: {} as never,
+      usedModel: { provider: 'gemini', modelName: 'test' },
+      referencedMemoryIds: [],
+      status: 'draft',
+      createdAt: '2026-07-22T00:00:00.000Z',
+      parentGenerationId: null,
+    });
+    const session = await refineChatService.getOrCreateRefineSession(projectId);
+    await storage.writeRefineSession(projectId, {
+      ...session,
+      patches: [
+        {
+          patchId: 'patch-mixed-draft',
+          createdAt: '2026-07-22T00:01:00.000Z',
+          sourceMessageId: 'msg-mixed',
+          summary: 'Mixed draft evidence must wait for acceptance',
+          operations: [
+            {
+              kind: 'character-update',
+              characterId: 'char-mixed-draft',
+              fields: { speechStyle: 'quiet' },
+            },
+          ],
+          status: 'pending',
+          origin: 'auto-scan',
+          evidenceScope: 'mixed',
+          sourceGenerationId: 'gen-mixed-draft',
+        },
+      ],
+    });
+
+    await expect(refineChatService.applyRefinePatch(projectId, 'patch-mixed-draft')).rejects.toMatchObject({
+      code: 'patch_source_generation_not_accepted',
+    });
+    expect((await storage.readCharacters(projectId))[0].speechStyle).toBeUndefined();
+  });
+
   it('allows manual apply once the source generation becomes accepted', async () => {
     const projectId = await createTrackedProject();
     await storage.writeCharacters(projectId, [

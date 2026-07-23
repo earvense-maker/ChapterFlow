@@ -2,8 +2,10 @@ import { Router } from 'express';
 import * as refineScanService from '../services/refineScanService.js';
 import * as refineChatService from '../services/refineChatService.js';
 import * as refineAutomationService from '../services/refineAutomationService.js';
+import * as postGenerationMaintenanceService from '../services/postGenerationMaintenanceService.js';
 import * as projectService from '../services/projectService.js';
 import { withProjectWriteLock } from '../services/generationService.js';
+import { assertGenerationNotBlockedByMaintenance } from '../services/refineAutomationGuard.js';
 import type { RefineAutomationSettings } from '../types/index.js';
 
 const router = Router();
@@ -29,6 +31,7 @@ function handleRefineError(err: unknown, res: import('express').Response): boole
 // NOTE: 明示走査。トークンを使うので UI 側からボタンで叩く運用。
 router.post('/projects/:id/refine/scan', async (req, res, next) => {
   try {
+    await assertGenerationNotBlockedByMaintenance(req.params.id);
     const result = await refineScanService.scanProjectSettings(req.params.id);
     res.json(result);
   } catch (err) {
@@ -82,6 +85,7 @@ router.post('/projects/:id/refine/messages', async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as { content?: unknown };
     const content = typeof body.content === 'string' ? body.content : '';
+    await assertGenerationNotBlockedByMaintenance(req.params.id);
     const result = await refineChatService.sendRefineMessage(req.params.id, content);
     res.json(result);
   } catch (err) {
@@ -151,7 +155,7 @@ router.put('/projects/:id/refine/automation', async (req, res, next) => {
 
 router.post('/projects/:id/refine/automation/retry', async (req, res, next) => {
   try {
-    const run = await refineAutomationService.retryFailedAutomationRun(req.params.id);
+    const run = await postGenerationMaintenanceService.retryFailedPostGenerationMaintenance(req.params.id);
     res.json(run);
   } catch (err) {
     if (handleRefineError(err, res)) return;

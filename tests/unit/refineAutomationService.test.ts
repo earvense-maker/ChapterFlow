@@ -3,6 +3,7 @@ import * as refineAutomationService from '../../src/server/services/refineAutoma
 import * as refineChatService from '../../src/server/services/refineChatService';
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
+import { renderAutomationEvidenceCharacters } from '../../src/server/utils/automationEvidence';
 import type {
   Character,
   GenerationRecord,
@@ -28,6 +29,23 @@ async function seedAcceptedGeneration(projectId: string, generationId: string, r
   };
   await storage.appendGenerationLog(projectId, record);
   await storage.appendGenerationStatusLog(projectId, generationId, 'accepted');
+}
+
+async function seedDraftGeneration(projectId: string, generationId: string, responseText: string) {
+  const record: GenerationRecord = {
+    generationId,
+    sceneId: `scene-${generationId}`,
+    episodeId: `ep-${generationId}`,
+    request: { wish: '', outputLength: 0, previousContextText: '' },
+    responseText,
+    usedPresets: {} as never,
+    usedModel: { provider: 'gemini', modelName: 'test' },
+    referencedMemoryIds: [],
+    status: 'draft',
+    createdAt: '2026-07-22T00:00:00.000Z',
+    parentGenerationId: null,
+  };
+  await storage.appendGenerationLog(projectId, record);
 }
 
 const createdProjectIds: string[] = [];
@@ -517,9 +535,80 @@ describe('refineAutomationService retry re-classifies with current state', () =>
     expect(retried.pendingPatchIds.length).toBeGreaterThan(0);
     expect((await storage.readCharacters(projectId))[0].speechStyle).toBe('早口');
   });
+
+  it('rehydrates a server-issued static source ref so a failed safe patch can retry safely', async () => {
+    const projectId = await createTrackedProject();
+    const character: Character = {
+      characterId: 'char-static-retry',
+      name: 'Static Hero',
+      role: 'protagonist',
+      description: 'desc',
+    };
+    await storage.writeCharacters(projectId, [character]);
+    const initial = await refineAutomationService.runRefineAutomationPipeline(projectId, {
+      generationId: 'gen-static-retry',
+      mode: 'safe',
+      usedModel: { provider: 'gemini', modelName: 'gemini-3.6-flash' },
+      acceptedGenerationCount: 0,
+      evidenceSources: [
+        {
+          sourceRef: 'static:characters',
+          scope: 'static',
+          text: renderAutomationEvidenceCharacters([character]),
+        },
+      ],
+      proposals: [
+        {
+          summary: 'Add the missing speaking style.',
+          operations: [
+            {
+              kind: 'character-update',
+              characterId: character.characterId,
+              fields: { speechStyle: 'calm' },
+            },
+          ],
+          evidenceScope: 'static',
+          evidenceSourceRef: 'static:characters',
+          evidenceQuote: `id: ${character.characterId}`,
+        },
+      ],
+    });
+    expect(initial.appliedPatchIds).toHaveLength(1);
+
+    // Simulate a persistence rollback: the failed run remains auditable, but
+    // the static setting is back at its pre-apply value before retrying.
+    await storage.writeCharacters(projectId, [character]);
+    const store = await refineAutomationService.readAutomationStore(projectId);
+    await storage.writeRefineAutomation(projectId, {
+      ...store,
+      runs: [{ ...store.runs[0], status: 'failed', appliedPatchIds: [] }],
+    });
+
+    const retried = await refineAutomationService.retryFailedAutomationRun(projectId);
+    expect(retried.appliedPatchIds).toHaveLength(1);
+    expect((await storage.readCharacters(projectId))[0].speechStyle).toBe('calm');
+  });
 });
 
 describe('refineAutomationService.assertGenerationNotBlockedByMaintenance', () => {
+  it('does not carry a prior maintenance error into a new phase', () => {
+    const previous = {
+      runId: 'autorun-old-error',
+      generationId: 'gen-old-error',
+      phase: 'failed' as const,
+      startedAt: '2026-07-22T00:00:00.000Z',
+      updatedAt: '2026-07-22T00:01:00.000Z',
+      leaseExpiresAt: '2026-07-22T00:03:00.000Z',
+      appliedPatchIds: [],
+      pendingPatchIds: [],
+      reviewPatchIds: [],
+      errorMessage: 'old failure',
+    };
+    expect(
+      refineAutomationService.buildMaintenanceStatus('autorun-new', 'gen-new', 'scanning', undefined, previous)
+    ).not.toHaveProperty('errorMessage');
+  });
+
   it('blocks generation while a maintenance phase is scanning/applying/reverting (lease still valid)', async () => {
     const projectId = await createTrackedProject();
     const state = await storage.readState(projectId);
@@ -798,6 +887,119 @@ describe('refineAutomationService — all-mode acknowledgement blocks further au
     expect(secondRun.appliedPatchIds).toHaveLength(0);
     expect(secondRun.pendingPatchIds).toHaveLength(1);
     expect((await storage.readCharacters(projectId))[0].description).toBe('d');
+
+    const safeRun = await refineAutomationService.runRefineAutomationPipeline(projectId, {
+      generationId: 'gen-ack-safe',
+      mode: 'safe',
+      usedModel: { provider: 'gemini', modelName: 'gemini-3.6-flash' },
+      acceptedGenerationCount: 3,
+      proposals: [
+        {
+          summary: '空の口調を補完',
+          operations: [{ kind: 'character-update', characterId: 'char-ack', fields: { speechStyle: '丁寧' } }],
+          evidenceScope: 'accepted',
+          evidenceQuote: '根拠3',
+          evidenceSourceGenerationId: 'gen-src-ack-3',
+        },
+      ],
+    });
+    expect(safeRun.appliedPatchIds).toHaveLength(0);
+    expect(safeRun.pendingPatchIds).toHaveLength(1);
+    expect((await storage.readCharacters(projectId))[0].speechStyle).toBeUndefined();
+  });
+});
+
+describe('refineAutomationService — accepted draft continuation guards', () => {
+  async function createAwaitingDraftPatch(projectId: string, character: Character): Promise<RefineAutomationRun> {
+    const generationId = `gen-awaiting-${character.characterId}`;
+    const draftText = `${character.name} speaks in a calm voice.`;
+    await storage.writeCharacters(projectId, [character]);
+    await seedDraftGeneration(projectId, generationId, draftText);
+    const run = await refineAutomationService.runRefineAutomationPipeline(projectId, {
+      generationId,
+      mode: 'safe',
+      usedModel: { provider: 'gemini', modelName: 'gemini-3.6-flash' },
+      acceptedGenerationCount: 0,
+      evidenceSources: [
+        {
+          sourceRef: `draft:${generationId}:0`,
+          scope: 'draft',
+          text: draftText,
+          generationId,
+          sceneId: `scene-${generationId}`,
+        },
+      ],
+      proposals: [
+        {
+          summary: 'Add the draft-supported speaking style.',
+          operations: [
+            {
+              kind: 'character-update',
+              characterId: character.characterId,
+              fields: { speechStyle: 'calm' },
+            },
+          ],
+          evidenceScope: 'draft',
+          evidenceSourceRef: `draft:${generationId}:0`,
+          evidenceQuote: draftText,
+        },
+      ],
+    });
+    expect(run.status).toBe('awaitingAcceptance');
+    await storage.appendGenerationStatusLog(projectId, generationId, 'accepted');
+    return run;
+  }
+
+  it('keeps accepted draft patches pending when a rollback hard-stop is active', async () => {
+    const projectId = await createTrackedProject();
+    const character: Character = {
+      characterId: 'char-hard-stop-continuation',
+      name: 'Hard Stop',
+      role: 'protagonist',
+      description: 'desc',
+    };
+    const run = await createAwaitingDraftPatch(projectId, character);
+    const store = await refineAutomationService.readAutomationStore(projectId);
+    await storage.writeRefineAutomation(projectId, {
+      ...store,
+      confirmationRequired: {
+        reason: 'automation_rollback_failed',
+        sinceRunId: 'autorun-earlier-failure',
+        setAt: nowIso(),
+      },
+    });
+
+    const continued = await refineAutomationService.continueAwaitingAcceptanceAutomationRun(projectId, run.runId);
+    expect(continued).toMatchObject({ status: 'needsReview', pendingPatchIds: [expect.any(String)] });
+    expect((await storage.readCharacters(projectId))[0].speechStyle).toBeUndefined();
+    expect((await storage.readState(projectId))?.refineMaintenance).toMatchObject({
+      runId: run.runId,
+      phase: 'needsReview',
+    });
+    expect((await refineAutomationService.readAutomationStore(projectId)).confirmationRequired).toBeDefined();
+  });
+
+  it('does not auto-apply a safe accepted-draft patch while any run awaits acknowledgement', async () => {
+    const projectId = await createTrackedProject();
+    const character: Character = {
+      characterId: 'char-ack-continuation',
+      name: 'Acknowledgement',
+      role: 'protagonist',
+      description: 'desc',
+    };
+    const run = await createAwaitingDraftPatch(projectId, character);
+    const store = await refineAutomationService.readAutomationStore(projectId);
+    await storage.writeRefineAutomation(projectId, {
+      ...store,
+      runs: [
+        ...store.runs,
+        stubRun({ runId: 'autorun-awaiting-ack', acknowledgement: 'pending' }),
+      ],
+    });
+
+    const continued = await refineAutomationService.continueAwaitingAcceptanceAutomationRun(projectId, run.runId);
+    expect(continued).toMatchObject({ status: 'needsReview', pendingPatchIds: [expect.any(String)] });
+    expect((await storage.readCharacters(projectId))[0].speechStyle).toBeUndefined();
   });
 });
 

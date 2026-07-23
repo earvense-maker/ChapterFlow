@@ -3,7 +3,12 @@ import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
 import { normalizeCharactersForStorage } from './projectService.js';
 import { normalizeCharacterTraits } from '../../shared/characterSchema.js';
-import { withProjectWriteLock } from './generationService.js';
+import { withProjectWriteLock } from './projectLock.js';
+import {
+  assertGenerationNotBlockedByMaintenance,
+  MaintenanceInProgressError,
+  maintenanceBlocksGeneration,
+} from './refineAutomationGuard.js';
 import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
@@ -113,6 +118,7 @@ async function migrateRefineSession(session: RefineSession): Promise<RefineSessi
 
 export async function resetRefineSession(projectId: string): Promise<RefineSession> {
   return withSessionLock(projectId, async () => {
+    await assertGenerationNotBlockedByMaintenance(projectId);
     // NOTE: 自動レビュー由来の patch (origin='auto-scan') は監査履歴の一部として
     // refineAutomation.json 側の run 記録と対で扱われる。chat 履歴をリセットしても
     // 監査を消してはいけないので、これらだけは新しい session へ引き継ぐ。
@@ -168,6 +174,10 @@ export async function sendRefineMessage(
       400
     );
   }
+  // NOTE: scanning 中に手動相談を始めると、終了時に双方が同じ RefineSession を保存して
+  // lost update になり得る。ここでは lease 正規化を含む preflight を行い、実際の
+  // session 書き込みは既存の session lock で自動 run と直列化する。
+  await assertGenerationNotBlockedByMaintenance(projectId);
   return withSessionLock(projectId, () => sendRefineMessageUnlocked(projectId, trimmed));
 }
 
@@ -338,6 +348,7 @@ async function applyRefinePatchUnlocked(
   projectId: string,
   patchId: string
 ): Promise<RefineApplyResponse> {
+  await assertRefineMutationNotBlockedUnlocked(projectId);
   const storedSession = await storage.readRefineSession(projectId);
   if (!storedSession) {
     throw new RefineChatError('セッションがありません。', 'session_not_found', false, 404);
@@ -357,10 +368,14 @@ async function applyRefinePatchUnlocked(
     );
   }
 
-  // NOTE: 自動レビューが draft 根拠で作った pending patch は、対応する生成案が
-  // 採用されるまで手動 apply でも通さない（設計書 1.2 / 7.4）。sourceGenerationId が
-  // 空なら根拠不明として拒否する。
-  if (patch.origin === 'auto-scan' && patch.evidenceScope === 'draft') {
+  // NOTE: draft、または draft を含む mixed 根拠の auto patch は、対応する生成案が
+  // 採用されるまで手動 apply でも通さない（設計書 4.3 / 7.1）。mixed でも source
+  // generation が残っている場合は draft 由来を否定できないため保守的に扱う。
+  const requiresAcceptedSource =
+    patch.origin === 'auto-scan' &&
+    (patch.evidenceScope === 'draft' ||
+      (patch.evidenceScope === 'mixed' && patch.sourceGenerationId !== undefined));
+  if (requiresAcceptedSource) {
     if (!patch.sourceGenerationId) {
       throw new RefineChatError(
         '根拠となる生成案が特定できないため、このパッチは適用できません。',
@@ -374,6 +389,20 @@ async function applyRefinePatchUnlocked(
       throw new RefineChatError(
         '根拠となる生成案がまだ採用されていません。採用後にもう一度お試しください。',
         'patch_source_generation_not_accepted',
+        false,
+        409
+      );
+    }
+  }
+
+  if (patch.origin === 'auto-scan' && patch.automationRunId) {
+    const run = (await storage.readRefineAutomation(projectId))?.runs.find(
+      (candidate) => candidate.runId === patch.automationRunId
+    );
+    if (!run || run.status === 'stale') {
+      throw new RefineChatError(
+        'この自動レビューは既に古くなったため、パッチを適用できません。',
+        'automation_patch_stale',
         false,
         409
       );
@@ -433,7 +462,9 @@ export async function rejectRefinePatch(
   projectId: string,
   patchId: string
 ): Promise<RefineApplyResponse> {
-  return withSessionLock(projectId, async () => {
+  return withSessionLock(projectId, () =>
+    withProjectWriteLock(projectId, async () => {
+      await assertRefineMutationNotBlockedUnlocked(projectId);
     const storedSession = await storage.readRefineSession(projectId);
     if (!storedSession) {
       throw new RefineChatError('セッションがありません。', 'session_not_found', false, 404);
@@ -466,8 +497,16 @@ export async function rejectRefinePatch(
       updatedAt: nowStr,
     };
     await storage.writeRefineSession(projectId, nextSession);
-    return { session: nextSession, patch: rejected };
-  });
+      return { session: nextSession, patch: rejected };
+    })
+  );
+}
+
+async function assertRefineMutationNotBlockedUnlocked(projectId: string): Promise<void> {
+  const maintenance = (await storage.readState(projectId))?.refineMaintenance;
+  if (maintenanceBlocksGeneration(maintenance?.phase)) {
+    throw new MaintenanceInProgressError();
+  }
 }
 
 // ---------- ヘルパー ----------
@@ -816,7 +855,7 @@ function normalizePatch(
   const opsRaw = Array.isArray(raw.operations) ? raw.operations : [];
   const operations: RefinePatchOperation[] = [];
   for (const opRaw of opsRaw) {
-    const op = normalizeOperation(opRaw, characters);
+    const op = normalizeRefinePatchOperation(opRaw, characters);
     if (op) operations.push(op);
   }
   if (operations.length === 0) return null;
@@ -830,7 +869,7 @@ function normalizePatch(
   };
 }
 
-function normalizeOperation(
+export function normalizeRefinePatchOperation(
   raw: unknown,
   characters: Character[]
 ): RefinePatchOperation | null {

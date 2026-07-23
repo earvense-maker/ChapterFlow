@@ -20,7 +20,11 @@ const createdProjectIds: string[] = [];
 async function createTrackedProject(): Promise<Project> {
   const project = await projectService.createProject({ title: 'Generation Test' });
   createdProjectIds.push(project.projectId);
-  return project;
+  // This suite exercises pre-existing generation and story-state behavior.
+  // Post-generation automation has dedicated lifecycle coverage below.
+  return projectService.updateProject(project.projectId, {
+    refineAutomation: { mode: 'off', scanPolicy: 'when-needed' },
+  });
 }
 
 async function writeAcceptedScene(projectId: string, text: string): Promise<void> {
@@ -170,7 +174,7 @@ async function writePendingRefreshScenario(
     ...state,
     currentEpisodeId: episodeId,
     currentSceneId: secondSceneId,
-    selectedDraftGenerationId: firstGenerationId,
+    selectedDraftGenerationId: secondGenerationId,
     lastAcceptedGenerationId: firstGenerationId,
     storyStateRefresh: {
       status: 'pending',
@@ -753,6 +757,11 @@ describe('generationService state operations', () => {
       mode: 'variate',
     });
 
+    await expect(generationService.acceptGeneration(project.projectId, first.generationId)).rejects.toMatchObject({
+      code: 'generation_not_selected',
+      status: 409,
+    });
+
     const accepted = await generationService.acceptGeneration(project.projectId);
 
     expect(accepted).toMatchObject({ generationId: second.generationId, status: 'accepted' });
@@ -877,6 +886,157 @@ describe('generationService state operations', () => {
       generationId: 'gen-c',
     });
     await expect(generationService.navigateDraft(project.projectId, 'next')).resolves.toBeNull();
+  });
+
+  it.each(['scanning', 'awaitingAcceptance'] as const)(
+    'keeps a %s maintenance run while the reader navigates to another scene',
+    async (phase) => {
+      const project = await createTrackedProject();
+      const episodeId = 'ep-scene-navigation-maintenance';
+      const sourceSceneId = 'scene-source';
+      const otherSceneId = 'scene-other';
+      const sourceGenerationId = 'gen-source-maintenance';
+      const otherGenerationId = 'gen-other-maintenance';
+      await storage.writeEpisodeRecord(project.projectId, {
+        episodeId,
+        title: '場面移動',
+        order: 1,
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+        scenes: [
+          {
+            sceneId: sourceSceneId,
+            episodeId,
+            order: 1,
+            createdAt: '2026-07-02T00:00:00Z',
+            updatedAt: '2026-07-02T00:00:00Z',
+            acceptedGenerationId: null,
+            draftGenerationIds: [sourceGenerationId],
+          },
+          {
+            sceneId: otherSceneId,
+            episodeId,
+            order: 2,
+            createdAt: '2026-07-02T00:00:00Z',
+            updatedAt: '2026-07-02T00:00:00Z',
+            acceptedGenerationId: null,
+            draftGenerationIds: [otherGenerationId],
+          },
+        ],
+      });
+      for (const [generationId, sceneId] of [
+        [sourceGenerationId, sourceSceneId],
+        [otherGenerationId, otherSceneId],
+      ]) {
+        await storage.appendGenerationLog(project.projectId, {
+          generationId,
+          episodeId,
+          sceneId,
+          request: { wish: '', outputLength: 1000, previousContextText: '' },
+          responseText: generationId,
+          usedPresets: project.activePresetIds,
+          usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+          referencedMemoryIds: [],
+          status: 'draft',
+          createdAt: '2026-07-02T00:00:00Z',
+          parentGenerationId: null,
+        });
+      }
+      const state = await storage.readState(project.projectId);
+      await storage.writeState(project.projectId, {
+        ...state!,
+        currentEpisodeId: episodeId,
+        currentSceneId: sourceSceneId,
+        selectedDraftGenerationId: sourceGenerationId,
+        refineMaintenance: {
+          runId: `autorun-${phase}-scene-navigation`,
+          generationId: sourceGenerationId,
+          phase,
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          appliedPatchIds: [],
+          pendingPatchIds: [],
+          reviewPatchIds: [],
+        },
+      });
+
+      await generationService.navigateScene(project.projectId, 'next');
+      await expect(storage.readState(project.projectId)).resolves.toMatchObject({
+        currentSceneId: otherSceneId,
+        selectedDraftGenerationId: otherGenerationId,
+        refineMaintenance: {
+          runId: `autorun-${phase}-scene-navigation`,
+          generationId: sourceGenerationId,
+          phase,
+        },
+      });
+    }
+  );
+
+  it('does not stale a scanning run when only the selected draft changes', async () => {
+    const project = await createTrackedProject();
+    const episodeId = 'ep-draft-scan-navigation';
+    const sceneId = 'scene-draft-scan-navigation';
+    const sourceGenerationId = 'gen-draft-scan-source';
+    const otherGenerationId = 'gen-draft-scan-other';
+    await storage.writeEpisodeRecord(project.projectId, {
+      episodeId,
+      title: '案移動',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId,
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: null,
+          draftGenerationIds: [sourceGenerationId, otherGenerationId],
+        },
+      ],
+    });
+    for (const generationId of [sourceGenerationId, otherGenerationId]) {
+      await storage.appendGenerationLog(project.projectId, {
+        generationId,
+        episodeId,
+        sceneId,
+        request: { wish: '', outputLength: 1000, previousContextText: '' },
+        responseText: generationId,
+        usedPresets: project.activePresetIds,
+        usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+        referencedMemoryIds: [],
+        status: 'draft',
+        createdAt: '2026-07-02T00:00:00Z',
+        parentGenerationId: null,
+      });
+    }
+    const state = await storage.readState(project.projectId);
+    await storage.writeState(project.projectId, {
+      ...state!,
+      currentEpisodeId: episodeId,
+      currentSceneId: sceneId,
+      selectedDraftGenerationId: sourceGenerationId,
+      refineMaintenance: {
+        runId: 'autorun-draft-scan-navigation',
+        generationId: sourceGenerationId,
+        phase: 'scanning',
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        appliedPatchIds: [],
+        pendingPatchIds: [],
+        reviewPatchIds: [],
+      },
+    });
+
+    await generationService.navigateDraft(project.projectId, 'next');
+    await expect(storage.readState(project.projectId)).resolves.toMatchObject({
+      selectedDraftGenerationId: otherGenerationId,
+      refineMaintenance: { runId: 'autorun-draft-scan-navigation', phase: 'scanning' },
+    });
   });
 });
 

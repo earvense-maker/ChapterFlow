@@ -247,6 +247,9 @@ describe('generation API', () => {
 
   it('generates a scene with a mocked adapter and persists it as a draft', async () => {
     const project = await projectService.createProject({ title: 'Generation API Test' });
+    await projectService.updateProject(project.projectId, {
+      refineAutomation: { mode: 'off', scanPolicy: 'when-needed' },
+    });
     try {
       const response = await fetch(`${baseUrl}/api/projects/${project.projectId}/generate`, {
         method: 'POST',
@@ -282,6 +285,9 @@ describe('generation API', () => {
 
   it('accepts a generated draft through the API and exposes it as the current accepted scene', async () => {
     const project = await projectService.createProject({ title: 'Generation Acceptance API Test' });
+    await projectService.updateProject(project.projectId, {
+      refineAutomation: { mode: 'off', scanPolicy: 'when-needed' },
+    });
     try {
       const generatedResponse = await fetch(`${baseUrl}/api/projects/${project.projectId}/generate`, {
         method: 'POST',
@@ -322,6 +328,40 @@ describe('generation API', () => {
       });
 
       await settleBackgroundStoryStateRefresh();
+    } finally {
+      await storage.deleteProjectDir(project.projectId);
+    }
+  });
+
+  it('returns a typed 409 when accepting a draft that is no longer selected', async () => {
+    const project = await projectService.createProject({ title: 'Selected Draft Guard API Test' });
+    await projectService.updateProject(project.projectId, {
+      refineAutomation: { mode: 'off', scanPolicy: 'when-needed' },
+    });
+    try {
+      const firstResponse = await fetch(`${baseUrl}/api/projects/${project.projectId}/generate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ wish: '最初の案', mode: 'continue' }),
+      });
+      const first = (await firstResponse.json()) as { generationId: string };
+      const secondResponse = await fetch(`${baseUrl}/api/projects/${project.projectId}/variate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ wish: '別案', mode: 'variate' }),
+      });
+      expect(secondResponse.status).toBe(200);
+
+      const acceptedResponse = await fetch(`${baseUrl}/api/projects/${project.projectId}/accept`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ generationId: first.generationId }),
+      });
+      expect(acceptedResponse.status).toBe(409);
+      await expect(acceptedResponse.json()).resolves.toMatchObject({
+        code: 'generation_not_selected',
+        retryable: false,
+      });
     } finally {
       await storage.deleteProjectDir(project.projectId);
     }

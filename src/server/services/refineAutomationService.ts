@@ -1,8 +1,9 @@
 import { generateTimestampId } from '../utils/id.js';
+import { renderAutomationEvidenceCharacters } from '../utils/automationEvidence.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
-import { withProjectWriteLock } from './generationService.js';
+import { withProjectWriteLock } from './projectLock.js';
 import {
   applyPatchOperationsToSnapshot,
   getOrCreateRefineSession,
@@ -46,25 +47,31 @@ const MAX_SNAPSHOTS = 5;
 // NOTE: lease は将来 Phase C の背景 job で定期更新する想定だが、Phase B は同期処理
 // なので処理時間の上限として TIMEOUT_MS 相当を持たせる。孤立レコードは guard 側で
 // 期限切れとして failed へ正規化される。
-const MAINTENANCE_LEASE_MS = 120_000;
+export const MAINTENANCE_LEASE_MS = 120_000;
 
-function buildMaintenanceStatus(
+export function buildMaintenanceStatus(
   runId: string,
   generationId: string,
   phase: RefineMaintenancePhase,
-  base?: Pick<RefineMaintenanceStatus, 'appliedPatchIds' | 'pendingPatchIds' | 'reviewPatchIds'>
+  base?: Pick<RefineMaintenanceStatus, 'appliedPatchIds' | 'pendingPatchIds' | 'reviewPatchIds'>,
+  previous?: RefineMaintenanceStatus
 ): RefineMaintenanceStatus {
   const nowStr = nowIso();
+  // An error belongs to the transition that produced it. A later reservation
+  // must start clean rather than inheriting a stale failure message.
   return {
     runId,
     generationId,
     phase,
-    startedAt: nowStr,
+    startedAt: previous?.startedAt ?? nowStr,
     updatedAt: nowStr,
     leaseExpiresAt: new Date(Date.now() + MAINTENANCE_LEASE_MS).toISOString(),
     appliedPatchIds: base?.appliedPatchIds ?? [],
     pendingPatchIds: base?.pendingPatchIds ?? [],
     reviewPatchIds: base?.reviewPatchIds ?? [],
+    ...(previous?.postAcceptanceContinuation
+      ? { postAcceptanceContinuation: previous.postAcceptanceContinuation }
+      : {}),
   };
 }
 
@@ -181,6 +188,33 @@ export async function getMaintenanceStatus(projectId: string): Promise<RefineMai
   return (await readAndNormalizeMaintenance(projectId)) ?? null;
 }
 
+// NOTE: generation 側は既に project write lock を保持しているため、ここで session lock を
+// 取ってはいけない。run 本体だけを監査履歴上 stale にし、個々の patch は手動適用時にも
+// run 状態を再検証することで安全に止める（§4.2 / §7.10）。
+export async function markAutomationRunStaleUnlocked(
+  projectId: string,
+  runId: string,
+  reason = '対応する下書きが選択対象ではなくなったため、この自動レビューは無効になりました。'
+): Promise<RefineAutomationRun | null> {
+  const store = await readAutomationStore(projectId);
+  const target = store.runs.find((run) => run.runId === runId);
+  if (!target || target.status === 'stale') return target ?? null;
+  const stale: RefineAutomationRun = {
+    ...target,
+    status: 'stale',
+    completedAt: nowIso(),
+    errorMessage: reason,
+  };
+  await storage.writeRefineAutomation(
+    projectId,
+    pruneAutomationStore({
+      ...store,
+      runs: store.runs.map((run) => (run.runId === runId ? stale : run)),
+    })
+  );
+  return stale;
+}
+
 // ---------- 分類+適用+保存パイプライン ----------
 // NOTE: このパイプラインは LLM スキャンそのものを含まない。proposals は呼び出し元が
 // 用意する。生成完了後に自動でスキャンして proposals を作る配線（Phase C）は本フェーズの
@@ -196,6 +230,17 @@ export interface AutomationPatchProposal {
   // sourceGenerationId から storage.findGenerationRecord 経由で解決する。将来 LLM
   // 出力を接続する Phase C でも、モデルが用意した文字列でsafe判定が通ることを防ぐ。
   evidenceSourceGenerationId?: GenerationId;
+  // NOTE: Phase C は LLM から渡された generationId / scope を信用しない。走査前に
+  // サーバーが入力へ発行した sourceRef と照合し、実際に渡した本文だけを safe 判定に使う。
+  evidenceSourceRef?: string;
+}
+
+export interface AutomationEvidenceSource {
+  sourceRef: string;
+  scope: Extract<RefineEvidenceScope, 'static' | 'accepted' | 'draft'>;
+  text: string;
+  generationId?: GenerationId;
+  sceneId?: string;
 }
 
 export interface RunAutomationPipelineInput {
@@ -213,6 +258,12 @@ export interface RunAutomationPipelineInput {
   // された状態のまま safe/all 適用が走らないようにする。省略時は「scan と apply が
   // 同一トランザクション」とみなし、チェックしない（Phase B/retry の呼び出し方）。
   scannedStaticHash?: string;
+  scannedStoryStateUpdatedAt?: string | null;
+  // NOTE: generation 保存時に予約した runId。指定時は active maintenance slot と
+  // compare-and-set で照合してから applying へ遷移する。
+  runId?: string;
+  expectedMaintenanceRunId?: string;
+  evidenceSources?: AutomationEvidenceSource[];
 }
 
 export async function runRefineAutomationPipeline(
@@ -236,6 +287,123 @@ function buildAutomationSummaryMessage(input: {
   return parts.join('');
 }
 
+interface ResolvedAutomationEvidence {
+  scope: RefineEvidenceScope;
+  sourceText?: string;
+  sourceGenerationId?: GenerationId;
+  sourceRef?: string;
+}
+
+async function resolveStoredEvidenceSource(
+  projectId: string,
+  sourceRef: string,
+  expectedGenerationId?: GenerationId
+): Promise<AutomationEvidenceSource | undefined> {
+  if (sourceRef === 'static:world') {
+    return { sourceRef, scope: 'static', text: await storage.readWorldText(projectId) };
+  }
+  if (sourceRef === 'static:characters') {
+    return {
+      sourceRef,
+      scope: 'static',
+      text: renderAutomationEvidenceCharacters(await storage.readCharacters(projectId)),
+    };
+  }
+
+  const generationMatch = /^(?:draft|accepted):([^:]+):\d+$/.exec(sourceRef);
+  if (!generationMatch || (expectedGenerationId && expectedGenerationId !== generationMatch[1])) {
+    return undefined;
+  }
+  const generation = await storage.findGenerationRecord(projectId, generationMatch[1]);
+  if (!generation || (generation.status !== 'draft' && generation.status !== 'accepted')) {
+    return undefined;
+  }
+  return {
+    sourceRef,
+    scope: generation.status,
+    text: generation.responseText,
+    generationId: generation.generationId,
+    sceneId: generation.sceneId,
+  };
+}
+
+async function resolveAutomationEvidence(
+  projectId: string,
+  proposal: AutomationPatchProposal,
+  sources: AutomationEvidenceSource[] | undefined
+): Promise<ResolvedAutomationEvidence> {
+  const suppliedFromScan = proposal.evidenceSourceRef
+    ? sources?.find((source) => source.sourceRef === proposal.evidenceSourceRef)
+    : undefined;
+  // A retry has no in-memory scan snapshot. Rehydrate only server-issued source
+  // refs from current storage so its risk decision remains evidence-backed.
+  const supplied =
+    suppliedFromScan ??
+    (proposal.evidenceSourceRef
+      ? await resolveStoredEvidenceSource(
+          projectId,
+          proposal.evidenceSourceRef,
+          proposal.evidenceSourceGenerationId
+        )
+      : undefined);
+
+  if (supplied) {
+    if (
+      proposal.evidenceSourceGenerationId !== undefined &&
+      proposal.evidenceSourceGenerationId !== supplied.generationId
+    ) {
+      return { scope: 'mixed' };
+    }
+    if (supplied.scope === 'static') {
+      return { scope: 'static', sourceText: supplied.text, sourceRef: supplied.sourceRef };
+    }
+
+    const generationId = supplied.generationId;
+    if (!generationId) return { scope: 'mixed' };
+    const sourceGeneration = await storage.findGenerationRecord(projectId, generationId);
+    if (!sourceGeneration) return { scope: 'mixed' };
+    if (sourceGeneration.status === 'accepted') {
+      // NOTE: 走査中にユーザーが採用した場合、同じ sourceRef でも適用直前の正本は
+      // accepted である。ここで再判定し、draft 専用保留を不必要に残さない。
+      return {
+        scope: 'accepted',
+        sourceText: supplied.text,
+        sourceGenerationId: generationId,
+        sourceRef: supplied.sourceRef,
+      };
+    }
+    if (sourceGeneration.status === 'draft') {
+      return {
+        scope: 'draft',
+        sourceText: supplied.text,
+        sourceGenerationId: generationId,
+        sourceRef: supplied.sourceRef,
+      };
+    }
+    return { scope: 'mixed' };
+  }
+
+  // NOTE: Phase B の直呼び出し・既存 retry との後方互換。Phase C 経路では必ず
+  // evidenceSources を渡すため、この fallback を safe 判定の新規根拠には使わない。
+  if (proposal.evidenceSourceGenerationId) {
+    const sourceGeneration = await storage.findGenerationRecord(
+      projectId,
+      proposal.evidenceSourceGenerationId
+    );
+    if (sourceGeneration?.status === 'accepted') {
+      return {
+        scope: proposal.evidenceScope === 'static' ? 'accepted' : proposal.evidenceScope,
+        sourceText: sourceGeneration.responseText,
+        sourceGenerationId: sourceGeneration.generationId,
+      };
+    }
+    if (proposal.evidenceScope === 'draft') {
+      return { scope: 'draft', sourceGenerationId: proposal.evidenceSourceGenerationId };
+    }
+  }
+  return { scope: proposal.evidenceScope === 'draft' ? 'draft' : 'mixed' };
+}
+
 async function runRefineAutomationPipelineUnlocked(
   projectId: string,
   input: RunAutomationPipelineInput
@@ -253,7 +421,29 @@ async function runRefineAutomationPipelineUnlocked(
       409
     );
   }
-  const existingForGeneration = store.runs.find((run) => run.generationId === input.generationId);
+  let reservedMaintenance: RefineMaintenanceStatus | undefined;
+  if (input.expectedMaintenanceRunId) {
+    const state = await storage.readState(projectId);
+    const maintenance = state?.refineMaintenance;
+    if (
+      !maintenance ||
+      maintenance.runId !== input.expectedMaintenanceRunId ||
+      maintenance.generationId !== input.generationId ||
+      maintenance.phase !== 'scanning'
+    ) {
+      throw new RefineAutomationError(
+        'この自動走査は新しい状態に置き換えられたため、結果を適用しません。',
+        'automation_slot_stale',
+        false,
+        409
+      );
+    }
+    reservedMaintenance = maintenance;
+  }
+
+  const existingForGeneration = store.runs.find(
+    (run) => run.generationId === input.generationId && run.runId !== input.runId
+  );
   if (existingForGeneration && existingForGeneration.status !== 'failed') {
     throw new RefineAutomationError(
       'この生成案は既に自動レビュー済みです。',
@@ -295,7 +485,7 @@ async function runRefineAutomationPipelineUnlocked(
   let charactersChangedOverall = false;
 
   const now = nowIso();
-  const runId = generateTimestampId('autorun');
+  const runId = input.runId ?? generateTimestampId('autorun');
   const systemMessageId = generateTimestampId('msg');
 
   const patches: RefinePatch[] = [];
@@ -304,9 +494,11 @@ async function runRefineAutomationPipelineUnlocked(
   const reviewPatchIds: string[] = [];
   const highRiskAppliedPatchIds: string[] = [];
   let runAcknowledgement: 'pending' | undefined;
+  let hasAwaitingAcceptancePatch = false;
 
   for (const proposal of input.proposals) {
     const patchId = generateTimestampId('patch');
+    const evidence = await resolveAutomationEvidence(projectId, proposal, input.evidenceSources);
     const patchBaseFields = {
       patchId,
       createdAt: now,
@@ -315,9 +507,10 @@ async function runRefineAutomationPipelineUnlocked(
       operations: proposal.operations,
       origin: 'auto-scan' as const,
       automationRunId: runId,
-      sourceGenerationId: proposal.evidenceSourceGenerationId,
-      evidenceScope: proposal.evidenceScope,
+      sourceGenerationId: evidence.sourceGenerationId ?? proposal.evidenceSourceGenerationId,
+      evidenceScope: evidence.scope,
       evidenceQuote: proposal.evidenceQuote,
+      evidenceSourceRef: evidence.sourceRef,
       sourceStaticHash: beforeHash,
     };
 
@@ -339,41 +532,27 @@ async function runRefineAutomationPipelineUnlocked(
       continue;
     }
 
-    // NOTE: 根拠本文はサーバーが持つ generation record からのみ解決する。呼び出し元
-    // (LLM や retry) が任意文字列を渡して safe 判定を通せないようにするため。
-    // さらに、evidenceScope='accepted'/'static' を主張する proposal は、
-    // sourceGeneration の status が 'accepted' である場合にだけ本文を照合対象にする。
-    // draft のままの generation を根拠に safe 判定へ持ち込まれないようにする。
-    let resolvedSourceText: string | undefined;
-    if (proposal.evidenceSourceGenerationId) {
-      const sourceGeneration = await storage.findGenerationRecord(
-        projectId,
-        proposal.evidenceSourceGenerationId
-      );
-      const acceptedOnlyScope =
-        proposal.evidenceScope === 'accepted' || proposal.evidenceScope === 'static';
-      if (sourceGeneration && (!acceptedOnlyScope || sourceGeneration.status === 'accepted')) {
-        resolvedSourceText = sourceGeneration.responseText;
-      }
-    }
     // NOTE: retry でも常に再分類する。以前 safe だった補完が、その間に手動で
     // 非空値へ編集されていれば review へ格下げされる。
     const { riskLevel, riskReasons } = classifyPatchRisk({
       operations: proposal.operations,
       characters: workingCharacters,
       worldText: workingWorldText,
-      evidenceScope: proposal.evidenceScope,
+      evidenceScope: evidence.scope,
       evidenceQuote: proposal.evidenceQuote,
-      evidenceSourceText: resolvedSourceText,
+      evidenceSourceText: evidence.sourceText,
     });
 
-    // NOTE: 下書きだけを根拠にしたパッチは、対応する生成案が採用されるまで適用しない
-    // （設計書 1.2）。Phase B は awaitingAcceptance のライフサイクル（採用/却下との連携）を
-    // 実装しないため、draft 根拠のパッチは常に pending のまま据え置く。
-    const blockedByDraftOnlyEvidence = proposal.evidenceScope === 'draft';
+    // NOTE: source generation が現在の draft である patch は、mode=all でも採用前に
+    // 適用しない。mixed のうち source がこの draft のものも同じ扱いにして、下書き情報を
+    // 確定設定へ早出ししない（§7.1 / §7.3）。
+    const blockedByDraftOnlyEvidence =
+      evidence.scope === 'draft' ||
+      (evidence.scope === 'mixed' && patchBaseFields.sourceGenerationId === input.generationId);
     const shouldAutoApply =
       !blockedByDraftOnlyEvidence &&
-      ((input.mode === 'safe' && riskLevel === 'safe') || (input.mode === 'all' && autoApplyAllowed));
+      autoApplyAllowed &&
+      (input.mode === 'all' || (input.mode === 'safe' && riskLevel === 'safe'));
 
     if (shouldAutoApply) {
       workingWorldText = attempt.worldText;
@@ -390,6 +569,13 @@ async function runRefineAutomationPipelineUnlocked(
       patches.push({ ...patchBaseFields, status: 'pending', riskLevel, riskReasons });
       pendingPatchIds.push(patchId);
       if (riskLevel === 'review') reviewPatchIds.push(patchId);
+      if (
+        blockedByDraftOnlyEvidence &&
+        patchBaseFields.sourceGenerationId === input.generationId &&
+        (evidence.scope === 'draft' || evidence.scope === 'mixed')
+      ) {
+        hasAwaitingAcceptancePatch = true;
+      }
     }
   }
 
@@ -422,17 +608,22 @@ async function runRefineAutomationPipelineUnlocked(
     worldText: persistedWorldText,
     characters: workingCharacters,
   });
+  const terminalStatus: RefineMaintenancePhase = hasAwaitingAcceptancePatch
+    ? 'awaitingAcceptance'
+    : pendingPatchIds.length > 0
+      ? 'needsReview'
+      : 'complete';
   const run: RefineAutomationRun = {
     schemaVersion: 1,
     runId,
     generationId: input.generationId,
-    status: pendingPatchIds.length > 0 ? 'needsReview' : 'complete',
+    status: terminalStatus,
     mode: input.mode,
     usedModel: input.usedModel,
     createdAt: now,
     completedAt: now,
     sourceStaticHash: beforeHash,
-    sourceStoryStateUpdatedAt: null,
+    sourceStoryStateUpdatedAt: input.scannedStoryStateUpdatedAt ?? null,
     sourceAcceptedGenerationCount: input.acceptedGenerationCount,
     patchIds: patches.map((p) => p.patchId),
     appliedPatchIds,
@@ -459,7 +650,7 @@ async function runRefineAutomationPipelineUnlocked(
       appliedPatchIds,
       pendingPatchIds,
       reviewPatchIds,
-    })
+    }, reservedMaintenance)
   );
 
   let succeeded = false;
@@ -540,13 +731,356 @@ async function runRefineAutomationPipelineUnlocked(
         appliedPatchIds: succeeded ? appliedPatchIds : [],
         pendingPatchIds,
         reviewPatchIds,
-      })
+      }, reservedMaintenance)
     ).catch((err) => {
       console.warn('Failed to clear maintenance phase', { projectId, runId, err });
     });
   }
 
   return run;
+}
+
+// ---------- draft 根拠の採用後適用 ----------
+
+async function deferAwaitingRunForConfirmationUnlocked(
+  projectId: string,
+  state: NonNullable<Awaited<ReturnType<typeof storage.readState>>>,
+  maintenance: RefineMaintenanceStatus,
+  store: RefineAutomationStore,
+  targetRun: RefineAutomationRun,
+  session: RefineSession
+): Promise<RefineAutomationRun> {
+  const pendingPatches = session.patches.filter(
+    (patch) => patch.automationRunId === targetRun.runId && patch.status === 'pending'
+  );
+  const pendingPatchIds = pendingPatches.map((patch) => patch.patchId);
+  const reviewPatchIds = pendingPatches
+    .filter((patch) => patch.riskLevel === 'review')
+    .map((patch) => patch.patchId);
+  const reason = '前回の自動レビューの後処理が未確認のため、採用後の自動反映は保留しています。';
+  const nextRun: RefineAutomationRun = {
+    ...targetRun,
+    status: 'needsReview',
+    completedAt: nowIso(),
+    pendingPatchIds,
+    reviewPatchIds,
+    errorMessage: reason,
+  };
+  const nextStore = pruneAutomationStore({
+    ...store,
+    runs: store.runs.map((run) => (run.runId === targetRun.runId ? nextRun : run)),
+  });
+  const nextMaintenance = buildMaintenanceStatus(
+    targetRun.runId,
+    targetRun.generationId,
+    'needsReview',
+    { appliedPatchIds: targetRun.appliedPatchIds, pendingPatchIds, reviewPatchIds },
+    maintenance
+  );
+  nextMaintenance.errorMessage = reason;
+
+  try {
+    await storage.writeRefineAutomation(projectId, nextStore);
+    await storage.writeState(projectId, { ...state, refineMaintenance: nextMaintenance });
+  } catch (error) {
+    await storage.writeRefineAutomation(projectId, store).catch(() => undefined);
+    throw error;
+  }
+  return nextRun;
+}
+
+export async function continueAwaitingAcceptanceAutomationRun(
+  projectId: string,
+  runId: string
+): Promise<RefineAutomationRun | null> {
+  return withSessionLock(projectId, () =>
+    withProjectWriteLock(projectId, () => continueAwaitingAcceptanceAutomationRunUnlocked(projectId, runId))
+  );
+}
+
+async function continueAwaitingAcceptanceAutomationRunUnlocked(
+  projectId: string,
+  runId: string
+): Promise<RefineAutomationRun | null> {
+  const state = await storage.readState(projectId);
+  const maintenance = state?.refineMaintenance;
+  if (!state || !maintenance || maintenance.runId !== runId || maintenance.phase !== 'awaitingAcceptance') {
+    return null;
+  }
+
+  const sourceGeneration = await storage.findGenerationRecord(projectId, maintenance.generationId);
+  if (!sourceGeneration || sourceGeneration.status !== 'accepted') {
+    if (sourceGeneration && (sourceGeneration.status === 'rejected' || sourceGeneration.status === 'superseded')) {
+      return staleAwaitingAutomationRunUnlocked(
+        projectId,
+        state,
+        maintenance,
+        '対応する下書きが採用されなかったため、この提案は無効になりました。'
+      );
+    }
+    return null;
+  }
+
+  const [store, session, originalWorldText, originalCharacters] = await Promise.all([
+    readAutomationStore(projectId),
+    getOrCreateRefineSession(projectId),
+    storage.readWorldText(projectId),
+    storage.readCharacters(projectId),
+  ]);
+  const runIndex = store.runs.findIndex((run) => run.runId === runId);
+  if (runIndex < 0) {
+    return staleAwaitingAutomationRunUnlocked(
+      projectId,
+      state,
+      maintenance,
+      '対応する自動レビュー履歴が見つからないため、この提案は無効になりました。'
+    );
+  }
+  const targetRun = store.runs[runIndex];
+  if (store.confirmationRequired) {
+    // A rollback hard-stop is stronger than accepting the draft: preserve the
+    // proposals for a manual decision, but never write world/characters here.
+    return deferAwaitingRunForConfirmationUnlocked(
+      projectId,
+      state,
+      maintenance,
+      store,
+      targetRun,
+      session
+    );
+  }
+  const currentHash = computeStaticSettingsHash({
+    worldText: originalWorldText,
+    characters: originalCharacters,
+  });
+  // Earlier safe static patches from this same run are already reflected in
+  // resultStaticHash. They must not make the later draft-evidence continuation
+  // look externally stale, while any unrelated change still must stop it.
+  if (currentHash !== (targetRun.resultStaticHash ?? targetRun.sourceStaticHash)) {
+    return staleAwaitingAutomationRunUnlocked(
+      projectId,
+      state,
+      maintenance,
+      '走査後に世界設定または人物設定が変更されたため、この提案は再検証できません。'
+    );
+  }
+
+  const hasPendingAcknowledgement = store.runs.some((run) => run.acknowledgement === 'pending');
+  let workingWorldText = originalWorldText;
+  let workingCharacters = originalCharacters;
+  let worldChangedOverall = false;
+  let charactersChangedOverall = false;
+  const now = nowIso();
+
+  const nextPatches = session.patches.map((patch) => {
+    if (
+      patch.automationRunId !== runId ||
+      patch.status !== 'pending' ||
+      patch.sourceGenerationId !== sourceGeneration.generationId ||
+      patch.evidenceScope !== 'draft'
+    ) {
+      return patch;
+    }
+
+    // NOTE: source generation が accepted になった時点で初めて、保存済み本文に対する
+    // quote 検証をやり直す。draft 時の分類やモデルの自己申告をそのまま昇格させない。
+    const attempted = applyPatchOperationsToSnapshot(workingWorldText, workingCharacters, patch.operations);
+    if (!attempted.ok) {
+      return { ...patch, status: 'rejected' as const, applyError: attempted.error };
+    }
+    const { riskLevel, riskReasons } = classifyPatchRisk({
+      operations: patch.operations,
+      characters: workingCharacters,
+      worldText: workingWorldText,
+      evidenceScope: 'accepted',
+      evidenceQuote: patch.evidenceQuote,
+      evidenceSourceText: sourceGeneration.responseText,
+    });
+    const shouldAutoApply =
+      !hasPendingAcknowledgement &&
+      (targetRun.mode === 'all' || (targetRun.mode === 'safe' && riskLevel === 'safe'));
+    if (!shouldAutoApply) {
+      return {
+        ...patch,
+        evidenceScope: 'accepted' as const,
+        riskLevel,
+        riskReasons,
+      };
+    }
+
+    workingWorldText = attempted.worldText;
+    workingCharacters = attempted.characters;
+    worldChangedOverall = worldChangedOverall || attempted.worldChanged;
+    charactersChangedOverall = charactersChangedOverall || attempted.charactersChanged;
+    return {
+      ...patch,
+      evidenceScope: 'accepted' as const,
+      status: 'applied' as const,
+      appliedAt: now,
+      applyError: undefined,
+      riskLevel,
+      riskReasons,
+    };
+  });
+
+  const runPatches = nextPatches.filter((patch) => patch.automationRunId === runId);
+  const appliedPatchIds = runPatches.filter((patch) => patch.status === 'applied').map((patch) => patch.patchId);
+  const pendingPatchIds = runPatches.filter((patch) => patch.status === 'pending').map((patch) => patch.patchId);
+  const reviewPatchIds = runPatches
+    .filter((patch) => patch.status === 'pending' && patch.riskLevel === 'review')
+    .map((patch) => patch.patchId);
+  const highRiskAppliedPatchIds = runPatches
+    .filter((patch) => patch.status === 'applied' && patch.riskLevel === 'review')
+    .map((patch) => patch.patchId);
+  const persistedWorld = worldChangedOverall ? parseWorldMd(workingWorldText) : undefined;
+  const persistedWorldText = persistedWorld ? serializeWorldMd(persistedWorld) : workingWorldText;
+  const nextRun: RefineAutomationRun = {
+    ...targetRun,
+    status: pendingPatchIds.length > 0 ? 'needsReview' : 'complete',
+    completedAt: now,
+    appliedPatchIds,
+    pendingPatchIds,
+    reviewPatchIds,
+    highRiskAppliedPatchIds,
+    acknowledgement: highRiskAppliedPatchIds.length > 0 && targetRun.mode === 'all' ? 'pending' : targetRun.acknowledgement,
+    resultStaticHash: computeStaticSettingsHash({
+      worldText: persistedWorldText,
+      characters: workingCharacters,
+    }),
+  };
+  const nextSession: RefineSession = {
+    ...session,
+    patches: nextPatches,
+    revision: session.revision + 1,
+    updatedAt: now,
+    lastError: null,
+  };
+  const nextStore = pruneAutomationStore({
+    ...store,
+    runs: store.runs.map((run) => (run.runId === runId ? nextRun : run)),
+  });
+
+  await writeMaintenanceStatus(
+    projectId,
+    buildMaintenanceStatus(
+      runId,
+      targetRun.generationId,
+      'applying',
+      { appliedPatchIds, pendingPatchIds, reviewPatchIds },
+      maintenance
+    )
+  );
+
+  let succeeded = false;
+  let failureMessage: string | undefined;
+  try {
+    if (persistedWorld) await storage.writeWorld(projectId, persistedWorld);
+    if (charactersChangedOverall) await storage.writeCharacters(projectId, workingCharacters);
+    await storage.writeRefineSession(projectId, nextSession);
+    await storage.writeRefineAutomation(projectId, nextStore);
+    succeeded = true;
+    return nextRun;
+  } catch (error) {
+    failureMessage = error instanceof Error ? error.message : '採用後の設定更新に失敗しました。';
+    const failedRun: RefineAutomationRun = {
+      ...nextRun,
+      status: 'failed',
+      errorMessage: failureMessage,
+      completedAt: nowIso(),
+    };
+    const failedStore = pruneAutomationStore({
+      ...store,
+      runs: store.runs.map((run) => (run.runId === runId ? failedRun : run)),
+    });
+    const rollbackResults = await Promise.allSettled([
+      ...(worldChangedOverall ? [storage.restoreWorldText(projectId, originalWorldText)] : []),
+      ...(charactersChangedOverall ? [storage.writeCharacters(projectId, originalCharacters)] : []),
+      storage.writeRefineSession(projectId, session),
+      storage.writeRefineAutomation(projectId, failedStore),
+    ]);
+    if (rollbackResults.some((result) => result.status === 'rejected')) {
+      await storage
+        .writeRefineAutomation(
+          projectId,
+          pruneAutomationStore({
+            ...failedStore,
+            confirmationRequired: {
+              reason: 'automation_rollback_failed',
+              sinceRunId: runId,
+              setAt: nowIso(),
+            },
+          })
+        )
+        .catch(() => undefined);
+    }
+    throw new RefineAutomationError('採用後の設定更新に失敗しました。', 'automation_apply_failed', true, 500);
+  } finally {
+    const terminal = buildMaintenanceStatus(
+      runId,
+      targetRun.generationId,
+      succeeded ? nextRun.status : 'failed',
+      {
+        appliedPatchIds: succeeded ? appliedPatchIds : [],
+        pendingPatchIds,
+        reviewPatchIds,
+      },
+      maintenance
+    );
+    if (failureMessage) terminal.errorMessage = failureMessage;
+    await writeMaintenanceStatus(projectId, terminal).catch((err) => {
+      console.warn('Failed to clear maintenance phase after acceptance', { projectId, runId, err });
+    });
+  }
+}
+
+async function staleAwaitingAutomationRunUnlocked(
+  projectId: string,
+  state: NonNullable<Awaited<ReturnType<typeof storage.readState>>>,
+  maintenance: RefineMaintenanceStatus,
+  reason: string
+): Promise<RefineAutomationRun | null> {
+  const [store, existingSession] = await Promise.all([
+    readAutomationStore(projectId),
+    storage.readRefineSession(projectId),
+  ]);
+  const target = store.runs.find((run) => run.runId === maintenance.runId);
+  const staleRun = target
+    ? { ...target, status: 'stale' as const, completedAt: nowIso(), errorMessage: reason }
+    : null;
+  const nextStore = staleRun
+    ? pruneAutomationStore({
+        ...store,
+        runs: store.runs.map((run) => (run.runId === maintenance.runId ? staleRun : run)),
+      })
+    : store;
+  const nextSession = existingSession
+    ? {
+        ...existingSession,
+        patches: existingSession.patches.map((patch) =>
+          patch.automationRunId === maintenance.runId && patch.status === 'pending'
+            ? { ...patch, status: 'stale' as const, applyError: reason }
+            : patch
+        ),
+        revision: existingSession.revision + 1,
+        updatedAt: nowIso(),
+      }
+    : null;
+  const staleStatus = buildMaintenanceStatus(
+    maintenance.runId,
+    maintenance.generationId,
+    'stale',
+    {
+      appliedPatchIds: maintenance.appliedPatchIds,
+      pendingPatchIds: maintenance.pendingPatchIds,
+      reviewPatchIds: maintenance.reviewPatchIds,
+    },
+    maintenance
+  );
+  staleStatus.errorMessage = reason;
+  if (nextSession) await storage.writeRefineSession(projectId, nextSession);
+  if (staleRun) await storage.writeRefineAutomation(projectId, nextStore);
+  await storage.writeState(projectId, { ...state, refineMaintenance: staleStatus });
+  return staleRun;
 }
 
 // ---------- 明示再試行 ----------
@@ -563,10 +1097,20 @@ function reconstructProposalsFromRun(
       evidenceScope: patch.evidenceScope ?? 'mixed',
       evidenceQuote: patch.evidenceQuote,
       evidenceSourceGenerationId: patch.sourceGenerationId,
+      evidenceSourceRef: patch.evidenceSourceRef,
     }));
 }
 
-export async function retryFailedAutomationRun(projectId: string): Promise<RefineAutomationRun> {
+interface RetryFailedAutomationRunOptions {
+  failedRunId?: string;
+  runId?: string;
+  expectedMaintenanceRunId?: string;
+}
+
+export async function retryFailedAutomationRun(
+  projectId: string,
+  options: RetryFailedAutomationRunOptions = {}
+): Promise<RefineAutomationRun> {
   const project = await projectService.getProject(projectId);
   if (!project) {
     throw new RefineAutomationError('作品が見つかりません。', 'project_not_found', false, 404);
@@ -576,7 +1120,9 @@ export async function retryFailedAutomationRun(projectId: string): Promise<Refin
     throw new RefineAutomationError('自動レビューはオフになっています。', 'automation_disabled', false, 409);
   }
   const store = await readAutomationStore(projectId);
-  const latest = store.runs[0];
+  const latest = options.failedRunId
+    ? store.runs.find((run) => run.runId === options.failedRunId)
+    : store.runs[0];
   if (!latest || latest.status !== 'failed') {
     throw new RefineAutomationError(
       '再試行できる失敗した自動レビューがありません。',
@@ -594,6 +1140,8 @@ export async function retryFailedAutomationRun(projectId: string): Promise<Refin
     proposals,
     acceptedGenerationCount: latest.sourceAcceptedGenerationCount,
     explicitConfirmation: true,
+    runId: options.runId,
+    expectedMaintenanceRunId: options.expectedMaintenanceRunId,
   });
 }
 

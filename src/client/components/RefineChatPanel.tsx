@@ -9,6 +9,7 @@ import type {
   RefineFinding,
   RefineFindingKind,
   RefineFindingTarget,
+  RefineMaintenancePhase,
   RefineMessage,
   RefinePatch,
   RefinePatchOperation,
@@ -32,6 +33,12 @@ interface Props {
 
 type RefineTab = 'findings' | 'history';
 
+const MAINTENANCE_BLOCKING_PHASES = new Set<RefineMaintenancePhase>([
+  'scanning',
+  'applying',
+  'reverting',
+]);
+
 export default function RefineChatPanel({
   projectId,
   characters,
@@ -51,6 +58,8 @@ export default function RefineChatPanel({
   const [sending, setSending] = useState(false);
   const [busyPatchId, setBusyPatchId] = useState<string | null>(null);
   const [revertingRunId, setRevertingRunId] = useState<string | null>(null);
+  const [retryingRunId, setRetryingRunId] = useState<string | null>(null);
+  const [maintenancePhase, setMaintenancePhase] = useState<RefineMaintenancePhase | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -61,6 +70,16 @@ export default function RefineChatPanel({
       setRuns(list);
     } catch {
       // NOTE: run 履歴の取得失敗は相談欄自体の利用を妨げないよう、静かに諦める。
+    }
+  }
+
+  async function loadMaintenanceStatus() {
+    try {
+      const { status } = await api.getRefineAutomationSettings(projectId);
+      setMaintenancePhase(status?.phase ?? null);
+    } catch {
+      // Maintenance state is advisory for the UI. The server remains the
+      // authoritative guard when this status request cannot be completed.
     }
   }
 
@@ -80,9 +99,17 @@ export default function RefineChatPanel({
     }
     load();
     void loadRuns();
+    void loadMaintenanceStatus();
     return () => {
       cancelled = true;
     };
+  }, [projectId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadMaintenanceStatus();
+    }, 1_500);
+    return () => window.clearInterval(timer);
   }, [projectId]);
 
   useEffect(() => {
@@ -117,7 +144,7 @@ export default function RefineChatPanel({
 
   async function handleSend() {
     const content = input.trim();
-    if (!content || sending || busyPatchId) return;
+    if (!content || sending || busyPatchId || manualActionsBlocked) return;
     try {
       setSending(true);
       setError(null);
@@ -142,6 +169,7 @@ export default function RefineChatPanel({
   }
 
   async function handleApply(patchId: string) {
+    if (manualActionsBlocked) return;
     try {
       setBusyPatchId(patchId);
       setError(null);
@@ -157,6 +185,7 @@ export default function RefineChatPanel({
   }
 
   async function handleReject(patchId: string) {
+    if (manualActionsBlocked) return;
     try {
       setBusyPatchId(patchId);
       setError(null);
@@ -186,7 +215,7 @@ export default function RefineChatPanel({
   }
 
   async function handleRevertRun(runId: string) {
-    if (revertingRunId || busyPatchId) return;
+    if (revertingRunId || busyPatchId || manualActionsBlocked) return;
     if (
       !(await confirmAction(
         'この自動更新を取り消しますか？世界設定・人物設定が更新前の状態へ戻ります。',
@@ -208,8 +237,23 @@ export default function RefineChatPanel({
     }
   }
 
+  async function handleRetryRun(runId: string) {
+    if (revertingRunId || retryingRunId || busyPatchId || manualActionsBlocked) return;
+    try {
+      setRetryingRunId(runId);
+      setError(null);
+      await api.retryRefineAutomation(projectId);
+      await Promise.all([loadRuns(), loadMaintenanceStatus()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '自動レビューを再試行できませんでした');
+      await Promise.all([loadRuns(), loadMaintenanceStatus()]);
+    } finally {
+      setRetryingRunId(null);
+    }
+  }
+
   async function handleReset() {
-    if (busyPatchId) return;
+    if (busyPatchId || manualActionsBlocked) return;
     if (
       !(await confirmAction(
         '相談の履歴をリセットしますか？（適用済みの変更はそのまま残ります）',
@@ -230,6 +274,7 @@ export default function RefineChatPanel({
   }
 
   async function handleScanClick() {
+    if (manualActionsBlocked) return;
     setActiveTab('findings');
     await onScanRefine();
   }
@@ -300,7 +345,9 @@ export default function RefineChatPanel({
 
   if (loading) return <div className="loading">相談セッションを読み込んでいます…</div>;
 
-  const patchActionDisabled = sending || busyPatchId !== null;
+  const manualActionsBlocked =
+    maintenancePhase !== null && MAINTENANCE_BLOCKING_PHASES.has(maintenancePhase);
+  const patchActionDisabled = sending || busyPatchId !== null || manualActionsBlocked;
   const findingCount = refineScan?.findings.length ?? 0;
   const messageCount = session?.messages.length ?? 0;
 
@@ -314,14 +361,14 @@ export default function RefineChatPanel({
           </span>
           <button
             onClick={handleScanClick}
-            disabled={scanning}
+            disabled={scanning || manualActionsBlocked}
             className="refine-scan-button"
           >
             {scanning ? '走査中…' : refineScan ? '再走査 🔄' : '気づきを走査 🔄'}
           </button>
           <button
             onClick={handleReset}
-            disabled={sending || busyPatchId !== null || !session?.messages.length}
+            disabled={sending || busyPatchId !== null || manualActionsBlocked || !session?.messages.length}
           >
             履歴をリセット
           </button>
@@ -382,8 +429,12 @@ export default function RefineChatPanel({
                       run={run}
                       isLatestRevertible={computeIsRevertible(run)}
                       busy={revertingRunId === run.runId}
+                      disabled={manualActionsBlocked}
+                      isRetryable={runs[0]?.runId === run.runId && run.status === 'failed'}
+                      retrying={retryingRunId === run.runId}
                       onAcknowledge={() => handleAcknowledgeRun(run.runId)}
                       onRevert={() => handleRevertRun(run.runId)}
+                      onRetry={() => handleRetryRun(run.runId)}
                     />
                     {runPatches.map((patch) => (
                       <PatchCard
@@ -418,8 +469,12 @@ export default function RefineChatPanel({
                     run={run}
                     isLatestRevertible={computeIsRevertible(run)}
                     busy={revertingRunId === run.runId}
+                    disabled={manualActionsBlocked}
+                    isRetryable={runs[0]?.runId === run.runId && run.status === 'failed'}
+                    retrying={retryingRunId === run.runId}
                     onAcknowledge={() => handleAcknowledgeRun(run.runId)}
                     onRevert={() => handleRevertRun(run.runId)}
+                    onRetry={() => handleRetryRun(run.runId)}
                   />
                 )}
                 {(patchesByMessageId.get(msg.messageId) ?? []).map((patch) => (
@@ -452,7 +507,7 @@ export default function RefineChatPanel({
           onChange={(e) => setInput(e.target.value)}
           placeholder="世界設定や人物設定について、変えたい点や足したい点を書いてください"
           rows={3}
-          disabled={sending || busyPatchId !== null}
+          disabled={sending || busyPatchId !== null || manualActionsBlocked}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
@@ -463,7 +518,7 @@ export default function RefineChatPanel({
         <button
           type="submit"
           className="primary"
-          disabled={sending || busyPatchId !== null || !input.trim()}
+          disabled={sending || busyPatchId !== null || manualActionsBlocked || !input.trim()}
         >
           {sending ? '送信中…' : '送る'}
         </button>
@@ -563,14 +618,22 @@ function AutomationRunSummary({
   run,
   isLatestRevertible,
   busy,
+  disabled,
+  isRetryable,
+  retrying,
   onAcknowledge,
   onRevert,
+  onRetry,
 }: {
   run: RefineAutomationRun;
   isLatestRevertible: boolean;
   busy: boolean;
+  disabled: boolean;
+  isRetryable: boolean;
+  retrying: boolean;
   onAcknowledge: () => void;
   onRevert: () => void;
+  onRetry: () => void;
 }) {
   return (
     <div id={`automation-run-${run.runId}`} className="automation-run-summary">
@@ -581,13 +644,18 @@ function AutomationRunSummary({
       )}
       {run.acknowledgement === 'reverted' && <span className="settings-badge">取り消し済み</span>}
       {run.acknowledgement === 'pending' && (
-        <button type="button" onClick={onAcknowledge} disabled={busy}>
+        <button type="button" onClick={onAcknowledge} disabled={busy || disabled}>
           {busy ? '処理中…' : '確認した'}
         </button>
       )}
       {isLatestRevertible && (
-        <button type="button" className="danger" onClick={onRevert} disabled={busy}>
+        <button type="button" className="danger" onClick={onRevert} disabled={busy || disabled}>
           {busy ? '取り消し中…' : 'この更新を取り消す'}
+        </button>
+      )}
+      {isRetryable && (
+        <button type="button" onClick={onRetry} disabled={disabled || retrying}>
+          {retrying ? '再試行中…' : '再試行'}
         </button>
       )}
     </div>
@@ -611,13 +679,15 @@ function PatchCard({
   onReject: () => void;
   automationRun?: RefineAutomationRun;
 }) {
-  const isActionable = patch.status === 'pending';
+  const effectiveStatus: RefinePatchStatus =
+    automationRun?.status === 'stale' && patch.status === 'pending' ? 'stale' : patch.status;
+  const isActionable = effectiveStatus === 'pending';
   const riskLevel = patch.riskLevel;
   return (
-    <div id={`refine-patch-${patch.patchId}`} className={`refine-patch-card status-${patch.status}`}>
+    <div id={`refine-patch-${patch.patchId}`} className={`refine-patch-card status-${effectiveStatus}`}>
       <div className="refine-patch-header">
-        <span className={`refine-patch-status status-${patch.status}`}>
-          {statusLabel(patch.status)}
+        <span className={`refine-patch-status status-${effectiveStatus}`}>
+          {statusLabel(effectiveStatus)}
         </span>
         {riskLevel === 'review' && <span className="settings-badge warn">要確認</span>}
         <span className="refine-patch-summary">{patch.summary}</span>

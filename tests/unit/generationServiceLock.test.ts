@@ -270,6 +270,11 @@ describe('generationService post-generation maintenance guard', () => {
       activeModelName: 'gpt-test',
     });
     createdProjectIds.push(project.projectId);
+    // This suite isolates the generation guard. Disable background scanning so
+    // the generated draft cannot outlive the test and race project cleanup.
+    await projectService.updateProject(project.projectId, {
+      refineAutomation: { mode: 'off', scanPolicy: 'when-needed' },
+    });
     if (phase) {
       const state = await storage.readState(project.projectId);
       if (!state) throw new Error('state missing');
@@ -324,6 +329,61 @@ describe('generationService post-generation maintenance guard', () => {
     expect(chunks).toEqual([]);
   });
 
+  it('re-checks the maintenance slot after waiting for a concurrent generation lock', async () => {
+    const project = await projectService.createProject({
+      title: 'Concurrent Maintenance Reservation Test',
+      activeModelProvider: 'openai',
+      activeModelName: 'gpt-test',
+    });
+    createdProjectIds.push(project.projectId);
+    await projectService.updateProject(project.projectId, {
+      refineAutomation: { mode: 'safe', scanPolicy: 'always' },
+    });
+
+    let releaseGeneration!: () => void;
+    const generationGate = new Promise<void>((resolve) => {
+      releaseGeneration = resolve;
+    });
+    let signalGenerationStarted!: () => void;
+    const generationStarted = new Promise<void>((resolve) => {
+      signalGenerationStarted = resolve;
+    });
+    let releaseScan!: () => void;
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    let generationCalls = 0;
+    openAiGenerateTextMock.mockImplementation(async (request) => {
+      if (request.systemInstructions.includes('生成後設定レビュー担当')) {
+        await scanGate;
+        return { text: JSON.stringify({ proposals: [] }), finishReason: 'stop', retryable: false };
+      }
+      generationCalls += 1;
+      if (generationCalls === 1) {
+        signalGenerationStarted();
+        await generationGate;
+      }
+      return { text: 'A generated draft.', finishReason: 'stop', retryable: false };
+    });
+
+    const first = generationService.generateScene(project.projectId, { wish: '', mode: 'continue' });
+    await generationStarted;
+    const second = generationService.generateScene(project.projectId, { wish: '', mode: 'continue' });
+    const secondIsBlocked = expect(second).rejects.toMatchObject({
+      code: 'post_generation_maintenance_in_progress',
+      status: 409,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    releaseGeneration();
+    await expect(first).resolves.toMatchObject({ status: 'draft' });
+    await waitForCondition(async () => (await storage.readState(project.projectId))?.refineMaintenance?.phase === 'scanning');
+    await secondIsBlocked;
+
+    releaseScan();
+    await waitForCondition(async () => (await storage.readState(project.projectId))?.refineMaintenance?.phase === 'complete');
+  });
+
   it('lets non-streaming generateScene proceed after normalizing an expired blocking-phase lease to failed', async () => {
     // P1-1 の回帰テスト。generateScene が期限切れ lease を failed へ正規化してから
     // 通常生成に入ることを確認する。過去には generateSceneUnlocked 側で直接
@@ -334,6 +394,9 @@ describe('generationService post-generation maintenance guard', () => {
       activeModelName: 'gpt-test',
     });
     createdProjectIds.push(project.projectId);
+    await projectService.updateProject(project.projectId, {
+      refineAutomation: { mode: 'off', scanPolicy: 'when-needed' },
+    });
     const state = await storage.readState(project.projectId);
     if (!state) throw new Error('state missing');
     await storage.writeState(project.projectId, {
@@ -372,4 +435,16 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function waitForCondition(
+  condition: () => Promise<boolean> | boolean,
+  timeoutMs = 1_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Timed out waiting for condition');
 }

@@ -1111,6 +1111,10 @@ export interface RefinePatch {
   // 再照合するためにサーバーが保存する（本文自体は sourceGenerationId から解決するので
   // ここでは quote 文字列だけを持つ）。
   evidenceQuote?: string;
+  // NOTE: 自動走査では、モデルが自由文で根拠を指し示すのではなく、サーバーが
+  // 入力時に発行した sourceRef を保存する。safe 判定はこの参照で解決した本文だけを
+  // 対象にするため、後から監査・再検証しても同じ根拠へ戻れる。
+  evidenceSourceRef?: string;
   sourceStaticHash?: string;
   sourceStoryStateUpdatedAt?: string | null;
 }
@@ -1205,6 +1209,9 @@ export interface RefineAutomationRun {
   acknowledgement?: 'pending' | 'acknowledged' | 'reverted';
   revertedAt?: string;
   revertError?: string;
+  // NOTE: 走査モデル呼び出しや保存に失敗した場合の監査用メッセージ。状態の正本は
+  // ProjectState.refineMaintenance だが、過去 run の履歴表示にも残す。
+  errorMessage?: string;
   beforeSnapshot?: { worldText: string; characters: Character[] };
   resultStaticHash?: string;
 }

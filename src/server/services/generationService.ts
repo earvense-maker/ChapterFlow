@@ -23,7 +23,13 @@ import { writeShortcut } from './shortcutService.js';
 import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
 import { withProjectWriteLock } from './projectLock.js';
 export { withProjectWriteLock } from './projectLock.js';
-import { assertGenerationNotBlockedByMaintenance } from './refineAutomationGuard.js';
+import {
+  assertGenerationNotBlockedByMaintenance,
+  MaintenanceInProgressError,
+  maintenanceBlocksGeneration,
+  readAndNormalizeMaintenance,
+  RefineAutomationError,
+} from './refineAutomationGuard.js';
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateContextUsage } from '../utils/contextEstimate.js';
 import type {
@@ -90,6 +96,11 @@ export interface GenerateStreamOptions extends GenerateOptions {
   abortSignal?: AbortSignal;
 }
 
+interface GeneratedSceneResult {
+  record: GenerationRecord;
+  maintenanceRunId?: string;
+}
+
 export async function generateScene(
   projectId: string,
   options: GenerateOptions
@@ -101,18 +112,26 @@ export async function generateScene(
   // 次の withProjectWriteLock 取得時までに blocking phase が復活しても、ロック取得後の
   // 実処理は正常に直列化される（pipeline は自分のロック内で完結してから離す）。
   await assertGenerationNotBlockedByMaintenance(projectId);
-  return withProjectWriteLock(projectId, () => generateSceneUnlocked(projectId, options));
+  const result = await withProjectWriteLock(projectId, () => generateSceneUnlocked(projectId, options));
+  startReservedPostGenerationMaintenance(projectId, result.record.generationId, result.maintenanceRunId);
+  return result.record;
 }
 
 async function generateSceneUnlocked(
   projectId: string,
   options: GenerateOptions
-): Promise<GenerationRecord> {
+): Promise<GeneratedSceneResult> {
   await reloadCredentials();
 
   const project = await storage.readProject(projectId);
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
+  // The preflight guard can race another generation while this request waits
+  // for the project lock. Re-check the state captured under that lock before
+  // any prompt or model work so a fresh scanning slot cannot be overwritten.
+  if (maintenanceBlocksGeneration(state.refineMaintenance?.phase)) {
+    throw new MaintenanceInProgressError();
+  }
 
   const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
@@ -227,17 +246,29 @@ async function generateSceneUnlocked(
   await persistTargetScene(projectId, target, generationId);
 
   // state更新
+  const rawWorldText = await storage.readWorldText(projectId);
+  const maintenanceReservation = await reservePostGenerationMaintenanceForDraftUnlocked({
+    projectId,
+    project,
+    state,
+    generation: record,
+    worldText: rawWorldText,
+    characters,
+  });
   await storage.writeState(projectId, {
     ...state,
     currentEpisodeId: episodeId,
     currentSceneId: sceneId,
     selectedDraftGenerationId: generationId,
     lastOpenedAt: nowIso(),
+    ...(maintenanceReservation.maintenance
+      ? { refineMaintenance: maintenanceReservation.maintenance }
+      : {}),
   });
 
   await projectService.updateProject(projectId, { updatedAt: nowIso() });
 
-  return record;
+  return { record, maintenanceRunId: maintenanceReservation.runId };
 }
 
 export async function generateSceneStream(
@@ -249,32 +280,39 @@ export async function generateSceneStream(
   // guard を通す。route 側にも preflight があるが、直接呼び出し（テスト等）でも
   // 同じ挙動を保証する。
   await assertGenerationNotBlockedByMaintenance(projectId);
-  return withProjectWriteLock(projectId, () =>
+  const result = await withProjectWriteLock(projectId, () =>
     generateSceneStreamUnlocked(projectId, options, onChunk)
   );
+  startReservedPostGenerationMaintenance(projectId, result.record.generationId, result.maintenanceRunId);
+  return result.record;
 }
 
 async function generateSceneStreamUnlocked(
   projectId: string,
   options: GenerateStreamOptions,
   onChunk: (chunk: string) => void
-): Promise<GenerationRecord> {
+): Promise<GeneratedSceneResult> {
   await reloadCredentials();
   throwIfAborted(options.abortSignal);
 
   const project = await storage.readProject(projectId);
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
+  // See the non-streaming path: the outer preflight is not a substitute for
+  // checking the maintenance slot after this request acquires the project lock.
+  if (maintenanceBlocksGeneration(state.refineMaintenance?.phase)) {
+    throw new MaintenanceInProgressError();
+  }
   throwIfAborted(options.abortSignal);
 
   const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
   if (!adapter.generateTextStream) {
-    const record = await generateSceneUnlocked(projectId, options);
+    const result = await generateSceneUnlocked(projectId, options);
     throwIfAborted(options.abortSignal);
-    onChunk(record.responseText);
-    return record;
+    onChunk(result.record.responseText);
+    return result;
   }
 
   const memories = (await storage.readMemories(projectId)).filter((m) => m.status === 'active');
@@ -407,17 +445,68 @@ async function generateSceneStreamUnlocked(
   await storage.appendGenerationLog(projectId, record);
   await persistTargetScene(projectId, target, generationId);
 
+  const rawWorldText = await storage.readWorldText(projectId);
+  const maintenanceReservation = await reservePostGenerationMaintenanceForDraftUnlocked({
+    projectId,
+    project,
+    state,
+    generation: record,
+    worldText: rawWorldText,
+    characters,
+  });
   await storage.writeState(projectId, {
     ...state,
     currentEpisodeId: episodeId,
     currentSceneId: sceneId,
     selectedDraftGenerationId: generationId,
     lastOpenedAt: nowIso(),
+    ...(maintenanceReservation.maintenance
+      ? { refineMaintenance: maintenanceReservation.maintenance }
+      : {}),
   });
 
   await projectService.updateProject(projectId, { updatedAt: nowIso() });
 
-  return record;
+  return { record, maintenanceRunId: maintenanceReservation.runId };
+}
+
+async function reservePostGenerationMaintenanceForDraftUnlocked(input: {
+  projectId: string;
+  project: Project;
+  state: ProjectState;
+  generation: GenerationRecord;
+  worldText: string;
+  characters: Character[];
+}): Promise<{ runId?: string; maintenance?: ProjectState['refineMaintenance'] }> {
+  // NOTE: postGenerationMaintenanceService は refineScanService を利用し、その既存実装は
+  // generationService の backlog helper を参照する。ここを runtime import にして、
+  // モジュール初期化時の循環依存を作らずに「同じ project lock 内の予約」を満たす。
+  const maintenanceService = await import('./postGenerationMaintenanceService.js');
+  return maintenanceService.reservePostGenerationMaintenanceUnlocked(input);
+}
+
+function startReservedPostGenerationMaintenance(
+  projectId: string,
+  generationId: string,
+  runId: string | undefined
+): void {
+  if (!runId) return;
+  void import('./postGenerationMaintenanceService.js')
+    .then((maintenanceService) => {
+      maintenanceService.startPostGenerationMaintenance(projectId, generationId, runId);
+    })
+    .catch((error) => {
+      console.warn('Failed to start post-generation maintenance', { projectId, generationId, runId, error });
+    });
+}
+
+async function markAwaitingMaintenanceStaleUnlocked(
+  projectId: string,
+  maintenance: NonNullable<ProjectState['refineMaintenance']>,
+  reason: string
+): Promise<void> {
+  const maintenanceService = await import('./refineAutomationService.js');
+  await maintenanceService.markAutomationRunStaleUnlocked(projectId, maintenance.runId, reason);
 }
 
 async function generateWithAdapter(
@@ -635,13 +724,30 @@ async function persistTargetScene(
 interface AcceptGenerationResult {
   record: GenerationRecord;
   refreshStoryState: boolean;
+  maintenanceContinuationRunId?: string;
 }
 
 export async function acceptGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
   const result = await withProjectWriteLock(projectId, () =>
     acceptGenerationUnlocked(projectId, generationId)
   );
-  if (result.refreshStoryState) {
+  if (result.maintenanceContinuationRunId) {
+    void import('./postGenerationMaintenanceService.js')
+      .then((maintenanceService) =>
+        maintenanceService.continuePostGenerationMaintenanceAfterAcceptance(
+          projectId,
+          result.record.generationId,
+          result.maintenanceContinuationRunId!
+        )
+      )
+      .catch((error) => {
+        console.warn('Failed to continue post-generation maintenance after acceptance', {
+          projectId,
+          generationId: result.record.generationId,
+          error,
+        });
+      });
+  } else if (result.refreshStoryState) {
     startStoryStateRefreshAfterAcceptance(projectId, result.record.generationId);
   }
   return result.record;
@@ -656,12 +762,27 @@ async function acceptGenerationUnlocked(
 
   const targetId = generationId || state.selectedDraftGenerationId;
   if (!targetId) throw new Error('No draft generation selected');
+  if (targetId !== state.selectedDraftGenerationId) {
+    throw new RefineAutomationError(
+      '現在選択されている下書きだけを採用できます。',
+      'generation_not_selected',
+      false,
+      409
+    );
+  }
 
   const generation = await findGeneration(projectId, targetId);
   if (!generation) throw new Error(`Generation not found: ${targetId}`);
 
   if (generation.status === 'accepted') {
-    return { record: generation, refreshStoryState: false };
+    const continuation = state.refineMaintenance?.postAcceptanceContinuation;
+    return {
+      record: generation,
+      refreshStoryState: false,
+      ...(continuation?.owner === 'maintenance' && continuation.generationId === generation.generationId
+        ? { maintenanceContinuationRunId: state.refineMaintenance?.runId }
+        : {}),
+    };
   }
 
   generation.status = 'accepted';
@@ -695,18 +816,56 @@ async function acceptGenerationUnlocked(
     });
   });
 
+  let nextMaintenance = state.refineMaintenance;
+  let maintenanceContinuationRunId: string | undefined;
+  if (
+    nextMaintenance &&
+    (nextMaintenance.phase === 'scanning' || nextMaintenance.phase === 'awaitingAcceptance')
+  ) {
+    if (nextMaintenance.generationId === generation.generationId) {
+      nextMaintenance = {
+        ...nextMaintenance,
+        postAcceptanceContinuation: {
+          generationId: generation.generationId,
+          action: 'story-state-refresh',
+          owner: 'maintenance',
+          requestedAt: nowIso(),
+        },
+        updatedAt: nowIso(),
+      };
+      maintenanceContinuationRunId = nextMaintenance.runId;
+    } else {
+      await markAwaitingMaintenanceStaleUnlocked(
+        projectId,
+        nextMaintenance,
+        '別の生成案が採用されたため、この採用待ちの自動レビューは無効になりました。'
+      );
+      nextMaintenance = {
+        ...nextMaintenance,
+        phase: 'stale',
+        updatedAt: nowIso(),
+        errorMessage: '別の生成案が採用されたため、この採用待ちは無効になりました。',
+      };
+    }
+  }
+
   const storyStateRefresh = buildStoryStateRefreshStatus('pending', generation.generationId);
   await storage.writeState(projectId, {
     ...state,
     lastAcceptedGenerationId: generation.generationId,
     selectedDraftGenerationId: generation.generationId,
     storyStateRefresh,
+    ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
   });
 
-  return { record: generation, refreshStoryState: true };
+  return {
+    record: generation,
+    refreshStoryState: maintenanceContinuationRunId === undefined,
+    maintenanceContinuationRunId,
+  };
 }
 
-function startStoryStateRefreshAfterAcceptance(projectId: string, generationId: string): void {
+export function startStoryStateRefreshAfterAcceptance(projectId: string, generationId: string): void {
   void startStoryStateRefreshJob(projectId, generationId).catch((err) => {
     console.warn('Story state refresh failed', {
       projectId,
@@ -750,11 +909,29 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
 
   await updateEpisodeMarkdown(projectId, episode);
 
+  let nextMaintenance = state.refineMaintenance;
+  if (
+    nextMaintenance &&
+    (nextMaintenance.phase === 'scanning' || nextMaintenance.phase === 'awaitingAcceptance') &&
+    nextMaintenance.generationId === generation.generationId
+  ) {
+    const reason = '採用を取り消したため、この生成案に紐づく自動レビューは無効になりました。';
+    await markAwaitingMaintenanceStaleUnlocked(projectId, nextMaintenance, reason);
+    const { postAcceptanceContinuation: _continuation, ...withoutContinuation } = nextMaintenance;
+    nextMaintenance = {
+      ...withoutContinuation,
+      phase: 'stale',
+      updatedAt: nowIso(),
+      errorMessage: reason,
+    };
+  }
+
   const nextState = {
     ...state,
     selectedDraftGenerationId: generation.generationId,
     lastAcceptedGenerationId:
       state.lastAcceptedGenerationId === acceptedId ? null : state.lastAcceptedGenerationId,
+    ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
   };
   await storage.writeState(projectId, nextState);
 
@@ -1001,6 +1178,24 @@ async function rejectGenerationUnlocked(
   generation.status = 'rejected';
   await storage.appendGenerationStatusLog(projectId, generation.generationId, generation.status);
 
+  let nextMaintenance = state.refineMaintenance;
+  let maintenanceChanged = false;
+  if (
+    nextMaintenance &&
+    (nextMaintenance.phase === 'scanning' || nextMaintenance.phase === 'awaitingAcceptance') &&
+    nextMaintenance.generationId === generation.generationId
+  ) {
+    const reason = '生成案が却下されたため、この採用待ちの自動レビューは無効になりました。';
+    await markAwaitingMaintenanceStaleUnlocked(projectId, nextMaintenance, reason);
+    nextMaintenance = {
+      ...nextMaintenance,
+      phase: 'stale',
+      updatedAt: nowIso(),
+      errorMessage: reason,
+    };
+    maintenanceChanged = true;
+  }
+
   if (state.selectedDraftGenerationId === generation.generationId) {
     const episode = await storage.readEpisodeRecord(projectId, generation.episodeId);
     const scene = episode?.scenes.find((s) => s.sceneId === generation.sceneId);
@@ -1014,8 +1209,14 @@ async function rejectGenerationUnlocked(
       await storage.writeState(projectId, {
         ...state,
         selectedDraftGenerationId: fallbackId,
+        ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
       });
+      maintenanceChanged = false;
     }
+  }
+
+  if (maintenanceChanged && nextMaintenance) {
+    await storage.writeState(projectId, { ...state, refineMaintenance: nextMaintenance });
   }
 
   return generation;
@@ -1058,7 +1259,27 @@ async function navigateDraftUnlocked(
   const target = await findGeneration(projectId, targetId);
   if (!target) return null;
 
-  await storage.writeState(projectId, { ...state, selectedDraftGenerationId: targetId });
+  let nextMaintenance = state.refineMaintenance;
+  if (
+    nextMaintenance &&
+    nextMaintenance.phase === 'awaitingAcceptance' &&
+    nextMaintenance.generationId !== targetId
+  ) {
+    const reason = '別の下書きが選択されたため、この採用待ちの自動レビューは無効になりました。';
+    await markAwaitingMaintenanceStaleUnlocked(projectId, nextMaintenance, reason);
+    nextMaintenance = {
+      ...nextMaintenance,
+      phase: 'stale',
+      updatedAt: nowIso(),
+      errorMessage: reason,
+    };
+  }
+
+  await storage.writeState(projectId, {
+    ...state,
+    selectedDraftGenerationId: targetId,
+    ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
+  });
   return target;
 }
 
@@ -1091,6 +1312,9 @@ async function navigateSceneUnlocked(
   const selectedDraftGenerationId =
     targetScene.draftGenerationIds.at(-1) ?? targetScene.acceptedGenerationId ?? null;
 
+  // Reading another scene does not change the source draft's eligibility.
+  // Only rejection, selecting another draft, or starting a new generation may
+  // stale its maintenance run (§4.2 / §7.10).
   await storage.writeState(projectId, {
     ...state,
     currentSceneId: targetScene.sceneId,
@@ -1381,6 +1605,9 @@ function sanitizeErrorDetail(detail?: string): string {
 }
 
 export async function getReaderState(projectId: string): Promise<ReaderState> {
+  // NOTE: ReaderState は再起動後に最初に読まれやすい経路。期限切れで process 内 job が
+  // 無い scanning/applying/reverting をここで failed に正規化し、永久ロックを残さない。
+  await readAndNormalizeMaintenance(projectId);
   const project = await storage.readProject(projectId);
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);

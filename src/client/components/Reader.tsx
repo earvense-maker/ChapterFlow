@@ -13,6 +13,7 @@ import type {
   Project,
   ReaderNavigationState,
   ReaderState,
+  RefineMaintenancePhase,
   SceneNavigationDirection,
   SceneRecord,
   StoryStateRefreshStatus,
@@ -30,15 +31,27 @@ interface Props {
 const CONTEXT_WARNING_THRESHOLD = 0.7;
 const WISH_TEXTAREA_MAX_HEIGHT = 240;
 const STORY_STATE_PENDING_GRACE_MS = 60_000;
-// NOTE: これ以外の phase (scanning/applying/reverting/awaitingAcceptance) の間は
-// App 全体の監視対象へ残す。Phase B では実際にこれらへ遷移するトリガーがまだ無い。
+const MAINTENANCE_DELAY_GRACE_MS = 60_000;
+// NOTE: awaitingAcceptance は生成を止めないが、採用後の継続や要確認通知を追えるよう
+// App 全体の監視対象には残す。scanning/applying/reverting だけが生成をブロックする。
 const MAINTENANCE_TERMINAL_PHASES = new Set(['complete', 'needsReview', 'stale', 'failed']);
+const MAINTENANCE_BLOCKING_PHASES = new Set<RefineMaintenancePhase>([
+  'scanning',
+  'applying',
+  'reverting',
+]);
 
 function isDelayedStoryStatePending(updatedAt: string | undefined): boolean {
   if (!updatedAt) return true;
   const timestamp = Date.parse(updatedAt);
   if (!Number.isFinite(timestamp)) return true;
   return Date.now() - timestamp >= STORY_STATE_PENDING_GRACE_MS;
+}
+
+function hasElapsedSince(timestamp: string | null, graceMs: number, now: number): boolean {
+  if (!timestamp) return false;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) && now - parsed >= graceMs;
 }
 
 export default function Reader({
@@ -68,6 +81,9 @@ export default function Reader({
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeListItem[]>([]);
   const [storyStateRefresh, setStoryStateRefresh] = useState<StoryStateRefreshStatus | null>(null);
   const [storyStateBacklogCount, setStoryStateBacklogCount] = useState(0);
+  const [maintenancePhase, setMaintenancePhase] = useState<RefineMaintenancePhase | null>(null);
+  const [maintenanceStartedAt, setMaintenanceStartedAt] = useState<string | null>(null);
+  const [maintenanceClock, setMaintenanceClock] = useState(() => Date.now());
   const [wish, setWish] = useState('');
   const [rewriteWish, setRewriteWish] = useState('');
   const [rewriteSheetOpen, setRewriteSheetOpen] = useState(false);
@@ -142,8 +158,10 @@ export default function Reader({
     setKnowledgeItems(state.knowledgeFiles);
     setStoryStateRefresh(state.state.storyStateRefresh ?? null);
     setStoryStateBacklogCount(state.storyStateBacklogCount ?? state.state.storyStateBacklogCount ?? 0);
-    const maintenancePhase = state.state.refineMaintenance?.phase;
-    if (maintenancePhase && !MAINTENANCE_TERMINAL_PHASES.has(maintenancePhase)) {
+    const nextMaintenancePhase = state.state.refineMaintenance?.phase ?? null;
+    setMaintenancePhase(nextMaintenancePhase);
+    setMaintenanceStartedAt(state.state.refineMaintenance?.startedAt ?? null);
+    if (nextMaintenancePhase && !MAINTENANCE_TERMINAL_PHASES.has(nextMaintenancePhase)) {
       notificationCenter.addMaintenanceWatch(projectId);
     } else {
       notificationCenter.removeMaintenanceWatch(projectId);
@@ -220,6 +238,15 @@ export default function Reader({
     }, 2000);
     return () => window.clearInterval(timer);
   }, [projectId, storyStateRefresh?.status]);
+
+  useEffect(() => {
+    if (!maintenancePhase || !MAINTENANCE_BLOCKING_PHASES.has(maintenancePhase)) return;
+    const timer = window.setInterval(() => {
+      setMaintenanceClock(Date.now());
+      void load();
+    }, 1_500);
+    return () => window.clearInterval(timer);
+  }, [projectId, maintenancePhase]);
 
   // NOTE: メニューの外側クリックで閉じる。Escでも閉じる。
   useEffect(() => {
@@ -350,6 +377,9 @@ export default function Reader({
       setWish('');
       setRewriteWish('');
       setRewriteSheetOpen(false);
+      // reservation は生成完了レスポンスより前にサーバーへ保存済み。直後に別画面へ
+      // 移動しても App 側が terminal phase まで通知を監視できるよう、ここで追加する。
+      notificationCenter.addMaintenanceWatch(generationProjectId);
       if (!(await load())) {
         setNotice('生成は完了しましたが、場面情報の再読み込みに失敗しました');
       } else if (record.finishReason === 'length') {
@@ -378,6 +408,14 @@ export default function Reader({
       }
       if (abortController?.signal.aborted) {
         setNotice('生成を停止しました');
+      } else if (
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        (err as { code?: unknown }).code === 'post_generation_maintenance_in_progress'
+      ) {
+        await load();
+        setNotice('生成後の設定レビューが進行中です。状態を更新しました。');
       } else {
         setError(err instanceof Error ? err.message : '生成に失敗しました');
         if (notificationSettings) {
@@ -608,14 +646,19 @@ export default function Reader({
   const storyStateIsPending = storyStateRefresh?.status === 'pending';
   const isDelayedPending =
     storyStateIsPending && isDelayedStoryStatePending(storyStateRefresh?.updatedAt);
-  const blocksGeneration = storyStateIsPending && !isDelayedPending;
+  const maintenanceBlocksGeneration =
+    maintenancePhase !== null && MAINTENANCE_BLOCKING_PHASES.has(maintenancePhase);
+  const maintenanceIsDelayed =
+    maintenanceBlocksGeneration &&
+    hasElapsedSince(maintenanceStartedAt, MAINTENANCE_DELAY_GRACE_MS, maintenanceClock);
+  const blocksGeneration = (storyStateIsPending && !isDelayedPending) || maintenanceBlocksGeneration;
   const needsStoryStateConfirmation =
     isDelayedPending ||
     (!storyStateIsPending &&
       (storyStateRefresh?.status === 'stale' || storyStateBacklogCount > 0));
   const canRetryExtraction = !storyStateIsPending || isDelayedPending;
   const storyStateIsStale =
-    !blocksGeneration &&
+    !(storyStateIsPending && !isDelayedPending) &&
     (isDelayedPending || storyStateRefresh?.status === 'stale' || storyStateBacklogCount > 0);
   const storyStateNeedsAttention = storyStateIsPending || storyStateIsStale;
 
@@ -816,11 +859,15 @@ export default function Reader({
             {notice}
           </div>
         )}
-        {storyStateNeedsAttention && (
+        {(storyStateNeedsAttention || maintenanceBlocksGeneration) && (
           <div className={`story-state-alert ${storyStateIsStale ? 'stale' : 'pending'}`}>
             <div>
               <strong>
-                {blocksGeneration
+                {maintenanceIsDelayed
+                  ? '生成後設定レビューに時間がかかっています'
+                  : maintenanceBlocksGeneration
+                  ? '設定の自動レビューを実行しています'
+                  : blocksGeneration
                   ? '続きに反映する情報を整理しています'
                   : isDelayedPending
                     ? '物語の状態整理に時間がかかっています'
@@ -829,7 +876,11 @@ export default function Reader({
                     : '物語の状態を更新できませんでした'}
               </strong>
               <p>
-                {blocksGeneration
+                {maintenanceIsDelayed
+                  ? 'レビューを継続しています。しばらく待っても完了しない場合は、設定画面を開いて状態を更新してください。'
+                  : maintenanceBlocksGeneration
+                  ? '生成直後の設定走査・反映が完了するまで、新しい本文生成はできません。'
+                  : blocksGeneration
                   ? '採用した場面から人物の状況や伏線を読み取り、次の場面に反映する準備をしています。'
                   : isDelayedPending
                     ? '処理が続いている可能性があります。再抽出するか、未反映であることを確認して生成できます。'

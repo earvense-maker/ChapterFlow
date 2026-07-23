@@ -1,6 +1,7 @@
 import * as storage from './storageService.js';
 import { withProjectWriteLock } from './projectLock.js';
 import { nowIso } from '../utils/date.js';
+import { isPostGenerationMaintenanceJobRunning } from './postGenerationMaintenanceRegistry.js';
 import type { RefineMaintenancePhase, RefineMaintenanceStatus } from '../types/index.js';
 
 // NOTE: このファイルは意図的に generationService.js / refineChatService.js に依存しない
@@ -56,7 +57,7 @@ export class MaintenanceInProgressError extends RefineAutomationError {
 // 書き込み経路は withProjectWriteLock 内でだけ行う。preflight（SSE の writeHead 前）
 // から呼ばれた場合でも、read → 期限判定 → write を同じロックで直列化することで、
 // storyStateRefresh / accept / apply などと state を奪い合わないようにする。
-function isExpired(maintenance: RefineMaintenanceStatus): boolean {
+export function isMaintenanceLeaseExpired(maintenance: RefineMaintenanceStatus): boolean {
   const expiresAt = Date.parse(maintenance.leaseExpiresAt);
   return Number.isFinite(expiresAt) && expiresAt < Date.now();
 }
@@ -67,7 +68,11 @@ async function normalizeExpiredLease(projectId: string): Promise<RefineMaintenan
     const maintenance = state?.refineMaintenance;
     if (!state || !maintenance) return undefined;
     if (!maintenanceBlocksGeneration(maintenance.phase)) return maintenance;
-    if (!isExpired(maintenance)) return maintenance;
+    if (!isMaintenanceLeaseExpired(maintenance)) return maintenance;
+    // NOTE: lease の更新が一時的に遅れていても、このプロセスで job が生きている
+    // 間は failed に正規化しない。実行側の timeout / heartbeat が正本であり、
+    // プロセス再起動後だけ registry が空になるため期限切れを回復できる。
+    if (isPostGenerationMaintenanceJobRunning(projectId, maintenance.runId)) return maintenance;
     const failed: RefineMaintenanceStatus = {
       ...maintenance,
       phase: 'failed',
@@ -88,7 +93,8 @@ export async function readAndNormalizeMaintenance(
   const state = await storage.readState(projectId);
   const maintenance = state?.refineMaintenance;
   if (!maintenance || !maintenanceBlocksGeneration(maintenance.phase)) return maintenance;
-  if (!isExpired(maintenance)) return maintenance;
+  if (!isMaintenanceLeaseExpired(maintenance)) return maintenance;
+  if (isPostGenerationMaintenanceJobRunning(projectId, maintenance.runId)) return maintenance;
   return normalizeExpiredLease(projectId);
 }
 

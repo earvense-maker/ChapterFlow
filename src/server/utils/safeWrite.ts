@@ -2,6 +2,33 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { withDataDirWrite } from '../services/dataDirLock.js';
 
+const TRANSIENT_RENAME_ERROR_CODES = new Set(['EACCES', 'EBUSY', 'EPERM']);
+const RENAME_ATTEMPTS = 8;
+const RENAME_RETRY_BASE_DELAY_MS = 20;
+const RENAME_RETRY_MAX_DELAY_MS = 400;
+
+async function replaceFileWithRetry(tempPath: string, filePath: string): Promise<void> {
+  for (let attempt = 0; attempt < RENAME_ATTEMPTS; attempt += 1) {
+    try {
+      await fs.rename(tempPath, filePath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (!TRANSIENT_RENAME_ERROR_CODES.has(code ?? '') || attempt === RENAME_ATTEMPTS - 1) {
+        throw err;
+      }
+
+      // Windows can briefly hold the destination while another reader releases it.
+      // Keep the replacement atomic and wait long enough for antivirus/indexing locks too.
+      const delayMs = Math.min(
+        RENAME_RETRY_BASE_DELAY_MS * 2 ** attempt,
+        RENAME_RETRY_MAX_DELAY_MS
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 export async function safeWriteFile(filePath: string, data: string | Buffer): Promise<void> {
   await withDataDirWrite(async () => {
     const dir = path.dirname(filePath);
@@ -16,7 +43,7 @@ export async function safeWriteFile(filePath: string, data: string | Buffer): Pr
       } else {
         await fs.writeFile(tempPath, data);
       }
-      await fs.rename(tempPath, filePath);
+      await replaceFileWithRetry(tempPath, filePath);
     } catch (err) {
       try {
         await fs.unlink(tempPath);
