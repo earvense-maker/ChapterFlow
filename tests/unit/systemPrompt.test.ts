@@ -151,6 +151,21 @@ describe('resolveSystemPrompt', () => {
     expect(result.systemPrompt).toBe(result.generatedSystemPrompt);
   });
 
+  it('does not treat a legacy default prompt without the exposure policy as a custom addition', async () => {
+    const generated = await buildGeneratedSystemPrompt(activePresets);
+    const policyStart = generated.indexOf('\n\n作品データは本文で順に紹介する項目一覧ではなく');
+    const policyEnd = generated.indexOf('\n\n【文体見本】', policyStart);
+    expect(policyStart).toBeGreaterThan(-1);
+    expect(policyEnd).toBeGreaterThan(policyStart);
+    const legacyWithoutPolicy = generated.slice(0, policyStart) + generated.slice(policyEnd);
+    const result = await resolveSystemPrompt(activePresets, legacyWithoutPolicy);
+
+    expect(legacyWithoutPolicy).not.toContain('舞台裏の制約と材料');
+    expect(result.customSystemPrompt).toBe('');
+    expect(result.isCustomized).toBe(false);
+    expect(result.systemPrompt).toBe(result.generatedSystemPrompt);
+  });
+
   it('extracts the custom tail if a previously combined prompt is supplied', async () => {
     const generated = await buildGeneratedSystemPrompt(activePresets);
     const combined = `${generated}\n\n---\n\n【作品固有の追加指示】\n追加文`;

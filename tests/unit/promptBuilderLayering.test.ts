@@ -208,6 +208,8 @@ describe('設定レイヤー分離 prompt rendering', () => {
 
     expect(noSettings).not.toContain('以下は作品の基礎設定である');
     expect(withSettings).toContain('以下は作品の基礎設定である');
+    expect(withSettings).toContain('背景情報');
+    expect(withSettings).toContain('設定を示すためだけの説明・会話・描写を足さない');
     expect(withSettings.indexOf('【作品設定】')).toBeLessThan(
       withSettings.indexOf('以下は作品の基礎設定である')
     );
