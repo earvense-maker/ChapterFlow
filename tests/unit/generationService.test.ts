@@ -1186,7 +1186,8 @@ describe('generationService state operations', () => {
   });
 });
 
-async function waitForCondition(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+// NOTE: 上限延長の理由は postGenerationMaintenanceService.test.ts の同名ヘルパーと同じ。
+async function waitForCondition(condition: () => boolean, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
     if (Date.now() >= deadline) {

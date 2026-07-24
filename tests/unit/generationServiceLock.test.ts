@@ -3,6 +3,7 @@ import * as generationService from '../../src/server/services/generationService'
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
 import { withDataDirLock } from '../../src/server/services/dataDirLock';
+import { getProjectWriteWaiterCountForTests } from '../../src/server/services/projectLock';
 import type { EpisodeRecord, GenerationRecord } from '../../src/server/types/index';
 
 const openAiGenerateTextMock = vi.hoisted(() => vi.fn());
@@ -373,7 +374,11 @@ describe('generationService post-generation maintenance guard', () => {
       code: 'post_generation_maintenance_in_progress',
       status: 409,
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // NOTE: second が「ロック待ち」に入りきる前に first を解放すると、待ち行列を経ずに
+    // 生成が通ってしまい、このテストが検証したい再チェック経路を通らない。second は
+    // ロック取得前に preflight guard で実ファイルを読むため、setTimeout(0) 1回では
+    // 並列実行時に間に合わなかった。待機カウントが立つまで待って順序を確定させる。
+    await waitForCondition(() => getProjectWriteWaiterCountForTests(project.projectId) === 1);
 
     releaseGeneration();
     await expect(first).resolves.toMatchObject({ status: 'draft' });
@@ -437,9 +442,10 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   }
 }
 
+// NOTE: 上限延長の理由は postGenerationMaintenanceService.test.ts の同名ヘルパーと同じ。
 async function waitForCondition(
   condition: () => Promise<boolean> | boolean,
-  timeoutMs = 1_000
+  timeoutMs = 15_000
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

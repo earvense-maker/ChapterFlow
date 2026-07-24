@@ -17,7 +17,10 @@ async function createTrackedProject() {
   return project;
 }
 
-async function waitForCondition(condition: () => Promise<boolean> | boolean, timeoutMs = 3_000): Promise<void> {
+// NOTE: 生成後メンテナンスのバックグラウンド遷移を待つポーリング。条件成立で即座に
+// 抜けるので、上限を延ばしても正常時の実行時間は変わらない。ワーカー並列時に
+// 3秒では足りず散発的に落ちていたため余裕を持たせる（速度の検証ではない）。
+async function waitForCondition(condition: () => Promise<boolean> | boolean, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await condition()) return;
