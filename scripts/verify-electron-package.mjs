@@ -14,7 +14,8 @@ const requiredEntries = [
   'dist/electron/main.js',
   'dist/server/server.js',
   'dist/shared/defaults.js',
-  'dist/shared/types.js',
+  // NOTE: 型定義はドメイン別に分割し、集約点は types/index.js（旧 types.js は廃止）。
+  'dist/shared/types/index.js',
   'package.json',
   'presets/default-presets.json',
 ];
