@@ -6,6 +6,7 @@ import SettingPanel from './components/SettingPanel';
 import SetupWorkspace from './components/SetupWorkspace';
 import AppSettingsPanel from './components/AppSettingsPanel';
 import RoleplayWorkspace from './components/RoleplayWorkspace';
+import ErrorBoundary from './components/ErrorBoundary';
 import { useNotificationCenter } from './components/NotificationCenter';
 import { useMaintenanceNotifications } from './hooks/useMaintenanceNotifications';
 import { api } from './clientApi';
@@ -130,6 +131,9 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* NOTE: 1画面の描画エラーでアプリ全体が白画面にならないようにする。フォールバックの
+          「一覧に戻る」は境界の外にある handleBackToList を呼ぶので、崩れた画面からも脱出できる。 */}
+      <ErrorBoundary onReset={handleBackToList} resetLabel="一覧に戻る">
       {view === 'list' && (
         <>
           {listNotice && (
@@ -195,6 +199,7 @@ export default function App() {
             onFocusTargetConsumed={() => setSettingsFocusTarget(null)}
           />
         )}
+      </ErrorBoundary>
     </div>
   );
 }
