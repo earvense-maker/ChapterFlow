@@ -18,19 +18,16 @@ import {
   extractExcerpt,
   formatRelativeTime,
   formatStoryDiffSummary,
-  summarizeStoryStateReduction,
 } from './workSettings/workSettingsHelpers';
-import { decodeKnowledgeFile } from './workSettings/knowledgeFile';
+import { useKnowledgeManager } from './workSettings/useKnowledgeManager';
+import { useStoryStatePanel } from './workSettings/useStoryStatePanel';
 import type {
   Character,
-  KnowledgeListItem,
   PresetsFile,
   Project,
   RefineReviewStatus,
   RefineScanResult,
   SettingsFocusTarget,
-  StoryState,
-  StoryStateDiffRecord,
   StyleSamplePreset,
   SystemPromptPreview,
   SystemPromptPreset,
@@ -117,18 +114,60 @@ export default function WorkSettingsTab({
   const [refineReviewStatus, setRefineReviewStatus] = useState<RefineReviewStatus | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
-  const [storyState, setStoryState] = useState<StoryState | null>(null);
-  const [storyStateDraft, setStoryStateDraft] = useState('');
-  const [storyStateEditing, setStoryStateEditing] = useState(false);
-  const [storyStateDiffs, setStoryStateDiffs] = useState<StoryStateDiffRecord[]>([]);
-  const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeListItem[]>([]);
-  const [knowledgeExpandedId, setKnowledgeExpandedId] = useState<string | null>(null);
-  const [knowledgeEditing, setKnowledgeEditing] = useState(false);
-  const [knowledgeTitleDraft, setKnowledgeTitleDraft] = useState('');
-  const [knowledgeContentDraft, setKnowledgeContentDraft] = useState('');
-  const [knowledgeUploading, setKnowledgeUploading] = useState(false);
 
   const [loading, setLoading] = useState(false);
+
+  // NOTE: 資料タブの状態とハンドラはカスタムフックへ切り出し済み。同名で分割代入する
+  // ため以降の JSX は無変更。初期一括ロードは setKnowledgeItems 経由で流し込む。
+  const {
+    knowledgeItems,
+    setKnowledgeItems,
+    knowledgeExpandedId,
+    knowledgeEditing,
+    setKnowledgeEditing,
+    knowledgeTitleDraft,
+    setKnowledgeTitleDraft,
+    knowledgeContentDraft,
+    setKnowledgeContentDraft,
+    knowledgeUploading,
+    handleKnowledgeFiles,
+    handleToggleKnowledge,
+    handleMoveKnowledge,
+    handleExpandKnowledge,
+    handleSaveKnowledge,
+    handleCancelKnowledgeEdit,
+    handleDeleteKnowledge,
+    enabledKnowledgeChars,
+    brokenEnabledKnowledgeCount,
+  } = useKnowledgeManager({
+    projectId,
+    onError,
+    onFlashMessage,
+    setLoading,
+    confirmAction,
+  });
+
+  // NOTE: 物語状態タブの状態とハンドラもフックへ切り出し済み。走査レビュー再取得は
+  // 複数タブ共通のため、親の refreshRefineReviewStatus（巻き上げ済み関数）を渡す。
+  const {
+    storyState,
+    setStoryState,
+    storyStateDraft,
+    setStoryStateDraft,
+    storyStateEditing,
+    setStoryStateEditing,
+    storyStateDiffs,
+    setStoryStateDiffs,
+    handleSaveStoryState,
+    handleRevertStoryDiff,
+  } = useStoryStatePanel({
+    projectId,
+    onError,
+    onFlashMessage,
+    setLoading,
+    confirmAction,
+    refreshRefineReviewStatus,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -264,14 +303,6 @@ export default function WorkSettingsTab({
     } catch {
       // NOTE: status が取れなくても既存の scan 表示や設定編集は妨げない。
       setRefineReviewStatus(null);
-    }
-  }
-
-  async function refreshKnowledge() {
-    try {
-      setKnowledgeItems(await api.getKnowledge(projectId));
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料の再読み込みに失敗しました');
     }
   }
 
@@ -657,191 +688,6 @@ export default function WorkSettingsTab({
     setBaseSystemPromptDraft(defaultBaseSystemPrompt);
   }
 
-  async function handleSaveStoryState() {
-    try {
-      onError(null);
-      let parsed: StoryState;
-      try {
-        parsed = JSON.parse(storyStateDraft) as StoryState;
-      } catch (parseErr) {
-        onError(parseErr instanceof Error ? `JSON構文エラー: ${parseErr.message}` : 'JSON構文エラー');
-        return;
-      }
-      // NOTE: JSON生編集の事故予防。主要配列が減っていたら明示 confirm。
-      // 増加や維持は素通し、減少幅と種別を並べて表示する。
-      const reduction = storyState ? summarizeStoryStateReduction(storyState, parsed) : [];
-      if (reduction.length > 0) {
-        const message = [
-          '以下の項目が減っています。保存すると復元は差分履歴からのみ可能です。',
-          '',
-          ...reduction.map((line) => `・${line}`),
-          '',
-          '本当に保存しますか？',
-        ].join('\n');
-        if (!(await confirmAction(message, { confirmLabel: '保存', danger: true }))) return;
-      }
-      setLoading(true);
-      const saved = await api.updateStoryState(projectId, parsed);
-      setStoryState(saved);
-      setStoryStateDraft(JSON.stringify(saved, null, 2));
-      setStoryStateEditing(false);
-      void refreshRefineReviewStatus();
-      onFlashMessage('物語状態を保存しました');
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '保存に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleRevertStoryDiff(diffId: string) {
-    try {
-      setLoading(true);
-      onError(null);
-      const result = await api.revertStoryStateDiff(projectId, diffId);
-      const diffs = await api.getStoryStateDiffs(projectId);
-      setStoryState(result.storyState);
-      setStoryStateDraft(JSON.stringify(result.storyState, null, 2));
-      setStoryStateDiffs(diffs);
-      void refreshRefineReviewStatus();
-      onFlashMessage('自動更新を取り消しました');
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '取り消しに失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleKnowledgeFiles(files: FileList | File[]) {
-    const selected = Array.from(files);
-    if (selected.length === 0) return;
-    try {
-      setKnowledgeUploading(true);
-      onError(null);
-      let imported = 0;
-      for (const file of selected) {
-        const content = await decodeKnowledgeFile(file);
-        await api.createKnowledge(projectId, { fileName: file.name, content });
-        imported += 1;
-      }
-      await refreshKnowledge();
-      onFlashMessage(`資料を${imported}件追加しました`);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料の追加に失敗しました');
-      await refreshKnowledge();
-    } finally {
-      setKnowledgeUploading(false);
-    }
-  }
-
-  async function handleToggleKnowledge(item: KnowledgeListItem) {
-    try {
-      setLoading(true);
-      onError(null);
-      await api.updateKnowledge(projectId, item.knowledgeId, { enabled: !item.enabled });
-      await refreshKnowledge();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料の更新に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleMoveKnowledge(index: number, delta: -1 | 1) {
-    const nextIndex = index + delta;
-    if (nextIndex < 0 || nextIndex >= knowledgeItems.length) return;
-    const next = [...knowledgeItems];
-    [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
-    try {
-      setLoading(true);
-      onError(null);
-      await api.reorderKnowledge(projectId, next.map((item) => item.knowledgeId));
-      await refreshKnowledge();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料の並べ替えに失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleExpandKnowledge(item: KnowledgeListItem) {
-    if (knowledgeExpandedId === item.knowledgeId) {
-      setKnowledgeExpandedId(null);
-      setKnowledgeEditing(false);
-      return;
-    }
-    try {
-      setLoading(true);
-      onError(null);
-      const result = await api.getKnowledgeContent(projectId, item.knowledgeId);
-      setKnowledgeExpandedId(item.knowledgeId);
-      setKnowledgeTitleDraft(result.meta.title);
-      setKnowledgeContentDraft(result.content);
-      setKnowledgeEditing(false);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料本文の読み込みに失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleSaveKnowledge(item: KnowledgeListItem) {
-    try {
-      setLoading(true);
-      onError(null);
-      await api.updateKnowledge(projectId, item.knowledgeId, {
-        title: knowledgeTitleDraft,
-        content: knowledgeContentDraft,
-      });
-      await refreshKnowledge();
-      setKnowledgeEditing(false);
-      onFlashMessage('資料を保存しました');
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料の保存に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleCancelKnowledgeEdit(item: KnowledgeListItem) {
-    try {
-      setLoading(true);
-      onError(null);
-      const result = await api.getKnowledgeContent(projectId, item.knowledgeId);
-      setKnowledgeTitleDraft(result.meta.title);
-      setKnowledgeContentDraft(result.content);
-      setKnowledgeEditing(false);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料本文の再読み込みに失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleDeleteKnowledge(item: KnowledgeListItem) {
-    if (
-      !(await confirmAction(`資料「${item.title}」を削除しますか？`, {
-        confirmLabel: '削除',
-        danger: true,
-      }))
-    ) return;
-    try {
-      setLoading(true);
-      onError(null);
-      await api.deleteKnowledge(projectId, item.knowledgeId);
-      if (knowledgeExpandedId === item.knowledgeId) {
-        setKnowledgeExpandedId(null);
-        setKnowledgeEditing(false);
-      }
-      await refreshKnowledge();
-      onFlashMessage('資料を削除しました');
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '資料の削除に失敗しました');
-    } finally {
-      setLoading(false);
-    }
-  }
-
   const worldIsEmpty = !world.foundation.trim() && !world.initialSituation.trim();
   const activeWorldText = world[worldSubTab];
   const activeWorldDraft =
@@ -857,12 +703,6 @@ export default function WorkSettingsTab({
   const isBaseSystemPromptCustomized =
     (presets.baseSystemPrompt ?? defaultBaseSystemPrompt).trim() !==
     defaultBaseSystemPrompt.trim();
-  const enabledKnowledgeChars = knowledgeItems
-    .filter((item) => item.enabled && item.contentStatus === 'ok')
-    .reduce((sum, item) => sum + item.charCount, 0);
-  const brokenEnabledKnowledgeCount = knowledgeItems.filter(
-    (item) => item.enabled && item.contentStatus !== 'ok'
-  ).length;
   const refineNudgeMessage = refineReviewStatus?.needsReview
     ? buildRefineNudgeMessage(refineReviewStatus)
     : null;
