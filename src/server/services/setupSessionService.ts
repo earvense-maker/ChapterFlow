@@ -104,7 +104,6 @@ export async function listSetupSessions(): Promise<SetupSessionSummary[]> {
     })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
-
 export async function createSetupSession(
   body: CreateSetupSessionBody
 ): Promise<SetupSessionResponse> {
@@ -1195,4 +1194,3 @@ function normalizeSessionError(err: unknown): SetupSessionError {
     createdAt: nowIso(),
   };
 }
-

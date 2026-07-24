@@ -50,7 +50,6 @@ interface StoryStateRefreshJob {
   generationId: string;
   queuedGenerationIds: string[];
 }
-
 // NOTE: これは二重抽出を防ぐプロセス内キューであり、物語状態の正本ではない。
 // 再起動後は永続化された pending を readStoryStateBacklog から手動回復できる。
 const storyStateRefreshJobs = new Map<string, StoryStateRefreshJob>();
@@ -605,4 +604,3 @@ export async function buildReaderContextUsage(
     promptTokenCount,
   });
 }
-

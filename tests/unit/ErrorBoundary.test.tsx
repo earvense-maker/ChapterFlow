@@ -3,20 +3,38 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
 import ErrorBoundary from '../../src/client/components/ErrorBoundary';
 
+const EXPECTED_RENDER_ERROR = '描画中に壊れた';
+let unexpectedConsoleErrors: string[] = [];
+
 // 描画時に投げる爆弾コンポーネント。shouldThrow で挙動を切り替える。
 function Bomb({ shouldThrow }: { shouldThrow: boolean }) {
-  if (shouldThrow) throw new Error('描画中に壊れた');
+  if (shouldThrow) throw new Error(EXPECTED_RENDER_ERROR);
   return <div>正常な内容</div>;
+}
+
+function preventExpectedWindowError(event: ErrorEvent) {
+  if (event.error instanceof Error && event.error.message === EXPECTED_RENDER_ERROR) {
+    event.preventDefault();
+  }
 }
 
 describe('ErrorBoundary', () => {
   beforeEach(() => {
-    // 境界が握りつぶす前に React が出す想定内のエラーログを抑制する。
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    unexpectedConsoleErrors = [];
+    window.addEventListener('error', preventExpectedWindowError);
+    // NOTE: 期待した描画例外だけを抑制し、それ以外の console.error はテスト失敗にする。
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      const rendered = args.map(String).join(' ');
+      if (!rendered.includes(EXPECTED_RENDER_ERROR)) {
+        unexpectedConsoleErrors.push(rendered);
+      }
+    });
   });
 
   afterEach(() => {
+    window.removeEventListener('error', preventExpectedWindowError);
     vi.restoreAllMocks();
+    expect(unexpectedConsoleErrors).toEqual([]);
   });
 
   it('renders children unchanged when nothing throws', () => {

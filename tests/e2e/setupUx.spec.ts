@@ -2,10 +2,22 @@ import { test, expect } from '@playwright/test';
 
 test('相談内容が空なら作品化できず、種メモ保存後は確認画面を表示する', async ({ page }) => {
   let session = createSession();
+  const inertWarnings: string[] = [];
+  const pageErrors: string[] = [];
   let committedBody: {
     plan: { project: { title: string }; characters: Array<{ role: string }>; firstWishSuggestion?: string };
     revision: number;
   } | null = null;
+
+  page.on('console', (message) => {
+    const text = message.text();
+    if (text.includes('non-boolean attribute') && text.includes('inert')) {
+      inertWarnings.push(text);
+    }
+  });
+  page.on('pageerror', (error) => {
+    pageErrors.push(error.message);
+  });
 
   await page.route('**/api/projects', async (route) => {
     await route.fulfill({ json: [] });
@@ -110,6 +122,28 @@ test('相談内容が空なら作品化できず、種メモ保存後は確認�
 
   const dialog = page.getByRole('dialog', { name: '作品にする内容を確認' });
   await expect(dialog).toBeVisible();
+  const backgroundRoots = page.locator('.setup-header, .setup-model-bar, .setup-main');
+  await expect(backgroundRoots).toHaveCount(4);
+  expect(
+    await backgroundRoots.evaluateAll((elements) =>
+      elements.map((element) => ({
+        inert: element.getAttribute('inert'),
+        ariaHidden: element.getAttribute('aria-hidden'),
+      }))
+    )
+  ).toEqual(
+    Array.from({ length: 4 }, () => ({ inert: '', ariaHidden: 'true' }))
+  );
+  const backgroundSummary = page.getByText('変更', { exact: true });
+  expect(
+    await backgroundSummary.evaluate((element) => {
+      (element as HTMLElement).focus();
+      return document.activeElement === element;
+    })
+  ).toBe(false);
+  await expect(dialog.getByLabel('作品タイトル')).toBeFocused();
+  expect(inertWarnings).toEqual([]);
+  expect(pageErrors).toEqual([]);
   await expect(dialog.getByLabel('作品タイトル')).toHaveValue('仮題：雨の図書館');
   await expect(dialog.getByLabel('世界の土台')).toHaveValue('');
   await expect(dialog.getByLabel('開始時点の状況')).toHaveValue('');
