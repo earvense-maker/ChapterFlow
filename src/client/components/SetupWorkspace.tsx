@@ -7,7 +7,6 @@ import PresetSelector, { type PresetCategory } from './PresetSelector';
 import { useNotificationCenter } from './NotificationCenter';
 import {
   collectDraftChanges,
-  ROLE_LABELS,
   type DraftChanges,
   type DraftChangeSummary,
   type StringDraftSection,
@@ -25,11 +24,11 @@ import {
   DraftTextList,
   type PendingDescriptor,
 } from './setupWorkspace/draftEditors';
+import SetupCommitDialog from './setupWorkspace/SetupCommitDialog';
 import { hasMeaningfulSetupContent } from '@shared/setupContent';
 import { normalizeActivePresetIds } from '@shared/presetMigration';
 import type {
   ActivePresets,
-  CharacterRole,
   GenerationNotificationSettings,
   ModelProviderInfo,
   SetupCommitPlan,
@@ -1523,151 +1522,16 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         </aside>
       </main>
       {commitPlan && (
-        <div className="setup-modal-backdrop">
-          <section
-            className="setup-commit-review"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="setup-commit-title"
-          >
-            <header>
-              <h2 id="setup-commit-title">作品にする内容を確認</h2>
-              <p>タイトル、作品の核、人物、第1話の入り方を確認してください。作成後も作品設定から変更できます。</p>
-            </header>
-            {commitError && <div className="error-toast" role="alert">{commitError}</div>}
-            <label>
-              作品タイトル
-              <input
-                autoFocus
-                value={commitPlan.project.title}
-                onChange={(event) =>
-                  setCommitPlan((current) => current ? {
-                    ...current,
-                    project: { ...current.project, title: event.target.value },
-                  } : current)
-                }
-                maxLength={100}
-              />
-            </label>
-            <label>
-              作品の核
-              <textarea
-                value={commitPlan.coreConcept ?? ''}
-                onChange={(event) =>
-                  setCommitPlan((current) => current ? { ...current, coreConcept: event.target.value } : current)
-                }
-                rows={3}
-              />
-            </label>
-            <label>
-              世界の土台
-              <textarea
-                value={commitPlan.world.foundation}
-                onChange={(event) =>
-                  setCommitPlan((current) => current
-                    ? {
-                        ...current,
-                        world: { ...current.world, foundation: event.target.value },
-                      }
-                    : current)
-                }
-                rows={4}
-                placeholder="物語進行で変わらない法則・地理・文化など"
-              />
-            </label>
-            <label>
-              開始時点の状況
-              <textarea
-                value={commitPlan.world.initialSituation}
-                onChange={(event) =>
-                  setCommitPlan((current) => current
-                    ? {
-                        ...current,
-                        world: { ...current.world, initialSituation: event.target.value },
-                      }
-                    : current)
-                }
-                rows={4}
-                placeholder="勢力関係・季節・直近の出来事など、進行で変わりうる状況"
-              />
-            </label>
-            <label>
-              第1話冒頭への希望
-              <textarea
-                value={commitPlan.firstWishSuggestion ?? ''}
-                onChange={(event) =>
-                  setCommitPlan((current) => current
-                    ? { ...current, firstWishSuggestion: event.target.value }
-                    : current)
-                }
-                rows={3}
-                maxLength={300}
-              />
-              <span className="settings-help">作品化後、Readerの第1話への希望として入ります。</span>
-            </label>
-            <div>
-              <h3>人物</h3>
-              {commitPlan.characters.length === 0 ? (
-                <p className="setup-draft-placeholder">人物はまだ設定されていません。</p>
-              ) : (
-                <ul className="setup-commit-edit-list">
-                  {commitPlan.characters.map((character, index) => (
-                    <li className="setup-commit-edit-row" key={character.characterId}>
-                      <input
-                        aria-label={`人物${index + 1}の名前`}
-                        value={character.name}
-                        placeholder={`人物${index + 1}の名前`}
-                        onChange={(event) =>
-                          setCommitPlan((current) => current ? {
-                            ...current,
-                            characters: current.characters.map((item, itemIndex) =>
-                              itemIndex === index ? { ...item, name: event.target.value } : item
-                            ),
-                          } : current)
-                        }
-                      />
-                      <select
-                        aria-label={`人物${index + 1}の役割`}
-                        value={character.role}
-                        onChange={(event) =>
-                          setCommitPlan((current) => current ? {
-                            ...current,
-                            characters: current.characters.map((item, itemIndex) =>
-                              itemIndex === index
-                                ? { ...item, role: event.target.value as CharacterRole }
-                                : item
-                            ),
-                          } : current)
-                        }
-                      >
-                        {Object.entries(ROLE_LABELS).map(([value, label]) => (
-                          <option key={value} value={value}>{label}</option>
-                        ))}
-                      </select>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div className="setup-commit-row-actions">
-              <button
-                type="button"
-                onClick={closeCommitReview}
-                disabled={committing}
-              >
-                相談に戻る
-              </button>
-              <button
-                type="button"
-                className="primary"
-                onClick={confirmCommit}
-                disabled={committing || !commitPlan.project.title.trim()}
-              >
-                {committing ? <GeneratingLabel text="作品を保存中..." /> : 'この内容で作品を作る'}
-              </button>
-            </div>
-          </section>
-        </div>
+        <SetupCommitDialog
+          plan={commitPlan}
+          error={commitError}
+          committing={committing}
+          onPlanChange={(update) =>
+            setCommitPlan((current) => current ? update(current) : current)
+          }
+          onClose={closeCommitReview}
+          onConfirm={confirmCommit}
+        />
       )}
     </div>
   );
