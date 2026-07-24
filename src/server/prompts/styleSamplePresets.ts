@@ -6,11 +6,6 @@ const MAX_TEXT_CHARS = 1000;
 
 let cache: StyleSamplePreset[] | null = null;
 
-interface StyleSamplesFile {
-  version: number;
-  items: StyleSamplePreset[];
-}
-
 export async function loadStyleSamples(): Promise<StyleSamplePreset[]> {
   if (cache) return cache;
   const text = await fs.readFile(STYLE_SAMPLES_PATH, 'utf-8');

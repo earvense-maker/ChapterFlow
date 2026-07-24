@@ -6,7 +6,6 @@
 
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
-import * as projectService from './projectService.js';
 import { buildPrompt } from '../prompts/promptBuilder.js';
 import * as expressionService from './expressionService.js';
 import * as knowledgeService from './knowledgeService.js';
@@ -33,7 +32,6 @@ import { estimateContextUsage } from '../utils/contextEstimate.js';
 
 import type {
   ContextUsageEstimate,
-  Character,
   EpisodeRecord,
   GenerationRecord,
   Project,

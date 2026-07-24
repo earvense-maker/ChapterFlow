@@ -38,7 +38,6 @@ import {
 import type {
   Character,
   GenerationRecord,
-  GenerationStatus,
   Project,
   ProjectState,
   RefineAutomationRun,
@@ -82,15 +81,6 @@ interface AutomationScanSnapshot {
   sourceStoryStateUpdatedAt: string | null;
   sourceAcceptedGenerationCount: number;
   promptSnapshot: string;
-}
-
-interface ParsedAutomationProposal {
-  summary: string;
-  operations: RefinePatchOperation[];
-  evidenceScope: 'static' | 'accepted' | 'draft' | 'mixed';
-  evidenceQuote?: string;
-  evidenceSourceGenerationId?: string;
-  evidenceSourceRef?: string;
 }
 
 // NOTE: この関数は generationService が保持する project write lock の内側から呼ぶ。

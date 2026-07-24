@@ -37,13 +37,11 @@ import type {
   EpisodeRecord,
   FinishReason,
   GenerationRecord,
-  Memory,
   Project,
   ProjectState,
   ReaderState,
   SceneNavigationDirection,
   SceneRecord,
-  StoryStateRefreshStatus,
 } from '../types/index.js';
 export { GenerateError } from './generationErrors.js';
 import {
@@ -61,7 +59,6 @@ import {
   buildStoryStateRefreshStatus,
   findGeneration,
   getReaderState,
-  refreshStoryState,
   startStoryStateRefreshAfterAcceptance,
   writeStoryStateRefreshUnlocked,
 } from './generationReaderState.js';

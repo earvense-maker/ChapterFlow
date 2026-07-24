@@ -277,7 +277,7 @@ function normalizeCharacters(value: unknown, now: string, session: SetupSession)
   return characters.length > 0 ? characters : normalizeDraftCharacters(session, now);
 }
 
-function normalizeCharacter(value: unknown, now: string): Character | null {
+function normalizeCharacter(value: unknown, _now: string): Character | null {
   if (!isRecord(value)) return null;
   const description = asString(value.description);
   const name = asString(value.name);
@@ -341,7 +341,7 @@ function normalizeDialogueExamplesForCharacter(value: unknown): string[] {
   return result;
 }
 
-function normalizeDraftCharacters(session: SetupSession, now: string): Character[] {
+function normalizeDraftCharacters(session: SetupSession, _now: string): Character[] {
   return session.draft.characters
     .filter((character) => character.status === 'active')
     .map((character): Character | null => {

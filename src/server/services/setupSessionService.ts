@@ -29,7 +29,6 @@ import { hasMeaningfulSetupContent } from '../../shared/setupContent.js';
 import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
-  AdapterGenerateResult,
   CommitSetupBody,
   CreateSetupSessionBody,
   FinishReason,
@@ -511,7 +510,6 @@ async function* runChatTurnStream(
 
   let generatedText = '';
   let finishReason: FinishReason = 'stop';
-  let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
   let debugInfo: string | undefined;
   let markerIndex: number | null = null;
   let emittedIndex = 0;
@@ -544,7 +542,6 @@ async function* runChatTurnStream(
         }
       } else {
         finishReason = event.finishReason;
-        rawUsage = event.rawUsage;
         debugInfo = event.debugInfo;
       }
     }

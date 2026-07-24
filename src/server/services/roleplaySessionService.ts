@@ -28,7 +28,6 @@ import {
   ROLEPLAY_RECENT_MESSAGES,
   ROLEPLAY_RECENT_MESSAGES_MAX_CHARS,
   ROLEPLAY_SUMMARY_MAX_CHARS,
-  ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS,
   ROLEPLAY_WORLD_MAX_CHARS,
 } from './roleplayPromptBuilder.js';
 import {
@@ -42,13 +41,11 @@ import {
 } from '../prompts/systemPrompt.js';
 import type {
   ActivePresets,
-  AdapterGenerateResult,
   Character,
   FinishReason,
   RoleplayContextSnapshot,
   RoleplayMessage,
   RoleplaySession,
-  RoleplaySessionStatus,
   RoleplaySessionSummary,
   RoleplaySessionView,
 } from '../types/index.js';

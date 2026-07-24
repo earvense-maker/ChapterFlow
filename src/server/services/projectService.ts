@@ -18,7 +18,6 @@ import {
 export { normalizeCharacterForStorage, normalizeCharactersForStorage };
 import {
   DEFAULT_ACTIVE_PRESET_IDS,
-  DEFAULT_PROJECT_TYPE,
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
   DEFAULT_STYLE_VARIATION_SETTINGS,
   NEW_PROJECT_REFINE_AUTOMATION_SETTINGS,
@@ -293,23 +292,6 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     await storage.deleteProjectDir(projectId).catch(() => undefined);
     throw err;
   }
-}
-
-async function copySettings(sourceId: string, destId: string): Promise<void> {
-  const presets = await storage.readPresets(sourceId);
-  if (presets) await storage.writePresets(destId, presets);
-
-  const characters = await storage.readCharacters(sourceId);
-  await storage.writeCharacters(destId, characters);
-
-  const memories = await storage.readMemories(sourceId);
-  await storage.writeMemories(destId, memories);
-
-  const world = await storage.readWorld(sourceId);
-  await storage.writeWorld(destId, world);
-
-  const storyState = await storage.readStoryState(sourceId);
-  if (storyState) await storage.writeStoryState(destId, storyState);
 }
 
 export async function getProject(projectId: string): Promise<Project | null> {
