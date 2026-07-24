@@ -1,5 +1,5 @@
 import { ROLEPLAY_LIMITS } from './defaults.js';
-import type { Character, CharacterRole, CharacterTrait } from './types.js';
+import type { Character, CharacterRole, CharacterTrait } from './types/index.js';
 
 export const CHARACTER_TRAIT_LIMITS = {
   count: 4,

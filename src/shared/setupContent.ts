@@ -1,4 +1,4 @@
-import type { SetupSession } from './types.js';
+import type { SetupSession } from './types/index.js';
 
 /**
  * Returns whether a setup session contains enough user-authored material to

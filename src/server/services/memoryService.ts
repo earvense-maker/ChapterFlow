@@ -1,7 +1,7 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
-import { MEMORY_CONTENT_MAX_CHARS } from '../../shared/types.js';
+import { MEMORY_CONTENT_MAX_CHARS } from '../../shared/types/index.js';
 import type { Memory, MemoryImportance, MemoryType } from '../types/index.js';
 
 const MEMORY_TYPES: MemoryType[] = ['storyFact', 'preference', 'negative'];

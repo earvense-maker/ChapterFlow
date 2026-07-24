@@ -1,5 +1,5 @@
 import { DEFAULT_ACTIVE_PRESET_IDS } from './defaults.js';
-import type { ActivePresets } from './types.js';
+import type { ActivePresets } from './types/index.js';
 
 export const PRESET_CATEGORY_ORDER = [
   'narration',

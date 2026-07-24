@@ -4,7 +4,7 @@ import {
   normalizeGenerationStyleProfile,
   normalizeStyleVariationSettings,
 } from '../../shared/defaults.js';
-import { STYLE_PROFILE_SCHEMA_VERSION } from '../../shared/types.js';
+import { STYLE_PROFILE_SCHEMA_VERSION } from '../../shared/types/index.js';
 import type {
   GenerationRecord,
   GenerationStyleProfile,

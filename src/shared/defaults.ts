@@ -1,4 +1,4 @@
-import { STYLE_PROFILE_SCHEMA_VERSION } from './types.js';
+import { STYLE_PROFILE_SCHEMA_VERSION } from './types/index.js';
 import type {
   ActivePresets,
   GenerationStyleProfile,
@@ -11,7 +11,7 @@ import type {
   SetupPurpose,
   StyleAxis,
   StyleVariationSettings,
-} from './types.js';
+} from './types/index.js';
 
 export const DEFAULT_ACTIVE_PRESET_IDS = {
   narration: 'third-close',
