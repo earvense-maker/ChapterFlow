@@ -848,7 +848,11 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
 
   return (
     <div className="setup-workspace">
-      <header className="setup-header" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
+      {/* NOTE: React 18 は inert を既知のboolean属性として扱わず、inert={false} で
+          「非boolean属性にfalseを渡した」警告を出す。commitPlan 表示中だけ属性を付け、
+          非表示時は undefined で属性ごと省く（React 公式の回避策）。aria-hidden は
+          既知の属性なので Boolean のままでよい。 */}
+      <header className="setup-header" inert={commitPlan ? true : undefined} aria-hidden={Boolean(commitPlan)}>
         <div>
           <h1>
             {purpose === 'roleplay' ? 'キャラと話す作品を作る' : '相談して作る'}
@@ -910,7 +914,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         <section
           className="setup-model-bar"
           aria-label="この相談のモデル"
-          inert={Boolean(commitPlan)}
+          inert={commitPlan ? true : undefined}
           aria-hidden={Boolean(commitPlan)}
         >
           <div>
@@ -965,7 +969,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         <section
           className="setup-model-bar setup-style-settings-bar"
           aria-label="この作品の作風設定"
-          inert={Boolean(commitPlan)}
+          inert={commitPlan ? true : undefined}
           aria-hidden={Boolean(commitPlan)}
         >
           <details>
@@ -988,7 +992,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         </section>
       )}
 
-      <main className="setup-main" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
+      <main className="setup-main" inert={commitPlan ? true : undefined} aria-hidden={Boolean(commitPlan)}>
           <section className="setup-chat" aria-label="相談チャット">
           <div className="setup-messages">
             {isColdStart ? (
