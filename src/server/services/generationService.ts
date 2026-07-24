@@ -7,41 +7,32 @@ import * as expressionService from './expressionService.js';
 import * as knowledgeService from './knowledgeService.js';
 import {
   buildEpisodeMarkdown,
-  getContextSummary,
   getCurrentSceneReferenceGenerationId,
-  getRecentContext,
 } from '../prompts/contextAssembler.js';
 import { adapterMap } from '../adapters/index.js';
-import { ModelAdapter, ModelAdapterError } from '../adapters/modelAdapter.js';
+import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import {
-  normalizeStoryState,
   revertLatestStoryStateDiffForGeneration,
-  updateStoryStateFromAcceptedScene,
-  withStoryStateLock,
 } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
-import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
+
 import { withProjectWriteLock } from './projectLock.js';
 export { withProjectWriteLock } from './projectLock.js';
 import {
   assertGenerationNotBlockedByMaintenance,
   MaintenanceInProgressError,
   maintenanceBlocksGeneration,
-  readAndNormalizeMaintenance,
   RefineAutomationError,
 } from './refineAutomationGuard.js';
-import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
-import { estimateContextUsage } from '../utils/contextEstimate.js';
+
 import {
   queueAcceptedGenerationStyleAnalysis,
   selectGenerationStyleProfile,
 } from './styleVariationService.js';
 import type {
   AdapterGenerateResult,
-  AdapterGenerateStreamEvent,
   ContextCompressionResult,
-  ContextUsageEstimate,
   Character,
   EpisodeRecord,
   FinishReason,
@@ -49,12 +40,40 @@ import type {
   Memory,
   Project,
   ProjectState,
-  ReaderNavigationState,
   ReaderState,
   SceneNavigationDirection,
   SceneRecord,
   StoryStateRefreshStatus,
 } from '../types/index.js';
+export { GenerateError } from './generationErrors.js';
+import {
+  GenerateError,
+  classifyEmptyResponse,
+  mapErrorMessage,
+  throwIfAborted,
+} from './generationErrors.js';
+import {
+  generateTextStreamWithPenaltyRetry,
+  generateWithAdapter,
+} from './generationAdapter.js';
+import {
+  buildReaderContextUsage,
+  buildStoryStateRefreshStatus,
+  findGeneration,
+  getReaderState,
+  refreshStoryState,
+  startStoryStateRefreshAfterAcceptance,
+  writeStoryStateRefreshUnlocked,
+} from './generationReaderState.js';
+export {
+  calculateStoryStateBacklog,
+  findGeneration,
+  getGenerationMarkdown,
+  getReaderState,
+  readStoryStateBacklog,
+  refreshStoryState,
+  startStoryStateRefreshAfterAcceptance,
+} from './generationReaderState.js';
 
 const TEMPERATURE_DEFAULT = 0.9;
 const TEMPERATURE_VARIATE_DELTA = 0.15;
@@ -78,19 +97,7 @@ function resolveTemperature(
 // 非ストリーミングでは従来どおり総時間。非ストリーミングで長い文字数設定＋遅い
 // モデルだと総時間側に当たりうるが、既定はストリーミングなので据え置き。
 const TIMEOUT_MS = 120_000;
-const STORY_STATE_TIMEOUT_MS = 30_000;
 const SUMMARY_CHUNK_CHARS = 20_000;
-
-
-interface StoryStateRefreshJob {
-  promise: Promise<void>;
-  generationId: string;
-  queuedGenerationIds: string[];
-}
-
-// NOTE: これは二重抽出を防ぐプロセス内キューであり、物語状態の正本ではない。
-// 再起動後は永続化された pending を readStoryStateBacklog から手動回復できる。
-const storyStateRefreshJobs = new Map<string, StoryStateRefreshJob>();
 
 export interface GenerateOptions {
   wish: string;
@@ -570,135 +577,6 @@ async function markAwaitingMaintenanceStaleUnlocked(
   await maintenanceService.markAutomationRunStaleUnlocked(projectId, maintenance.runId, reason);
 }
 
-async function generateWithAdapter(
-  adapter: ModelAdapter,
-  request: Parameters<ModelAdapter['generateText']>[0]
-) {
-  try {
-    const result = await adapter.generateText(request);
-    if (shouldRetryWithoutPenalty(result, request)) {
-      console.warn('Retrying generation without penalties after invalid argument error', {
-        provider: adapter.providerName,
-        code: result.errorCode,
-        message: result.errorMessage,
-      });
-      try {
-        return await adapter.generateText({
-          ...request,
-          frequencyPenalty: undefined,
-          presencePenalty: undefined,
-        });
-      } catch (retryErr) {
-        if (retryErr instanceof ModelAdapterError) {
-          throw new GenerateError(
-            mapErrorMessage(retryErr.code, retryErr.message),
-            retryErr.code,
-            retryErr.retryable
-          );
-        }
-        throw retryErr;
-      }
-    }
-    return result;
-  } catch (err) {
-    if (
-      err instanceof ModelAdapterError &&
-      isPenaltyUnsupportedError(err) &&
-      hasPenalty(request)
-    ) {
-      console.warn('Retrying generation without penalties after invalid argument error', {
-        provider: adapter.providerName,
-        code: err.code,
-        message: err.message,
-      });
-      try {
-        return await adapter.generateText({
-          ...request,
-          frequencyPenalty: undefined,
-          presencePenalty: undefined,
-        });
-      } catch (retryErr) {
-        if (retryErr instanceof ModelAdapterError) {
-          throw new GenerateError(
-            mapErrorMessage(retryErr.code, retryErr.message),
-            retryErr.code,
-            retryErr.retryable
-          );
-        }
-        throw retryErr;
-      }
-    }
-    if (err instanceof ModelAdapterError) {
-      throw new GenerateError(mapErrorMessage(err.code, err.message), err.code, err.retryable);
-    }
-    throw err;
-  }
-}
-
-async function* generateTextStreamWithPenaltyRetry(
-  adapter: ModelAdapter,
-  request: Parameters<NonNullable<ModelAdapter['generateTextStream']>>[0]
-): AsyncGenerator<AdapterGenerateStreamEvent> {
-  let yielded = false;
-  try {
-    for await (const event of adapter.generateTextStream!(request)) {
-      yielded = true;
-      yield event;
-    }
-  } catch (err) {
-    if (
-      !yielded &&
-      err instanceof ModelAdapterError &&
-      isPenaltyUnsupportedError(err) &&
-      hasPenalty(request)
-    ) {
-      console.warn('Retrying streaming generation without penalties after invalid argument error', {
-        provider: adapter.providerName,
-        code: err.code,
-        message: err.message,
-      });
-      for await (const event of adapter.generateTextStream!({
-        ...request,
-        frequencyPenalty: undefined,
-        presencePenalty: undefined,
-      })) {
-        yield event;
-      }
-      return;
-    }
-    throw err;
-  }
-}
-
-function hasPenalty(
-  request: Parameters<ModelAdapter['generateText']>[0]
-): boolean {
-  return Boolean(request.frequencyPenalty || request.presencePenalty);
-}
-
-function isPenaltyUnsupportedError(err: ModelAdapterError): boolean {
-  return isPenaltyUnsupportedSignal(err.code, err.message);
-}
-
-function shouldRetryWithoutPenalty(
-  result: AdapterGenerateResult,
-  request: Parameters<ModelAdapter['generateText']>[0]
-): boolean {
-  return (
-    result.finishReason === 'error' &&
-    hasPenalty(request) &&
-    isPenaltyUnsupportedSignal(result.errorCode, result.errorMessage)
-  );
-}
-
-function isPenaltyUnsupportedSignal(code?: string, message?: string): boolean {
-  // NOTE: 非ストリーミング adapters はHTTP 400を例外ではなく結果として返すため、
-  // code/message のどちらにプロバイダ固有情報が載っても拾えるようにしている。
-  const text = `${code ?? ''} ${message ?? ''}`;
-  if (/INVALID_ARGUMENT|invalid_request|unsupported_?param/i.test(text)) return true;
-  return code === 'api_error' && /\b400\b|bad request/i.test(message ?? '');
-}
-
 type TargetScene =
   | {
       mode: 'continue';
@@ -936,16 +814,6 @@ async function acceptGenerationUnlocked(
   };
 }
 
-export function startStoryStateRefreshAfterAcceptance(projectId: string, generationId: string): void {
-  void startStoryStateRefreshJob(projectId, generationId).catch((err) => {
-    console.warn('Story state refresh failed', {
-      projectId,
-      generationId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  });
-}
-
 async function writeProjectShortcut(projectId: string): Promise<void> {
   const project = await storage.readProject(projectId);
   if (!project) return;
@@ -1025,208 +893,6 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
   }
 
   return generation;
-}
-
-export async function refreshStoryState(projectId: string): Promise<ReaderState> {
-  const refreshRequest = await withProjectWriteLock(projectId, async () => {
-    // NOTE: check と job 登録を同じプロジェクトロックで行う。連打した手動再抽出が
-    // calculateStoryStateBacklog の await 境界で別々のモデル呼び出しへ分かれないようにする。
-    const activeJob = storyStateRefreshJobs.get(projectId);
-    if (activeJob) {
-      // NOTE: 完了処理の state.json 置換と ReaderState 読取りを同じロックで直列化する。
-      return { job: null, readerState: await getReaderState(projectId) };
-    }
-
-    const backlog = await calculateStoryStateBacklog(projectId);
-    if (backlog.length === 0) {
-      await writeStoryStateRefreshUnlocked(projectId, buildStoryStateRefreshStatus('fresh', null));
-      return { job: null, readerState: null };
-    }
-
-    const generationId = backlog[0].generationId;
-    await writeStoryStateRefreshUnlocked(
-      projectId,
-      buildStoryStateRefreshStatus('pending', generationId)
-    );
-    return { job: startStoryStateRefreshJob(projectId, generationId), readerState: null };
-  });
-  const job = refreshRequest.job;
-  if (!job) return refreshRequest.readerState ?? getReaderState(projectId);
-
-  await job;
-  return getReaderState(projectId);
-}
-
-function startStoryStateRefreshJob(projectId: string, generationId: string): Promise<void> {
-  const existing = storyStateRefreshJobs.get(projectId);
-  if (existing) {
-    if (
-      existing.generationId !== generationId &&
-      !existing.queuedGenerationIds.includes(generationId)
-    ) {
-      existing.queuedGenerationIds.push(generationId);
-    }
-    return existing.promise;
-  }
-
-  const job: StoryStateRefreshJob = {
-    promise: Promise.resolve(),
-    generationId,
-    queuedGenerationIds: [],
-  };
-  // NOTE: 背景抽出は採用時の AsyncLocalStorage 書込みスコープを継承させない。
-  // ただし実行中はデータディレクトリの切替・削除と競合しないよう、job 全体を
-  // 独立した書込みスコープとして保持する。
-  const promise = runOutsideDataDirWrite(() =>
-    withDataDirWrite(() => runStoryStateRefreshJob(projectId, job))
-  );
-  job.promise = promise;
-  storyStateRefreshJobs.set(projectId, job);
-  void promise.then(
-    () => {
-      if (storyStateRefreshJobs.get(projectId) === job) {
-        storyStateRefreshJobs.delete(projectId);
-      }
-    },
-    () => {
-      if (storyStateRefreshJobs.get(projectId) === job) {
-        storyStateRefreshJobs.delete(projectId);
-      }
-    }
-  );
-  return promise;
-}
-
-async function runStoryStateRefreshJob(projectId: string, job: StoryStateRefreshJob): Promise<void> {
-  // NOTE: クライアントの ReaderState 再取得より先にモデルが応答しても、旧データの
-  // processedGenerationIds 移行を確定してから新しい採用本文を追加する。
-  await calculateStoryStateBacklog(projectId);
-
-  while (true) {
-    const generationId = job.generationId;
-    const backlog = await readStoryStateBacklog(projectId);
-    const backlogItem = backlog.find((item) => item.generationId === generationId);
-
-    if (backlogItem) {
-      const generation = await findGeneration(projectId, generationId);
-      const refreshStatus =
-        !generation || generation.status !== 'accepted'
-          ? buildStoryStateRefreshStatus(
-              'stale',
-              generationId,
-              '未反映の採用済み本文が見つかりません。'
-            )
-          : await refreshStoryStateForGeneration(projectId, generation, {
-              skipRefreshStatusWrite: true,
-            });
-
-      if (refreshStatus.status === 'stale') {
-        const wroteOwnedStatus = await writeStoryStateRefreshIfOwned(
-          projectId,
-          generationId,
-          refreshStatus
-        );
-        if (!wroteOwnedStatus) {
-          await writeQueuedStoryStateRefreshStale(projectId, job);
-        }
-        if (refreshStatus.errorMessage) {
-          console.warn('Story state refresh produced no update', {
-            projectId,
-            generationId,
-            error: refreshStatus.errorMessage,
-          });
-        }
-        return;
-      }
-    }
-
-    const remaining = await readStoryStateBacklog(projectId);
-    const nextGenerationId = takeQueuedBacklogGenerationId(job, remaining);
-    if (nextGenerationId) {
-      job.generationId = nextGenerationId;
-      continue;
-    }
-
-    const terminalStatus = buildStoryStateRefreshStatus(
-      remaining.length > 0 ? 'stale' : 'fresh',
-      generationId,
-      remaining.length > 0
-        ? `物語の状態に未反映の場面があと${remaining.length}件あります。`
-        : undefined
-    );
-    await writeStoryStateRefreshIfOwned(projectId, generationId, terminalStatus);
-    if (terminalStatus.status === 'stale') {
-      if (terminalStatus.errorMessage) {
-        console.warn('Story state refresh produced no update', {
-          projectId,
-          generationId,
-          error: terminalStatus.errorMessage,
-        });
-      }
-      return;
-    }
-    return;
-  }
-}
-
-function takeQueuedBacklogGenerationId(
-  job: StoryStateRefreshJob,
-  backlog: AcceptedGenerationRef[]
-): string | null {
-  const currentBacklogIds = new Set(backlog.map((item) => item.generationId));
-  while (job.queuedGenerationIds.length > 0) {
-    const generationId = job.queuedGenerationIds.shift();
-    if (generationId && currentBacklogIds.has(generationId)) return generationId;
-  }
-  return null;
-}
-
-async function refreshStoryStateForGeneration(
-  projectId: string,
-  generation: GenerationRecord,
-  options: { skipRefreshStatusWrite?: boolean } = {}
-): Promise<StoryStateRefreshStatus> {
-  try {
-    await reloadCredentials();
-
-    const project = await storage.readProject(projectId);
-    if (!project) throw new Error(`Project not found: ${projectId}`);
-
-    const adapter = adapterMap[project.activeModelProvider];
-    if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
-
-    const [characters, worldText] = await Promise.all([
-      storage.readCharacters(projectId),
-      storage.readWorldPromptText(projectId),
-    ]);
-
-    const updated = await updateStoryStateFromAcceptedScene({
-      project,
-      adapter,
-      generation,
-      characters,
-      worldText,
-      timeoutMs: STORY_STATE_TIMEOUT_MS,
-      applyIfCurrent: (apply) =>
-        withProjectWriteLock(projectId, async () => {
-          if (!(await isCurrentAcceptedGeneration(projectId, generation))) return null;
-          return apply();
-        }),
-    });
-
-    if (!updated) {
-      // 差し替え採用により、モデル応答待ちの間に対象が現在の採用本文でなくなった。
-      // runStoryStateRefreshJob が待機列と最新 backlog を見て次の採用本文へ進む。
-      const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
-      return options.skipRefreshStatusWrite ? fresh : writeStoryStateRefresh(projectId, fresh);
-    }
-
-    const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
-    return options.skipRefreshStatusWrite ? fresh : writeStoryStateRefresh(projectId, fresh);
-  } catch (err) {
-    const stale = buildStoryStateRefreshStatus('stale', generation.generationId, storyStateErrorMessage(err));
-    return options.skipRefreshStatusWrite ? stale : writeStoryStateRefresh(projectId, stale);
-  }
 }
 
 export async function rejectGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
@@ -1459,443 +1125,13 @@ async function compressProjectContextUnlocked(projectId: string): Promise<Contex
   return { summary, contextUsage };
 }
 
-export async function findGeneration(
-  projectId: string,
-  generationId: string
-): Promise<GenerationRecord | null> {
-  return storage.findGenerationRecord(projectId, generationId);
-}
-
-export async function getGenerationMarkdown(
-  projectId: string,
-  generationId: string
-): Promise<{ filename: string; text: string } | null> {
-  const generation = await findGeneration(projectId, generationId);
-  if (!generation) return null;
-
-  const storedText = await storage.readGenerationMarkdown(projectId, generationId);
-  return {
-    filename: `${generationId}.md`,
-    text: storedText || generation.responseText,
-  };
-}
-
-type AcceptedGenerationRef = {
-  generationId: string;
-  episodeId: string;
-  sceneId: string;
-};
-
-export async function calculateStoryStateBacklog(projectId: string): Promise<AcceptedGenerationRef[]> {
-  const [accepted, state] = await Promise.all([
-    listAcceptedGenerationRefs(projectId),
-    storage.readState(projectId),
-  ]);
-  const pendingGenerationId =
-    state?.storyStateRefresh?.status === 'pending' ? state.storyStateRefresh.generationId : null;
-  const activeJob = storyStateRefreshJobs.get(projectId);
-  const protectedGenerationIds = new Set<string>(
-    [pendingGenerationId, activeJob?.generationId, ...(activeJob?.queuedGenerationIds ?? [])].filter(
-      (generationId): generationId is string => Boolean(generationId)
-    )
-  );
-
-  await withStoryStateLock(projectId, async () => {
-    const rawStoryState = await storage.readStoryState(projectId);
-    const hadProcessedIds = Array.isArray(rawStoryState?.processedGenerationIds);
-    if (hadProcessedIds) return;
-
-    // NOTE: 旧データは pending の採用本文だけを未処理として引き継ぐ。通常の
-    // Reader 読み込みではこの移行を書き込むが、レビューは read-only query を使う。
-    const storyState = normalizeStoryState(rawStoryState ?? undefined);
-    storyState.processedGenerationIds = accepted
-      .map((item) => item.generationId)
-      .filter((generationId) => !protectedGenerationIds.has(generationId));
-    await storage.writeStoryState(projectId, storyState);
-  });
-
-  return readStoryStateBacklog(projectId);
-}
-
-// NOTE: レビューや進行中ジョブが安全に利用できる、書き込みを行わない backlog query。
-// processedGenerationIds を持たない旧データは、現行移行規則と同じく pending の採用
-// generation だけを未抽出扱いにする。
-export async function readStoryStateBacklog(projectId: string): Promise<AcceptedGenerationRef[]> {
-  const [accepted, state, storyState] = await Promise.all([
-    listAcceptedGenerationRefs(projectId),
-    storage.readState(projectId),
-    storage.readStoryState(projectId),
-  ]);
-  const pendingGenerationId =
-    state?.storyStateRefresh?.status === 'pending' ? state.storyStateRefresh.generationId : null;
-  const processedIds = storyState?.processedGenerationIds;
-
-  if (!Array.isArray(processedIds)) {
-    return pendingGenerationId
-      ? accepted.filter((item) => item.generationId === pendingGenerationId)
-      : [];
-  }
-
-  const processed = new Set(processedIds);
-  return accepted.filter((item) => !processed.has(item.generationId));
-}
-
-async function isCurrentAcceptedGeneration(
-  projectId: string,
-  generation: GenerationRecord
-): Promise<boolean> {
-  const episode = await storage.readEpisodeRecord(projectId, generation.episodeId);
-  return (
-    episode?.scenes.some(
-      (scene) =>
-        scene.sceneId === generation.sceneId &&
-        scene.acceptedGenerationId === generation.generationId
-    ) ?? false
-  );
-}
-
-async function listAcceptedGenerationRefs(projectId: string): Promise<AcceptedGenerationRef[]> {
-  const episodeIds = await storage.listEpisodeIds(projectId);
-  const episodes = await Promise.all(
-    episodeIds.map((episodeId) => storage.readEpisodeRecord(projectId, episodeId))
-  );
-  return episodes
-    .filter((episode): episode is EpisodeRecord => episode !== null)
-    .sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt))
-    .flatMap((episode) =>
-      [...episode.scenes]
-        .sort((a, b) => a.order - b.order || a.createdAt.localeCompare(b.createdAt))
-        .flatMap((scene) =>
-          scene.acceptedGenerationId
-            ? [
-                {
-                  generationId: scene.acceptedGenerationId,
-                  episodeId: episode.episodeId,
-                  sceneId: scene.sceneId,
-                },
-              ]
-            : []
-        )
-    );
-}
-
 async function updateEpisodeMarkdown(projectId: string, episode: EpisodeRecord): Promise<void> {
   const text = await buildEpisodeMarkdown(projectId, episode);
   await storage.writeEpisodeText(projectId, episode.episodeId, text);
 }
 
-export class GenerateError extends Error {
-  constructor(
-    message: string,
-    public readonly code: string,
-    public readonly retryable: boolean
-  ) {
-    super(message);
-    this.name = 'GenerateError';
-  }
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) {
-    throw new GenerateError('生成が中断されました。', 'aborted', false);
-  }
-}
-
-// NOTE: adapter が空応答時に埋める debugInfo からセーフティ由来かを判定する。
-// promptFeedback.blockReason（PROHIBITED_CONTENT / SAFETY 等）か、blocked=true の
-// candidateSafety が入っていれば「解除できない安全フィルタ」と見なす。HIGH でも
-// blocked=false の評価はあり得るため、確率だけではブロック扱いにしない。
-function classifyEmptyResponse(debugInfo?: string): { code: string; retryable: boolean } {
-  if (isSafetyBlockedDiagnostic(debugInfo)) {
-    return { code: 'safety_blocked', retryable: false };
-  }
-  return { code: 'empty_response', retryable: true };
-}
-
-function isSafetyBlockedDiagnostic(debugInfo?: string): boolean {
-  return Boolean(
-    debugInfo &&
-      (/promptBlockReason=/.test(debugInfo) || /candidateSafety=\S*\(blocked\)/.test(debugInfo))
-  );
-}
-
-function mapErrorMessage(code?: string, detail?: string): string {
-  let base: string;
-  switch (code) {
-    case 'api_key_missing':
-      base = 'APIキーが設定されていません。設定画面からAPIキーを入力してください。';
-      break;
-    case 'invalid_api_key':
-      base = 'APIキーが無効です。設定を確認してください。';
-      break;
-    case 'payment_required':
-      base = 'APIキーのクレジットが不足しています。プロバイダー側の残高や利用上限を確認してください。';
-      break;
-    case 'permission_denied':
-      base = 'APIキーにこのモデルを利用する権限がないか、プロバイダー側で拒否されました。';
-      break;
-    case 'rate_limit':
-      base = 'リクエスト制限に達しました。しばらくしてから再試行してください。';
-      break;
-    case 'timeout':
-      base = '生成がタイムアウトしました。出力文量を下げるか、再試行してください。';
-      break;
-    case 'aborted':
-      base = '生成が中断されました。';
-      break;
-    case 'network_error':
-      base = 'モデルサービスに接続できませんでした。ネットワーク設定を確認して再試行してください。';
-      break;
-    case 'server_error':
-    case 'service_unavailable':
-      base = 'モデルサービスで一時的な問題が発生しました。再試行してください。';
-      break;
-    case 'content_filter':
-    case 'safety_blocked':
-      base =
-        'AIの安全フィルタでブロックされ、本文が生成されませんでした。Geminiは解除できない固定フィルタ（PROHIBITED_CONTENT等）を持つため、創作用途では設定画面からDeepSeekへの切り替えをおすすめします。';
-      break;
-    case 'empty_response':
-      base =
-        'モデルからの本文が空でした。出力上限（maxOutputTokens）が不足しているか、モデル名が誤っている可能性があります。';
-      break;
-    default:
-      base = '生成に失敗しました。設定画面のプロバイダー、モデル名、APIキーを確認してください。';
-  }
-
-  const safeDetail = sanitizeErrorDetail(detail);
-  if (!safeDetail || safeDetail === base) return base;
-  return `${base}\n詳細: ${safeDetail}`;
-}
-
-function sanitizeErrorDetail(detail?: string): string {
-  if (!detail) return '';
-  const collapsed = detail.replace(/\s+/g, ' ').trim();
-  if (!collapsed) return '';
-  return collapsed.length > 500 ? `${collapsed.slice(0, 500)}...` : collapsed;
-}
-
-export async function getReaderState(projectId: string): Promise<ReaderState> {
-  // NOTE: ReaderState は再起動後に最初に読まれやすい経路。期限切れで process 内 job が
-  // 無い scanning/applying/reverting をここで failed に正規化し、永久ロックを残さない。
-  await readAndNormalizeMaintenance(projectId);
-  const project = await storage.readProject(projectId);
-  const state = await storage.readState(projectId);
-  if (!project || !state) throw new Error(`Project not found: ${projectId}`);
-
-  const [memories, knowledgeFiles] = await Promise.all([
-    storage.readMemories(projectId),
-    knowledgeService.listKnowledge(projectId),
-  ]);
-
-  let currentEpisode: EpisodeRecord | null = null;
-  let currentScene: SceneRecord | null = null;
-  let currentGeneration: GenerationRecord | null = null;
-
-  if (state.currentEpisodeId) {
-    currentEpisode = await storage.readEpisodeRecord(projectId, state.currentEpisodeId);
-  }
-  if (currentEpisode && state.currentSceneId) {
-    currentScene = currentEpisode.scenes.find((s) => s.sceneId === state.currentSceneId) ?? null;
-  }
-  if (state.selectedDraftGenerationId) {
-    currentGeneration = await findGeneration(projectId, state.selectedDraftGenerationId);
-  }
-  if (!currentGeneration && currentScene?.acceptedGenerationId) {
-    currentGeneration = await findGeneration(projectId, currentScene.acceptedGenerationId);
-  }
-
-  const navigation = buildNavigationState(currentEpisode, currentScene);
-  const contextUsage = await buildReaderContextUsage(project, state, '');
-  const contextSummary = await storage.readContextSummary(projectId);
-  const storyStateBacklogCount = (await calculateStoryStateBacklog(projectId)).length;
-  const stateWithBacklog: ProjectState = {
-    ...state,
-    storyStateBacklogCount,
-  };
-
-  return {
-    project,
-    state: stateWithBacklog,
-    storyStateBacklogCount,
-    currentEpisode,
-    currentScene,
-    currentGeneration,
-    memories,
-    knowledgeFiles,
-    navigation,
-    contextUsage,
-    contextSummaryExcerpt: contextSummary.slice(0, 240),
-  };
-}
-
-async function writeStoryStateRefresh(
-  projectId: string,
-  storyStateRefresh: StoryStateRefreshStatus
-): Promise<StoryStateRefreshStatus> {
-  return withProjectWriteLock(projectId, () =>
-    writeStoryStateRefreshUnlocked(projectId, storyStateRefresh)
-  );
-}
-
-async function writeStoryStateRefreshIfOwned(
-  projectId: string,
-  generationId: string,
-  storyStateRefresh: StoryStateRefreshStatus
-): Promise<boolean> {
-  return withProjectWriteLock(projectId, async () => {
-    const state = await storage.readState(projectId);
-    if (
-      !state ||
-      state.storyStateRefresh?.status !== 'pending' ||
-      state.storyStateRefresh.generationId !== generationId
-    ) {
-      return false;
-    }
-    await storage.writeState(projectId, { ...state, storyStateRefresh });
-    return true;
-  });
-}
-
-async function writeQueuedStoryStateRefreshStale(
-  projectId: string,
-  job: StoryStateRefreshJob
-): Promise<boolean> {
-  const queuedGenerationIds = new Set(job.queuedGenerationIds);
-  return withProjectWriteLock(projectId, async () => {
-    const state = await storage.readState(projectId);
-    const currentRefresh = state?.storyStateRefresh;
-    if (
-      !state ||
-      currentRefresh?.status !== 'pending' ||
-      !currentRefresh.generationId ||
-      !queuedGenerationIds.has(currentRefresh.generationId)
-    ) {
-      return false;
-    }
-    await storage.writeState(projectId, {
-      ...state,
-      storyStateRefresh: buildStoryStateRefreshStatus(
-        'stale',
-        currentRefresh.generationId,
-        '先に採用した場面の状態整理に失敗したため、未反映の場面があります。再抽出してください。'
-      ),
-    });
-    return true;
-  });
-}
-
-async function writeStoryStateRefreshUnlocked(
-  projectId: string,
-  storyStateRefresh: StoryStateRefreshStatus
-): Promise<StoryStateRefreshStatus> {
-  const state = await storage.readState(projectId);
-  if (!state) throw new Error(`State not found: ${projectId}`);
-  await storage.writeState(projectId, {
-    ...state,
-    storyStateRefresh,
-  });
-  return storyStateRefresh;
-}
-
-function buildStoryStateRefreshStatus(
-  status: StoryStateRefreshStatus['status'],
-  generationId: string | null,
-  errorMessage?: string
-): StoryStateRefreshStatus {
-  return {
-    status,
-    generationId,
-    updatedAt: nowIso(),
-    ...(errorMessage ? { errorMessage } : {}),
-  };
-}
-
-function storyStateErrorMessage(err: unknown): string {
-  if (err instanceof ModelAdapterError) return mapErrorMessage(err.code, err.message);
-  if (err instanceof GenerateError) return err.message;
-  if (err instanceof Error) return sanitizeErrorDetail(err.message) || '物語の状態更新に失敗しました。';
-  return '物語の状態更新に失敗しました。';
-}
-
 // NOTE: withProjectWriteLock は projectLock.ts から re-export。移設理由の詳細は
 // projectLock.ts のコメント参照（refineAutomationGuard との循環 import 回避）。
-
-function buildNavigationState(
-  episode: EpisodeRecord | null,
-  currentScene: SceneRecord | null
-): ReaderNavigationState {
-  if (!episode || !currentScene) {
-    return {
-      currentSceneOrder: null,
-      totalScenes: episode?.scenes.length ?? 0,
-      hasPreviousScene: false,
-      hasNextScene: false,
-    };
-  }
-
-  const index = episode.scenes.findIndex((scene) => scene.sceneId === currentScene.sceneId);
-  return {
-    currentSceneOrder: index >= 0 ? index + 1 : null,
-    totalScenes: episode.scenes.length,
-    hasPreviousScene: index > 0,
-    hasNextScene: index >= 0 && index < episode.scenes.length - 1,
-  };
-}
-
-async function buildReaderContextUsage(
-  project: Project,
-  state: ProjectState,
-  wish: string
-): Promise<ContextUsageEstimate | null> {
-  const [memories, characters, worldText, presets, summaryText, recentContextText, knowledgeTexts] =
-    await Promise.all([
-      storage.readMemories(project.projectId),
-      storage.readCharacters(project.projectId),
-      storage.readWorldPromptText(project.projectId),
-      storage.readPresets(project.projectId),
-      getContextSummary(project.projectId),
-      getRecentContext(project.projectId, state.currentEpisodeId, state.currentSceneId),
-      knowledgeService.getEnabledKnowledgeTexts(project.projectId),
-    ]);
-
-  const bannedExpressions = await expressionService.resolveBannedExpressions(project.projectId);
-
-  const { systemInstructions, userPrompt } = await buildPrompt({
-    project,
-    state,
-    wish,
-    memories: memories.filter((m) => m.status === 'active'),
-    characters,
-    worldText,
-    baseSystemPrompt: presets?.baseSystemPrompt,
-    customSystemPrompt: presets?.customSystemPrompt,
-    bannedExpressions,
-    knowledgeTexts,
-  });
-  const [modelLimits, promptTokenCount] = await Promise.all([
-    resolveModelTokenLimits(project.activeModelProvider, project.activeModelName),
-    countPromptTokens(
-      project.activeModelProvider,
-      project.activeModelName,
-      systemInstructions,
-      userPrompt
-    ),
-  ]);
-
-  return estimateContextUsage({
-    provider: project.activeModelProvider,
-    modelName: project.activeModelName,
-    systemInstructions,
-    userPrompt,
-    outputLength: project.outputLength,
-    summaryText,
-    recentContextText,
-    knowledgeText: knowledgeTexts.map((item) => item.content).join('\n\n'),
-    modelLimits,
-    promptTokenCount,
-  });
-}
 
 function splitTextIntoChunks(text: string, maxChars: number): string[] {
   const chunks: string[] = [];
