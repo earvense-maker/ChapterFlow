@@ -51,11 +51,31 @@ import type {
   SetupSessionError,
   SetupSessionResponse,
   SetupSessionSummary,
-  SetupSuggestedAction,
   UpdateSetupDraftBody,
 } from '../types/index.js';
+import {
+  SetupServiceError,
+  adapterResultToError,
+  mapErrorMessage,
+  toSetupServiceError,
+} from './setupSessionErrors.js';
+export { SetupServiceError } from './setupSessionErrors.js';
+export { parseChatResult } from './setupSessionParsing.js';
+import {
+  DRAFT_PATCH_MARKER,
+  MAX_CONVERSATION_SUMMARY_CHARS,
+  isRecord,
+  parseChatResult,
+  parseJsonObject,
+} from './setupSessionParsing.js';
+import {
+  assertRevision,
+  assertValidCreateSetupSessionBody,
+  assertValidRevision,
+  normalizeOutputLength,
+  normalizeProvider,
+} from './setupSessionValidation.js';
 
-const DEFAULT_MODEL_PROVIDER = 'gemini';
 const CHAT_OUTPUT_LENGTH = 1800;
 const PREVIEW_OUTPUT_LENGTH = 900;
 const COMMIT_OUTPUT_LENGTH = 3200;
@@ -63,18 +83,6 @@ const CHAT_TEMPERATURE = 0.7;
 const PREVIEW_TEMPERATURE = 0.8;
 const COMMIT_TEMPERATURE = 0.2;
 const TIMEOUT_MS = 120_000;
-const INITIAL_MESSAGE_MAX_CHARS = 4_000;
-const SETUP_TITLE_MAX_CHARS = 100;
-const MODEL_NAME_MAX_CHARS = 200;
-const UNREADABLE_CHAT_REPLY =
-  '相談相手の返答をうまく読み取れませんでした。あなたの入力は保存されています。もう一度、今の内容を整理してみます。';
-const UNREADABLE_CHAT_ACTIONS: SetupSuggestedAction[] = [
-  {
-    label: 'もう一度整理',
-    message: '直前の相談内容をもう一度整理してください。',
-  },
-];
-
 
 const sessionMutexes = new Map<string, Promise<void>>();
 
@@ -1116,24 +1124,6 @@ async function withSessionLock<T>(
   }
 }
 
-function assertRevision(session: SetupSession, revision: number): void {
-  if (session.revision !== revision) {
-    throw new SetupServiceError(
-      '相談メモが更新されています。最新の内容を確認してください。',
-      'revision_conflict',
-      false,
-      409,
-      session
-    );
-  }
-}
-
-function assertValidRevision(revision: unknown): asserts revision is number {
-  if (typeof revision !== 'number' || !Number.isInteger(revision)) {
-    throw new SetupServiceError('リクエストの形式が不正です。', 'invalid_request', false, 400);
-  }
-}
-
 async function generateWithSessionModel(
   session: SetupSession,
   request: {
@@ -1209,290 +1199,3 @@ function normalizeSessionError(err: unknown): SetupSessionError {
   };
 }
 
-const DRAFT_PATCH_MARKER = '===DRAFT_PATCH===';
-const MAX_CONVERSATION_SUMMARY_CHARS = 2000;
-
-export function parseChatResult(text: string): {
-  visibleReply: string;
-  draftPatch: unknown | null;
-  suggestedActions: SetupSuggestedAction[];
-  conversationSummary: string | null;
-} {
-  const markerIndex = text.indexOf(DRAFT_PATCH_MARKER);
-  if (markerIndex >= 0) {
-    const visibleReply = text.slice(0, markerIndex).trim();
-    const jsonPart = text.slice(markerIndex + DRAFT_PATCH_MARKER.length);
-    const parsed = parseJsonObject(jsonPart);
-    if (parsed) {
-      return {
-        visibleReply,
-        draftPatch: parsed.draftPatch ?? null,
-        suggestedActions: normalizeSuggestedActions(parsed.suggestedActions),
-        conversationSummary: asString(parsed.conversationSummary) || null,
-      };
-    }
-    return {
-      visibleReply,
-      draftPatch: null,
-      suggestedActions: [],
-      conversationSummary: null,
-    };
-  }
-
-  const parsed = parseJsonObject(text);
-  if (parsed) {
-    return {
-      visibleReply: asString(parsed.visibleReply),
-      draftPatch: parsed.draftPatch ?? null,
-      suggestedActions: normalizeSuggestedActions(parsed.suggestedActions),
-      conversationSummary: asString(parsed.conversationSummary) || null,
-    };
-  }
-
-  const plain = stripCodeFence(text).trim();
-  if (!plain) {
-    return unreadableChatFallback();
-  }
-  if (plain.includes('draftPatch') || plain.includes('visibleReply')) {
-    return unreadableChatFallback();
-  }
-
-  return {
-    visibleReply: plain,
-    draftPatch: null,
-    suggestedActions: [],
-    conversationSummary: null,
-  };
-}
-
-function stripCodeFence(text: string): string {
-  return text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-}
-
-function unreadableChatFallback(): {
-  visibleReply: string;
-  draftPatch: null;
-  suggestedActions: SetupSuggestedAction[];
-  conversationSummary: null;
-} {
-  return {
-    visibleReply: UNREADABLE_CHAT_REPLY,
-    draftPatch: null,
-    suggestedActions: UNREADABLE_CHAT_ACTIONS.map((action) => ({ ...action })),
-    conversationSummary: null,
-  };
-}
-
-function normalizeSuggestedActions(value: unknown): SetupSuggestedAction[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      if (!isRecord(item)) return null;
-      const label = asString(item.label);
-      const message = asString(item.message);
-      const intent = normalizeSuggestedActionIntent(item.intent);
-      return label && message ? { label, message, ...(intent ? { intent } : {}) } : null;
-    })
-    .filter((item): item is SetupSuggestedAction => item !== null)
-    .slice(0, 4);
-}
-
-function normalizeSuggestedActionIntent(value: unknown): SetupSuggestedAction['intent'] {
-  return value === 'preview' || value === 'commit' ? value : undefined;
-}
-
-function parseJsonObject(text: string): Record<string, unknown> | null {
-  const trimmed = text.trim();
-  const withoutFence = trimmed
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-  const start = withoutFence.indexOf('{');
-  const end = withoutFence.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-
-  try {
-    const parsed = JSON.parse(withoutFence.slice(start, end + 1));
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function adapterResultToError(result: {
-  errorCode?: string;
-  errorMessage?: string;
-  retryable: boolean;
-}): SetupServiceError {
-  const code = result.errorCode || 'setup_generation_failed';
-  return new SetupServiceError(
-    mapErrorMessage(code, result.errorMessage),
-    code,
-    result.retryable,
-    503
-  );
-}
-
-function toSetupServiceError(err: unknown, session?: SetupSession): SetupServiceError {
-  if (err instanceof SetupServiceError) {
-    return session && !err.session
-      ? new SetupServiceError(err.message, err.code, err.retryable, err.status, session)
-      : err;
-  }
-  if (err instanceof ModelAdapterError) {
-    return new SetupServiceError(err.message, err.code, err.retryable, 503, session);
-  }
-  return new SetupServiceError(
-    err instanceof Error ? err.message : '相談処理に失敗しました。',
-    'setup_failed',
-    true,
-    503,
-    session
-  );
-}
-
-function mapErrorMessage(code: string, detail?: string): string {
-  let base: string;
-  switch (code) {
-    case 'api_key_missing':
-      base = 'APIキーが設定されていません。設定画面からAPIキーを入力してください。';
-      break;
-    case 'invalid_api_key':
-      base = 'APIキーが無効です。設定を確認してください。';
-      break;
-    case 'payment_required':
-      base = 'APIキーのクレジットが不足しています。プロバイダー側の残高や利用上限を確認してください。';
-      break;
-    case 'permission_denied':
-      base = 'APIキーにこのモデルを利用する権限がないか、プロバイダー側で拒否されました。';
-      break;
-    case 'rate_limit':
-      base = 'リクエスト制限に達しました。しばらくしてから再試行してください。';
-      break;
-    case 'timeout':
-      base = '生成がタイムアウトしました。少し待って再試行してください。';
-      break;
-    case 'service_unavailable':
-      base = 'モデルサービスを現在利用できません。少し待って再試行してください。';
-      break;
-    default:
-      base = '相談処理に失敗しました。設定を確認して再試行してください。';
-  }
-  return detail && detail !== base ? `${base}\n詳細: ${detail}` : base;
-}
-
-function assertValidCreateSetupSessionBody(
-  value: unknown
-): asserts value is CreateSetupSessionBody {
-  if (!isRecord(value)) {
-    throw invalidCreateRequest('リクエスト本文はオブジェクトで指定してください。');
-  }
-
-  if (
-    value.initialMessage !== undefined &&
-    (typeof value.initialMessage !== 'string' ||
-      value.initialMessage.length > INITIAL_MESSAGE_MAX_CHARS)
-  ) {
-    throw invalidCreateRequest(
-      `最初のメッセージは${INITIAL_MESSAGE_MAX_CHARS.toLocaleString('ja-JP')}文字以内で指定してください。`
-    );
-  }
-
-  if (value.model !== undefined) {
-    if (!isRecord(value.model)) {
-      throw invalidCreateRequest('モデル設定が不正です。');
-    }
-    const provider = value.model.provider;
-    if (provider !== undefined && typeof provider !== 'string') {
-      throw invalidCreateRequest('モデルプロバイダーが不正です。');
-    }
-    if (typeof provider === 'string' && provider.trim() && !isSupportedProvider(provider)) {
-      throw new SetupServiceError(
-        '未対応のモデルプロバイダーです。',
-        'unsupported_provider',
-        false,
-        400
-      );
-    }
-    if (
-      value.model.modelName !== undefined &&
-      (typeof value.model.modelName !== 'string' ||
-        value.model.modelName.length > MODEL_NAME_MAX_CHARS)
-    ) {
-      throw invalidCreateRequest(
-        `モデル名は${MODEL_NAME_MAX_CHARS.toLocaleString('ja-JP')}文字以内で指定してください。`
-      );
-    }
-  }
-
-  if (value.projectSettings !== undefined) {
-    if (!isRecord(value.projectSettings)) {
-      throw invalidCreateRequest('作品設定が不正です。');
-    }
-    const settings = value.projectSettings;
-    if (
-      settings.title !== undefined &&
-      (typeof settings.title !== 'string' || settings.title.length > SETUP_TITLE_MAX_CHARS)
-    ) {
-      throw invalidCreateRequest(
-        `タイトルは${SETUP_TITLE_MAX_CHARS.toLocaleString('ja-JP')}文字以内で指定してください。`
-      );
-    }
-    if (
-      settings.outputLength !== undefined &&
-      (typeof settings.outputLength !== 'number' || !Number.isFinite(settings.outputLength))
-    ) {
-      throw invalidCreateRequest('出力文字数が不正です。');
-    }
-    if (
-      settings.streamingEnabled !== undefined &&
-      typeof settings.streamingEnabled !== 'boolean'
-    ) {
-      throw invalidCreateRequest('ストリーミング設定が不正です。');
-    }
-    if (
-      settings.activePresetIds !== undefined &&
-      !isRecord(settings.activePresetIds)
-    ) {
-      throw invalidCreateRequest('プリセット設定が不正です。');
-    }
-  }
-}
-
-function invalidCreateRequest(message: string): SetupServiceError {
-  return new SetupServiceError(message, 'invalid_request', false, 400);
-}
-
-function normalizeProvider(value: string | undefined): string {
-  return value && isSupportedProvider(value) ? value : DEFAULT_MODEL_PROVIDER;
-}
-
-function normalizeOutputLength(value: number | undefined): number {
-  if (!Number.isFinite(value)) return 3000;
-  return Math.max(500, Math.min(10000, Math.round(value as number)));
-}
-
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export class SetupServiceError extends Error {
-  constructor(
-    message: string,
-    public readonly code: string,
-    public readonly retryable: boolean,
-    public readonly status: number,
-    public readonly session?: SetupSession
-  ) {
-    super(message);
-    this.name = 'SetupServiceError';
-  }
-}
