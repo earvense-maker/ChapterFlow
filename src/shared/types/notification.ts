@@ -8,8 +8,14 @@ export interface GenerationNotificationEvents {
   reviewRequired: boolean;
 }
 
+// NOTE: リポジトリに音声アセットを持たないため、通知音は Web Audio の合成音で用意する
+// （notificationService の SOUND_SPECS が実体）。ID は保存データに載るので、音色を
+// 調整しても ID 自体は変えない。
+export type NotificationSoundId = 'chime' | 'bell' | 'marimba' | 'blip';
+
 export interface GenerationNotificationSettings {
   soundEnabled: boolean;
+  soundId: NotificationSoundId;
   systemPopupEnabled: boolean;
   onlyWhenUnfocused: boolean;
   events: GenerationNotificationEvents;

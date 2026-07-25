@@ -4,6 +4,7 @@ import type {
   GenerationStyleProfile,
   GenerationNotificationEvents,
   GenerationNotificationSettings,
+  NotificationSoundId,
   ProjectType,
   RefineAutomationMode,
   RefineAutomationScanPolicy,
@@ -60,11 +61,31 @@ export const ROLEPLAY_LIMITS = {
 
 export const DEFAULT_ROLEPLAY_OUTPUT_CHARS = 250;
 
+// NOTE: 新規作品の既定。生成完了まで無反応に見える時間が長いため、既定でストリーミング
+// 表示を有効にする。既存作品は保存済みの値を持つのでここの変更では変わらない。
+export const DEFAULT_STREAMING_ENABLED = true;
+
+// NOTE: 配列ではなく Record にしているのは、NotificationSoundId を増やしたときに
+// ここの更新漏れをコンパイルエラーで気づけるようにするため（保存値の検証はこの一覧が正本）。
+const NOTIFICATION_SOUND_ID_SET: Record<NotificationSoundId, true> = {
+  chime: true,
+  bell: true,
+  marimba: true,
+  blip: true,
+};
+
+export function isNotificationSoundId(value: unknown): value is NotificationSoundId {
+  return typeof value === 'string' && Object.hasOwn(NOTIFICATION_SOUND_ID_SET, value);
+}
+
 // NOTE: 既存利用者へ突然音・OS通知を出さないよう、sound/popup は既定 false。
 // firstOutput/failed/settingsUpdated/reviewRequired は有用性が高いため既定 true、
 // completed のみ「毎回鳴る」を避けるため既定 false（設計書 5.1）。
+// soundId の既定 'chime' は音種選択を足す前から鳴っていた単音そのもので、既存利用者の
+// 音が黙って変わらないようにしている。
 export const DEFAULT_GENERATION_NOTIFICATION_SETTINGS: GenerationNotificationSettings = {
   soundEnabled: false,
+  soundId: 'chime',
   systemPopupEnabled: false,
   onlyWhenUnfocused: true,
   events: {
@@ -89,6 +110,7 @@ export function normalizeGenerationNotificationSettings(value: unknown): Generat
   const bool = (input: unknown, fallback: boolean): boolean => (typeof input === 'boolean' ? input : fallback);
   return {
     soundEnabled: bool(raw.soundEnabled, defaults.soundEnabled),
+    soundId: isNotificationSoundId(raw.soundId) ? raw.soundId : defaults.soundId,
     systemPopupEnabled: bool(raw.systemPopupEnabled, defaults.systemPopupEnabled),
     onlyWhenUnfocused: bool(raw.onlyWhenUnfocused, defaults.onlyWhenUnfocused),
     events: {

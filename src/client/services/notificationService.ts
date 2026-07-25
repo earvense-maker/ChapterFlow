@@ -1,4 +1,8 @@
-import type { GenerationNotificationSettings, NotificationEventType } from '@shared/types';
+import type {
+  GenerationNotificationSettings,
+  NotificationEventType,
+  NotificationSoundId,
+} from '@shared/types';
 
 // NOTE: 音・OS通知・アプリ内通知の実際のディスパッチと、どのチャネルを使うべきかの
 // 判定ロジック。React に依存しない純粋関数＋ブラウザAPIラッパーのみで構成する。
@@ -65,21 +69,73 @@ export function unlockAudioContext(): void {
   }
 }
 
-export async function playNotificationSound(): Promise<void> {
+interface ToneSpec {
+  frequency: number;
+  // NOTE: 発音開始のオフセット秒。複数 tone を重ねる/ずらすことで音色差を作る。
+  startOffset: number;
+  // NOTE: 減衰しきるまでの秒数。stop はこれに余韻ぶんを足した時刻で呼ぶ。
+  decay: number;
+  peak: number;
+  type: OscillatorType;
+}
+
+// NOTE: 'chime' は音種選択を足す前から鳴っていた 880Hz 単音そのまま（既定値）。
+// 他は聞き分けが目的なので、音域・波形・音数のどれかを必ず変えてある。
+const SOUND_SPECS: Record<NotificationSoundId, ToneSpec[]> = {
+  chime: [{ frequency: 880, startOffset: 0, decay: 0.35, peak: 0.2, type: 'sine' }],
+  bell: [
+    { frequency: 1318.5, startOffset: 0, decay: 0.6, peak: 0.16, type: 'sine' },
+    { frequency: 659.25, startOffset: 0, decay: 0.9, peak: 0.09, type: 'sine' },
+  ],
+  marimba: [
+    { frequency: 523.25, startOffset: 0, decay: 0.3, peak: 0.22, type: 'triangle' },
+    { frequency: 1046.5, startOffset: 0, decay: 0.14, peak: 0.07, type: 'sine' },
+  ],
+  blip: [
+    { frequency: 988, startOffset: 0, decay: 0.1, peak: 0.16, type: 'triangle' },
+    { frequency: 1318.5, startOffset: 0.13, decay: 0.12, peak: 0.16, type: 'triangle' },
+  ],
+};
+
+const SOUND_LABELS: Record<NotificationSoundId, string> = {
+  chime: 'チャイム（高い単音）',
+  bell: 'ベル（余韻が長い）',
+  marimba: 'マリンバ（低く短い）',
+  blip: 'ブリップ（2連の電子音）',
+};
+
+// NOTE: 選択肢は SOUND_SPECS から導出する。音を足したときにラベル漏れ（Record が
+// 埋まっていない）も選択肢漏れも起きないようにするため、一覧を手で二重管理しない。
+export const NOTIFICATION_SOUND_OPTIONS: readonly {
+  id: NotificationSoundId;
+  label: string;
+}[] = (Object.keys(SOUND_SPECS) as NotificationSoundId[]).map((id) => ({
+  id,
+  label: SOUND_LABELS[id],
+}));
+
+export async function playNotificationSound(soundId: NotificationSoundId): Promise<void> {
   if (!audioContext) return;
   try {
     if (audioContext.state === 'suspended') {
       await audioContext.resume();
     }
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    oscillator.frequency.value = 880;
-    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.2, audioContext.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.35);
-    oscillator.connect(gain).connect(audioContext.destination);
-    oscillator.start();
-    oscillator.stop(audioContext.currentTime + 0.4);
+    // NOTE: 保存データに未知の ID が入っていても無音にはせず既定音へ倒す。
+    const spec = SOUND_SPECS[soundId] ?? SOUND_SPECS.chime;
+    const startedAt = audioContext.currentTime;
+    for (const tone of spec) {
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const toneStart = startedAt + tone.startOffset;
+      oscillator.type = tone.type;
+      oscillator.frequency.value = tone.frequency;
+      gain.gain.setValueAtTime(0.0001, toneStart);
+      gain.gain.exponentialRampToValueAtTime(tone.peak, toneStart + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, toneStart + tone.decay);
+      oscillator.connect(gain).connect(audioContext.destination);
+      oscillator.start(toneStart);
+      oscillator.stop(toneStart + tone.decay + 0.05);
+    }
   } catch (err) {
     console.warn('[notification] sound playback failed', err);
   }

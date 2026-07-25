@@ -2,13 +2,8 @@ import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import { DEFAULT_GEMINI_MODEL } from '@shared/defaults';
 import DataDirSettingsSection from './DataDirSettingsSection';
-import { useNotificationCenter } from './NotificationCenter';
-import {
-  isSystemPopupAvailable,
-  requestSystemPopupPermission,
-  systemPopupPermission,
-} from '../services/notificationService';
-import type { GenerationNotificationSettings, ModelProviderInfo, NgExpression } from '@shared/types';
+import GenerationNotificationSection from './GenerationNotificationSection';
+import type { ModelProviderInfo, NgExpression } from '@shared/types';
 
 interface Props {
   onBack: () => void;
@@ -16,14 +11,7 @@ interface Props {
 }
 
 export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
-  const notificationCenter = useNotificationCenter();
   const [dataDirBusy, setDataDirBusy] = useState(false);
-  const [notificationSettings, setNotificationSettings] = useState<GenerationNotificationSettings | null>(
-    null
-  );
-  const [notificationLoading, setNotificationLoading] = useState(true);
-  const [notificationSaving, setNotificationSaving] = useState(false);
-  const [popupPermission, setPopupPermission] = useState<NotificationPermission>(systemPopupPermission());
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);
   const [provider, setProvider] = useState('');
   const [modelName, setModelName] = useState('');
@@ -92,24 +80,6 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
       cancelled = true;
     };
   }, [initialProvider]);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getNotificationSettings()
-      .then((settings) => {
-        if (!cancelled) setNotificationSettings(settings);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : '通知設定の読み込みに失敗しました');
-      })
-      .finally(() => {
-        if (!cancelled) setNotificationLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   async function refreshProviders() {
     const providerList = await api.getModelProviders();
@@ -216,60 +186,6 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
   function showMessage(text: string) {
     setMessage(text);
     window.setTimeout(() => setMessage(null), 5000);
-  }
-
-  async function saveNotificationSettings(next: GenerationNotificationSettings) {
-    setNotificationSettings(next);
-    try {
-      setNotificationSaving(true);
-      setError(null);
-      const saved = await api.updateNotificationSettings(next);
-      setNotificationSettings(saved);
-      showMessage('生成通知の設定を保存しました。');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '通知設定の保存に失敗しました');
-    } finally {
-      setNotificationSaving(false);
-    }
-  }
-
-  function updateNotificationSettings(patch: Partial<GenerationNotificationSettings>) {
-    if (!notificationSettings) return;
-    void saveNotificationSettings({ ...notificationSettings, ...patch });
-  }
-
-  function updateNotificationEvent(
-    event: keyof GenerationNotificationSettings['events'],
-    value: boolean
-  ) {
-    if (!notificationSettings) return;
-    void saveNotificationSettings({
-      ...notificationSettings,
-      events: { ...notificationSettings.events, [event]: value },
-    });
-  }
-
-  async function handleSystemPopupToggle(checked: boolean) {
-    if (checked) {
-      const permission = await requestSystemPopupPermission();
-      setPopupPermission(permission);
-    }
-    updateNotificationSettings({ systemPopupEnabled: checked });
-  }
-
-  function sendTestNotification() {
-    notificationCenter.enableAudioFromGesture();
-    if (!notificationSettings) return;
-    notificationCenter.notify(notificationSettings, {
-      eventType: 'completed',
-      dedupeKey: `test-notification-${Date.now()}`,
-      title: 'テスト通知',
-      body: 'この内容が音・ポップアップ・アプリ内通知として届けば設定は正しく動いています。',
-      clickTarget: { kind: 'setup' },
-      // NOTE: completed イベントは既定 false のため、テスト用にゲートを迂回して
-      // 有効なチャネル全てを使って発火させる（設計書の意図と揃える）。
-      bypassEventGate: true,
-    });
   }
 
   const activeProvider = providers.find((item) => item.name === provider);
@@ -424,108 +340,7 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
           </>
         )}
       </section>
-      <section className="settings-section">
-        <h2>生成通知</h2>
-        <p className="settings-help">
-          本文の生成開始・完了・失敗や、設定の自動更新を音・システムポップアップ・アプリ内通知でお知らせします。
-        </p>
-        {notificationLoading || !notificationSettings ? (
-          <div className="loading">読み込み中…</div>
-        ) : (
-          <>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.soundEnabled}
-                onChange={(e) => {
-                  notificationCenter.enableAudioFromGesture();
-                  updateNotificationSettings({ soundEnabled: e.target.checked });
-                }}
-                disabled={notificationSaving}
-              />
-              <span>通知音を鳴らす</span>
-            </label>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.systemPopupEnabled}
-                onChange={(e) => void handleSystemPopupToggle(e.target.checked)}
-                disabled={notificationSaving || !isSystemPopupAvailable()}
-              />
-              <span>システムポップアップを出す</span>
-            </label>
-            {notificationSettings.systemPopupEnabled && popupPermission === 'denied' && (
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                システム通知は許可されていません。アプリ内通知を使います。
-              </p>
-            )}
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.onlyWhenUnfocused}
-                onChange={(e) => updateNotificationSettings({ onlyWhenUnfocused: e.target.checked })}
-                disabled={notificationSaving}
-              />
-              <span>アプリが背面にあるときだけ通知する</span>
-            </label>
-
-            <p className="settings-help" style={{ marginTop: '0.75rem' }}>
-              通知するタイミング
-            </p>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.events.firstOutput}
-                onChange={(e) => updateNotificationEvent('firstOutput', e.target.checked)}
-                disabled={notificationSaving}
-              />
-              <span>最初の文章が届いたとき</span>
-            </label>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.events.completed}
-                onChange={(e) => updateNotificationEvent('completed', e.target.checked)}
-                disabled={notificationSaving}
-              />
-              <span>生成が完了したとき</span>
-            </label>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.events.failed}
-                onChange={(e) => updateNotificationEvent('failed', e.target.checked)}
-                disabled={notificationSaving}
-              />
-              <span>生成に失敗したとき</span>
-            </label>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.events.settingsUpdated}
-                onChange={(e) => updateNotificationEvent('settingsUpdated', e.target.checked)}
-                disabled={notificationSaving}
-              />
-              <span>設定が自動更新されたとき</span>
-            </label>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={notificationSettings.events.reviewRequired}
-                onChange={(e) => updateNotificationEvent('reviewRequired', e.target.checked)}
-                disabled={notificationSaving}
-              />
-              <span>確認が必要な変更があるとき</span>
-            </label>
-
-            <div className="summary-card-actions">
-              <button type="button" onClick={sendTestNotification} disabled={notificationSaving}>
-                テスト通知を送る
-              </button>
-            </div>
-          </>
-        )}
-      </section>
+      <GenerationNotificationSection onError={setError} onFlashMessage={showMessage} />
       <DataDirSettingsSection onBusyChange={setDataDirBusy} />
       {appVersion && (
         <section className="settings-section">

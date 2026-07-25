@@ -25,6 +25,7 @@ import {
   type PendingDescriptor,
 } from './setupWorkspace/draftEditors';
 import SetupCommitDialog from './setupWorkspace/SetupCommitDialog';
+import { DEFAULT_STREAMING_ENABLED } from '@shared/defaults';
 import { hasMeaningfulSetupContent } from '@shared/setupContent';
 import { normalizeActivePresetIds } from '@shared/presetMigration';
 import type {
@@ -53,7 +54,7 @@ interface Props {
 
 const DEFAULT_PROJECT_SETTINGS = {
   outputLength: 3000,
-  streamingEnabled: false,
+  streamingEnabled: DEFAULT_STREAMING_ENABLED,
   activePresetIds: {},
 };
 

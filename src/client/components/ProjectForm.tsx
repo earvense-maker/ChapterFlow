@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
-import { DEFAULT_ACTIVE_PRESET_IDS, DEFAULT_GEMINI_MODEL } from '@shared/defaults';
+import {
+  DEFAULT_ACTIVE_PRESET_IDS,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_STREAMING_ENABLED,
+} from '@shared/defaults';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import type { ActivePresets, Character, ModelProviderInfo, WorldContent } from '@shared/types';
 
@@ -21,7 +25,7 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
   const [selection, setSelection] = useState<ActivePresets>({ ...DEFAULT_ACTIVE_PRESET_IDS });
   const [outputLength, setOutputLength] = useState(6000);
-  const [streamingEnabled, setStreamingEnabled] = useState(false);
+  const [streamingEnabled, setStreamingEnabled] = useState(DEFAULT_STREAMING_ENABLED);
   const [provider, setProvider] = useState('gemini');
   const [modelName, setModelName] = useState(DEFAULT_GEMINI_MODEL);
   const [providers, setProviders] = useState<ModelProviderInfo[]>([]);

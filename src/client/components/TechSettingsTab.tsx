@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
+import GenerationNotificationSection from './GenerationNotificationSection';
 import {
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
   DEFAULT_GEMINI_MODEL,
@@ -404,6 +405,11 @@ export default function TechSettingsTab({
         )}
       </section>
 
+      <GenerationNotificationSection
+        onError={onError}
+        onFlashMessage={onFlashMessage}
+        scopeNote="この設定はアプリ全体に適用されます（作品ごとの設定ではありません）。アプリ設定の「生成通知」と同じ内容です。"
+      />
     </div>
   );
 }

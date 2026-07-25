@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TechSettingsTab from '../../src/client/components/TechSettingsTab';
+import { DEFAULT_GENERATION_NOTIFICATION_SETTINGS } from '../../src/shared/defaults';
 import type { Project } from '../../src/shared/types';
 
 const { apiMock } = vi.hoisted(() => ({
@@ -8,6 +9,8 @@ const { apiMock } = vi.hoisted(() => ({
     getModelProviders: vi.fn(),
     getExpressions: vi.fn(),
     updateProject: vi.fn(),
+    getNotificationSettings: vi.fn(),
+    updateNotificationSettings: vi.fn(),
   },
 }));
 
@@ -40,6 +43,8 @@ describe('TechSettingsTab Gemini sampling settings', () => {
       },
     ]);
     apiMock.getExpressions.mockResolvedValue({ ngExpressions: [] });
+    apiMock.getNotificationSettings.mockResolvedValue(DEFAULT_GENERATION_NOTIFICATION_SETTINGS);
+    apiMock.updateNotificationSettings.mockImplementation(async (next) => next);
     apiMock.updateProject.mockImplementation(async (_projectId, patch) => ({
       ...baseProject,
       ...patch,
@@ -84,6 +89,15 @@ describe('TechSettingsTab Gemini sampling settings', () => {
     expect(screen.getByText(/共通＋作品固有の新しい順で最大12件/)).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'アプリ設定を開く' }));
     expect(onOpenAppSettings).toHaveBeenCalledWith('gemini');
+  });
+
+  it('shows the app-wide generation notification settings inside the work settings tab', async () => {
+    renderSettings(baseProject);
+
+    expect(await screen.findByRole('heading', { name: '生成通知' })).toBeVisible();
+    expect(await screen.findByLabelText('通知音の種類')).toBeVisible();
+    // NOTE: 作品ごとの設定と誤解されるのが一番の事故なので、断り書きの存在まで固定する。
+    expect(screen.getByText(/この設定はアプリ全体に適用されます/)).toBeVisible();
   });
 });
 

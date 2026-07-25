@@ -8,6 +8,7 @@ import {
   updateAppSettings,
   writeAppSettings,
 } from '../../src/server/services/appSettingsService';
+import { DEFAULT_GENERATION_NOTIFICATION_SETTINGS } from '../../src/shared/defaults';
 
 let testDir = '';
 let originalSettingsPath: string | undefined;
@@ -88,6 +89,7 @@ describe('appSettingsService', () => {
     }));
     expect(saved.generationNotifications).toEqual({
       soundEnabled: true,
+      soundId: 'chime',
       systemPopupEnabled: false,
       onlyWhenUnfocused: false,
       events: {
@@ -108,6 +110,7 @@ describe('appSettingsService', () => {
     }));
     expect(saved.generationNotifications).toEqual({
       soundEnabled: false,
+      soundId: 'chime',
       systemPopupEnabled: false,
       onlyWhenUnfocused: true,
       events: {
@@ -118,6 +121,27 @@ describe('appSettingsService', () => {
         reviewRequired: true,
       },
     });
+  });
+
+  it('keeps a known notification sound and falls back for an unknown one', async () => {
+    const withKnownSound = await updateAppSettings((settings) => ({
+      ...settings,
+      generationNotifications: {
+        ...DEFAULT_GENERATION_NOTIFICATION_SETTINGS,
+        soundId: 'bell',
+      },
+    }));
+    expect(withKnownSound.generationNotifications?.soundId).toBe('bell');
+
+    // NOTE: 音種を将来削除/改名しても保存済みデータで無音にならないことを固定する。
+    const withUnknownSound = await updateAppSettings((settings) => ({
+      ...settings,
+      generationNotifications: {
+        ...DEFAULT_GENERATION_NOTIFICATION_SETTINGS,
+        soundId: 'removed-sound' as never,
+      },
+    }));
+    expect(withUnknownSound.generationNotifications?.soundId).toBe('chime');
   });
 
   it('updating setupModel alone does not drop a previously saved generationNotifications', async () => {

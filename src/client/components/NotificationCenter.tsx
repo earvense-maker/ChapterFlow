@@ -112,7 +112,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             inApp: true,
           }
         : resolveNotificationChannels(settings, input.eventType, focus);
-      if (channels.sound) void playNotificationSound();
+      if (channels.sound) void playNotificationSound(settings.soundId);
       if (channels.popup) {
         showSystemPopup(input.title, input.body, () => {
           clickHandlerRef.current?.(input.clickTarget);

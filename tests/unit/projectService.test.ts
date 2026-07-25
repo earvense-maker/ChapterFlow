@@ -25,6 +25,12 @@ describe('project settings validation', () => {
     expect(project.samplingConfig?.temperature).toBe(0.9);
   });
 
+  it('enables streaming by default for new projects', async () => {
+    const project = await createTrackedProject();
+
+    expect(project.streamingEnabled).toBe(true);
+  });
+
   it('keeps the required narration default for consultation projects', async () => {
     const project = await projectService.createProject({
       title: 'Consultation without defaults',

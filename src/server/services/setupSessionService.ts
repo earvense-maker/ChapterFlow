@@ -23,7 +23,7 @@ import {
   readPresetIdsByCategory,
 } from './setupCommitService.js';
 import { normalizeSetupPurpose } from '../types/index.js';
-import { DEFAULT_ACTIVE_PRESET_IDS } from '../../shared/defaults.js';
+import { DEFAULT_ACTIVE_PRESET_IDS, DEFAULT_STREAMING_ENABLED } from '../../shared/defaults.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import { hasMeaningfulSetupContent } from '../../shared/setupContent.js';
 import type { SetupPurpose } from '../types/index.js';
@@ -136,7 +136,7 @@ export async function createSetupSession(
     projectSettings: {
       title: body.projectSettings?.title?.trim() || '',
       outputLength: normalizeOutputLength(body.projectSettings?.outputLength),
-      streamingEnabled: body.projectSettings?.streamingEnabled ?? false,
+      streamingEnabled: body.projectSettings?.streamingEnabled ?? DEFAULT_STREAMING_ENABLED,
       activePresetIds: normalizeActivePresetIds(
         hasCurrentPresetCategory(requestedPresetIds)
           ? { ...DEFAULT_ACTIVE_PRESET_IDS, ...requestedPresetIds }

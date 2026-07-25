@@ -142,6 +142,13 @@ describe('setupSessionService', () => {
     });
   });
 
+  it('enables streaming by default when create settings omit it', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    expect(result.session.projectSettings.streamingEnabled).toBe(true);
+  });
+
   it('lists setup sessions with the latest session first', async () => {
     const first = await setupSessionService.createSetupSession({});
     const second = await setupSessionService.createSetupSession({});
