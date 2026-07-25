@@ -1,15 +1,19 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import { useTheme } from '../hooks/useTheme';
 import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
 import { useNotificationCenter } from './NotificationCenter';
+import NgHighlightedText from './NgHighlightedText';
+import { findNgMatches, type NgMatch } from '@shared/ngDetection';
 import { GENERATION_WISH_MAX_CHARS, KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import type {
   ContextUsageEstimate,
   GenerationNotificationSettings,
   GenerationRecord,
   KnowledgeListItem,
+  NgAutoRewriteSettings,
+  NgExpression,
   Project,
   ReaderNavigationState,
   ReaderState,
@@ -46,6 +50,19 @@ function isDelayedStoryStatePending(updatedAt: string | undefined): boolean {
   const timestamp = Date.parse(updatedAt);
   if (!Number.isFinite(timestamp)) return true;
   return Date.now() - timestamp >= STORY_STATE_PENDING_GRACE_MS;
+}
+
+// NOTE: 作品NGと共通NGを合わせて検出対象にする。片方の取得に失敗しても、
+// もう片方だけでハイライトは成立するので全体を諦めない。
+async function loadNgExpressions(projectId: string): Promise<NgExpression[]> {
+  const [projectResult, globalResult] = await Promise.allSettled([
+    api.getExpressions(projectId),
+    api.getGlobalExpressions(),
+  ]);
+  const merged: NgExpression[] = [];
+  if (projectResult.status === 'fulfilled') merged.push(...projectResult.value.ngExpressions);
+  if (globalResult.status === 'fulfilled') merged.push(...globalResult.value.ngExpressions);
+  return merged;
 }
 
 function hasElapsedSince(timestamp: string | null, graceMs: number, now: number): boolean {
@@ -93,6 +110,9 @@ export default function Reader({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(18);
+  const [ngExpressions, setNgExpressions] = useState<NgExpression[]>([]);
+  const [ngRewriteBusyStart, setNgRewriteBusyStart] = useState<number | null>(null);
+  const [ngAutoRewriteRunning, setNgAutoRewriteRunning] = useState(false);
   const [selectedText, setSelectedText] = useState('');
   const [selectionButtonPosition, setSelectionButtonPosition] = useState<{ top: number; left: number } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -102,6 +122,10 @@ export default function Reader({
   const generationAbortRef = useRef<AbortController | null>(null);
   const generationRunRef = useRef<symbol | null>(null);
   const projectIdRef = useRef(projectId);
+  // NOTE: 自動書き換えは生成完了後の長い非同期ループから設定と登録語を読むため、
+  // レンダー時点でキャプチャされた state ではなく ref を見る。
+  const ngExpressionsRef = useRef<NgExpression[]>([]);
+  const ngAutoRewriteRef = useRef<NgAutoRewriteSettings | null>(null);
   const loadRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
   const storyStatePollInFlightRef = useRef(false);
@@ -226,6 +250,34 @@ export default function Reader({
       cancelled = true;
     };
   }, []);
+
+  // NOTE: NG表現はプロンプトに載せず、出力後に本文を検出してハイライトする方式。
+  // 検出はクライアント側で完結するのでサーバー処理もトークンも要らず、登録一覧を
+  // 変えた直後や過去の本文にも遡ってそのまま効く。
+  useEffect(() => {
+    let cancelled = false;
+    void loadNgExpressions(projectId)
+      .then((expressions) => {
+        if (cancelled) return;
+        setNgExpressions(expressions);
+        ngExpressionsRef.current = expressions;
+      })
+      // NOTE: 取得に失敗してもハイライトが出ないだけ。本文の閲覧と生成は続けられる
+      // ようにする（NG検出はあくまで補助機能）。
+      .catch(() => {});
+    void api
+      .getNgAutoRewriteSettings()
+      .then((settings) => {
+        // NOTE: 描画には使わず自動書き換えループからだけ読むので ref のみに置く。
+        if (!cancelled) ngAutoRewriteRef.current = settings;
+      })
+      // NOTE: 取得に失敗したら自動書き換えは動かさない（勝手に本文を書き換える側の
+      // 機能なので、設定が読めないときは「やらない」に倒す）。
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   useEffect(() => {
     if (storyStateRefresh?.status !== 'pending') return;
@@ -386,6 +438,10 @@ export default function Reader({
         setNotice(
           'モデルの出力上限に達したため、本文が途中で終わった可能性があります。内容を確認して採用または再生成してください'
         );
+      } else {
+        // NOTE: load() の後に回す。先に走らせると load() の setText が書き換え結果を
+        // 上書きしてしまう。有効でなければ即座に返るので分岐は増やさない。
+        await runNgAutoRewrite(record.generationId, record.responseText, generationProjectId);
       }
       inputRef.current?.focus();
     } catch (err) {
@@ -579,12 +635,141 @@ export default function Reader({
     });
   }
 
+  const ngMatches = useMemo(
+    () => (text ? findNgMatches(text, ngExpressions) : []),
+    [text, ngExpressions]
+  );
+
+  // NOTE: 生成直後の自動書き換え。1件書き換えるたびに本文が変わって以降の位置が
+  // ずれるので、必ず「書き換える → 取り直す → 次を探す」の直列ループにする。
+  // 収束しなかったヒットは飛ばして次へ進む（ハイライトは残るので手で直せる）。
+  // 上限はユーザー設定。そのまま1回の生成で余分に走るモデル呼び出しの上限になる。
+  async function runNgAutoRewrite(
+    targetGenerationId: string,
+    startText: string,
+    targetProjectId: string
+  ): Promise<void> {
+    const settings = ngAutoRewriteRef.current;
+    const expressions = ngExpressionsRef.current;
+    if (!settings?.enabled || expressions.length === 0) return;
+    if (findNgMatches(startText, expressions).length === 0) return;
+
+    let currentText = startText;
+    let skipCount = 0;
+    let rewritten = 0;
+    let failed = 0;
+
+    setNgAutoRewriteRunning(true);
+    setNotice('NG表現を書き換えています…');
+    try {
+      while (rewritten < settings.maxRewritesPerGeneration) {
+        if (!mountedRef.current || projectIdRef.current !== targetProjectId) return;
+        const target = findNgMatches(currentText, expressions)[skipCount];
+        if (!target) break;
+        try {
+          const result = await api.rewriteNgOccurrence(targetProjectId, targetGenerationId, {
+            expressionId: target.expressionId,
+            start: target.start,
+            end: target.end,
+          });
+          if (!mountedRef.current || projectIdRef.current !== targetProjectId) return;
+          currentText = result.text;
+          setText(result.text);
+          rewritten += 1;
+        } catch {
+          skipCount += 1;
+          failed += 1;
+        }
+      }
+    } finally {
+      if (mountedRef.current) setNgAutoRewriteRunning(false);
+    }
+
+    if (!mountedRef.current || projectIdRef.current !== targetProjectId) return;
+    if (rewritten === 0 && failed === 0) {
+      setNotice(null);
+      return;
+    }
+    // NOTE: ヒットごとではなく1回にまとめて通知する。生成のたびに何件も鳴ると
+    // 通知そのものが読まれなくなるため。
+    // NOTE: 1件も書き換えられなかったときに「書き換えました」と言わない。本文が
+    // 変わっていないのに変わったと伝えると、ハイライトが残っている理由が分からなくなる。
+    const remainder =
+      failed > 0 ? `${failed}件は書き換えられずハイライトのまま残っています` : '';
+    const summary =
+      rewritten === 0
+        ? `NG表現を書き換えられませんでした（${failed}件はハイライトのまま残っています）`
+        : failed > 0
+          ? `NG表現を${rewritten}件書き換えました（${remainder}）`
+          : `NG表現を${rewritten}件書き換えました`;
+    setNotice(summary);
+    setTimeout(() => setNotice(null), 6000);
+    if (notificationSettings) {
+      notificationCenter.notify(notificationSettings, {
+        eventType: 'ngRewrite',
+        dedupeKey: `ng-auto-rewrite-${targetGenerationId}`,
+        title: rewritten === 0 ? 'NG表現を書き換えられませんでした' : 'NG表現を書き換えました',
+        body: summary,
+        clickTarget: { kind: 'project', projectId: targetProjectId, projectType: 'novel' },
+      });
+    }
+  }
+
+  // NOTE: 全文の再生成ではなく、当たった一文だけを書き換える。サーバー側で結果を
+  // 文字列一致で再チェックし、NGが残っていたり一音だけ変えただけなら弾いてやり直す。
+  async function handleRewriteNgMatch(match: NgMatch) {
+    if (!generationId || ngRewriteBusyStart !== null) return;
+
+    const alternativeNote =
+      match.alternatives.length > 0
+        ? `\n登録済みの代替案: ${match.alternatives.join(' / ')}`
+        : '';
+    const confirmed = await confirmAction(
+      `「${match.expressionText}」を含む一文を書き換えます。${alternativeNote}\nこの箇所だけをモデルに投げ直すので、本文全体は作り直しません。`,
+      { title: 'NG表現の書き換え', confirmLabel: '書き換える' }
+    );
+    if (!confirmed) return;
+
+    try {
+      setNgRewriteBusyStart(match.start);
+      setError(null);
+      setNotice(null);
+      const result = await api.rewriteNgOccurrence(projectId, generationId, {
+        expressionId: match.expressionId,
+        start: match.start,
+        end: match.end,
+      });
+      if (!mountedRef.current) return;
+      setText(result.text);
+      if (notificationSettings) {
+        notificationCenter.notify(notificationSettings, {
+          eventType: 'ngRewrite',
+          dedupeKey: `ng-rewrite-${generationId}-${match.start}-${Date.now()}`,
+          title: 'NG表現を書き換えました',
+          body: `「${result.expressionText}」→ ${result.after}`,
+          clickTarget: { kind: 'project', projectId, projectType: 'novel' },
+        });
+      }
+      setNotice(`「${result.expressionText}」を書き換えました`);
+      setTimeout(() => setNotice(null), 4000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'NG表現の書き換えに失敗しました');
+    } finally {
+      if (mountedRef.current) setNgRewriteBusyStart(null);
+    }
+  }
+
   async function handleRegisterSelectedExpression() {
     if (!selectedText) return;
     try {
       setLoading(true);
       setError(null);
       await api.createGlobalExpression({ text: selectedText, source: 'selection' });
+      // NOTE: 登録した語をその場でハイライトへ反映する。登録直後に本文が光ることで
+      // 「今の登録が何件に当たるのか」がすぐ分かる。
+      const reloaded = await loadNgExpressions(projectId);
+      setNgExpressions(reloaded);
+      ngExpressionsRef.current = reloaded;
       setNotice(`「${selectedText}」を共通NG表現に登録しました`);
       setTimeout(() => setNotice(null), 2000);
       setSelectionButtonPosition(null);
@@ -914,14 +1099,36 @@ export default function Reader({
         )}
 
         {hasText ? (
-          <article
-            ref={textRef}
-            className="reader-text"
-            style={{ fontSize: `${fontSize}px` }}
-            onMouseUp={handleTextSelected}
-          >
-            {text}
-          </article>
+          <>
+            {ngAutoRewriteRunning ? (
+              <div className="ng-hit-summary">NG表現を自動で書き換えています…</div>
+            ) : (
+              ngMatches.length > 0 && (
+                <div className="ng-hit-summary">
+                  NG表現が {ngMatches.length} 件見つかりました。ハイライトをクリックすると、その一文だけを書き換えます。
+                </div>
+              )
+            )}
+            <article
+              ref={textRef}
+              className="reader-text"
+              style={{ fontSize: `${fontSize}px` }}
+              onMouseUp={handleTextSelected}
+            >
+              <NgHighlightedText
+                text={text}
+                matches={ngMatches}
+                onSelectMatch={handleRewriteNgMatch}
+                busyMatchStart={ngRewriteBusyStart}
+                disabled={
+                  loading ||
+                  isGeneratingStream ||
+                  ngAutoRewriteRunning ||
+                  ngRewriteBusyStart !== null
+                }
+              />
+            </article>
+          </>
         ) : (
           <div className="reader-empty">
             <p>まだ本文がありません。下の欄に短い希望を入れて、続きを生成してください。</p>

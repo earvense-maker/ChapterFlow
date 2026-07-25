@@ -592,6 +592,30 @@ export async function appendGenerationStyleProfileLog(
   });
 }
 
+// NOTE: NG表現の局所リライトで本文が書き換わったときに追記する。元レコードを
+// 書き換えないのは status / style-profile と同じ理由で、追記型ログの監査性を保つため。
+// 「いつ・どの登録語が理由で・どこが変わったか」を後から追えるようにしておく。
+export async function appendGenerationTextRevisionLog(
+  projectId: string,
+  generationId: string,
+  responseText: string,
+  revision: { reason: string; before: string; after: string }
+): Promise<void> {
+  const logPath = generationLogPath(projectId);
+  await withDataDirWrite(async () => {
+    await ensureDir(generationsDir(projectId));
+    const line =
+      JSON.stringify({
+        entryType: 'text-revision',
+        generationId,
+        responseText,
+        revision,
+        updatedAt: new Date().toISOString(),
+      }) + '\n';
+    await fs.appendFile(logPath, line, 'utf-8');
+  });
+}
+
 export async function findGenerationRecord(
   projectId: string,
   generationId: string
@@ -614,6 +638,7 @@ export async function findGenerationRecords(
 
   const latestStatuses = new Map<string, GenerationStatus>();
   const latestStyleProfiles = new Map<string, GenerationStyleProfile>();
+  const latestTexts = new Map<string, string>();
   const records = new Map<string, GenerationRecord>();
   const lines = text.trim().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -629,6 +654,15 @@ export async function findGenerationRecords(
         }
         continue;
       }
+      // NOTE: text-revision は responseText を持つので、この分岐を responseText の
+      // 分岐より前に置く必要がある。順序を入れ替えると改訂行が元レコードとして
+      // 採用され、改訂前の本文が二度と現れなくなる。
+      if (entry.entryType === 'text-revision' && typeof entry.responseText === 'string') {
+        if (!latestTexts.has(entry.generationId)) {
+          latestTexts.set(entry.generationId, entry.responseText);
+        }
+        continue;
+      }
       if (entry.entryType === 'style-profile' && entry.styleProfile) {
         const normalizedProfile = normalizeGenerationStyleProfile(entry.styleProfile);
         if (normalizedProfile && !latestStyleProfiles.has(entry.generationId)) {
@@ -640,10 +674,12 @@ export async function findGenerationRecords(
         const record = entry as GenerationRecord;
         const latestStatus = latestStatuses.get(entry.generationId);
         const latestStyleProfile = latestStyleProfiles.get(entry.generationId);
+        const latestText = latestTexts.get(entry.generationId);
         records.set(entry.generationId, {
           ...record,
           ...(latestStatus ? { status: latestStatus } : {}),
           ...(latestStyleProfile ? { styleProfile: latestStyleProfile } : {}),
+          ...(latestText !== undefined ? { responseText: latestText } : {}),
         });
         if (records.size === targets.size) break;
       }

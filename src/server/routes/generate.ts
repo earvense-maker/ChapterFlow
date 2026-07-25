@@ -3,6 +3,7 @@ import * as generationService from '../services/generationService.js';
 import * as storage from '../services/storageService.js';
 import * as storyStateService from '../services/storyStateService.js';
 import * as refineAutomationService from '../services/refineAutomationService.js';
+import * as ngRewriteService from '../services/ngRewriteService.js';
 import { DataDirLockedError } from '../services/dataDirLock.js';
 import { GENERATION_WISH_MAX_CHARS } from '../types/index.js';
 import type { GenerateRequestBody, SceneNavigationDirection } from '../types/index.js';
@@ -374,6 +375,36 @@ router.get('/projects/:id/generations/:generationId/markdown', async (req, res, 
     }
     res.send(markdown.text);
   } catch (err) {
+    next(err);
+  }
+});
+
+// NOTE: NG表現の局所リライト。全文の再生成ではなく当たった一文だけを書き換えるので
+// 生成系ルートに置く。保守中は本文を触らせない（生成と同じ扱い）。
+router.post('/projects/:id/generations/:generationId/ng-rewrite', async (req, res, next) => {
+  try {
+    await refineAutomationService.assertGenerationNotBlockedByMaintenance(req.params.id);
+    const expressionId = typeof req.body?.expressionId === 'string' ? req.body.expressionId : '';
+    const start = Number(req.body?.start);
+    const end = Number(req.body?.end);
+    if (!expressionId || !Number.isInteger(start) || !Number.isInteger(end)) {
+      return res.status(400).json({ error: 'expressionId と start / end が必要です。' });
+    }
+
+    const result = await ngRewriteService.rewriteNgOccurrence({
+      projectId: req.params.id,
+      generationId: req.params.generationId,
+      expressionId,
+      start,
+      end,
+    });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof ngRewriteService.NgRewriteError) {
+      return res
+        .status(err.status)
+        .json({ error: err.message, code: err.code, retryable: err.retryable });
+    }
     next(err);
   }
 });

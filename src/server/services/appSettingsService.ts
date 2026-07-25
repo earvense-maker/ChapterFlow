@@ -4,8 +4,11 @@ import { existsSync } from 'node:fs';
 import { readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
 import { readEnvWithLegacyFallback } from '../utils/env.js';
 import { withDataDirWrite } from './dataDirLock.js';
-import { normalizeGenerationNotificationSettings } from '../types/index.js';
-import type { GenerationNotificationSettings } from '../types/index.js';
+import {
+  normalizeGenerationNotificationSettings,
+  normalizeNgAutoRewriteSettings,
+} from '../types/index.js';
+import type { GenerationNotificationSettings, NgAutoRewriteSettings } from '../types/index.js';
 
 let appSettingsMutationTail: Promise<void> = Promise.resolve();
 
@@ -18,6 +21,7 @@ export interface AppSettings {
     modelName?: string;
   };
   generationNotifications?: GenerationNotificationSettings;
+  ngAutoRewrite?: NgAutoRewriteSettings;
 }
 
 export function getAppSettingsPath(): string {
@@ -131,6 +135,9 @@ function normalizeAppSettings(settings: AppSettings | null): AppSettings {
     normalized.generationNotifications = normalizeGenerationNotificationSettings(
       settings.generationNotifications
     );
+  }
+  if (settings.ngAutoRewrite !== undefined) {
+    normalized.ngAutoRewrite = normalizeNgAutoRewriteSettings(settings.ngAutoRewrite);
   }
   return normalized;
 }

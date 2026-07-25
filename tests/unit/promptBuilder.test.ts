@@ -618,9 +618,12 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('Legacy-only knowledge survives migration.');
   });
 
-  it('places registered banned expressions immediately before the wish section', async () => {
+  // NOTE: 登録NGは意図的にプロンプトへ載せない。語をプロンプトに書くとモデルが
+  // 「〇〇ではなく」という否定形で本文へ出してしまうため、検出と局所リライトに
+  // 移した（ngDetection / ngRewriteService）。ここはその不注入の回帰テスト。
+  it('never puts registered banned expressions into the prompt', async () => {
     const banned = Array.from({ length: 12 }, (_, i) => `NG表現${i + 1}`);
-    const { userPrompt } = await buildPrompt({
+    const { systemInstructions, userPrompt } = await buildPrompt({
       project: makeProject(),
       state: makeState(),
       wish: '続き',
@@ -629,22 +632,11 @@ describe('buildPrompt', () => {
       worldText: '',
       bannedExpressions: banned,
     });
-    const outputIndex = userPrompt.indexOf('【出力形式】');
-    const bannedIndex = userPrompt.indexOf('【使わない表現】');
-    const wishIndex = userPrompt.indexOf('【今回の希望】');
-    expect(outputIndex).toBeGreaterThanOrEqual(0);
-    expect(bannedIndex).toBeGreaterThan(outputIndex);
-    // NOTE: 新仕様では【使わない表現】は【今回の希望】の直前配置。
-    // 他セクション（style sample など）が挟まらないことを、区切りが1つだけであることで確認する。
-    expect(bannedIndex).toBeLessThan(wishIndex);
-    const between = userPrompt.slice(bannedIndex, wishIndex);
-    const separatorCount = between.split('\n\n---\n\n').length - 1;
-    expect(separatorCount).toBe(1);
-    // 旧セクション名（ラッパー見出し）は残さない
+    expect(userPrompt).not.toContain('【使わない表現】');
     expect(userPrompt).not.toContain('【表現上の注意】');
-    // NG 表現は上限（12件）分がすべて残る（黙って削らない）
     for (const text of banned) {
-      expect(userPrompt).toContain(`「${text}」`);
+      expect(userPrompt).not.toContain(text);
+      expect(systemInstructions).not.toContain(text);
     }
   });
 
@@ -734,13 +726,18 @@ describe('buildPrompt', () => {
       characters: [],
       bannedExpressions: [` ${repeatedPhrase}。 `],
     });
-    expect(manualDuplicate.userPrompt).toContain('【使わない表現】');
+    // NOTE: 登録NGはプロンプトに載せないので、頻出フレーズ側からも落ちて完全に姿を消す。
+    // 除外を外すと soft caution 経由でNG語がプロンプトへ戻ってしまうため、この除外が
+    // 「注入しない」ことの実質的な守りになっている。
+    expect(manualDuplicate.userPrompt).not.toContain('【使わない表現】');
     expect(manualDuplicate.userPrompt).not.toContain('【表現の重複を避ける】');
-    // NOTE: 新仕様では【使わない表現】が末尾（【今回の希望】の直前）にあり、
-    // ここは手動NGの重複除去（頻出セクションを出さないこと）を検証する場所。
-    // 手動NG本文の出現回数を数えるので、split 先は【使わない表現】に置き換える。
-    const manualSection = manualDuplicate.userPrompt.split('【使わない表現】')[1]?.split('---')[0] ?? '';
-    expect(manualSection.split(repeatedPhrase).length - 1).toBe(1);
+    // NOTE: 直近本文セクションには当然その語が含まれる（作品本文そのものなので）。
+    // 検証したいのは「それ以外の場所には現れない」こと。
+    const recentTextSection =
+      manualDuplicate.userPrompt.split('【これまでの作品本文（直近）】')[1]?.split('---')[0] ?? '';
+    expect(recentTextSection).toContain(repeatedPhrase);
+    const outsideRecentText = manualDuplicate.userPrompt.replace(recentTextSection, '');
+    expect(outsideRecentText).not.toContain(repeatedPhrase);
   });
 
   it('limits automatically injected frequent phrases to eight items', async () => {
@@ -949,8 +946,8 @@ describe('buildPrompt', () => {
   });
 
   // NOTE: Track 3A の新配置スナップショット。
-  // continue モード: 【出力形式】→【これまでの作品本文（直近）】→【表現の重複を避ける】→【使わない表現】→【今回の希望】。
-  it('orders sections per Track 3A: registered banned expressions land right before the wish', async () => {
+  // continue モード: 【出力形式】→【これまでの作品本文（直近）】→【表現の重複を避ける】→【今回の希望】。
+  it('orders sections: the frequent phrase caution lands right before the wish', async () => {
     const project = makeProject(promptStateProjectId);
     const episodeId = 'ep-order-3a';
     const sceneId = 'scene-order-3a';
@@ -1005,7 +1002,6 @@ describe('buildPrompt', () => {
       '【出力形式】',
       '【これまでの作品本文（直近）】',
       '【表現の重複を避ける】',
-      '【使わない表現】',
       '【今回の希望】',
     ].map((marker) => userPrompt.indexOf(marker));
     expect(order.every((index) => index >= 0)).toBe(true);
@@ -1013,7 +1009,7 @@ describe('buildPrompt', () => {
   });
 
   // NOTE: rewrite モード時の順序: 【これまでの作品本文…】→【今回書き直しの対象となる場面】→
-  // 【表現の重複を避ける】→【使わない表現】→【今回の希望】。
+  // 【表現の重複を避ける】→【今回の希望】。
   it('orders sections per Track 3A in rewrite mode with target scene between recent text and frequent phrases', async () => {
     const project = makeProject(promptStateProjectId);
     const episodeId = 'ep-order-3a-rewrite';
@@ -1100,7 +1096,6 @@ describe('buildPrompt', () => {
         '【これまでの作品本文（直近／今回書き直す場面より前まで）】',
         targetHeading,
         '【表現の重複を避ける】',
-        '【使わない表現】',
         '【今回の希望】',
       ].map((marker) => userPrompt.indexOf(marker));
       expect(order.every((index) => index >= 0)).toBe(true);
@@ -1108,8 +1103,9 @@ describe('buildPrompt', () => {
     }
   });
 
-  // NOTE: 【好み・NG】直下に、末尾の【使わない表現】へ誘導する注記が出ることを検証する。
-  it('adds a pointer note under 好み・NG when negative memories exist', async () => {
+  // NOTE: 【好み・NG】は方向指示（「性描写を露骨に書かない」等）専用。言い回し単位の
+  // 登録NGはプロンプトに載せなくなったので、そこへ誘導する注記も出してはいけない。
+  it('renders 好み・NG without pointing at a registered banned expression section', async () => {
     const memories: Memory[] = [
       {
         memoryId: 'mem-neg-1',
@@ -1134,7 +1130,8 @@ describe('buildPrompt', () => {
       worldText: '',
     });
     expect(userPrompt).toContain('【好み・NG】');
-    expect(userPrompt).toContain('※言い回し単位で禁止したい語句は末尾の【使わない表現】に登録する。');
+    expect(userPrompt).toContain('性描写を露骨に書かない');
+    expect(userPrompt).not.toContain('【使わない表現】');
   });
 
   // NOTE: Track 1A: 重要イベントの主体行の描画。

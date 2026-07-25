@@ -37,6 +37,8 @@ export interface BuildPromptInput {
   worldText: string;
   baseSystemPrompt?: string | null;
   customSystemPrompt?: string | null;
+  // NOTE: プロンプトには載せない。頻出フレーズの soft caution にNG語が紛れ込むと
+  // 結局プロンプトへ語を注入することになるので、その除外のためだけに受け取る。
   bannedExpressions?: string[];
   knowledgeTexts?: Array<{ title: string; content: string }>;
   // NOTE: continue=続き, regenerate=書き直し（同じ場面）, variate=別案（同じ場面）。
@@ -206,13 +208,13 @@ export async function buildPrompt(input: BuildPromptInput): Promise<{
     );
   }
 
-  // NOTE: 登録NGは末尾追従の効きを最大化するため、【今回の希望】の直前に置く。
-  // ロールプレイ側（roleplayPromptBuilder.ts）が scenario/summary/recent/banned/指示 の
-  // 順に組んでいるのと同じ配置意図。
-  const registeredBannedSection = renderRegisteredBannedExpressions(bannedExpressions);
-  if (registeredBannedSection) {
-    parts.push(registeredBannedSection);
-  }
+  // NOTE: 登録NGはここに置いていたが撤去した。語をプロンプトに書くと、モデルは
+  // 意味を保ったまま制約も満たそうとして「〇〇ではなく」という否定形で語を本文へ
+  // 出してしまう（指示に従った結果として起きるので再現性が高い）。長文生成では
+  // 指示側の影響が減衰する一方、語だけは最後まで参照可能なまま残るのも効いていた。
+  // 現在は出力後に ngDetection で検出し、当たった一文だけを ngRewriteService で
+  // 書き換える。bannedExpressions はプロンプトへ載せず、下記の頻出フレーズ経由で
+  // NG語が混入しないようにする除外用途だけで使う。
 
   // 今回の希望（末尾。優先順位と裁量段落を付加）
   parts.push(renderWishSection(wish, mode));
@@ -469,12 +471,11 @@ function renderPreferenceNotes(memories: Memory[]): string {
     parts.push(`【好み】\n${preferences.map((m) => `- ${m.content}`).join('\n')}`);
   }
   if (negatives.length > 0) {
-    // NOTE: 手動登録の言い回し単位 NG は末尾の【使わない表現】側に集約されている。
-    // 本セクションの【NG】はプリファレンス寄り（「性描写を露骨に書かない」等の方向指示）
-    // なので、両者の使い分けを利用者と後任に示す注記を1行付ける。
-    parts.push(
-      `【NG】\n${negatives.map((m) => `- ${m.content}`).join('\n')}\n※言い回し単位で禁止したい語句は末尾の【使わない表現】に登録する。`
-    );
+    // NOTE: 本セクションの【NG】はプリファレンス寄り（「性描写を露骨に書かない」等の
+    // 方向指示）。言い回し単位の登録NGはプロンプトに載せず、出力後の検出と局所リライトで
+    // 扱うため（ngDetection / ngRewriteService）、ここには現れない。方向指示は語そのものを
+    // 文脈へ持ち込まないので、否定形で本文に漏れる問題も起きにくい。
+    parts.push(`【NG】\n${negatives.map((m) => `- ${m.content}`).join('\n')}`);
   }
   if (parts.length === 0) return '';
   return `【好み・NG】\n${parts.join('\n\n')}`;
@@ -664,15 +665,6 @@ function normalizeExpressionText(text: string): string {
     .normalize('NFKC')
     .replace(/[\s\p{P}\p{S}]+/gu, '')
     .toLocaleLowerCase();
-}
-
-// NOTE: 手動登録の NG。プロンプトの最末尾（【今回の希望】の直前）に置く。
-// 末尾追従の強いモデルでも効くようにという配置意図。
-function renderRegisteredBannedExpressions(expressions: string[] | undefined): string {
-  const manualItems = expressions?.filter((text) => text.trim().length > 0) ?? [];
-  if (manualItems.length === 0) return '';
-  const lines = manualItems.map((text) => `- 「${text.trim()}」`).join('\n');
-  return `【使わない表現】\n以下の言い回しは今回の本文に出さないこと。同じ意味は別の言い方で書く。\n引用符・括弧内・地の文の別を問わず、部分一致も避ける。\n${lines}`;
 }
 
 // NOTE: 直近本文の頻出フレーズ。soft caution。本文セクション直後に置く。

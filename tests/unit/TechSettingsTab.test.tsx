@@ -10,6 +10,8 @@ const { apiMock } = vi.hoisted(() => ({
     getExpressions: vi.fn(),
     updateProject: vi.fn(),
     getNotificationSettings: vi.fn(),
+    getNgAutoRewriteSettings: vi.fn().mockResolvedValue({ enabled: false, maxRewritesPerGeneration: 3 }),
+    updateNgAutoRewriteSettings: vi.fn(),
     updateNotificationSettings: vi.fn(),
   },
 }));
@@ -86,7 +88,9 @@ describe('TechSettingsTab Gemini sampling settings', () => {
     );
 
     expect(await screen.findByRole('heading', { name: 'この作品のNG表現' })).toBeVisible();
-    expect(screen.getByText(/共通＋作品固有の新しい順で最大12件/)).toBeVisible();
+    // NOTE: 登録NGはプロンプトに送らず、生成後の検出＋局所リライトで扱う方式に変えた。
+    // 説明文がその挙動を伝えていることを、利用者向けの契約として押さえておく。
+    expect(screen.getByText(/プロンプトには送らず/)).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'アプリ設定を開く' }));
     expect(onOpenAppSettings).toHaveBeenCalledWith('gemini');
   });

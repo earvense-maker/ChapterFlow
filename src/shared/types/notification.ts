@@ -6,6 +6,9 @@ export interface GenerationNotificationEvents {
   failed: boolean;
   settingsUpdated: boolean;
   reviewRequired: boolean;
+  // NOTE: NG表現の局所リライトが本文を書き換えたとき。本文が勝手に変わったことは
+  // 必ず知らせたいので、既定は on。
+  ngRewrite: boolean;
 }
 
 // NOTE: リポジトリに音声アセットを持たないため、通知音は Web Audio の合成音で用意する

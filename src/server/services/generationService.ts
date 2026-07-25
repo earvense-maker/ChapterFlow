@@ -177,10 +177,14 @@ async function generateSceneUnlocked(
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
 
-  const [bannedExpressions, knowledgeTexts] = await Promise.all([
-    expressionService.resolveBannedExpressions(projectId),
+  // NOTE: bannedExpressions はプロンプトへ載せない（promptBuilder のコメント参照）。
+  // 頻出フレーズの soft caution からNG語を除外するためだけに使うので、件数を絞らない
+  // 全件版を使う。絞ると漏れた語が soft caution 経由でプロンプトへ戻ってしまう。
+  const [ngExpressions, knowledgeTexts] = await Promise.all([
+    expressionService.resolveActiveNgExpressions(projectId),
     knowledgeService.getEnabledKnowledgeTexts(projectId),
   ]);
+  const bannedExpressions = ngExpressions.map((expression) => expression.text);
   const rewriteTargetGenerationId =
     options.mode === 'continue'
       ? null
@@ -372,10 +376,14 @@ async function generateSceneStreamUnlocked(
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
 
-  const [bannedExpressions, knowledgeTexts] = await Promise.all([
-    expressionService.resolveBannedExpressions(projectId),
+  // NOTE: bannedExpressions はプロンプトへ載せない（promptBuilder のコメント参照）。
+  // 頻出フレーズの soft caution からNG語を除外するためだけに使うので、件数を絞らない
+  // 全件版を使う。絞ると漏れた語が soft caution 経由でプロンプトへ戻ってしまう。
+  const [ngExpressions, knowledgeTexts] = await Promise.all([
+    expressionService.resolveActiveNgExpressions(projectId),
     knowledgeService.getEnabledKnowledgeTexts(projectId),
   ]);
+  const bannedExpressions = ngExpressions.map((expression) => expression.text);
   const rewriteTargetGenerationId =
     options.mode === 'continue'
       ? null
@@ -1120,6 +1128,25 @@ async function compressProjectContextUnlocked(projectId: string): Promise<Contex
   await storage.writeContextSummary(projectId, summary);
   const contextUsage = await buildReaderContextUsage(project, state, '');
   return { summary, contextUsage };
+}
+
+// NOTE: NG表現の局所リライトで採用済み本文が書き換わったときに、その本文を含む章の
+// .md を作り直す。generation の .md が正本で章 .md は派生物なので、片方だけ更新すると
+// 書き出した原稿にだけ古い表現が残る。対象の generation が採用済みでなければ何もしない
+// （下書きは章 .md に載っていないため）。
+export async function rebuildEpisodeMarkdownForAcceptedGeneration(
+  projectId: string,
+  generationId: string
+): Promise<boolean> {
+  const episodeIds = await storage.listEpisodeIds(projectId);
+  for (const episodeId of episodeIds) {
+    const episode = await storage.readEpisodeRecord(projectId, episodeId);
+    if (!episode) continue;
+    if (!episode.scenes.some((scene) => scene.acceptedGenerationId === generationId)) continue;
+    await updateEpisodeMarkdown(projectId, episode);
+    return true;
+  }
+  return false;
 }
 
 async function updateEpisodeMarkdown(projectId: string, episode: EpisodeRecord): Promise<void> {

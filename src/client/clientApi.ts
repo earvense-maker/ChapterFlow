@@ -21,9 +21,12 @@ import type {
   KnowledgeListItem,
   Memory,
   ModelProviderInfo,
+  NgAutoRewriteSettings,
   NgExpression,
   NgExpressionSource,
   NgExpressionsResponse,
+  NgRewriteRequestBody,
+  NgRewriteResult,
   PresetsFile,
   Project,
   ProjectState,
@@ -312,6 +315,21 @@ export const api = {
     request<NgExpression>('/expressions/global', { method: 'POST', body: JSON.stringify(body) }),
   archiveGlobalExpression: (expressionId: string) =>
     request<{ ok: true }>(`/expressions/global/${expressionId}`, { method: 'DELETE' }),
+  updateExpressionAlternatives: (id: string, expressionId: string, alternatives: string[]) =>
+    request<NgExpression>(`/projects/${id}/expressions/${expressionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ alternatives }),
+    }),
+  updateGlobalExpressionAlternatives: (expressionId: string, alternatives: string[]) =>
+    request<NgExpression>(`/expressions/global/${expressionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ alternatives }),
+    }),
+  rewriteNgOccurrence: (id: string, generationId: string, body: NgRewriteRequestBody) =>
+    request<NgRewriteResult>(`/projects/${id}/generations/${generationId}/ng-rewrite`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   getRefineScan: (id: string) =>
     request<RefineScanResult | null>(`/projects/${id}/refine/scan`),
@@ -337,6 +355,12 @@ export const api = {
       method: 'POST',
     }),
 
+  getNgAutoRewriteSettings: () => request<NgAutoRewriteSettings>('/system/ng-auto-rewrite'),
+  updateNgAutoRewriteSettings: (body: NgAutoRewriteSettings) =>
+    request<NgAutoRewriteSettings>('/system/ng-auto-rewrite', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
   getNotificationSettings: () =>
     request<GenerationNotificationSettings>('/system/notification-settings'),
   updateNotificationSettings: (body: GenerationNotificationSettings) =>

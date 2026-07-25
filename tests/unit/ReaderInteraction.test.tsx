@@ -17,6 +17,11 @@ vi.mock('../../src/client/clientApi', () => ({
     navigateDraft: vi.fn(),
     shutdown: vi.fn(),
     getNotificationSettings: vi.fn().mockResolvedValue(null),
+    getExpressions: vi.fn().mockResolvedValue({ ngExpressions: [] }),
+    getGlobalExpressions: vi.fn().mockResolvedValue({ ngExpressions: [] }),
+    rewriteNgOccurrence: vi.fn(),
+    getNgAutoRewriteSettings: vi.fn().mockResolvedValue({ enabled: false, maxRewritesPerGeneration: 3 }),
+    updateNgAutoRewriteSettings: vi.fn(),
   },
 }));
 

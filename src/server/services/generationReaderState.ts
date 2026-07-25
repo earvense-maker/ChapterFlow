@@ -567,7 +567,10 @@ export async function buildReaderContextUsage(
       knowledgeService.getEnabledKnowledgeTexts(project.projectId),
     ]);
 
-  const bannedExpressions = await expressionService.resolveBannedExpressions(project.projectId);
+  // NOTE: プロンプトへは載せず、頻出フレーズからの除外にだけ使う（promptBuilder 参照）。
+  const bannedExpressions = (
+    await expressionService.resolveActiveNgExpressions(project.projectId)
+  ).map((expression) => expression.text);
 
   const { systemInstructions, userPrompt } = await buildPrompt({
     project,

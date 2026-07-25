@@ -194,12 +194,12 @@ describe('設定レイヤー分離 prompt rendering', () => {
 
     const lens = userPrompt.indexOf('【今回の文体レンズ】');
     const sample = userPrompt.indexOf('【文体見本】');
-    const banned = userPrompt.indexOf('【使わない表現】');
     const wish = userPrompt.indexOf('【今回の希望】');
     expect(lens).toBeGreaterThanOrEqual(0);
     expect(lens).toBeLessThan(sample);
-    expect(sample).toBeLessThan(banned);
-    expect(banned).toBeLessThan(wish);
+    expect(sample).toBeLessThan(wish);
+    // NOTE: 登録NGはプロンプトへ載せない（ngDetection での検出＋局所リライトに移した）。
+    expect(userPrompt).not.toContain('【使わない表現】');
   });
 
   it('adds the temporal note only when work settings are present', async () => {

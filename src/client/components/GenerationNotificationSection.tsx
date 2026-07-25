@@ -226,6 +226,15 @@ export default function GenerationNotificationSection({ onError, onFlashMessage,
             />
             <span>確認が必要な変更があるとき</span>
           </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={settings.events.ngRewrite}
+              onChange={(e) => updateEvent('ngRewrite', e.target.checked)}
+              disabled={saving}
+            />
+            <span>NG表現の書き換えが済んだとき</span>
+          </label>
 
           <div className="summary-card-actions">
             <button type="button" onClick={sendTestNotification} disabled={saving}>

@@ -17,6 +17,9 @@ export const BAN_LIMIT_TOTAL = 12;
 const MAX_NG_EXPRESSIONS = 50;
 const MIN_NG_TEXT_LENGTH = 1;
 const MAX_NG_TEXT_LENGTH = 30;
+// NOTE: 代替案はリライトの1回のプロンプトに丸ごと載せるので、選択肢を増やすより
+// 少数を的確に出したほうが効く。3件で打ち止めにする。
+const MAX_NG_ALTERNATIVES = 3;
 const GLOBAL_EXPRESSIONS_PATH = path.resolve(CONFIG_DIR, 'global-expressions.json');
 
 // NOTE: キューは read → update → write をスコープ単位で直列化する。safeWriteJson
@@ -58,6 +61,7 @@ export async function getGlobalExpressions(): Promise<NgExpression[]> {
 export interface CreateExpressionInput {
   text: string;
   source?: NgExpressionSource;
+  alternatives?: string[];
 }
 
 export async function createExpression(
@@ -83,6 +87,33 @@ export async function createGlobalExpression(
   );
 }
 
+export async function updateExpressionAlternatives(
+  projectId: string,
+  expressionId: string,
+  alternatives: string[]
+): Promise<NgExpression> {
+  return updateAlternativesInScope(
+    `project:${projectId}`,
+    () => storage.readExpressions(projectId),
+    (file) => storage.writeExpressions(projectId, file),
+    expressionId,
+    alternatives
+  );
+}
+
+export async function updateGlobalExpressionAlternatives(
+  expressionId: string,
+  alternatives: string[]
+): Promise<NgExpression> {
+  return updateAlternativesInScope(
+    'global',
+    readGlobalExpressionsFile,
+    writeGlobalExpressionsFile,
+    expressionId,
+    alternatives
+  );
+}
+
 export async function archiveExpression(projectId: string, expressionId: string): Promise<void> {
   await archiveExpressionInScope(
     `project:${projectId}`,
@@ -96,9 +127,40 @@ export async function archiveGlobalExpression(expressionId: string): Promise<voi
   await archiveExpressionInScope('global', readGlobalExpressionsFile, writeGlobalExpressionsFile, expressionId);
 }
 
+// NOTE: 本文生成の検出・局所リライト用。プロンプトへ載せないので BAN_LIMIT_TOTAL の
+// ような件数制限は掛けない（制限はプロンプト肥大化を防ぐためのものだった）。登録した
+// 語は最後の1件まで検出されるべきなので、作品NGと共通NGの全件を返す。
+export async function resolveActiveNgExpressions(projectId: string): Promise<NgExpression[]> {
+  const [projectExpressions, globalExpressions] = await Promise.all([
+    getExpressions(projectId),
+    getGlobalExpressions().catch((err) => {
+      if (err instanceof GlobalExpressionsCorruptError) {
+        console.warn('Global expressions file is corrupt; falling back to project expressions', {
+          projectId,
+        });
+        return [];
+      }
+      throw err;
+    }),
+  ]);
+
+  const seen = new Set<string>();
+  const result: NgExpression[] = [];
+  for (const expression of [...projectExpressions, ...globalExpressions]) {
+    const normalized = normalizeNgText(expression.text);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(expression);
+  }
+  return result;
+}
+
 // NOTE: 以前は頻出フレーズを自動で回避リストに入れていたが、固有名詞や
 // 一般的な言い回しまで誤って回避対象になる副作用があったため撤去。
 // 現在はユーザーが明示的に登録した共通NG・作品NGのみをプロンプトに送る。
+//
+// NOTE: 本文生成はNG語をプロンプトへ載せなくなったため、この関数の利用先は
+// ロールプレイ（短い応答なので注入が効きやすく、局所リライト導線も無い）だけ。
 export async function resolveBannedExpressions(projectId: string): Promise<string[]> {
   const [projectExpressions, globalExpressions] = await Promise.all([
     getExpressions(projectId),
@@ -149,6 +211,7 @@ async function createExpressionInScope(
   }
   const normalized = normalizeNgText(rawText);
   validateNgText(normalized);
+  const alternatives = normalizeAlternatives(input.alternatives);
 
   return withExpressionMutationQueue(scope, async () => {
     const file = await readFile();
@@ -168,6 +231,7 @@ async function createExpressionInScope(
     const expression: NgExpression = {
       id: generateTimestampId('ngx'),
       text: normalized,
+      ...(alternatives.length > 0 ? { alternatives } : {}),
       source: input.source ?? 'manual',
       status: 'active',
       createdAt: now,
@@ -176,6 +240,34 @@ async function createExpressionInScope(
     file.ngExpressions.push(expression);
     await writeFile(file);
     return { expression, isExisting: false };
+  });
+}
+
+async function updateAlternativesInScope(
+  scope: string,
+  readFile: () => Promise<ExpressionsFile>,
+  writeFile: (file: ExpressionsFile) => Promise<void>,
+  expressionId: string,
+  rawAlternatives: string[]
+): Promise<NgExpression> {
+  const alternatives = normalizeAlternatives(rawAlternatives);
+
+  return withExpressionMutationQueue(scope, async () => {
+    const file = await readFile();
+    const expression = file.ngExpressions.find(
+      (candidate) => candidate.id === expressionId && candidate.status === 'active'
+    );
+    if (!expression) {
+      throw new ExpressionValidationError('対象のNG表現が見つかりません。');
+    }
+    if (alternatives.length > 0) {
+      expression.alternatives = alternatives;
+    } else {
+      delete expression.alternatives;
+    }
+    expression.updatedAt = nowIso();
+    await writeFile(file);
+    return expression;
   });
 }
 
@@ -242,6 +334,13 @@ function isExpressionsFile(value: unknown): value is ExpressionsFile {
 
 function isNgExpression(value: unknown): value is NgExpression {
   if (!isRecord(value)) return false;
+  // NOTE: alternatives は後から足したフィールドなので、無い既存ファイルも有効として通す。
+  if (
+    value.alternatives !== undefined &&
+    !(Array.isArray(value.alternatives) && value.alternatives.every((item) => typeof item === 'string'))
+  ) {
+    return false;
+  }
   return (
     typeof value.id === 'string' &&
     typeof value.text === 'string' &&
@@ -258,6 +357,30 @@ function activeExpressions(file: ExpressionsFile): NgExpression[] {
 
 function normalizeNgText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeAlternatives(value: string[] | undefined): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    if (/[\r\n]/.test(item)) {
+      throw new ExpressionValidationError('改行を含む代替案は登録できません。');
+    }
+    const normalized = normalizeNgText(item);
+    if (!normalized) continue;
+    if (normalized.length > MAX_NG_TEXT_LENGTH) {
+      throw new ExpressionValidationError(
+        `代替案は${MAX_NG_TEXT_LENGTH}字以内で登録してください。`
+      );
+    }
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+    if (result.length >= MAX_NG_ALTERNATIVES) break;
+  }
+  return result;
 }
 
 function validateNgText(text: string): void {

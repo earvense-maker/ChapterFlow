@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import GenerationNotificationSection from './GenerationNotificationSection';
+import NgAutoRewriteSection from './NgAutoRewriteSection';
+import NgExpressionList from './NgExpressionList';
 import {
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
   DEFAULT_GEMINI_MODEL,
@@ -169,6 +171,21 @@ export default function TechSettingsTab({
       onFlashMessage('NG表現を登録しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '登録に失敗しました');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleUpdateNgAlternatives(expressionId: string, alternatives: string[]) {
+    try {
+      setLoading(true);
+      onError(null);
+      await api.updateExpressionAlternatives(projectId, expressionId, alternatives);
+      const expressionsData = await api.getExpressions(projectId);
+      setNgExpressions(expressionsData.ngExpressions);
+      onFlashMessage('代替案を保存しました');
+    } catch (err) {
+      onError(err instanceof Error ? err.message : '代替案の保存に失敗しました');
     } finally {
       setLoading(false);
     }
@@ -358,7 +375,7 @@ export default function TechSettingsTab({
             : 'この作品だけで生成時に避けさせたい言い回しを登録します（1〜30字）。'}
         </p>
         <p className="settings-help">
-          アプリ設定の共通NG表現も併用されます。共通＋作品固有の新しい順で最大12件が生成に使われます。
+          アプリ設定の共通NG表現も併用されます。登録した語はプロンプトには送らず、生成後の本文から検出して読書画面でハイライトします。ハイライトをクリックすると、その一文だけを書き換えられます。
         </p>
         <button type="button" onClick={() => onOpenAppSettings(provider)} disabled={loading}>
           アプリ設定を開く
@@ -384,24 +401,22 @@ export default function TechSettingsTab({
             NG表現が上限（50件）に近づいています。
           </p>
         )}
-        <ul className="ng-expression-list">
-          {ngExpressions.map((e) => (
-            <li key={e.id} className="ng-expression-item">
-              <span>「{e.text}」</span>
-              <button
-                className="danger"
-                onClick={() => handleArchiveNgExpression(e.id)}
-                disabled={loading}
-              >
-                削除
-              </button>
-            </li>
-          ))}
-        </ul>
-        {ngExpressions.length === 0 && (
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            登録されたNG表現はありません。
-          </p>
+        <NgExpressionList
+          expressions={ngExpressions}
+          disabled={loading}
+          onArchive={handleArchiveNgExpression}
+          onUpdateAlternatives={handleUpdateNgAlternatives}
+          emptyMessage="登録されたNG表現はありません。"
+        />
+        {/* NOTE: ロールプレイは従来どおりNG語をプロンプトへ送る方式のままで、
+            出力後の検出・書き換え導線が無いので自動化の設定も出さない。 */}
+        {!isRoleplay && (
+          <NgAutoRewriteSection
+            onError={onError}
+            onFlashMessage={onFlashMessage}
+            disabled={loading}
+            scopeNote="この設定はアプリ全体で共通です。どの作品から変えても同じ値を書き換えます。"
+          />
         )}
       </section>
 

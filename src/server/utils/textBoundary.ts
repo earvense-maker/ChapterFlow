@@ -33,3 +33,76 @@ export function trimTrailingTextToSentenceBoundary(text: string): string {
 
   return lastBoundaryEnd > 0 ? text.slice(0, lastBoundaryEnd) : text;
 }
+
+const SENTENCE_TERMINATORS = new Set(['。', '！', '？']);
+const CLOSING_BRACKETS = new Set(['」', '』', '）', '〕', '］', '】', '〉', '》']);
+// NOTE: 局所リライトに投げる一文の上限。これを超える「一文」は句読点が無いだけの
+// 長い塊なので、そのまま投げると書き換え幅が大きくなりすぎて再チェックの意味が薄れる。
+const MAX_SPAN_LENGTH = 400;
+const FALLBACK_MARGIN = 120;
+const SOFT_BOUNDARIES = new Set(['、', '，', '　', ' ']);
+
+export interface TextSpan {
+  start: number;
+  end: number;
+}
+
+// NOTE: NG表現が当たった位置を含む一文を取り出す。局所リライトの単位を段落ではなく
+// 一文にしているのは、書き換え範囲が広いほど「NGは消えたが別物になった」失敗が増え、
+// 決定的な再チェックで弾いても直しどころが定まらなくなるため。
+export function extractSentenceSpan(text: string, start: number, end: number): TextSpan {
+  let spanStart = 0;
+  for (let i = start - 1; i >= 0; i--) {
+    const char = text[i];
+    if (char === '\n') {
+      spanStart = i + 1;
+      break;
+    }
+    if (SENTENCE_TERMINATORS.has(char)) {
+      let j = i + 1;
+      while (j < start && CLOSING_BRACKETS.has(text[j])) j++;
+      spanStart = j;
+      break;
+    }
+  }
+
+  let spanEnd = text.length;
+  for (let i = end; i < text.length; i++) {
+    const char = text[i];
+    if (char === '\n') {
+      spanEnd = i;
+      break;
+    }
+    if (SENTENCE_TERMINATORS.has(char)) {
+      let j = i + 1;
+      while (j < text.length && CLOSING_BRACKETS.has(text[j])) j++;
+      spanEnd = j;
+      break;
+    }
+  }
+
+  if (spanEnd - spanStart <= MAX_SPAN_LENGTH) return { start: spanStart, end: spanEnd };
+  return narrowSpan(text, { start: spanStart, end: spanEnd }, start, end);
+}
+
+// NOTE: 長すぎる一文は当該箇所の前後だけに縮める。読点などの弱い区切りまで
+// 寄せてから切ることで、語の途中で切れた断片をモデルに渡さないようにする。
+function narrowSpan(text: string, sentence: TextSpan, start: number, end: number): TextSpan {
+  let left = Math.max(sentence.start, start - FALLBACK_MARGIN);
+  let right = Math.min(sentence.end, end + FALLBACK_MARGIN);
+
+  for (let i = left; i < start; i++) {
+    if (SOFT_BOUNDARIES.has(text[i])) {
+      left = i + 1;
+      break;
+    }
+  }
+  for (let i = right - 1; i >= end; i--) {
+    if (SOFT_BOUNDARIES.has(text[i])) {
+      right = i + 1;
+      break;
+    }
+  }
+
+  return { start: left, end: right };
+}

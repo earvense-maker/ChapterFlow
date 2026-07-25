@@ -3,6 +3,8 @@ import { api } from '../clientApi';
 import { DEFAULT_GEMINI_MODEL } from '@shared/defaults';
 import DataDirSettingsSection from './DataDirSettingsSection';
 import GenerationNotificationSection from './GenerationNotificationSection';
+import NgAutoRewriteSection from './NgAutoRewriteSection';
+import NgExpressionList from './NgExpressionList';
 import type { ModelProviderInfo, NgExpression } from '@shared/types';
 
 interface Props {
@@ -169,6 +171,19 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
     }
   }
 
+  async function updateGlobalAlternatives(expressionId: string, alternatives: string[]) {
+    try {
+      setGlobalSaving(true);
+      setGlobalError(null);
+      await api.updateGlobalExpressionAlternatives(expressionId, alternatives);
+      await reloadGlobalExpressions();
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : '代替案の保存に失敗しました');
+    } finally {
+      setGlobalSaving(false);
+    }
+  }
+
   async function archiveGlobalExpression(expressionId: string) {
     try {
       setGlobalSaving(true);
@@ -288,7 +303,7 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
           すべての作品とロールプレイで避けたい表現を登録します。作品だけで避けたい表現は、その作品の設定で登録してください。
         </p>
         <p className="settings-help">
-          共通＋作品固有の新しい順で最大12件が生成に使われます。
+          登録した語はプロンプトには送りません。生成後の本文から検出して読書画面でハイライトし、クリックするとその一文だけを書き換えます。ロールプレイでは従来どおり新しい順に最大12件をプロンプトへ送ります。
         </p>
         {globalError && <div className="refine-scan-error">{globalError}</div>}
         {globalLoading ? (
@@ -317,26 +332,18 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
                 共通NG表現が上限（50件）に近づいています。
               </p>
             )}
-            <ul className="ng-expression-list">
-              {globalExpressions.map((expression) => (
-                <li key={expression.id} className="ng-expression-item">
-                  <span>「{expression.text}」</span>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => archiveGlobalExpression(expression.id)}
-                    disabled={dataDirBusy || globalSaving}
-                  >
-                    削除
-                  </button>
-                </li>
-              ))}
-            </ul>
-            {globalExpressions.length === 0 && !globalError && (
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                登録された共通NG表現はありません。
-              </p>
-            )}
+            <NgExpressionList
+              expressions={globalExpressions}
+              disabled={dataDirBusy || globalSaving}
+              onArchive={archiveGlobalExpression}
+              onUpdateAlternatives={updateGlobalAlternatives}
+              emptyMessage="登録された共通NG表現はありません。"
+            />
+            <NgAutoRewriteSection
+              onError={setGlobalError}
+              onFlashMessage={showMessage}
+              disabled={dataDirBusy || globalSaving}
+            />
           </>
         )}
       </section>

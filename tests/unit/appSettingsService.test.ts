@@ -98,6 +98,7 @@ describe('appSettingsService', () => {
         failed: true,
         settingsUpdated: false,
         reviewRequired: true,
+        ngRewrite: true,
       },
     });
     expect((await readAppSettings()).generationNotifications).toEqual(saved.generationNotifications);
@@ -119,6 +120,7 @@ describe('appSettingsService', () => {
         failed: true,
         settingsUpdated: true,
         reviewRequired: true,
+        ngRewrite: true,
       },
     });
   });

@@ -13,7 +13,9 @@ import {
 import { readAppSettings, updateAppSettings } from '../services/appSettingsService.js';
 import {
   DEFAULT_GENERATION_NOTIFICATION_SETTINGS,
+  DEFAULT_NG_AUTO_REWRITE_SETTINGS,
   normalizeGenerationNotificationSettings,
+  normalizeNgAutoRewriteSettings,
 } from '../types/index.js';
 
 export interface SystemRouterOptions {
@@ -50,6 +52,25 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
     try {
       const normalized = normalizeGenerationNotificationSettings(req.body);
       await updateAppSettings((settings) => ({ ...settings, generationNotifications: normalized }));
+      res.json(normalized);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/system/ng-auto-rewrite', async (_req, res, next) => {
+    try {
+      const settings = await readAppSettings();
+      res.json(settings.ngAutoRewrite ?? DEFAULT_NG_AUTO_REWRITE_SETTINGS);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.put('/system/ng-auto-rewrite', async (req, res, next) => {
+    try {
+      const normalized = normalizeNgAutoRewriteSettings(req.body);
+      await updateAppSettings((settings) => ({ ...settings, ngAutoRewrite: normalized }));
       res.json(normalized);
     } catch (err) {
       next(err);

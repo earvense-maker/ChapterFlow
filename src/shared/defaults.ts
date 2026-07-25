@@ -1,9 +1,14 @@
-import { STYLE_PROFILE_SCHEMA_VERSION } from './types/index.js';
+import {
+  NG_AUTO_REWRITE_MAX_LIMIT,
+  NG_AUTO_REWRITE_MIN_LIMIT,
+  STYLE_PROFILE_SCHEMA_VERSION,
+} from './types/index.js';
 import type {
   ActivePresets,
   GenerationStyleProfile,
   GenerationNotificationEvents,
   GenerationNotificationSettings,
+  NgAutoRewriteSettings,
   NotificationSoundId,
   ProjectType,
   RefineAutomationMode,
@@ -94,8 +99,30 @@ export const DEFAULT_GENERATION_NOTIFICATION_SETTINGS: GenerationNotificationSet
     failed: true,
     settingsUpdated: true,
     reviewRequired: true,
+    ngRewrite: true,
   },
 };
+
+// NOTE: 既定は無効。有効にすると生成のたびに本文が自動で書き換わり、ヒット件数だけ
+// モデル呼び出しが走るため、利用者が明示的に選んだときだけ動くようにする。
+export const DEFAULT_NG_AUTO_REWRITE_SETTINGS: NgAutoRewriteSettings = {
+  enabled: false,
+  maxRewritesPerGeneration: 3,
+};
+
+export function normalizeNgAutoRewriteSettings(value: unknown): NgAutoRewriteSettings {
+  const defaults = DEFAULT_NG_AUTO_REWRITE_SETTINGS;
+  if (typeof value !== 'object' || value === null) return defaults;
+  const raw = value as Partial<NgAutoRewriteSettings>;
+  const rawLimit = Number(raw.maxRewritesPerGeneration);
+  const limit = Number.isFinite(rawLimit)
+    ? Math.min(NG_AUTO_REWRITE_MAX_LIMIT, Math.max(NG_AUTO_REWRITE_MIN_LIMIT, Math.floor(rawLimit)))
+    : defaults.maxRewritesPerGeneration;
+  return {
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : defaults.enabled,
+    maxRewritesPerGeneration: limit,
+  };
+}
 
 export function normalizeGenerationNotificationSettings(value: unknown): GenerationNotificationSettings {
   const defaults = DEFAULT_GENERATION_NOTIFICATION_SETTINGS;
@@ -119,6 +146,7 @@ export function normalizeGenerationNotificationSettings(value: unknown): Generat
       failed: bool(rawEvents.failed, defaults.events.failed),
       settingsUpdated: bool(rawEvents.settingsUpdated, defaults.events.settingsUpdated),
       reviewRequired: bool(rawEvents.reviewRequired, defaults.events.reviewRequired),
+      ngRewrite: bool(rawEvents.ngRewrite, defaults.events.ngRewrite),
     },
   };
 }
