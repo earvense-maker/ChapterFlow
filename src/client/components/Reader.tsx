@@ -52,17 +52,47 @@ function isDelayedStoryStatePending(updatedAt: string | undefined): boolean {
   return Date.now() - timestamp >= STORY_STATE_PENDING_GRACE_MS;
 }
 
+interface NgExpressionLoad {
+  expressions: NgExpression[];
+  projectFailed: boolean;
+  globalFailed: boolean;
+}
+
 // NOTE: 作品NGと共通NGを合わせて検出対象にする。片方の取得に失敗しても、
-// もう片方だけでハイライトは成立するので全体を諦めない。
-async function loadNgExpressions(projectId: string): Promise<NgExpression[]> {
+// もう片方だけでハイライトは成立するので全体を諦めない。ただしどちらが落ちたかは
+// 呼び元へ返す。黙って縮退すると、利用者からは「登録した語が効かない」としか
+// 見えず、共通NG設定の破損（GET /expressions/global が 500）に気づけない。
+async function loadNgExpressions(projectId: string): Promise<NgExpressionLoad> {
   const [projectResult, globalResult] = await Promise.allSettled([
     api.getExpressions(projectId),
     api.getGlobalExpressions(),
   ]);
-  const merged: NgExpression[] = [];
-  if (projectResult.status === 'fulfilled') merged.push(...projectResult.value.ngExpressions);
-  if (globalResult.status === 'fulfilled') merged.push(...globalResult.value.ngExpressions);
-  return merged;
+  const expressions: NgExpression[] = [];
+  if (projectResult.status === 'fulfilled') expressions.push(...projectResult.value.ngExpressions);
+  if (globalResult.status === 'fulfilled') expressions.push(...globalResult.value.ngExpressions);
+  return {
+    expressions,
+    projectFailed: projectResult.status === 'rejected',
+    globalFailed: globalResult.status === 'rejected',
+  };
+}
+
+function ngExpressionLoadNotice(load: NgExpressionLoad): string | null {
+  if (load.projectFailed && load.globalFailed) {
+    return 'NG表現の一覧を取得できませんでした。検出と自動書き換えは行われません';
+  }
+  if (load.globalFailed) {
+    return '共通NG設定を取得できませんでした。作品のNG表現だけで検出しています';
+  }
+  if (load.projectFailed) {
+    return '作品のNG表現を取得できませんでした。共通NG設定だけで検出しています';
+  }
+  return null;
+}
+
+function joinNotices(...parts: Array<string | null>): string | null {
+  const joined = parts.filter((part): part is string => Boolean(part)).join(' / ');
+  return joined || null;
 }
 
 function hasElapsedSince(timestamp: string | null, graceMs: number, now: number): boolean {
@@ -126,6 +156,14 @@ export default function Reader({
   // レンダー時点でキャプチャされた state ではなく ref を見る。
   const ngExpressionsRef = useRef<NgExpression[]>([]);
   const ngAutoRewriteRef = useRef<NgAutoRewriteSettings | null>(null);
+  // NOTE: 上2つの ref を埋める読み込みの promise。生成完了が読み込みを追い越すこと
+  // があるため、自動書き換えの入口でこれを待つ。待たずに ref を見ていた頃は、作品を
+  // 開いた直後の生成だけ自動書き換えが無言で飛んでいた。
+  const ngResourcesRef = useRef<{ projectId: string; pending: Promise<void> } | null>(null);
+  const ngExpressionLoadNoticeRef = useRef<string | null>(null);
+  // NOTE: 設定が読めなかったときは自動書き換えを行わない（本文を勝手に書き換える側の
+  // 機能なので安全側に倒す）。理由をここに残し、実際にNGが当たったときだけ提示する。
+  const ngSettingsErrorRef = useRef<string | null>(null);
   const loadRequestIdRef = useRef(0);
   const mountedRef = useRef(true);
   const storyStatePollInFlightRef = useRef(false);
@@ -254,26 +292,43 @@ export default function Reader({
   // NOTE: NG表現はプロンプトに載せず、出力後に本文を検出してハイライトする方式。
   // 検出はクライアント側で完結するのでサーバー処理もトークンも要らず、登録一覧を
   // 変えた直後や過去の本文にも遡ってそのまま効く。
-  useEffect(() => {
+  useLayoutEffect(() => {
     let cancelled = false;
-    void loadNgExpressions(projectId)
-      .then((expressions) => {
-        if (cancelled) return;
-        setNgExpressions(expressions);
-        ngExpressionsRef.current = expressions;
-      })
+    setNgExpressions([]);
+    setNotice(null);
+    ngExpressionsRef.current = [];
+    ngAutoRewriteRef.current = null;
+    ngExpressionLoadNoticeRef.current = null;
+    ngSettingsErrorRef.current = null;
+    const pending = (async () => {
+      const [expressionResult, settingsResult] = await Promise.allSettled([
+        loadNgExpressions(projectId),
+        api.getNgAutoRewriteSettings(),
+      ]);
+      if (cancelled) return;
+
       // NOTE: 取得に失敗してもハイライトが出ないだけ。本文の閲覧と生成は続けられる
-      // ようにする（NG検出はあくまで補助機能）。
-      .catch(() => {});
-    void api
-      .getNgAutoRewriteSettings()
-      .then((settings) => {
-        // NOTE: 描画には使わず自動書き換えループからだけ読むので ref のみに置く。
-        if (!cancelled) ngAutoRewriteRef.current = settings;
-      })
-      // NOTE: 取得に失敗したら自動書き換えは動かさない（勝手に本文を書き換える側の
-      // 機能なので、設定が読めないときは「やらない」に倒す）。
-      .catch(() => {});
+      // ようにする（NG検出はあくまで補助機能）。ただし縮退したことは画面に出す。
+      const load: NgExpressionLoad =
+        expressionResult.status === 'fulfilled'
+          ? expressionResult.value
+          : { expressions: [], projectFailed: true, globalFailed: true };
+      setNgExpressions(load.expressions);
+      ngExpressionsRef.current = load.expressions;
+      const loadNotice = ngExpressionLoadNotice(load);
+      ngExpressionLoadNoticeRef.current = loadNotice;
+      if (loadNotice) setNotice(loadNotice);
+
+      if (settingsResult.status === 'fulfilled') {
+        ngAutoRewriteRef.current = settingsResult.value;
+      } else {
+        ngAutoRewriteRef.current = null;
+        ngSettingsErrorRef.current =
+          'NG自動書き換えの設定を取得できなかったため、自動書き換えを行いませんでした';
+      }
+    })();
+    ngResourcesRef.current = { projectId, pending };
+    void pending.catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -432,17 +487,26 @@ export default function Reader({
       // reservation は生成完了レスポンスより前にサーバーへ保存済み。直後に別画面へ
       // 移動しても App 側が terminal phase まで通知を監視できるよう、ここで追加する。
       notificationCenter.addMaintenanceWatch(generationProjectId);
-      if (!(await load())) {
-        setNotice('生成は完了しましたが、場面情報の再読み込みに失敗しました');
-      } else if (record.finishReason === 'length') {
-        setNotice(
-          'モデルの出力上限に達したため、本文が途中で終わった可能性があります。内容を確認して採用または再生成してください'
-        );
-      } else {
-        // NOTE: load() の後に回す。先に走らせると load() の setText が書き換え結果を
-        // 上書きしてしまう。有効でなければ即座に返るので分岐は増やさない。
-        await runNgAutoRewrite(record.generationId, record.responseText, generationProjectId);
-      }
+      const loaded = await load();
+      const pendingNotice = joinNotices(
+        !loaded ? '生成は完了しましたが、場面情報の再読み込みに失敗しました' : null,
+        record.finishReason === 'length'
+          ? 'モデルの出力上限に達したため、本文が途中で終わった可能性があります。内容を確認して採用または再生成してください'
+          : null
+      );
+      if (pendingNotice) setNotice(pendingNotice);
+      // NOTE: load() の後に回す。先に走らせると load() の setText が書き換え結果を
+      // 上書きしてしまう。
+      // NOTE: 出力上限に達した生成や再読み込みに失敗した生成でも走らせる。本文は
+      // サーバーに保存済みで、どちらもNG表現が残ってよい理由にはならない。以前は
+      // これらを else if で分岐していたため、上限に当たった生成では自動書き換えが
+      // 丸ごと飛んでいた。通知は pendingNotice として引き継ぎ、上書きしない。
+      await runNgAutoRewrite(
+        record.generationId,
+        record.responseText,
+        generationProjectId,
+        pendingNotice
+      );
       inputRef.current?.focus();
     } catch (err) {
       if (
@@ -647,12 +711,35 @@ export default function Reader({
   async function runNgAutoRewrite(
     targetGenerationId: string,
     startText: string,
-    targetProjectId: string
+    targetProjectId: string,
+    pendingNotice: string | null
   ): Promise<void> {
+    // NOTE: NG一覧と設定の読み込みを追い越さないよう、まず待つ。ここを待たずに ref を
+    // 見ていたため、作品を開いた直後の生成では読み込みが間に合わず、自動書き換えが
+    // 何も言わずに飛んでいた。
+    const resources = ngResourcesRef.current;
+    if (!resources || resources.projectId !== targetProjectId) return;
+    await resources.pending.catch(() => {});
+    if (!mountedRef.current || projectIdRef.current !== targetProjectId) return;
+
     const settings = ngAutoRewriteRef.current;
     const expressions = ngExpressionsRef.current;
-    if (!settings?.enabled || expressions.length === 0) return;
-    if (findNgMatches(startText, expressions).length === 0) return;
+    const baseNotice = joinNotices(pendingNotice, ngExpressionLoadNoticeRef.current);
+    const hasMatch =
+      expressions.length > 0 && findNgMatches(startText, expressions).length > 0;
+
+    // NOTE: 設定が読めなかった場合だけは、NGが実際に当たっているときに理由を出す。
+    // 当たっていないときは黙って戻る（何も起きないのが正しい挙動なので）。
+    if (!settings) {
+      const reason = hasMatch ? ngSettingsErrorRef.current : null;
+      const merged = joinNotices(baseNotice, reason);
+      if (merged) setNotice(merged);
+      return;
+    }
+    if (!settings.enabled || !hasMatch) {
+      if (baseNotice) setNotice(baseNotice);
+      return;
+    }
 
     let currentText = startText;
     let skipCount = 0;
@@ -687,7 +774,8 @@ export default function Reader({
 
     if (!mountedRef.current || projectIdRef.current !== targetProjectId) return;
     if (rewritten === 0 && failed === 0) {
-      setNotice(null);
+      // NOTE: 「書き換えています…」を消すだけ。生成側の通知は消さずに戻す。
+      setNotice(baseNotice);
       return;
     }
     // NOTE: ヒットごとではなく1回にまとめて通知する。生成のたびに何件も鳴ると
@@ -702,8 +790,10 @@ export default function Reader({
         : failed > 0
           ? `NG表現を${rewritten}件書き換えました（${remainder}）`
           : `NG表現を${rewritten}件書き換えました`;
-    setNotice(summary);
-    setTimeout(() => setNotice(null), 6000);
+    setNotice(joinNotices(baseNotice, summary));
+    // NOTE: 生成側の通知を引き継いでいるときは自動で消さない。出力上限に達したこと
+    // など、書き換え結果より寿命の長い情報が一緒に消えてしまうため。
+    if (!baseNotice) setTimeout(() => setNotice(null), 6000);
     if (notificationSettings) {
       notificationCenter.notify(notificationSettings, {
         eventType: 'ngRewrite',
@@ -768,10 +858,17 @@ export default function Reader({
       // NOTE: 登録した語をその場でハイライトへ反映する。登録直後に本文が光ることで
       // 「今の登録が何件に当たるのか」がすぐ分かる。
       const reloaded = await loadNgExpressions(projectId);
-      setNgExpressions(reloaded);
-      ngExpressionsRef.current = reloaded;
-      setNotice(`「${selectedText}」を共通NG表現に登録しました`);
-      setTimeout(() => setNotice(null), 2000);
+      setNgExpressions(reloaded.expressions);
+      ngExpressionsRef.current = reloaded.expressions;
+      const loadNotice = ngExpressionLoadNotice(reloaded);
+      ngExpressionLoadNoticeRef.current = loadNotice;
+      setNotice(
+        joinNotices(
+          `「${selectedText}」を共通NG表現に登録しました`,
+          loadNotice
+        )
+      );
+      if (!loadNotice) setTimeout(() => setNotice(null), 2000);
       setSelectionButtonPosition(null);
       setSelectedText('');
       window.getSelection()?.removeAllRanges();

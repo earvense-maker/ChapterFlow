@@ -123,6 +123,57 @@ describe('Reader NG auto rewrite', () => {
     expect(first[2].start).toBeLessThan(second[2].start);
     await waitFor(() => expect(document.querySelectorAll('mark.ng-hit')).toHaveLength(1));
   });
+
+  it('waits for NG resources before deciding whether to auto-rewrite', async () => {
+    const expressions = deferred<Awaited<ReturnType<typeof api.getGlobalExpressions>>>();
+    const settings = deferred<Awaited<ReturnType<typeof api.getNgAutoRewriteSettings>>>();
+    getGlobalExpressions.mockReturnValue(expressions.promise);
+    getNgAutoRewriteSettings.mockReturnValue(settings.promise);
+    rewriteNgOccurrence.mockResolvedValue(rewriteResult(AFTER_FIRST, '言葉を失った'));
+
+    await renderAndGenerate();
+
+    await waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
+    expect(rewriteNgOccurrence).not.toHaveBeenCalled();
+
+    expressions.resolve({ ngExpressions: [ngExpression()] });
+    settings.resolve({ enabled: true, maxRewritesPerGeneration: 1 });
+
+    await waitFor(() => expect(rewriteNgOccurrence).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps a partial NG-expression load warning visible after generation', async () => {
+    getGlobalExpressions.mockRejectedValue(new Error('global expressions unavailable'));
+    getNgAutoRewriteSettings.mockResolvedValue({ enabled: false, maxRewritesPerGeneration: 3 });
+
+    const { findByRole } = await renderAndGenerate();
+
+    await waitFor(() =>
+      expect(findByRole('status')).resolves.toHaveTextContent(
+        '共通NG設定を取得できませんでした。作品のNG表現だけで検出しています'
+      )
+    );
+  });
+
+  it('preserves both the reload failure and output-limit warnings', async () => {
+    getNgAutoRewriteSettings.mockResolvedValue({ enabled: false, maxRewritesPerGeneration: 3 });
+    getReaderState
+      .mockReset()
+      .mockResolvedValueOnce(readerState())
+      .mockRejectedValueOnce(new Error('reload failed'));
+    generate.mockResolvedValue(generationRecord({ finishReason: 'length' }));
+
+    const { getByText } = await renderAndGenerate();
+
+    await waitFor(() => {
+      const status = getByText(
+        (content) =>
+          content.includes('生成は完了しましたが、場面情報の再読み込みに失敗しました') &&
+          content.includes('モデルの出力上限に達したため')
+      );
+      expect(status).toBeTruthy();
+    });
+  });
 });
 
 // 1件目を飛ばして2件目だけ書き換えた本文
@@ -160,7 +211,18 @@ function rewriteResult(text: string, after: string) {
   };
 }
 
-function generationRecord(): GenerationRecord {
+function ngExpression() {
+  return {
+    id: 'ngx-1',
+    text: '息を呑んだ',
+    source: 'manual' as const,
+    status: 'active' as const,
+    createdAt: '2026-07-25T00:00:00.000Z',
+    updatedAt: '2026-07-25T00:00:00.000Z',
+  };
+}
+
+function generationRecord(overrides: Partial<GenerationRecord> = {}): GenerationRecord {
   return {
     generationId: 'gen-ng-auto-rewrite',
     episodeId: 'episode-ng-auto-rewrite',
@@ -173,7 +235,18 @@ function generationRecord(): GenerationRecord {
     status: 'draft',
     createdAt: '2026-07-25T00:01:00.000Z',
     parentGenerationId: null,
+    ...overrides,
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function readerState(): ReaderState {
