@@ -57,6 +57,22 @@ describe('writeCrashRecord', () => {
     expect(readFileSync(logPath!, 'utf-8')).toContain('{"code":"EPERM"}');
   });
 
+  it('redacts common credential fields and provider key formats', () => {
+    const dataDir = makeDataDir();
+
+    const logPath = writeCrashRecord('unhandledRejection', {
+      apiKey: 'sk-example-secret-value',
+      authorization: 'Bearer header-secret-value',
+      message: 'request failed for AIza123456789012345678901234567890',
+    }, { dataDir });
+
+    const contents = readFileSync(logPath!, 'utf-8');
+    expect(contents).toContain('[REDACTED]');
+    expect(contents).not.toContain('sk-example-secret-value');
+    expect(contents).not.toContain('header-secret-value');
+    expect(contents).not.toContain('AIza123456789012345678901234567890');
+  });
+
   it('falls back to the temp dir when the data dir cannot be written', () => {
     const dataDir = makeDataDir();
     // NOTE: logs を「ファイル」として作ると mkdir が必ず失敗する。保存先の書き込み不能

@@ -31,8 +31,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm audit --audit-level=moderate
+      - name: Audit runtime dependencies
+        # NOTE: Electron のビルドツールは配布物へ含めない。CI は利用者へ配布する
+        # production dependency を監査し、build-only advisories は固定 lockfile と
+        # 実際の Windows パッケージ検証で別途扱う。
+        run: npm audit --omit=dev --audit-level=moderate
 
       - name: Type check
         run: npm run typecheck

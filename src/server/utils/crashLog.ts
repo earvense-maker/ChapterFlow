@@ -10,6 +10,9 @@ import { DATA_DIR } from '../config.js';
 export const CRASH_LOG_DIR_NAME = 'logs';
 export const CRASH_LOG_FILE_NAME = 'crash.log';
 const MAX_CRASH_LOG_BYTES = 1_000_000;
+const SENSITIVE_FIELD_PATTERN = /(\b(?:api[_-]?key|authorization|password|secret|token)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}\]]+)/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi;
+const PROVIDER_KEY_PATTERN = /\b(?:sk-(?:or-v1-)?|xai-)[A-Za-z0-9_-]{8,}|\bAIza[0-9A-Za-z_-]{20,}/g;
 
 export type CrashKind = 'unhandledRejection' | 'uncaughtException';
 export type CrashRuntime = 'server' | 'electron';
@@ -21,14 +24,22 @@ export interface WriteCrashRecordOptions {
 }
 
 function formatReason(reason: unknown): string {
+  let text: string;
   if (reason instanceof Error) {
-    return reason.stack ?? `${reason.name}: ${reason.message}`;
+    text = reason.stack ?? `${reason.name}: ${reason.message}`;
+  } else {
+    try {
+      text = typeof reason === 'string' ? reason : JSON.stringify(reason);
+    } catch {
+      text = String(reason);
+    }
   }
-  try {
-    return typeof reason === 'string' ? reason : JSON.stringify(reason);
-  } catch {
-    return String(reason);
-  }
+  // NOTE: クラッシュ理由には外部APIの応答やリクエスト設定が混ざり得る。完全な
+  // 機密判定はできないが、既知の資格情報フィールドと代表的なキー形式は保存前に隠す。
+  return text
+    .replace(SENSITIVE_FIELD_PATTERN, '$1[REDACTED]')
+    .replace(BEARER_PATTERN, 'Bearer [REDACTED]')
+    .replace(PROVIDER_KEY_PATTERN, '[REDACTED]');
 }
 
 function rotateIfTooLarge(logPath: string): void {
