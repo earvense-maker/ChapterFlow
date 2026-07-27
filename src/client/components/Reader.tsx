@@ -117,6 +117,7 @@ export default function Reader({
   const [text, setText] = useState('');
   const [generationId, setGenerationId] = useState<string | null>(null);
   const [status, setStatus] = useState<GenerationRecord['status'] | null>(null);
+  const [currentGenerationWish, setCurrentGenerationWish] = useState('');
   const [navigation, setNavigation] = useState<ReaderNavigationState>({
     currentSceneOrder: null,
     totalScenes: 0,
@@ -209,10 +210,12 @@ export default function Reader({
       setText(state.currentGeneration.responseText);
       setGenerationId(state.currentGeneration.generationId);
       setStatus(state.currentGeneration.status);
+      setCurrentGenerationWish(state.currentGeneration.request.wish);
     } else {
       setText('');
       setGenerationId(null);
       setStatus(null);
+      setCurrentGenerationWish('');
     }
     setCurrentScene(state.currentScene);
     setNavigation(state.navigation);
@@ -481,6 +484,7 @@ export default function Reader({
       setText(record.responseText);
       setGenerationId(record.generationId);
       setStatus(record.status);
+      setCurrentGenerationWish(record.request.wish);
       setWish('');
       setRewriteWish('');
       setRewriteSheetOpen(false);
@@ -574,6 +578,7 @@ export default function Reader({
   }
 
   function openRewriteSheet() {
+    setRewriteWish(currentGenerationWish);
     setRewriteSheetOpen(true);
     setTimeout(() => rewriteInputRef.current?.focus(), 0);
   }
@@ -621,6 +626,7 @@ export default function Reader({
       setText(record.responseText);
       setGenerationId(record.generationId);
       setStatus(record.status);
+      setCurrentGenerationWish(record.request.wish);
     } catch (err) {
       setError(err instanceof Error ? err.message : '案の移動に失敗しました');
     } finally {

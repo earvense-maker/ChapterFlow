@@ -218,6 +218,68 @@ describe('Reader interactions', () => {
     expect(await findByRole('button', { name: '生成' })).toBeEnabled();
   });
 
+  it('prefills rewrite with the current draft wish and keeps the latest rewrite wish', async () => {
+    const initialState = readerStateWithDraft();
+    initialState.currentGeneration = {
+      ...initialState.currentGeneration!,
+      request: {
+        ...initialState.currentGeneration!.request,
+        wish: '静かな雨の場面にしたい',
+      },
+    };
+    const rewrittenRecord: GenerationRecord = {
+      ...generationRecord(),
+      generationId: 'gen-rewritten',
+      request: {
+        ...generationRecord().request,
+        wish: '雨音を強めたい',
+      },
+      responseText: 'Rewritten scene text',
+    };
+    const rewrittenState = readerStateWithDraft();
+    rewrittenState.currentGeneration = rewrittenRecord;
+    rewrittenState.state.selectedDraftGenerationId = rewrittenRecord.generationId;
+    rewrittenState.currentScene = {
+      ...rewrittenState.currentScene!,
+      draftGenerationIds: ['gen-a', 'gen-b', rewrittenRecord.generationId],
+    };
+    getReaderState
+      .mockResolvedValueOnce(initialState)
+      .mockResolvedValueOnce(rewrittenState);
+    generate.mockResolvedValue(rewrittenRecord);
+
+    const { findByRole } = render(
+      <Reader
+        projectId="proj-reader-interaction"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+        onOpenMemories={vi.fn()}
+      />
+    );
+
+    fireEvent.click(await findByRole('button', { name: '書き直す' }));
+    let dialog = await findByRole('dialog', { name: '書き直し指示' });
+    let rewriteTextarea = dialog.querySelector('textarea')!;
+    expect(rewriteTextarea).toHaveValue('静かな雨の場面にしたい');
+
+    fireEvent.change(rewriteTextarea, { target: { value: '雨音を強めたい' } });
+    fireEvent.click(await findByRole('button', { name: 'この指示で書き直す' }));
+
+    await waitFor(() =>
+      expect(generate).toHaveBeenCalledWith('proj-reader-interaction', {
+        wish: '雨音を強めたい',
+        mode: 'regenerate',
+      })
+    );
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(await findByRole('button', { name: '書き直す' }));
+    dialog = await findByRole('dialog', { name: '書き直し指示' });
+    rewriteTextarea = dialog.querySelector('textarea')!;
+    expect(rewriteTextarea).toHaveValue('雨音を強めたい');
+  });
+
   it('registers a selected reader phrase through the common NG API only', async () => {
     getReaderState.mockResolvedValue(readerStateWithDraft());
     const { findByText, findByRole } = render(
@@ -288,12 +350,27 @@ describe('Reader interactions', () => {
 
   it('moves to both the previous and next draft without changing draft status', async () => {
     getReaderState.mockResolvedValue(readerStateWithDraft());
-    navigateDraft.mockResolvedValue({
-      ...generationRecord(),
-      generationId: 'gen-c',
-      responseText: 'Next draft text',
-      status: 'superseded',
-    });
+    navigateDraft
+      .mockResolvedValueOnce({
+        ...generationRecord(),
+        generationId: 'gen-c',
+        request: {
+          ...generationRecord().request,
+          wish: '次の案を作った指示',
+        },
+        responseText: 'Next draft text',
+        status: 'superseded',
+      })
+      .mockResolvedValueOnce({
+        ...generationRecord(),
+        generationId: 'gen-b',
+        request: {
+          ...generationRecord().request,
+          wish: '現在の下案を作った指示',
+        },
+        responseText: 'Draft scene text',
+        status: 'draft',
+      });
 
     const { findByRole, findByText } = render(
       <Reader
@@ -316,8 +393,19 @@ describe('Reader interactions', () => {
       expect(navigateDraft).toHaveBeenCalledWith('proj-reader-interaction', 'next')
     );
     expect(await findByText('Next draft text')).toBeInTheDocument();
-    expect(await findByRole('button', { name: '前の案' })).toBeEnabled();
+    const previousButton = await findByRole('button', { name: '前の案' });
+    expect(previousButton).toBeEnabled();
     expect(await findByRole('button', { name: '次の案' })).toBeDisabled();
+
+    fireEvent.click(previousButton);
+    await waitFor(() =>
+      expect(navigateDraft).toHaveBeenNthCalledWith(2, 'proj-reader-interaction', 'previous')
+    );
+    expect(await findByText('Draft scene text')).toBeInTheDocument();
+
+    fireEvent.click(await findByRole('button', { name: '書き直す' }));
+    const dialog = await findByRole('dialog', { name: '書き直し指示' });
+    expect(dialog.querySelector('textarea')).toHaveValue('現在の下案を作った指示');
   });
 
   it('shuts down immediately without opening a confirmation dialog', async () => {

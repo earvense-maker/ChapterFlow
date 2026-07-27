@@ -8,7 +8,12 @@ import { isLanAuthRequiredForHost } from './services/lanAuthService.js';
 import * as projectService from './services/projectService.js';
 import { continuePostGenerationMaintenanceAfterAcceptance } from './services/postGenerationMaintenanceService.js';
 import { readAndNormalizeMaintenance } from './services/refineAutomationGuard.js';
+import { installCrashLogging } from './utils/crashLog.js';
 import { readEnvWithLegacyFallback } from './utils/env.js';
+
+// NOTE: 背景ジョブの未処理拒否でプロセスが消えると、dev では concurrently が全体を
+// 落とすためターミナルの出力ごと失われる。起動直後に登録して痕跡を必ず残す。
+installCrashLogging('server');
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HOST = readEnvWithLegacyFallback('CHAPTERFLOW_HOST', 'YUMEWEAVING_HOST') ?? '127.0.0.1';

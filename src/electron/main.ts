@@ -86,6 +86,11 @@ if (!gotLock) {
 async function bootstrap(): Promise<void> {
   Menu.setApplicationMenu(null);
   await prepareAppSettingsBeforeServer();
+  // NOTE: crashLog は config.js（DATA_DIR を module 初期化時に確定する）に依存するため、
+  // 保存先を決める prepareAppSettingsBeforeServer の後に runtime import する。静的 import に
+  // すると既定の保存先で DATA_DIR が固まり、アプリ設定の保存先が無視される。
+  const { installCrashLogging } = await import('../server/utils/crashLog.js');
+  installCrashLogging('electron');
 
   try {
     runningServer = await startServerWithPersistedPort();
