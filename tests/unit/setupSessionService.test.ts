@@ -40,7 +40,10 @@ describe('setupSessionService', () => {
     expect(result.session.status).toBe('active');
     expect(result.session.revision).toBe(1);
     expect(result.session.draft.confirmed).toEqual([]);
-    expect(result.session.projectSettings.activePresetIds).toEqual({ narration: 'third-close' });
+    expect(result.session.projectSettings.activePresetIds).toEqual({
+      narration: 'third-close',
+      rpResponseStyle: 'bracketed-action',
+    });
   });
 
   it('normalizes legacy preset selections when reading a stored setup session', async () => {
@@ -60,6 +63,7 @@ describe('setupSessionService', () => {
 
     const loaded = await setupSessionService.getSetupSession(result.sessionId);
     expect(loaded?.projectSettings.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       aftertaste: ['searing'],
       sceneProgression: 'immersive',
@@ -136,9 +140,31 @@ describe('setupSessionService', () => {
     createdSessionIds.push(result.sessionId);
 
     expect(result.session.projectSettings.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       aftertaste: ['searing'],
       intimacy: 'suggestive',
+    });
+  });
+
+  it('keeps roleplay-only preset selections when creating a setup session', async () => {
+    const result = await setupSessionService.createSetupSession({
+      purpose: 'roleplay',
+      projectSettings: {
+        activePresetIds: {
+          rpResponseStyle: 'dialogue-only',
+          rpInitiative: 'lead',
+          rpMood: ['warm', 'playful'],
+        },
+      },
+    });
+    createdSessionIds.push(result.sessionId);
+
+    expect(result.session.projectSettings.activePresetIds).toEqual({
+      narration: 'third-close',
+      rpResponseStyle: 'dialogue-only',
+      rpInitiative: 'lead',
+      rpMood: ['warm', 'playful'],
     });
   });
 
@@ -771,9 +797,31 @@ describe('setupSessionService', () => {
 
     expect(patched.session.model).toEqual(result.session.model);
     expect(patched.session.projectSettings.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       painLevel: 'safe',
       aftertaste: ['heartwarming'],
+    });
+  });
+
+  it('keeps roleplay-only style settings when patching through the API', async () => {
+    const result = await setupSessionService.createSetupSession({ purpose: 'roleplay' });
+    createdSessionIds.push(result.sessionId);
+
+    const patched = await setupSessionService.patchSetupSettings(result.sessionId, {
+      activePresetIds: {
+        rpResponseStyle: 'dialogue-only',
+        rpDistance: 'eager',
+        rpMood: ['warm'],
+      } as never,
+      revision: result.session.revision,
+    });
+
+    expect(patched.session.projectSettings.activePresetIds).toEqual({
+      narration: 'third-close',
+      rpResponseStyle: 'dialogue-only',
+      rpDistance: 'eager',
+      rpMood: ['warm'],
     });
   });
 

@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { PRESETS_PATH } from '../config.js';
-import { PRESET_CATEGORY_ORDER } from '../../shared/presetMigration.js';
+import { NOVEL_PRESET_CATEGORY_ORDER } from '../../shared/presetMigration.js';
 import type { ActivePresets } from '../types/index.js';
 
 let presetCache: Record<string, PresetCategory> | null = null;
@@ -18,11 +18,19 @@ export async function loadPresetCategories(): Promise<Record<string, PresetCateg
   return presetCache;
 }
 
-export async function renderPresets(activePresets: ActivePresets): Promise<string> {
+// NOTE: categoryOrder で「どの語彙セットを流すか」を切り替える。既定は小説用で、
+// ロールプレイは ROLEPLAY_RENDERED_PRESET_CATEGORY_ORDER を明示的に渡す。
+export async function renderPresets(
+  activePresets: ActivePresets,
+  categoryOrder: readonly (keyof ActivePresets)[] = NOVEL_PRESET_CATEGORY_ORDER,
+  // NOTE: 既定の見出しは systemPrompt.ts の SELECTED_SETTINGS_HEADING と同値。旧データから
+  // 追加指示を切り出す際の目印になっているので、小説側では変更しないこと。
+  heading = '【選択された設定】'
+): Promise<string> {
   const categories = await loadPresetCategories();
   const parts: string[] = [];
 
-  for (const categoryKey of PRESET_CATEGORY_ORDER) {
+  for (const categoryKey of categoryOrder) {
     const category = categories[categoryKey];
     if (!category) continue;
     const selected = activePresets[categoryKey];
@@ -35,7 +43,7 @@ export async function renderPresets(activePresets: ActivePresets): Promise<strin
   }
 
   if (parts.length === 0) return '';
-  return `【選択された設定】\n${parts.join('\n\n')}`;
+  return `${heading}\n${parts.join('\n\n')}`;
 }
 
 export async function getPresetLabel(categoryKey: string, presetId: string): Promise<string | null> {

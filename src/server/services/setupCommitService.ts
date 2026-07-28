@@ -7,6 +7,10 @@ import {
   normalizeSetupPurpose,
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
+import {
+  NOVEL_PRESET_CATEGORY_ORDER,
+  ROLEPLAY_PRESET_CATEGORY_ORDER,
+} from '../../shared/presetMigration.js';
 import type {
   ActivePresets,
   Character,
@@ -187,27 +191,28 @@ function normalizeSetupActivePresetIds(
   const normalizedRaw = migrateLegacySetupPresetIds(raw);
   const normalizedFallback = migrateLegacySetupPresetIds(fallback);
   const result: Partial<ActivePresets> = {};
-  const keys: Array<keyof ActivePresets> = [
-    'narration',
-    'aftertaste',
-    'emotionDisplay',
-    'sceneProgression',
-    'chapterEnding',
-    'painLevel',
-    'intimacy',
-  ];
+  // NOTE: 相談セッションは小説・ロールプレイ両用途で共有されるため、両カテゴリ群を通す。
+  // 用途に合わないカテゴリは相談側で選択されないので、ここでは素通しでよい。
+  const multiSelectKeys = ['aftertaste', 'rpMood'] as const;
+  const singleSelectKeys = [
+    ...NOVEL_PRESET_CATEGORY_ORDER,
+    ...ROLEPLAY_PRESET_CATEGORY_ORDER,
+  ].filter(
+    (key): key is Exclude<keyof ActivePresets, (typeof multiSelectKeys)[number]> =>
+      !(multiSelectKeys as readonly string[]).includes(key)
+  );
 
-  for (const key of keys) {
-    if (key === 'aftertaste') {
-      const allowed = presetIdsByCategory[key] ?? [];
-      const rawValues = normalizePresetIdList(normalizedRaw?.[key])
-        .filter((value) => allowed.includes(value));
-      const fallbackValues = normalizePresetIdList(normalizedFallback?.[key])
-        .filter((value) => allowed.includes(value));
-      const normalized = (rawValues.length > 0 ? rawValues : fallbackValues).slice(0, 2);
-      if (normalized.length > 0) result.aftertaste = normalized;
-      continue;
-    }
+  for (const key of multiSelectKeys) {
+    const allowed = presetIdsByCategory[key] ?? [];
+    const rawValues = normalizePresetIdList(normalizedRaw?.[key])
+      .filter((value) => allowed.includes(value));
+    const fallbackValues = normalizePresetIdList(normalizedFallback?.[key])
+      .filter((value) => allowed.includes(value));
+    const normalized = (rawValues.length > 0 ? rawValues : fallbackValues).slice(0, 2);
+    if (normalized.length > 0) result[key] = normalized;
+  }
+
+  for (const key of singleSelectKeys) {
     const fallbackValue = asString(normalizedFallback?.[key]);
     const value = asString(normalizedRaw?.[key]) || fallbackValue;
     if (!value) continue;

@@ -173,6 +173,56 @@ describe('roleplaySessionService', () => {
     );
   });
 
+  it('sends roleplay style presets and keeps novel-only categories out of the conversation', async () => {
+    const project = await makeRoleplayProject();
+    await projectService.updateProject(project.projectId, {
+      activePresetIds: {
+        // 小説用: 会話には流れてはいけない
+        narration: 'first-person',
+        chapterEnding: 'hook',
+        // ロールプレイ用: 会話に流れる
+        rpResponseStyle: 'dialogue-only',
+        rpInitiative: 'lead',
+        rpMood: ['tense'],
+        rpPainLevel: 'unflinching',
+      },
+    });
+
+    let capturedSystemInstructions = '';
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
+      capturedSystemInstructions = request.systemInstructions;
+      return streamChunks(['……。']);
+    });
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '話そう',
+        revision: created.revision,
+      })
+    );
+
+    expect(capturedSystemInstructions).toContain('【会話の作風】');
+    expect(capturedSystemInstructions).toContain('【会話の主導権: キャラから動かす】');
+    expect(capturedSystemInstructions).toContain('【会話の空気: 張りつめた】');
+    expect(capturedSystemInstructions).toContain('【踏み込みの上限: 容赦なくてよい】');
+
+    // 小説用カテゴリは一切流れない（地の文・章立ての指示は応答形式と衝突する）
+    expect(capturedSystemInstructions).not.toContain('【選択された設定】');
+    expect(capturedSystemInstructions).not.toContain('【語り:');
+    expect(capturedSystemInstructions).not.toContain('【章の幕引き:');
+
+    // 応答の形は固定規則へ直接埋め込まれ、プリセット本文としては重複しない
+    expect(capturedSystemInstructions).toContain(
+      '応答はキャラクターのセリフだけで構成する。'
+    );
+    expect(capturedSystemInstructions).not.toContain('【応答の形:');
+  });
+
   it('runs the send→character commit and revision transitions R → R+1 → R+2', async () => {
     const project = await makeRoleplayProject();
     vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>

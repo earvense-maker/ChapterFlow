@@ -278,8 +278,9 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     };
   }, []);
 
+  // NOTE: カテゴリ一覧は小説・ロールプレイ共通の1ファイル。用途で絞らずに読み、
+  // 表示するカテゴリ群は PresetSelector の mode 側で振り分ける。
   useEffect(() => {
-    if (purpose !== 'novel') return;
     let ignore = false;
     api.getPresets()
       .then((result) => {
@@ -294,7 +295,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     return () => {
       ignore = true;
     };
-  }, [purpose]);
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -965,7 +966,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         </section>
       )}
 
-      {purpose === 'novel' && session && (
+      {session && (
         <section
           className="setup-model-bar setup-style-settings-bar"
           aria-label="この作品の作風設定"
@@ -975,7 +976,11 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
           <details>
             <summary>
               <strong>作風設定</strong>
-              <span> — 視点・境界・読み味など</span>
+              <span>
+                {purpose === 'roleplay'
+                  ? ' — 応答の形・距離感・境界など'
+                  : ' — 視点・境界・読み味など'}
+              </span>
             </summary>
             {presetCategories ? (
               <PresetSelector
@@ -984,6 +989,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                 onChange={(value) => void saveStyleSettings(value)}
                 disabled={busy}
                 namePrefix="setup-style"
+                mode={purpose}
               />
             ) : (
               <p className="settings-help">作風設定を読み込み中…</p>

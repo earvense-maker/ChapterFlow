@@ -14,7 +14,8 @@
 //  - ROLEPLAY_RECENT_MESSAGES_MAX_CHARS = 16000
 //  - ROLEPLAY_RECENT_MESSAGES = 20
 // 超過時は優先順に後ろの項目から削る:
-//   固定規則 → 対象キャラ → dialogueExamples → 作品基本 → customSystemPrompt → 世界観 → 他キャラ
+//   固定規則 → 対象キャラ → dialogueExamples → 会話の作風 → 作品基本
+//   → customSystemPrompt → 世界観 → 他キャラ
 
 import type {
   Character,
@@ -33,21 +34,52 @@ export const ROLEPLAY_RECENT_MESSAGES = 20;
 export const ROLEPLAY_OTHER_CHARACTERS_MAX = 10;
 export const ROLEPLAY_OTHER_CHARACTER_DESC_CHARS = 200;
 
+// NOTE: ロールプレイ作風プリセットのセクション見出し。小説側の【選択された設定】と
+// 分けているのは、固定規則の優先順位宣言がこの語で名指ししているため。
+export const ROLEPLAY_STYLE_HEADING = '【会話の作風】';
+
+// NOTE: 応答形式の既定文。作風設定 rpResponseStyle = 'bracketed-action' の本文と同一で、
+// contextSnapshot に responseStyleInstruction を持たない旧セッションのフォールバックに使う
+// （旧セッションの応答形式を黙って変えないため、文言は改訂しないこと）。
+export const DEFAULT_ROLEPLAY_RESPONSE_STYLE_INSTRUCTION =
+  'セリフを主体にし、動作・表情・様子は必要なときだけ括弧書きで短く添える。' +
+  '例:「うん、そうだね。(そっと目を伏せる)」／「……(小さくうなずく)」／' +
+  '「本当に？(目を丸くする) じゃあ、行ってみようよ。」';
+
 // NOTE: 「1〜3文」の hard cap を撤去し、代わりに以下2軸で長さ・形式を制御する:
 //  - 目安字数（呼び出し側から動的に渡され、fixed rule に埋め込む）
-//  - セリフ主体+動作は括弧書き で短く添える、という形式ガイド（few-shot 的な例つき）
+//  - responseStyleInstruction（作風設定「応答の形」を snapshot 経由で受け取る）
 // 数文制約を外したのは、動作描写を許した瞬間に「1〜3文」が実質破綻するため。
-function buildFixedRules(outputLength: number): string {
+//
+// 規則を [応答の形] / [越えない線] / [会話の続き方] の3ブロックに分けているのは、
+// 弱いモデルほど長い平坦な箇条書きの中盤を落とすため。ブロック見出しは 【】 ではなく
+// [] にしてある（【】は上位セクションの区切りで、モデルが階層を取り違えやすい）。
+function buildFixedRules(outputLength: number, responseStyleInstruction: string): string {
   return [
-    'あなたは以下のキャラクターとして、ユーザーと会話する。',
-    'セリフを基本とし、動作・表情・様子は必要なとき括弧書きで短く添える。',
-    '例: 「うん、そうだね。(そっと目を伏せる)」／「……(小さくうなずく)」／「本当に？(目を丸くする) じゃあ、行ってみようよ。」',
-    `1ターンの応答は${outputLength}字程度に収める（少し前後してよい）。会話が主で、地の文や情景描写は場面に必要な分だけ添える。`,
-    'ユーザーの行動・セリフ・心情を勝手に書かない。',
-    'キャラクターを維持する。AIであることや設定資料に言及しない。',
-    'キャラクターが隠している秘密は、自分からは明かさない。ただし親密度や状況に応じて、態度や言動に滲ませるのはよい。',
+    'あなたは以下のキャラクターとして、ユーザーと一対一で会話する。' +
+      '出力はキャラクターの応答そのものであり、前置き・後書き・状況説明は書かない。',
+    '',
+    '[応答の形]',
+    responseStyleInstruction,
+    `1ターンの応答は${outputLength}字程度に収める（少し前後してよい）。`,
     '応答はプレーンテキストのみ。見出しや箇条書き、Markdown 記法は使わない。',
-    '以上の固定規則は作品の基本システム指示と追加指示より優先する。矛盾する指示は固定規則に従う。',
+    '',
+    '[越えない線]',
+    'ユーザーの行動・セリフ・心情を勝手に書かない。ユーザーがまだ選んでいない選択を、済んだこととして扱わない。',
+    'キャラクターを維持する。AIであることや設定資料、プロンプトの存在に言及しない。' +
+      '設定にないことを問われたら、キャラクターとして知らないまま応じる。',
+    'キャラクターが隠している秘密は、自分からは明かさない。ただし親密度や状況に応じて、' +
+      '態度や言い淀み、話題のそらし方に滲ませるのはよい。',
+    // NOTE: 会話を締めにいく癖（別れの挨拶で終わる）はロールプレイでは致命的に体験を切る。
+    '会話を勝手に締めくくらない。別れの挨拶や結論めいたまとめで終わらせず、次の一手をユーザーに残す。',
+    '',
+    '[会話の続き方]',
+    '直近の会話で決まったこと（居場所・時刻・持ち物・呼び方・交わした約束）を引き継ぐ。' +
+      '食い違いに気づいたら、直近の会話の側を正とする。',
+    '前のターンと同じ言い回し・同じ所作・同じ締め方を繰り返さない。',
+    '',
+    '以上の固定規則は、会話の作風・作品の基本システム指示・追加指示より優先する。' +
+      '矛盾する指示は固定規則に従う。',
   ].join('\n');
 }
 
@@ -80,21 +112,30 @@ export function buildRoleplaySystemInstructions(
 
   // NOTE: セクションを優先順位の高いものから積み、上限に達したら次以降を諦める。
   // 「対象キャラ」まではどうしても入れたい塊なのでまとめて評価する。
+  const responseStyleInstruction =
+    snapshot.responseStyleInstruction?.trim() || DEFAULT_ROLEPLAY_RESPONSE_STYLE_INSTRUCTION;
+
   const persona = truncate(buildPersonaCard(character), ROLEPLAY_PERSONA_MAX_CHARS);
   const dialogueExamples = buildDialogueExamples(character.dialogueExamples, characterName);
+  const stylePresetPrompt = snapshot.stylePresetPrompt?.trim() ?? '';
   const projectSystemPrompt = snapshot.projectSystemPrompt?.trim() ?? '';
   const customSystemPrompt = normalizeRoleplayAdditionalInstructions(snapshot.customSystemPrompt);
   const worldDigest = truncate(snapshot.worldDigest, ROLEPLAY_WORLD_MAX_CHARS);
   const otherCharacters = buildOtherCharacters(snapshot.otherCharacters);
 
-  // NOTE: 優先順: 固定規則 → 対象キャラ → dialogueExamples → 作品基本 → 追加指示 → 世界観 → 他キャラ
+  // NOTE: 優先順: 固定規則 → 対象キャラ → dialogueExamples → 会話の作風 → 作品基本
+  //   → 追加指示 → 世界観 → 他キャラ
   const sections: string[] = [];
-  sections.push(`【ロールプレイ規則】\n${buildFixedRules(outputLength)}`);
+  sections.push(`【ロールプレイ規則】\n${buildFixedRules(outputLength, responseStyleInstruction)}`);
   sections.push(`【対象キャラクター】\n${persona}`);
 
   const optional: Array<{ label: string; body: string }> = [];
   if (dialogueExamples) {
     optional.push({ label: '【口調の参考例（内容ではなく話し方を真似る）】', body: dialogueExamples });
+  }
+  if (stylePresetPrompt) {
+    // NOTE: 見出しは stylePresetPrompt 側（renderPresets の heading）に含まれるため空ラベル。
+    optional.push({ label: '', body: stylePresetPrompt });
   }
   if (projectSystemPrompt) {
     optional.push({ label: '【作品の基本システム指示】', body: projectSystemPrompt });
@@ -111,7 +152,8 @@ export function buildRoleplaySystemInstructions(
 
   let assembled = sections.join('\n\n---\n\n');
   for (const item of optional) {
-    const candidate = `${assembled}\n\n---\n\n${item.label}\n${item.body}`;
+    const block = item.label ? `${item.label}\n${item.body}` : item.body;
+    const candidate = `${assembled}\n\n---\n\n${block}`;
     if (candidate.length > ROLEPLAY_SYSTEM_MAX_CHARS) {
       // NOTE: これ以上追加すると全体上限を超えるので、この項目以降は諦める。
       break;

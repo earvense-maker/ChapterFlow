@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderPresets } from '../../src/server/prompts/presetParts';
+import { ROLEPLAY_RENDERED_PRESET_CATEGORY_ORDER } from '../../src/shared/presetMigration';
+import { ROLEPLAY_STYLE_HEADING } from '../../src/server/services/roleplayPromptBuilder';
 
 describe('renderPresets', () => {
   it('renders categories in the fixed definition order', async () => {
@@ -42,5 +44,46 @@ describe('renderPresets', () => {
     expect(rendered.match(/^【[^】]+】$/gm)).toHaveLength(2);
     expect(rendered).not.toContain('読後感');
     expect(await renderPresets({ narration: 'unknown' })).toBe('');
+  });
+
+  it('renders only roleplay categories under the roleplay heading', async () => {
+    const rendered = await renderPresets(
+      {
+        narration: 'first-person',
+        chapterEnding: 'hook',
+        rpResponseStyle: 'prose-mixed',
+        rpInitiative: 'lead',
+        rpDistance: 'guarded',
+        rpMood: ['warm', 'melancholic'],
+        rpEmotionDisplay: 'restrained',
+        rpPainLevel: 'safe',
+        rpIntimacy: 'suggestive',
+      },
+      ROLEPLAY_RENDERED_PRESET_CATEGORY_ORDER,
+      ROLEPLAY_STYLE_HEADING
+    );
+
+    const headings = [...rendered.matchAll(/^【([^】]+)】$/gm)].map((match) => match[1]);
+    expect(headings).toEqual([
+      '会話の作風',
+      '会話の主導権: キャラから動かす',
+      '距離の詰め方: 慎重に縮める',
+      '会話の空気: あたたかい',
+      '会話の空気: 陰のある',
+      '感情の出し方: 抑えて示す',
+      '踏み込みの上限: 安心して話せる',
+      '性的な場面: 気配だけ匂わせる',
+    ]);
+    // 応答の形は固定規則側で埋め込むため、ここには出さない
+    expect(rendered).not.toContain('応答の形:');
+  });
+
+  it('omits the roleplay section entirely when nothing beyond the response style is selected', async () => {
+    const rendered = await renderPresets(
+      { narration: 'third-close', rpResponseStyle: 'bracketed-action' },
+      ROLEPLAY_RENDERED_PRESET_CATEGORY_ORDER,
+      ROLEPLAY_STYLE_HEADING
+    );
+    expect(rendered).toBe('');
   });
 });

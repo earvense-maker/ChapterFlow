@@ -19,8 +19,12 @@ import type {
   StyleVariationSettings,
 } from './types/index.js';
 
+// NOTE: 必須2カテゴリだけを既定で埋める。narration は小説生成、rpResponseStyle は
+// ロールプレイ応答の形式で、どちらも「未選択」だと出力の形が定まらないため。
+// 種別と無関係に両方入るが、レンダリングはカテゴリ順で振り分けるので混ざらない。
 export const DEFAULT_ACTIVE_PRESET_IDS = {
   narration: 'third-close',
+  rpResponseStyle: 'bracketed-action',
 } satisfies ActivePresets;
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';

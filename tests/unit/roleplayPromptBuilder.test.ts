@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_ROLEPLAY_RESPONSE_STYLE_INSTRUCTION,
   ROLEPLAY_RECENT_MESSAGES_MAX_CHARS,
   ROLEPLAY_SYSTEM_MAX_CHARS,
   ROLEPLAY_WORLD_MAX_CHARS,
@@ -132,6 +133,55 @@ describe('buildRoleplaySystemInstructions', () => {
     const snapshot = baseSnapshot({ worldDigest: '短い世界観' });
     const system = buildRoleplaySystemInstructions({ snapshot });
     expect(system).toContain('短い世界観');
+  });
+
+  it('embeds the snapshot response style instead of the bracketed-action default', () => {
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        responseStyleInstruction: '応答はキャラクターのセリフだけで構成する。',
+      }),
+    });
+
+    expect(system).toContain('[応答の形]');
+    expect(system).toContain('応答はキャラクターのセリフだけで構成する。');
+    expect(system).not.toContain(DEFAULT_ROLEPLAY_RESPONSE_STYLE_INSTRUCTION);
+  });
+
+  it('falls back to the bracketed-action default for sessions saved before response styles existed', () => {
+    const system = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
+    expect(system).toContain(DEFAULT_ROLEPLAY_RESPONSE_STYLE_INSTRUCTION);
+  });
+
+  it('states the roleplay guardrails that the rewrite added', () => {
+    const system = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
+    // 会話を締めにいく癖・繰り返し・設定にないことの捏造を明示的に禁じる
+    expect(system).toContain('会話を勝手に締めくくらない');
+    expect(system).toContain('同じ締め方を繰り返さない');
+    expect(system).toContain('キャラクターとして知らないまま応じる');
+    expect(system).toContain('ユーザーがまだ選んでいない選択');
+    // 3ブロック構成
+    expect(system).toContain('[応答の形]');
+    expect(system).toContain('[越えない線]');
+    expect(system).toContain('[会話の続き方]');
+  });
+
+  it('renders the roleplay style presets as a self-labeled section ranked above the base prompt', () => {
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        stylePresetPrompt: '【会話の作風】\n【会話の主導権: キャラから動かす】\n自分から話題を振る。',
+        projectSystemPrompt: 'この会話では短い比喩を使う。',
+      }),
+    });
+
+    expect(system).toContain('【会話の作風】');
+    expect(system).toContain('【会話の主導権: キャラから動かす】');
+    // 見出しが二重にならない
+    expect(system.match(/【会話の作風】/g)).toHaveLength(1);
+    expect(system.indexOf('【会話の作風】')).toBeLessThan(
+      system.indexOf('【作品の基本システム指示】')
+    );
+    // 固定規則が作風より優先すると宣言している
+    expect(system).toContain('以上の固定規則は、会話の作風');
   });
 
   it('does not inject a legacy generated prompt as an additional roleplay instruction', () => {

@@ -280,7 +280,10 @@ describe('setupCommitService', () => {
       },
     });
 
-    expect(normalized.projectInput.activePresetIds).toEqual({ narration: 'third-close' });
+    expect(normalized.projectInput.activePresetIds).toEqual({
+      narration: 'third-close',
+      rpResponseStyle: 'bracketed-action',
+    });
     expect(normalized.projectInput.applyDefaultPresets).toBe(false);
   });
 
@@ -310,6 +313,7 @@ describe('setupCommitService', () => {
     });
 
     expect(normalized.projectInput.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'third-close',
       intimacy: 'suggestive',
     });
@@ -323,6 +327,7 @@ describe('setupCommitService', () => {
       narration: 'third-close',
       emotionDisplay: 'restrained',
       intimacy: 'suggestive',
+      rpResponseStyle: 'bracketed-action',
     };
 
     const normalized = normalizeSetupCommitPlan({
@@ -369,6 +374,7 @@ describe('setupCommitService', () => {
     });
 
     expect(normalized.projectInput.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       emotionDisplay: 'expressive',
       sceneProgression: 'immersive',
@@ -397,6 +403,7 @@ describe('setupCommitService', () => {
     });
 
     expect(normalized.projectInput.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       painLevel: 'safe',
     });
@@ -420,6 +427,7 @@ describe('setupCommitService', () => {
     });
 
     expect(normalized.projectInput.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       painLevel: 'safe',
     });

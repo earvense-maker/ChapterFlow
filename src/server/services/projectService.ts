@@ -9,7 +9,11 @@ import {
 import { createEmptyStoryState } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
-import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
+import {
+  NOVEL_PRESET_CATEGORY_ORDER,
+  normalizeActivePresetIds,
+  ROLEPLAY_PRESET_CATEGORY_ORDER,
+} from '../../shared/presetMigration.js';
 import {
   isValidCharacterInput,
   normalizeCharacterForStorage,
@@ -52,15 +56,14 @@ const DEFAULT_MODEL_PROVIDER = 'gemini';
 const DEFAULT_MODEL_NAME = defaultModelForProvider(DEFAULT_MODEL_PROVIDER);
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
+// NOTE: 未知キーの取りこぼしをコンパイル時に検出するため、カテゴリ順の定義を正本にする。
 const ACTIVE_PRESET_KEYS = new Set<keyof ActivePresets>([
-  'narration',
-  'aftertaste',
-  'emotionDisplay',
-  'sceneProgression',
-  'chapterEnding',
-  'painLevel',
-  'intimacy',
+  ...NOVEL_PRESET_CATEGORY_ORDER,
+  ...ROLEPLAY_PRESET_CATEGORY_ORDER,
 ]);
+
+// NOTE: 複数選択カテゴリ（最大2件の配列）。単一選択と検証分岐が異なる。
+const MULTI_SELECT_PRESET_KEYS = new Set<keyof ActivePresets>(['aftertaste', 'rpMood']);
 
 function normalizeScenarioSeeds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -450,7 +453,7 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
     const activePresetIds: Partial<ActivePresets> = {};
     for (const [key, value] of Object.entries(updates.activePresetIds)) {
       if (!ACTIVE_PRESET_KEYS.has(key as keyof ActivePresets)) continue;
-      if (key === 'aftertaste') {
+      if (MULTI_SELECT_PRESET_KEYS.has(key as keyof ActivePresets)) {
         if (
           value !== undefined &&
           (!Array.isArray(value) ||
@@ -458,10 +461,10 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
             value.some((item) => typeof item !== 'string' || item.length > 200))
         ) {
           throw new ProjectValidationError(
-            'activePresetIds.aftertaste must be an array of at most 2 strings'
+            `activePresetIds.${key} must be an array of at most 2 strings`
           );
         }
-        activePresetIds.aftertaste = value as string[] | undefined;
+        (activePresetIds as Record<string, unknown>)[key] = value;
         continue;
       }
       if (value !== undefined && typeof value !== 'string') {

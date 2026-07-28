@@ -21,6 +21,16 @@ const categories = {
   intimacy: category('濡れ場の描写', ['fade-to-black']),
 };
 
+const roleplayCategories = {
+  rpResponseStyle: category('応答の形', ['bracketed-action']),
+  rpInitiative: category('会話の主導権', ['lead']),
+  rpDistance: category('距離の詰め方', ['guarded']),
+  rpMood: category('会話の空気', ['warm', 'tense', 'playful']),
+  rpEmotionDisplay: category('感情の出し方', ['restrained']),
+  rpPainLevel: category('踏み込みの上限', ['safe']),
+  rpIntimacy: category('性的な場面', ['fade-to-black']),
+};
+
 describe('PresetSelector', () => {
   it('shows all groups, categories, labels, and full descriptions', () => {
     render(
@@ -63,5 +73,48 @@ describe('PresetSelector', () => {
     const painGroup = screen.getByRole('group', { name: '痛みの上限' });
     fireEvent.click(painGroup.querySelector('input[type="radio"]') as HTMLInputElement);
     expect(onChange).toHaveBeenLastCalledWith({ narration: 'third-close' });
+  });
+
+  it('shows only roleplay categories in roleplay mode', () => {
+    render(
+      <PresetSelector
+        categories={{ ...categories, ...roleplayCategories }}
+        value={{ narration: 'third-close', rpResponseStyle: 'bracketed-action' }}
+        onChange={vi.fn()}
+        mode="roleplay"
+      />
+    );
+
+    expect(screen.getByRole('heading', { name: '応答のつくり' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: '関係と空気' })).toBeVisible();
+    expect(screen.queryByRole('group', { name: '語り' })).toBeNull();
+    expect(screen.queryByRole('group', { name: '章の幕引き' })).toBeNull();
+    expect(screen.getAllByRole('group')).toHaveLength(7);
+    // 応答の形は必須なので「指定しない」を出さない（他6カテゴリのうち rpMood 以外の5つ）
+    expect(screen.getAllByText('指定しない')).toHaveLength(5);
+  });
+
+  it('limits rpMood to two selections in roleplay mode', () => {
+    const onChange = vi.fn();
+    render(
+      <PresetSelector
+        categories={{ ...categories, ...roleplayCategories }}
+        value={{
+          narration: 'third-close',
+          rpResponseStyle: 'bracketed-action',
+          rpMood: ['warm', 'tense'],
+        }}
+        onChange={onChange}
+        mode="roleplay"
+      />
+    );
+
+    expect(screen.getByDisplayValue('playful')).toBeDisabled();
+    fireEvent.click(screen.getByDisplayValue('warm'));
+    expect(onChange).toHaveBeenCalledWith({
+      narration: 'third-close',
+      rpResponseStyle: 'bracketed-action',
+      rpMood: ['tense'],
+    });
   });
 });

@@ -8,6 +8,7 @@ import type {
 
 // NOTE: プリセットカテゴリ ID → タグに使う短い日本語名。作品像サマリーでは
 // preset ラベルを参照し、カテゴリ側は既知キーだけを扱う。
+// 濡れ場（intimacy / rpIntimacy）はサマリーのタグ列には出さない。
 const STYLE_TAG_CATEGORY_ORDER = [
   'narration',
   'aftertaste',
@@ -15,6 +16,15 @@ const STYLE_TAG_CATEGORY_ORDER = [
   'sceneProgression',
   'chapterEnding',
   'painLevel',
+] as const;
+
+const ROLEPLAY_STYLE_TAG_CATEGORY_ORDER = [
+  'rpResponseStyle',
+  'rpInitiative',
+  'rpDistance',
+  'rpMood',
+  'rpEmotionDisplay',
+  'rpPainLevel',
 ] as const;
 
 // NOTE: 物語状態の主要な active 配列について、before → after で減った件数だけを
@@ -72,11 +82,14 @@ export function extractExcerpt(text: string, maxChars: number): string {
 
 export function deriveStyleTags(
   activePresetIds: Project['activePresetIds'],
-  categories: Record<string, PresetCategory> | null
+  categories: Record<string, PresetCategory> | null,
+  mode: 'novel' | 'roleplay' = 'novel'
 ): string[] {
   if (!categories) return [];
+  const order =
+    mode === 'roleplay' ? ROLEPLAY_STYLE_TAG_CATEGORY_ORDER : STYLE_TAG_CATEGORY_ORDER;
   const tags: string[] = [];
-  for (const categoryKey of STYLE_TAG_CATEGORY_ORDER) {
+  for (const categoryKey of order) {
     const category = categories[categoryKey];
     if (!category) continue;
     const selected = activePresetIds[categoryKey];
@@ -95,12 +108,18 @@ export function clearRemovedPresetValues(
 ): Partial<Project['activePresetIds']> {
   const cleared: Record<string, string | string[]> = {};
   if (current.aftertaste && !next.aftertaste) cleared.aftertaste = [];
+  if (current.rpMood && !next.rpMood) cleared.rpMood = [];
   for (const key of [
     'emotionDisplay',
     'sceneProgression',
     'chapterEnding',
     'painLevel',
     'intimacy',
+    'rpInitiative',
+    'rpDistance',
+    'rpEmotionDisplay',
+    'rpPainLevel',
+    'rpIntimacy',
   ] as const) {
     if (current[key] && !next[key]) cleared[key] = '';
   }

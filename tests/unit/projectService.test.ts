@@ -39,7 +39,10 @@ describe('project settings validation', () => {
     });
     createdProjectIds.push(project.projectId);
 
-    expect(project.activePresetIds).toEqual({ narration: 'third-close' });
+    expect(project.activePresetIds).toEqual({
+      narration: 'third-close',
+      rpResponseStyle: 'bracketed-action',
+    });
     expect(await buildGeneratedSystemPrompt(project.activePresetIds)).toContain(
       '【語り: 三人称・視点人物に寄り添う】'
     );
@@ -95,6 +98,7 @@ describe('project settings validation', () => {
       } as never,
     });
     expect(updated.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'third-close',
       painLevel: 'bittersweet',
     });
@@ -114,6 +118,7 @@ describe('project settings validation', () => {
 
     const loaded = await projectService.getProject(project.projectId);
     expect(loaded?.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       aftertaste: ['searing'],
       sceneProgression: 'immersive',
@@ -368,6 +373,7 @@ describe('project settings validation', () => {
     expect(project.activeModelProvider).toBe('gemini');
     expect(project.activeModelName).toBe('gemini-1.5-flash');
     expect(project.activePresetIds).toEqual({
+      rpResponseStyle: 'bracketed-action',
       narration: 'first-person',
       aftertaste: ['heartwarming'],
     });

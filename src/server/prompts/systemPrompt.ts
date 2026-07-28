@@ -53,10 +53,12 @@ const LEGACY_PRESET_LABELS = new Set([
 
 export async function buildGeneratedSystemPrompt(
   activePresets: ActivePresets,
-  baseSystemPrompt?: string | null
+  baseSystemPrompt?: string | null,
+  // NOTE: ロールプレイは小説用と別カテゴリ群を流すため、呼び出し側で順序を差し替える。
+  categoryOrder?: readonly (keyof ActivePresets)[]
 ): Promise<string> {
   const resolvedBaseSystemPrompt = resolveBaseSystemPrompt(baseSystemPrompt);
-  const presetInstructions = await renderPresets(activePresets);
+  const presetInstructions = await renderPresets(activePresets, categoryOrder);
   return [resolvedBaseSystemPrompt, presetInstructions].filter(Boolean).join('\n\n---\n\n');
 }
 

@@ -605,7 +605,9 @@ export default function WorkSettingsTab({
     worldSubTab === 'foundation' ? foundationEditing : initialSituationEditing;
   const activeWorldExpanded =
     worldSubTab === 'foundation' ? foundationExpanded : initialSituationExpanded;
-  const styleTags = deriveStyleTags(project.activePresetIds, categories);
+  const isRoleplay = project.projectType === 'roleplay';
+  const presetMode = isRoleplay ? 'roleplay' : 'novel';
+  const styleTags = deriveStyleTags(project.activePresetIds, categories, presetMode);
   const isSystemPromptDraftCustomized = systemPromptDraft.trim().length > 0;
   const isBaseSystemPromptDraftCustomized =
     baseSystemPromptDraft.trim() !== defaultBaseSystemPrompt.trim();
@@ -615,8 +617,7 @@ export default function WorkSettingsTab({
   const refineNudgeMessage = refineReviewStatus?.needsReview
     ? buildRefineNudgeMessage(refineReviewStatus)
     : null;
-  const initialStateLabel =
-    project.projectType === 'roleplay' ? '会話開始時点の状態' : '初期状態（物語開始時点）';
+  const initialStateLabel = isRoleplay ? '会話開始時点の状態' : '初期状態（物語開始時点）';
 
   if (!categories) return <div className="loading">読み込み中…</div>;
 
@@ -642,7 +643,7 @@ export default function WorkSettingsTab({
         focusTarget={focusTarget}
         onFocusTargetConsumed={onFocusTargetConsumed}
       />
-      {project.projectType !== 'roleplay' && (
+      {!isRoleplay && (
         <RefineAutomationSettingsCard
           projectId={projectId}
           project={project}
@@ -656,7 +657,10 @@ export default function WorkSettingsTab({
           <h2>詳細設定</h2>
           <div className="summary-card-badges">
             {projectDetails.coreConcept.trim() && <span className="settings-badge preset">核あり</span>}
-            {styleSample.trim() && <span className="settings-badge preset">見本あり</span>}
+            {/* NOTE: 文体見本はロールプレイでは参照されないので、バッジも出さない。 */}
+            {!isRoleplay && styleSample.trim() && (
+              <span className="settings-badge preset">見本あり</span>
+            )}
             {worldIsEmpty && <span className="settings-badge warn">世界未設定 ⚠</span>}
             <span className="settings-meta">人物 {characters.length}人</span>
             <span className="settings-meta">資料 {knowledgeItems.length}件</span>
@@ -780,7 +784,7 @@ export default function WorkSettingsTab({
         )}
       </section>
 
-      {detailSettingsTab === 'style' && project.projectType !== 'roleplay' && (
+      {detailSettingsTab === 'style' && !isRoleplay && (
       <StyleVariationSettingsCard
         project={project}
         onProjectUpdated={onProjectUpdated}
@@ -826,18 +830,25 @@ export default function WorkSettingsTab({
                 ))}
               </div>
             )}
+            {/* NOTE: systemPrompt は小説生成用の結合結果。ロールプレイの実際の system は
+                キャラごとに組み直され、ここでは再現できないので出さない（誤読を招く）。 */}
+            {!isRoleplay && (
+              <details className="summary-details">
+                <summary>システムプロンプト全文（{systemPrompt.length} 字）</summary>
+                <pre className="summary-prewrap">{systemPrompt}</pre>
+              </details>
+            )}
             <details className="summary-details">
-              <summary>システムプロンプト全文（{systemPrompt.length} 字）</summary>
-              <pre className="summary-prewrap">{systemPrompt}</pre>
-            </details>
-            <details className="summary-details">
-              <summary>作風設定（全7カテゴリ）</summary>
+              <summary>
+                {isRoleplay ? '会話の作風（全7カテゴリ）' : '作風設定（全7カテゴリ）'}
+              </summary>
               <PresetSelector
                 categories={categories}
                 value={project.activePresetIds}
                 onChange={handlePresetChange}
                 disabled={loading}
                 namePrefix="work-preset"
+                mode={presetMode}
               />
             </details>
           </>
@@ -845,7 +856,9 @@ export default function WorkSettingsTab({
         {systemPromptEditing && (
           <>
             <p className="settings-help">
-              基本プロンプトはこの作品の生成で常に適用されます。選択中の作風設定はその後ろに、作品固有の追加指示はさらに後ろに加わります。
+              {isRoleplay
+                ? '会話ではロールプレイ規則（応答の形・越えない線）が常に最優先で適用されます。基本プロンプトは初期値のままなら会話に渡されず、編集したときだけ規則の後ろに加わります。会話の作風と追加指示はさらに後ろです。設定は会話を新しく始めた時点で固定され、進行中の会話には反映されません。'
+                : '基本プロンプトはこの作品の生成で常に適用されます。選択中の作風設定はその後ろに、作品固有の追加指示はさらに後ろに加わります。'}
             </p>
             <div className="prompt-toolbar">
               <strong>
@@ -920,7 +933,9 @@ export default function WorkSettingsTab({
       </section>
       )}
 
-      {detailSettingsTab === 'style' && (
+      {/* NOTE: 文体見本は本文生成のプロンプトにしか載らない。ロールプレイ会話の
+          contextSnapshot は参照しないため、設定できると誤解させないよう隠す。 */}
+      {detailSettingsTab === 'style' && !isRoleplay && (
       <section className="summary-card detail-settings-panel-card">
         <header className="summary-card-header">
           <h2>文体見本</h2>

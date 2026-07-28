@@ -3,6 +3,11 @@ import type { StyleVariationSettings } from './style.js';
 import type { Character } from './character.js';
 import type { RefineAutomationSettings, RefineMaintenanceStatus } from './refineAutomation.js';
 
+// NOTE: 小説用（narration〜intimacy）とロールプレイ用（rp*）で語彙が別物なため、
+// 同じ Record に同居させつつカテゴリ順（presetMigration の *_PRESET_CATEGORY_ORDER）で
+// 描き分ける。projectType ごとに片方だけをレンダリング・編集対象にする。
+// rpResponseStyle だけは narration と同じく必須（未選択という状態を作らない）。
+// 応答形式が未定義だと出力の形そのものが崩れるため、既定値で必ず埋める。
 export interface ActivePresets {
   narration: string;
   aftertaste?: string[];
@@ -11,6 +16,13 @@ export interface ActivePresets {
   chapterEnding?: string;
   painLevel?: string;
   intimacy?: string;
+  rpResponseStyle: string;
+  rpInitiative?: string;
+  rpDistance?: string;
+  rpMood?: string[];
+  rpEmotionDisplay?: string;
+  rpPainLevel?: string;
+  rpIntimacy?: string;
 }
 
 export interface SamplingConfig {

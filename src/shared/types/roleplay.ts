@@ -19,9 +19,14 @@ export interface RoleplayContextSnapshot {
   character: Character;
   otherCharacters: Array<Pick<Character, 'characterId' | 'name' | 'description'>>;
   worldDigest: string;
-  // NOTE: 編集済み基本プロンプトと明示選択プリセットを、会話開始時に固定する。
-  // 旧セッションでは未指定のため optional。
+  // NOTE: 編集済み基本プロンプト。旧セッションでは選択プリセットも結合して保存されている
+  // （現在は stylePresetPrompt に分離）。旧セッションでは未指定のため optional。
   projectSystemPrompt?: string;
+  // NOTE: ロールプレイ用作風プリセットのレンダリング結果。見出し込みで保存する。
+  stylePresetPrompt?: string;
+  // NOTE: 作風設定「応答の形」(rpResponseStyle) の本文。ロールプレイ規則へ直接埋め込む。
+  // 未指定の旧セッションは DEFAULT_ROLEPLAY_RESPONSE_STYLE_INSTRUCTION で従来通りに動く。
+  responseStyleInstruction?: string;
   customSystemPrompt: string;
   capturedAt: string;
 }

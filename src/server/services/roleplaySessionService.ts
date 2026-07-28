@@ -27,18 +27,18 @@ import {
   buildRoleplayUserPrompt,
   ROLEPLAY_RECENT_MESSAGES,
   ROLEPLAY_RECENT_MESSAGES_MAX_CHARS,
+  ROLEPLAY_STYLE_HEADING,
   ROLEPLAY_SUMMARY_MAX_CHARS,
   ROLEPLAY_WORLD_MAX_CHARS,
 } from './roleplayPromptBuilder.js';
+import { ROLEPLAY_RENDERED_PRESET_CATEGORY_ORDER } from '../../shared/presetMigration.js';
+import { loadPresetCategories, renderPresets } from '../prompts/presetParts.js';
 import {
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
   normalizeProjectType,
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
-import {
-  buildGeneratedSystemPrompt,
-  resolveSystemPrompt,
-} from '../prompts/systemPrompt.js';
+import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import type {
   ActivePresets,
   Character,
@@ -286,12 +286,17 @@ async function buildContextSnapshot(input: {
     input.baseSystemPrompt
   );
   // NOTE: 小説向けの未編集デフォルト本文はロールプレイ固定規則と競合するため除外する。
-  // 利用者が編集した基本文と、明示的に選ばれたプリセットだけを会話へ引き継ぐ。
-  const projectSystemPrompt = await buildGeneratedSystemPrompt(
-    input.activePresetIds,
+  // 利用者が編集した基本文だけを会話へ引き継ぐ。
+  const projectSystemPrompt =
     resolution.baseSystemPrompt === resolution.defaultBaseSystemPrompt
       ? ''
-      : resolution.baseSystemPrompt
+      : resolution.baseSystemPrompt;
+  // NOTE: 小説用カテゴリ（語り・章の幕引きなど）は地の文と章立てを前提にしており、
+  // 会話に流すと応答形式と衝突する。ロールプレイ用カテゴリだけをレンダリングする。
+  const stylePresetPrompt = await renderPresets(
+    input.activePresetIds,
+    ROLEPLAY_RENDERED_PRESET_CATEGORY_ORDER,
+    ROLEPLAY_STYLE_HEADING
   );
   return {
     character: { ...input.character },
@@ -302,9 +307,27 @@ async function buildContextSnapshot(input: {
     })),
     worldDigest: buildWorldDigest(input.worldText),
     projectSystemPrompt,
+    stylePresetPrompt,
+    responseStyleInstruction: await resolveResponseStyleInstruction(input.activePresetIds),
     customSystemPrompt: resolution.customSystemPrompt,
     capturedAt: nowIso(),
   };
+}
+
+// NOTE: rpResponseStyle はロールプレイ規則へ直接埋め込むため、プリセット本文として
+// 別途レンダリングせずここで本文だけを引く。未知IDや読み込み失敗時は undefined を返し、
+// プロンプト側の既定文にフォールバックさせる（会話開始を失敗させない）。
+async function resolveResponseStyleInstruction(
+  activePresetIds: ActivePresets
+): Promise<string | undefined> {
+  const presetId = activePresetIds.rpResponseStyle;
+  if (!presetId) return undefined;
+  try {
+    const categories = await loadPresetCategories();
+    return categories.rpResponseStyle?.items[presetId]?.text.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ===== 作成 =====
