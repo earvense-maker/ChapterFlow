@@ -592,9 +592,11 @@ describe('roleplaySessionService', () => {
     expect(capturedSystem).not.toContain('1〜3文');
   });
 
-  it('injects manually-registered NG expressions into the roleplay prompt', async () => {
+  // NOTE: Phase D で方針を反転した（設計書 5.5）。登録NG語を main prompt へ列挙すると、
+  // モデルは指示に従おうとして「〇〇ではなく」の否定形で語を本文へ出してしまう。
+  // 現在はプロンプトへ載せず、応答後に findNgMatches で決定的に検出する。
+  it('never lists manually-registered NG expressions in the roleplay prompt', async () => {
     const project = await makeRoleplayProject();
-    // NOTE: NG 表現を登録してから会話開始。プロンプト末尾に載るかを確認する。
     const expressionService = await import('../../src/server/services/expressionService');
     await expressionService.createExpression(project.projectId, {
       text: '息を呑んだ',
@@ -623,9 +625,11 @@ describe('roleplaySessionService', () => {
         revision: created.revision,
       })
     );
-    expect(capturedPrompt).toContain('【表現上の注意】');
-    expect(capturedPrompt).toContain('- 「息を呑んだ」');
-    expect(capturedPrompt).toContain('- 「胸の奥が」');
+    expect(capturedPrompt).not.toContain('【表現上の注意】');
+    expect(capturedPrompt).not.toContain('息を呑んだ');
+    expect(capturedPrompt).not.toContain('胸の奥が');
+    // 最終行の再注目指示は残る
+    expect(capturedPrompt).toContain('として応答してください。');
   });
 
   it('refuses a second send while the first is still in flight', async () => {

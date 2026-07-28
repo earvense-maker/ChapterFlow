@@ -160,11 +160,14 @@ export function renderStyleLensPrompt(profile: GenerationStyleProfile | undefine
     normalized.attenuatedPatterns.length > 0
       ? `直近で続いた${normalized.attenuatedPatterns.map((item) => `「${item}」`).join('、')}は、同等以上の別案がある場合だけ弱く避ける。`
       : '',
-    '感情を即座に評価語で確定せず、行動・接点・知覚の差分で伝えられる候補を弱く優先する。',
+    // NOTE: 「感情を評価語で確定しない」という固定文はここから外した。
+    // 感情表現プリセット emotionDisplay = expressive と正面から競合し、
+    // どちらが効いているか利用者にもテストにも判別できなかったため。
+    // 感情の見せ方はプリセットを正本とする（設計書 4.7）。
     '人物の目的、伏線、クライマックス、意図的な反復、今回の明示指示と競合する場合は、このレンズを優先しない。',
   ].filter(Boolean);
 
-  return `【今回の文体レンズ】\n${rules.slice(0, 5).join('\n')}`.slice(
+  return `【今回の文体レンズ】\n${rules.slice(0, 4).join('\n')}`.slice(
     0,
     LENS_PROMPT_MAX_CHARS
   );

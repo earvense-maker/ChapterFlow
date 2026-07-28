@@ -51,3 +51,38 @@ jobs:
 
       - name: Run end-to-end tests
         run: npm run test:e2e
+
+  # NOTE: 公開Web版は Electron 版と別ジョブ・別成果物にする（設計書 4.1）。
+  # verify に needs で繋がないのは、Web のデプロイ検証が落ちても Electron の
+  # GitHub Releases を止めないため。ランナーが ubuntu なのは、Web の配置先が
+  # Linux コンテナで、Windows 固有の挙動を検証する必要がないから。
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.12.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check web app
+        run: npm run web:typecheck
+
+      - name: Run web tests
+        run: npm run web:test
+
+      # NOTE: インベントリは生成物。ソースと食い違ったまま放置されると、
+      # 移行計画の判断材料にならないので CI で鮮度を検証する。
+      - name: Verify migration inventory is current
+        run: npm run test -- tests/unit/webPortability.test.ts
+
+      - name: Build web app
+        run: npm run web:build

@@ -1,0 +1,11 @@
+{
+  "name": "@chapterflow/web",
+  "private": true,
+  "version": "0.0.0-phase0",
+  "description": "ChapterFlow 公開Web版。Phase 0 時点では認証前の空の起動系のみ。",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

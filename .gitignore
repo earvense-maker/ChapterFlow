@@ -1,9 +1,11 @@
 node_modules
 dist
+dist-web
 data/
 .env
 .env.local
 *.log
+logs/
 .DS_Store
 coverage
 playwright-report

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { verifyRewrite } from '../../src/server/services/ngRewriteService';
+// NOTE: 検証ロジックはストレージ非依存の ngTextRewriteService へ抽出した（設計書 5.5）。
+// 小説とロールプレイが同じ判定を共有することを、この import 先で表している。
+import { verifyRewrite } from '../../src/server/services/ngTextRewriteService';
 import { extractSentenceSpan } from '../../src/server/utils/textBoundary';
 
 const target = { id: 'a', text: '瞳を揺らす' };

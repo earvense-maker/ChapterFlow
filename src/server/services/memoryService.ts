@@ -1,8 +1,12 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
-import * as storage from './storageService.js';
+import { localProjectStorage } from '../storage/boundProjectStorage.js';
 import { MEMORY_CONTENT_MAX_CHARS } from '../../shared/types/index.js';
 import type { Memory, MemoryImportance, MemoryType } from '../types/index.js';
+
+// NOTE(web-phase1): 保存層は契約経由（設計書 4.2）。Phase 1 でリクエスト由来の
+// UserContext に差し替える。
+const storage = localProjectStorage();
 
 const MEMORY_TYPES: MemoryType[] = ['storyFact', 'preference', 'negative'];
 const MEMORY_IMPORTANCE: MemoryImportance[] = ['high', 'medium', 'low'];

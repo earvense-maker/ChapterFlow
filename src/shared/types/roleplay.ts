@@ -1,3 +1,4 @@
+import type { PromptBudgetReport } from './generation.js';
 import type { CharacterId, ProjectId } from './ids.js';
 import type { Character } from './character.js';
 import type { ActivePresets } from './project.js';
@@ -29,6 +30,9 @@ export interface RoleplayAppliedPreset {
 export interface RoleplayAppliedSettings {
   capturedAt: string;
   presets: RoleplayAppliedPreset[];
+  // NOTE: セッション作成時の system prompt 縮小結果（設計書 6.1）。
+  // 何が切り詰められたかを設定詳細から確認できるようにする。原文は含まない。
+  promptBudgetReport?: PromptBudgetReport;
 }
 
 // NOTE: 会話要約と同時に更新するセッションローカルの派生状態。数値は UI 用の
@@ -43,11 +47,22 @@ export interface RoleplayRelationshipState {
   updatedAt: string;
 }
 
+// NOTE: 生のNG語は複製しない（設計書 5.5）。warning は表示のたびに現在の登録内容と
+// 突き合わせるための ID だけを持つ。登録が消えていれば一般的な警告文へ落とす。
+export interface RoleplayGenerationWarning {
+  code: 'ng_expression_detected' | 'ng_rewrite_failed';
+  expressionIds: string[];
+}
+
 export interface RoleplayMessage {
   messageId: string;
   role: RoleplayMessageRole;
   content: string;
   createdAt: string;
+  generationWarnings?: RoleplayGenerationWarning[];
+  // NOTE: この turn の結合済み system/user トークン確認と、縮小結果。
+  // 「なぜ履歴が短くなったのか」を後から確認できるようにする（設計書 6.1）。
+  promptBudgetReport?: PromptBudgetReport;
 }
 
 // NOTE: 会話開始時に固定するペルソナ・世界観のスナップショット。プロンプト構築の

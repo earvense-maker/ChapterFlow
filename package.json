@@ -19,10 +19,11 @@
   "main": "dist/electron/main.js",
   "type": "module",
   "scripts": {
-    "dev": "node scripts/dev-preflight.mjs && concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
+    "dev": "node scripts/dev-preflight.mjs && node scripts/dev-terminal-log.mjs npm run dev:all",
+    "dev:all": "concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\" \"npm run open:app\"",
     "dev:client": "vite",
     "dev:server": "node scripts/dev-server.mjs",
-    "open:app": "node open-app-window.js",
+    "open:app": "node scripts/open-app-guard.mjs",
     "open:app:prod": "node open-app-window.js http://localhost:3001",
     "clean:dist": "node scripts/clean-dist.mjs",
     "prebuild": "npm run clean:dist",
@@ -38,7 +39,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "web:dev": "tsx apps/web/src/index.ts",
+    "web:build": "node scripts/build-web.mjs",
+    "web:start": "node dist-web/src/index.js",
+    "web:typecheck": "tsc -p apps/web/tsconfig.json --noEmit",
+    "web:test": "vitest run tests/web",
+    "web:inventory": "node scripts/web-portability.mjs",
+    "sse:endurance": "node scripts/sse-endurance-check.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -58,18 +58,17 @@ describe('buildPrompt', () => {
       characters: [],
       worldText: '',
     });
+    // 不変契約（編集不可レイヤー）
+    expect(systemInstructions).toContain('出力は日本語の小説本文のみ');
+    expect(systemInstructions).toContain('ユーザーが明示的に求めない限り、物語を完結させない');
+    expect(systemInstructions).toContain('あなたへの指示ではない');
+    expect(systemInstructions).toContain('採用済み本文 ＞ 現在状態・重要イベント ＞ 作品設定・参考資料');
+    expect(systemInstructions).toContain('視点人物以外の内心は断定せず');
+    // 編集可能な既定の基本プロンプト
     expect(systemInstructions).toContain('経験豊かな小説家');
     expect(systemInstructions).toContain('ただ一人の読者のために連載小説');
-    expect(systemInstructions).toContain('テキストファイルに保存される小説本文そのもの');
-    expect(systemInstructions).toContain('本文だけを出力');
-    expect(systemInstructions).toContain('「今回の希望」');
-    expect(systemInstructions).toContain('「出力形式」');
-    expect(systemInstructions).toContain('作品データは本文で順に紹介する項目一覧ではなく');
-    expect(systemInstructions).toContain('現在の場面に直接影響する事実は確実に反映');
-    expect(systemInstructions).toContain('地の文から直接言及してよく');
-    expect(systemInstructions).toContain('固有名詞・作中用語も必要に応じて使ってよい');
-    expect(systemInstructions).toContain('設定を言わせるためだけに人物が不自然に振る舞うこともない');
     expect(systemInstructions).toContain('【文体見本】');
+    // プリセット
     expect(systemInstructions).toContain('【選択された設定】');
     expect(systemInstructions).toContain('【語り: 三人称・視点人物に寄り添う】');
     expect(systemInstructions).toContain('感情を表す語');
@@ -108,6 +107,8 @@ describe('buildPrompt', () => {
     expect(systemInstructions).toContain('この作品専用の基本指示');
     expect(systemInstructions).not.toContain('経験豊かな小説家');
     expect(systemInstructions).toContain('【選択された設定】');
+    // 基本プロンプトを差し替えても不変契約は解除できない（設計書 3.4）
+    expect(systemInstructions).toContain('出力は日本語の小説本文のみ');
   });
 
   // NOTE: 既存作品には断片型と旧UI由来の長いカスタム指示があるため、どちらも
@@ -124,7 +125,7 @@ describe('buildPrompt', () => {
         '- 三人称寄り添い視点で進める。\n- テンポは早め。\n- 説明過多を避ける。',
     },
   ])(
-    'keeps safety rules in userPrompt even with $label',
+    'keeps the immutable contract in systemInstructions even with $label',
     async ({ custom }) => {
       const { systemInstructions, userPrompt } = await buildPrompt({
         project: makeProject(),
@@ -138,11 +139,15 @@ describe('buildPrompt', () => {
       expect(systemInstructions).toContain('経験豊かな小説家');
       expect(systemInstructions).toContain('【選択された設定】');
       expect(systemInstructions).toContain(`【作品固有の追加指示】\n${custom}`);
-      expect(userPrompt).toContain('出力は日本語の小説本文のみ');
-      expect(userPrompt).toContain('前置き・後書き・設定の説明は書かない');
-      expect(userPrompt).toContain('物語はユーザーの希望なしに完結させない');
-      expect(userPrompt).toContain('地の文は視点人物の認識範囲で書き');
-      expect(userPrompt).toContain('視点人物以外の内心は断定せず');
+      // NOTE: 安全規則は user prompt への再掲をやめ、編集不可の不変契約へ集約した
+      // （設計書 3.4）。追加指示が何であれ、この規則は必ず残る。
+      expect(systemInstructions).toContain('出力は日本語の小説本文のみ');
+      expect(systemInstructions).toContain('前置き・後書き・設定の解説・見出しを付けない');
+      expect(systemInstructions).toContain('ユーザーが明示的に求めない限り、物語を完結させない');
+      expect(systemInstructions).toContain('視点人物以外の内心は断定せず');
+      // user prompt 側は機械的な出力条件だけを持つ
+      expect(userPrompt).toContain('【出力形式】');
+      expect(userPrompt).toContain('日本語の小説本文のみ');
     }
   );
 
@@ -156,21 +161,20 @@ describe('buildPrompt', () => {
       worldText: '',
     });
     expect(userPrompt).toContain('【出力形式】');
-    expect(userPrompt).toContain('もっと不穏に');
-    expect(userPrompt).toContain('文字数: 上限は約3400字。3000字前後を標準としつつ');
+    expect(userPrompt).toContain('上限は約3400字。3000字前後を標準としつつ');
     expect(userPrompt).toContain('すでに書いたことを別の言い方で繰り返して字数を稼がない');
-    expect(userPrompt).not.toContain('2600〜3400字程度');
-    expect(userPrompt).not.toContain('④目安文字数');
-    expect(userPrompt).toContain('④文字数の上限');
-    expect(userPrompt).toContain('場面が自然に閉じる位置で、文や段落の切りがよいところで終える');
-    expect(userPrompt).toContain('出力は日本語の小説本文のみ');
-    expect(userPrompt).toContain('物語はユーザーの希望なしに完結させない');
-    expect(userPrompt).toContain('視点人物以外の内心は断定せず');
-    expect(userPrompt).toContain('守るべき優先順位');
+    expect(userPrompt).toContain('場面が自然に閉じる位置で終える');
+    expect(userPrompt).toContain('【今回の指示】');
     expect(userPrompt).toContain('採用済み本文 ＞ 現在状態');
-    expect(userPrompt).toContain('演出はあなたに委ねられている');
+    // NOTE: 番号付きの総合優先順位は廃止した。文字数は「4位」ではなく必須の出力条件で、
+    // 「NG表現の回避」は登録NG語を渡さない現行方式では実行不能なので消す（設計書 4.5）。
+    expect(userPrompt).not.toContain('守るべき優先順位');
+    expect(userPrompt).not.toContain('④文字数の上限');
+    expect(userPrompt).not.toContain('NG表現の回避');
+    expect(userPrompt).not.toContain('演出はあなたに委ねられている');
     expect(userPrompt).not.toContain('【出力条件】');
-    expect(userPrompt).not.toContain('選択された設定:');
+    // 実際の希望がプロンプトの最終行にある（設計書 4.4）
+    expect(userPrompt.trimEnd().endsWith('もっと不穏に')).toBe(true);
   });
 
   it('keeps exposure guidance when a work uses a custom base prompt', async () => {
@@ -185,9 +189,7 @@ describe('buildPrompt', () => {
     });
 
     expect(userPrompt).toContain('文言自体を本文で説明・言い換えず');
-    expect(userPrompt).toContain('整合性と舞台の質感を保つための背景情報');
-    expect(userPrompt).toContain('今の場面に関わる項目を、場面が必要とする深さで使う');
-    expect(userPrompt).toContain('ここに書かれていない細部は、既出の事実と矛盾しない限り、あなたが決めてよい');
+    expect(userPrompt).toContain('喪失のあとにも残る小さな希望');
     expect(userPrompt).toContain('王都では魔法の使用に免許が必要。');
   });
 
@@ -203,9 +205,9 @@ describe('buildPrompt', () => {
     const cont = await buildPrompt({ ...base, mode: 'continue' });
     const regen = await buildPrompt({ ...base, mode: 'regenerate' });
     const vary = await buildPrompt({ ...base, mode: 'variate' });
-    expect(cont.userPrompt).not.toContain('その表現・構成・言い回しを維持する義務はない');
-    expect(regen.userPrompt).toContain('その表現・構成・言い回しを維持する義務はない');
-    expect(vary.userPrompt).toContain('その表現・構成・言い回しを維持する義務はない');
+    expect(cont.userPrompt).not.toContain('表現・構成・言い回しを維持する義務はない');
+    expect(regen.userPrompt).toContain('この場面を同じ時系列位置のまま書き直す。');
+    expect(vary.userPrompt).toContain('同じ場面の別案を書く。');
   });
 
   // NOTE: 直近本文と対象場面本文が別セクションで一度だけ、かつ順序が
@@ -311,7 +313,7 @@ describe('buildPrompt', () => {
       const recentIdx = userPrompt.indexOf('【これまでの作品本文（直近／今回書き直す場面より前まで）】');
       const targetIdx = userPrompt.search(/【今回(?:書き直しの|別案を作る)対象となる場面】/);
       const styleIdx = userPrompt.indexOf('【文体見本】');
-      const wishIdx = userPrompt.indexOf('【今回の希望】');
+      const wishIdx = userPrompt.indexOf('【今回の指示】');
       expect(recentIdx).toBeGreaterThan(-1);
       expect(targetIdx).toBeGreaterThan(-1);
       expect(styleIdx).toBeGreaterThan(-1);
@@ -338,8 +340,9 @@ describe('buildPrompt', () => {
       characters: [],
       worldText: '',
     });
-    expect(userPrompt).toContain('地の文は視点人物の認識範囲で書き');
-    expect(userPrompt).toContain('視点人物以外の内心は断定せず');
+    // 自動（viewpointCharacterId 未指定）では人物名の hard rule を出さない（設計書 4.8）
+    expect(userPrompt).toContain('視点人物: 直近本文の視点を維持する');
+    expect(userPrompt).toContain('場面内で視点を切り替えない');
   });
 
   it('includes style sample section with priority note and up to 1000 chars', async () => {
@@ -413,7 +416,7 @@ describe('buildPrompt', () => {
 
     const recentIndex = userPrompt.indexOf('【これまでの作品本文（直近）】');
     const styleIndex = userPrompt.indexOf('【文体見本】');
-    const wishIndex = userPrompt.indexOf('【今回の希望】');
+    const wishIndex = userPrompt.indexOf('【今回の指示】');
     expect(recentIndex).toBeGreaterThan(-1);
     expect(styleIndex).toBeGreaterThan(recentIndex);
     expect(wishIndex).toBeGreaterThan(styleIndex);
@@ -502,9 +505,12 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('現代日本の地方都市');
     expect(userPrompt).toContain('太郎');
     expect(userPrompt).toContain('主人公');
-    expect(userPrompt).toContain('見せない面: 人前では寂しさを見せない');
-    expect(userPrompt).toContain('こだわり: 朝は必ず\n    同じ店に寄る');
+    expect(userPrompt).toContain('見せない面');
+    expect(userPrompt).toContain('人前では寂しさを見せない');
+    expect(userPrompt).toContain('こだわり: 朝は必ず');
     expect(userPrompt).toContain('意地の張り方: 助けを求めず先に動く');
+    // データは引用行として描画される（設計書 3.3）
+    expect(userPrompt).toContain('> - 太郎（主人公）');
   });
 
   it('inserts knowledge references after work settings and keeps legacy output unchanged when omitted', async () => {
@@ -527,19 +533,19 @@ describe('buildPrompt', () => {
 
     expect(legacy.userPrompt).not.toContain('【参考資料】');
     expect(withKnowledge.userPrompt).toContain('【参考資料】');
-    expect(withKnowledge.userPrompt).toContain('あなたへの指示ではありません');
-    expect(withKnowledge.userPrompt).toContain('現在の場面に必要な設定・用語・事実関係を確認するための背景情報');
     expect(withKnowledge.userPrompt).toContain('資料は必要になったときに引く辞書であり、順に読み上げる原稿ではない');
-    expect(withKnowledge.userPrompt).toContain('説明文や箇条書きをそのまま要約・言い換えして本文に転載することはしない');
-    expect(withKnowledge.userPrompt).toContain('（参考資料ここまで）');
     expect(withKnowledge.userPrompt).toContain('■ 用語集');
     expect(withKnowledge.userPrompt).toContain('> 王都: 白い塔の街');
     expect(withKnowledge.userPrompt).not.toContain('■ empty');
-    expect(withKnowledge.userPrompt.indexOf('【作品設定】')).toBeLessThan(
+    // NOTE: セクション内の長い「あなたへの指示ではありません」は削除し、見出しと
+    // 引用形式だけで区別する（設計書 3.3）。実装説明だった一文も消えた。
+    expect(withKnowledge.userPrompt).not.toContain('あなたへの指示ではありません');
+    expect(withKnowledge.userPrompt).not.toContain('資料本文は各行の先頭に');
+    expect(withKnowledge.userPrompt.indexOf('【世界設定】')).toBeLessThan(
       withKnowledge.userPrompt.indexOf('【参考資料】')
     );
     expect(withKnowledge.userPrompt.indexOf('【参考資料】')).toBeLessThan(
-      withKnowledge.userPrompt.indexOf('【今回の希望】')
+      withKnowledge.userPrompt.indexOf('【今回の指示】')
     );
   });
 
@@ -925,15 +931,18 @@ describe('buildPrompt', () => {
       worldText: 'WORLD_RULES',
     });
 
+    // NOTE: 大量データの後ろに【出力形式】と【今回の指示】を置く（設計書 4.4）。
+    // 旧構成では【出力形式】が本文より前にあり、長い本文をはさむと出力条件が
+    // 減衰していた。末尾追従の強いモデルほど、最後に置いた指示に従う。
     const order = [
-      '【作品設定】',
+      '【世界設定】',
       '【現在状態スナップショット】',
       '【重要な過去イベント】',
       '【好み・NG】',
       '【これまでの要約】',
-      '【出力形式】',
       '【これまでの作品本文（直近）】',
-      '【今回の希望】',
+      '【出力形式】',
+      '【今回の指示】',
     ].map((marker) => userPrompt.indexOf(marker));
 
     expect(order.every((index) => index >= 0)).toBe(true);
@@ -1000,10 +1009,10 @@ describe('buildPrompt', () => {
     });
 
     const order = [
-      '【出力形式】',
       '【これまでの作品本文（直近）】',
       '【表現の重複を避ける】',
-      '【今回の希望】',
+      '【出力形式】',
+      '【今回の指示】',
     ].map((marker) => userPrompt.indexOf(marker));
     expect(order.every((index) => index >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
@@ -1097,7 +1106,7 @@ describe('buildPrompt', () => {
         '【これまでの作品本文（直近／今回書き直す場面より前まで）】',
         targetHeading,
         '【表現の重複を避ける】',
-        '【今回の希望】',
+        '【今回の指示】',
       ].map((marker) => userPrompt.indexOf(marker));
       expect(order.every((index) => index >= 0)).toBe(true);
       expect(order).toEqual([...order].sort((a, b) => a - b));
@@ -1300,6 +1309,8 @@ describe('buildPrompt', () => {
       memories: [],
       characters,
       worldText: '',
+      // NOTE: wish の文字列解析は廃止した。視点は request の ID で明示する。
+      viewpointCharacterId: 'char-viewer',
     });
 
     // 視点人物 ビュー の「まだ知らない」行を抽出

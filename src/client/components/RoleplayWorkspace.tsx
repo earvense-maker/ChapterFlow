@@ -60,6 +60,8 @@ export default function RoleplayWorkspace({
   const [activeSession, setActiveSession] = useState<RoleplaySessionView | null>(null);
   const [message, setMessage] = useState('');
   const [streamingText, setStreamingText] = useState('');
+  // NOTE: 保存前のNG検出・局所リライト中であることの表示（設計書 6.3）。
+  const [postprocessing, setPostprocessing] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isRegenerate, setIsRegenerate] = useState(false);
@@ -97,6 +99,7 @@ export default function RoleplayWorkspace({
     setIsRegenerate(false);
     setIsCreatingSession(false);
     setStreamingText('');
+    setPostprocessing(false);
     return () => {
       mountedRef.current = false;
       sessionLoadRequestRef.current += 1;
@@ -175,6 +178,7 @@ export default function RoleplayWorkspace({
 
   const resetStreamState = useCallback(() => {
     setStreamingText('');
+    setPostprocessing(false);
     setIsStreaming(false);
     setIsStopping(false);
     setIsRegenerate(false);
@@ -252,6 +256,7 @@ export default function RoleplayWorkspace({
         ) return;
         setActiveSession(res.session);
         setStreamingText('');
+    setPostprocessing(false);
         setPendingReplaceMessageId(null);
         setMessage('');
       } catch (err) {
@@ -276,6 +281,7 @@ export default function RoleplayWorkspace({
     const preSendRevision = activeSession.revision;
     setMessage('');
     setStreamingText('');
+    setPostprocessing(false);
     setIsStreaming(true);
     setIsStopping(false);
     setIsRegenerate(false);
@@ -309,6 +315,19 @@ export default function RoleplayWorkspace({
           setStreamingText((prev) => prev + chunk);
         }
       },
+      // NOTE: 保存前の表現調整。ここで表示を差し替えず、待機中であることだけを伝える。
+      onPostprocessing: () => {
+        if (mountedRef.current && projectIdRef.current === projectId) {
+          setPostprocessing(true);
+        }
+      },
+      // NOTE: 保存済み本文の先行通知。暫定表示を確定本文へ置き換える。
+      // これを取りこぼしても onDone の session が最終正なので表示は必ず一致する。
+      onReplace: (text) => {
+        if (mountedRef.current && projectIdRef.current === projectId) {
+          setStreamingText(text);
+        }
+      },
       onDone: async (session) => {
         if (!mountedRef.current || projectIdRef.current !== projectId) return;
         if (notificationSettings) {
@@ -340,6 +359,7 @@ export default function RoleplayWorkspace({
         const stoppedSend = err.code === 'aborted' && stopRequestedRef.current;
         const sentText = sentMessageRef.current || text;
         setStreamingText('');
+    setPostprocessing(false);
         abortRef.current = null;
         if (stoppedSend) {
           setError(null);
@@ -447,6 +467,7 @@ export default function RoleplayWorkspace({
       setPendingReplaceMessageId(null);
     }
     setStreamingText('');
+    setPostprocessing(false);
     setIsStreaming(true);
     setIsStopping(false);
     setIsRegenerate(true);
@@ -477,6 +498,19 @@ export default function RoleplayWorkspace({
             });
           }
           setStreamingText((prev) => prev + chunk);
+        }
+      },
+      // NOTE: 保存前の表現調整。ここで表示を差し替えず、待機中であることだけを伝える。
+      onPostprocessing: () => {
+        if (mountedRef.current && projectIdRef.current === projectId) {
+          setPostprocessing(true);
+        }
+      },
+      // NOTE: 保存済み本文の先行通知。暫定表示を確定本文へ置き換える。
+      // これを取りこぼしても onDone の session が最終正なので表示は必ず一致する。
+      onReplace: (text) => {
+        if (mountedRef.current && projectIdRef.current === projectId) {
+          setStreamingText(text);
         }
       },
       onDone: async (session) => {
@@ -577,6 +611,7 @@ export default function RoleplayWorkspace({
       setPendingReplaceMessageId(null);
       setMessage('');
       setStreamingText('');
+    setPostprocessing(false);
       setIsStreaming(false);
       setIsStopping(false);
       setIsRegenerate(false);
@@ -832,6 +867,16 @@ export default function RoleplayWorkspace({
                   >
                     <div style={styles.bubbleLabel}>
                       {m.role === 'user' ? 'あなた' : currentCharacterName}
+                      {/* NOTE: 一致箇所のハイライトは Phase 1 の対象外。offset を保存せず、
+                          警告アイコンと一般的な文言だけにしている（設計書 5.5）。 */}
+                      {(m.generationWarnings?.length ?? 0) > 0 && (
+                        <span
+                          style={styles.warningBadge}
+                          title="避けたい表現として登録された言い回しが残っている可能性があります。"
+                        >
+                          ⚠ 表現の確認
+                        </span>
+                      )}
                     </div>
                     <div
                       style={styles.bubbleContent}
@@ -847,7 +892,9 @@ export default function RoleplayWorkspace({
                 <div style={{ ...styles.bubble, ...styles.characterBubble }}>
                   <div style={styles.bubbleLabel}>
                     {currentCharacterName}
-                    <span style={styles.streamingBadge}>生成中…</span>
+                    <span style={styles.streamingBadge}>
+                      {postprocessing ? '表現を調整しています…' : '生成中…'}
+                    </span>
                   </div>
                   <div style={styles.bubbleContent}>
                     {streamingText || <em style={styles.placeholder}>応答を待っています…</em>}
@@ -1467,6 +1514,15 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '999px',
     background: 'var(--accent)',
     color: '#ffffff',
+  },
+  warningBadge: {
+    marginLeft: '0.4rem',
+    fontSize: '0.7rem',
+    padding: '0.05rem 0.4rem',
+    borderRadius: '999px',
+    border: '1px solid var(--danger)',
+    color: 'var(--danger)',
+    cursor: 'help',
   },
   placeholder: {
     color: 'var(--text-muted)',

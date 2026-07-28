@@ -133,6 +133,10 @@ export default function Reader({
   const [maintenanceStartedAt, setMaintenanceStartedAt] = useState<string | null>(null);
   const [maintenanceClock, setMaintenanceClock] = useState(() => Date.now());
   const [wish, setWish] = useState('');
+  // NOTE: null は「自動」。サーバーは wish の文字列から視点を推測しない（設計書 4.8）。
+  // 「アキ視点は避ける」を視点指定へ昇格させる事故を、UI 側の明示指定で置き換えた。
+  const [viewpointCharacterId, setViewpointCharacterId] = useState<string | null>(null);
+  const [characters, setCharacters] = useState<Array<{ characterId: string; name: string }>>([]);
   const [rewriteWish, setRewriteWish] = useState('');
   const [rewriteSheetOpen, setRewriteSheetOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -292,6 +296,33 @@ export default function Reader({
     };
   }, []);
 
+  // NOTE: 視点セレクト用の人物一覧。取得に失敗しても「自動」だけは選べるので、
+  // 生成そのものは止めない。
+  useEffect(() => {
+    let cancelled = false;
+    setViewpointCharacterId(null);
+    setCharacters([]);
+    void api
+      .getCharacters(projectId)
+      .then((list) => {
+        if (cancelled) return;
+        setCharacters(
+          list
+            .filter((character) => character.name?.trim())
+            .map((character) => ({
+              characterId: character.characterId,
+              name: character.name,
+            }))
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setCharacters([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
   // NOTE: NG表現はプロンプトに載せず、出力後に本文を検出してハイライトする方式。
   // 検出はクライアント側で完結するのでサーバー処理もトークンも要らず、登録一覧を
   // 変えた直後や過去の本文にも遡ってそのまま効く。
@@ -433,7 +464,7 @@ export default function Reader({
       const record = shouldStream
         ? await api.generateStream(
             projectId,
-            { wish: requestWish, mode },
+            { wish: requestWish, mode, viewpointCharacterId },
             (() => {
               let streamedText = '';
               setText('');
@@ -463,7 +494,7 @@ export default function Reader({
             })(),
             abortController?.signal
           )
-        : await api.generate(projectId, { wish: requestWish, mode });
+        : await api.generate(projectId, { wish: requestWish, mode, viewpointCharacterId });
 
       if (
         !mountedRef.current ||
@@ -1280,6 +1311,23 @@ export default function Reader({
             handleGenerate('continue');
           }}
         >
+          {characters.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem' }}>
+              視点:
+              <select
+                value={viewpointCharacterId ?? ''}
+                onChange={(e) => setViewpointCharacterId(e.target.value || null)}
+                disabled={loading}
+              >
+                <option value="">自動</option>
+                {characters.map((character) => (
+                  <option key={character.characterId} value={character.characterId}>
+                    {character.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <textarea
             ref={inputRef}
             rows={1}

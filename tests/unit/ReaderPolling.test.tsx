@@ -6,6 +6,8 @@ import type { ReaderState } from '../../src/shared/types';
 
 vi.mock('../../src/client/clientApi', () => ({
   api: {
+    // NOTE: 視点セレクト用の人物一覧。取得できなくても「自動」は選べる想定なので空で足りる。
+    getCharacters: vi.fn().mockResolvedValue([]),
     getReaderState: vi.fn(),
     getKnowledge: vi.fn(),
     updateState: vi.fn(),

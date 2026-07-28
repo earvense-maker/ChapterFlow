@@ -232,7 +232,10 @@ describe('style profile selection', () => {
     expect(rendered).toContain('【今回の文体レンズ】');
     expect(rendered).toContain('文体見本・人称・視点・人物の口調は維持');
     expect(rendered.length).toBeLessThanOrEqual(900);
-    expect(rendered.split('\n').slice(1)).toHaveLength(5);
+    // NOTE: 感情表現の固定文を外したので4行（設計書 4.7）。プリセット emotionDisplay と
+    // 競合する規則をレンズ側から出さないため、行数の上限もひとつ下がる。
+    expect(rendered.split('\n').slice(1)).toHaveLength(4);
+    expect(rendered).not.toContain('評価語で確定');
   });
 });
 

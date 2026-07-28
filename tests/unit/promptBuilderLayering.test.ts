@@ -194,7 +194,7 @@ describe('設定レイヤー分離 prompt rendering', () => {
 
     const lens = userPrompt.indexOf('【今回の文体レンズ】');
     const sample = userPrompt.indexOf('【文体見本】');
-    const wish = userPrompt.indexOf('【今回の希望】');
+    const wish = userPrompt.indexOf('【今回の指示】');
     expect(lens).toBeGreaterThanOrEqual(0);
     expect(lens).toBeLessThan(sample);
     expect(sample).toBeLessThan(wish);
@@ -206,13 +206,11 @@ describe('設定レイヤー分離 prompt rendering', () => {
     const noSettings = await prompt([]);
     const withSettings = await prompt([], '王国には魔法がある。');
 
-    expect(noSettings).not.toContain('以下は作品の基礎設定である');
-    expect(withSettings).toContain('以下は作品の基礎設定である');
-    expect(withSettings).toContain('背景情報');
-    expect(withSettings).toContain('今の場面に関わる項目を、場面が必要とする深さで使う');
-    expect(withSettings.indexOf('【作品設定】')).toBeLessThan(
-      withSettings.indexOf('以下は作品の基礎設定である')
-    );
+    // NOTE: 【作品設定】という囲みの見出しは廃止し、【世界設定】【人物設定】を
+    // それぞれ独立セクションにした（設計書 4.4）。世界設定はデータブロックで描画される。
+    expect(noSettings).not.toContain('【世界設定】');
+    expect(withSettings).toContain('【世界設定】');
+    expect(withSettings).toContain('> 王国には魔法がある。');
   });
 
   it('does not emit an empty work-settings header for a canonical empty world', async () => {

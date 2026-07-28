@@ -1,6 +1,6 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
-import * as storage from './storageService.js';
+import { localProjectStorage } from '../storage/boundProjectStorage.js';
 import * as knowledgeService from './knowledgeService.js';
 import {
   defaultModelForProvider,
@@ -9,6 +9,7 @@ import {
 import { createEmptyStoryState } from './storyStateService.js';
 import { writeShortcut } from './shortcutService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import { identifyBaseInstruction } from '../prompts/baseInstruction.js';
 import {
   NOVEL_PRESET_CATEGORY_ORDER,
   normalizeActivePresetIds,
@@ -47,6 +48,10 @@ import type {
   UpdateProjectBody,
   WorldContent,
 } from '../types/index.js';
+
+// NOTE(web-phase1): 保存層は契約経由（設計書 4.2）。現状は Electron 用の固定コンテキストで
+// 束縛しているので、Phase 1 でリクエスト由来の UserContext に差し替える。
+const storage = localProjectStorage();
 
 const DEFAULT_OUTPUT_LENGTH = 6000;
 const DEFAULT_FREQUENCY_PENALTY = 0.1;
@@ -154,7 +159,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   }
   const projectId = generateTimestampId('proj');
   try {
-  await storage.createProjectDir(projectId);
+  await storage.createProjectContainer(projectId);
 
   const initialPresetIds = DEFAULT_ACTIVE_PRESET_IDS;
   let activePresetIds: ActivePresets = { ...initialPresetIds };
@@ -268,10 +273,17 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     },
   };
 
+  // NOTE: 新規作成・複製の時点で「既定文のままか」を記録しておく（設計書 5.4）。
+  // 以後の判定は hash 照合へ頼らずこの値を見られる。
+  const identifiedBase = identifyBaseInstruction(baseSystemPrompt);
   const presets: PresetsFile = {
     userCustomPromptParts: sourcePresets?.userCustomPromptParts ?? [],
     baseSystemPrompt,
     customSystemPrompt,
+    baseSystemPromptSource: identifiedBase.source,
+    ...(identifiedBase.version === undefined
+      ? {}
+      : { baseSystemPromptVersion: identifiedBase.version }),
   };
   const characters = normalizeCharactersForStorage(body.characters ?? sourceCharacters);
   const world = body.world ?? sourceWorld;
@@ -292,7 +304,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
 
   return project;
   } catch (err) {
-    await storage.deleteProjectDir(projectId).catch(() => undefined);
+    await storage.deleteProject(projectId).catch(() => undefined);
     throw err;
   }
 }
@@ -635,7 +647,7 @@ function normalizeTemperature(value: unknown): number | undefined {
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
-  await storage.deleteProjectDir(projectId);
+  await storage.deleteProject(projectId);
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {

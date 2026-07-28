@@ -2,7 +2,7 @@ import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
-import { buildPrompt } from '../prompts/promptBuilder.js';
+import { buildPrompt, type BuildPromptResult } from '../prompts/promptBuilder.js';
 import * as expressionService from './expressionService.js';
 import * as knowledgeService from './knowledgeService.js';
 import {
@@ -54,6 +54,14 @@ import {
   generateTextStreamWithPenaltyRetry,
   generateWithAdapter,
 } from './generationAdapter.js';
+import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
+import {
+  checkPromptTokenBudget,
+  NOVEL_TOTAL_PROMPT_MAX_CHARS,
+  tokensToReducibleChars,
+} from '../prompts/promptBudget.js';
+import { estimateMaxOutputTokens } from '../utils/outputLength.js';
+import type { PromptBudgetReport } from '../../shared/types/generation.js';
 import {
   buildReaderContextUsage,
   buildStoryStateRefreshStatus,
@@ -99,6 +107,8 @@ const SUMMARY_CHUNK_CHARS = 20_000;
 export interface GenerateOptions {
   wish: string;
   mode: 'continue' | 'regenerate' | 'variate';
+  // NOTE: null / 未指定は「自動」。旧クライアントの request には無いので optional。
+  viewpointCharacterId?: string | null;
 }
 
 export interface GenerateStreamOptions extends GenerateOptions {
@@ -200,7 +210,7 @@ async function generateSceneUnlocked(
     rewriteTargetGenerationId
   );
 
-  const { systemInstructions, userPrompt } = await buildPrompt({
+  const built = await buildPrompt({
     project,
     state,
     wish: options.wish,
@@ -213,7 +223,12 @@ async function generateSceneUnlocked(
     knowledgeTexts,
     mode: options.mode,
     styleProfile,
+    viewpointCharacterId: options.viewpointCharacterId ?? null,
   });
+
+  const fitted = await fitPromptToTokenBudget({ project, built });
+  const { systemInstructions, userPrompt } = fitted.built;
+  const promptBudgetReport = fitted.report;
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
 
@@ -276,6 +291,7 @@ async function generateSceneUnlocked(
       previousContextText: 'Prompt saved separately. See previousContextFilePath.',
       previousContextFilePath,
       previousContextChars: userPrompt.length,
+      viewpointCharacterId: options.viewpointCharacterId ?? null,
     },
     responseText: result.text,
     usedPresets: project.activePresetIds,
@@ -291,6 +307,7 @@ async function generateSceneUnlocked(
     bannedExpressions,
     finishReason: result.finishReason,
     ...(styleProfile ? { styleProfile } : {}),
+    promptBudgetReport,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -399,7 +416,7 @@ async function generateSceneStreamUnlocked(
     rewriteTargetGenerationId
   );
 
-  const { systemInstructions, userPrompt } = await buildPrompt({
+  const built = await buildPrompt({
     project,
     state,
     wish: options.wish,
@@ -412,7 +429,12 @@ async function generateSceneStreamUnlocked(
     knowledgeTexts,
     mode: options.mode,
     styleProfile,
+    viewpointCharacterId: options.viewpointCharacterId ?? null,
   });
+
+  const fitted = await fitPromptToTokenBudget({ project, built });
+  const { systemInstructions, userPrompt } = fitted.built;
+  const promptBudgetReport = fitted.report;
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
   const textParts: string[] = [];
@@ -497,6 +519,7 @@ async function generateSceneStreamUnlocked(
       previousContextText: 'Prompt saved separately. See previousContextFilePath.',
       previousContextFilePath,
       previousContextChars: userPrompt.length,
+      viewpointCharacterId: options.viewpointCharacterId ?? null,
     },
     responseText: streamedText,
     usedPresets: project.activePresetIds,
@@ -512,6 +535,7 @@ async function generateSceneStreamUnlocked(
     bannedExpressions,
     finishReason,
     ...(styleProfile ? { styleProfile } : {}),
+    promptBudgetReport,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -541,6 +565,88 @@ async function generateSceneStreamUnlocked(
   await projectService.updateProject(projectId, { updatedAt: nowIso() });
 
   return { record, maintenanceRunId: maintenanceReservation.runId };
+}
+
+// NOTE: provider 実測を使う経路の計測上限（設計書 3.1 step 5）。
+// 初回、一括縮小後の再計測、保守的縮小後の最終計測の3回で打ち切り、
+// 外部APIを無制限に叩かない。
+const NOVEL_TOKEN_MEASUREMENTS_MAX = 3;
+
+/**
+ * 本文生成の直前に、組み立て済み prompt がモデルのトークン予算へ収まるか検証し、
+ * 超過していれば任意節を縮小して組み立て直す（設計書 3.1 step 5〜7）。
+ *
+ * 文字数上限（system 24,000 / user 56,000 / 合計 80,000）は promptBuilder 側で
+ * 保証済みだが、日本語では 80,000 字が 128k モデルでも収まらない。ここで縮小せず
+ * 即エラーにすると「参考資料を1つ減らせば通る入力」まで生成不能になる。
+ */
+async function fitPromptToTokenBudget(input: {
+  project: Project;
+  built: BuildPromptResult;
+}): Promise<{ built: BuildPromptResult; report: PromptBudgetReport }> {
+  const limits = await resolveModelTokenLimits(
+    input.project.activeModelProvider,
+    input.project.activeModelName
+  );
+  const estimatedMaxOutputTokens = estimateMaxOutputTokens(
+    input.project.outputLength,
+    Math.min(limits.contextWindowTokens, limits.outputTokenLimit ?? limits.contextWindowTokens)
+  );
+
+  let built = input.built;
+  let lastCheck: ReturnType<typeof checkPromptTokenBudget> | null = null;
+
+  for (let attempt = 0; attempt < NOVEL_TOKEN_MEASUREMENTS_MAX; attempt += 1) {
+    const totalChars = built.systemInstructions.length + built.userPrompt.length;
+    if (totalChars > NOVEL_TOTAL_PROMPT_MAX_CHARS) {
+      throw new GenerateError(
+        `プロンプトが上限を${totalChars - NOVEL_TOTAL_PROMPT_MAX_CHARS}字超えています。参考資料や設定を減らしてください。`,
+        'prompt_budget_exceeded',
+        false
+      );
+    }
+
+    const providerCount = await countPromptTokens(
+      input.project.activeModelProvider,
+      input.project.activeModelName,
+      built.systemInstructions,
+      built.userPrompt
+    );
+    const check = checkPromptTokenBudget({
+      systemInstructions: built.systemInstructions,
+      userPrompt: built.userPrompt,
+      contextWindowTokens: limits.contextWindowTokens,
+      ...(limits.inputTokenLimit === undefined ? {} : { inputTokenLimit: limits.inputTokenLimit }),
+      estimatedMaxOutputTokens,
+      providerTokens: providerCount?.tokens ?? null,
+    });
+    lastCheck = check;
+
+    if (check.ok) {
+      return {
+        built,
+        report: {
+          ...built.budgetReport,
+          assembledChars: totalChars,
+          tokenCheck: check.tokenCheck,
+        },
+      };
+    }
+
+    // 超過量から削るべき文字数を出し、user 予算を下げて組み立て直す。
+    // 必須節の合計より下へは意味が無いので、そこで打ち切って型付きエラーにする。
+    const reducible = tokensToReducibleChars(check.overByTokens, built.userPrompt);
+    const nextBudget = built.budgetReport.maxChars - reducible;
+    if (nextBudget <= built.requiredUserChars) break;
+    built = built.rebuildWithUserBudget(nextBudget);
+  }
+
+  const over = lastCheck?.overByTokens ?? 0;
+  throw new GenerateError(
+    `プロンプトが選択中のモデルの文脈上限を約${over}トークン超えています。参考資料や設定を減らすか、上限の大きいモデルへ切り替えてください。`,
+    'prompt_budget_exceeded',
+    false
+  );
 }
 
 async function reservePostGenerationMaintenanceForDraftUnlocked(input: {

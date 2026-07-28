@@ -391,7 +391,7 @@ export const api = {
       { method: 'POST' }
     ),
 
-  generate: (id: string, body: { wish: string; mode: 'continue' | 'regenerate' | 'variate' }) =>
+  generate: (id: string, body: GenerateRequestBody) =>
     request<GenerationRecord>(`/projects/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   generateStream: (
     id: string,
@@ -488,6 +488,11 @@ export interface RoleplayStreamHandlers {
     retryable?: boolean;
     revision?: number;
   }) => void;
+  // NOTE: 保存前の表現調整に入ったことの通知（設計書 6.3）。optional なので、
+  // このイベントを知らない呼び出し側は素通りして done まで到達する。
+  onPostprocessing?: () => void;
+  // NOTE: 保存済み本文の先行通知。最終正は onDone の session と再接続後の GET。
+  onReplace?: (text: string) => void;
 }
 
 async function roleplayStream(
@@ -555,6 +560,11 @@ async function roleplayStream(
     if (event === 'chunk') {
       const payload = parseStreamJson<{ text?: string }>(data);
       if (payload.text) handlers.onChunk(payload.text);
+    } else if (event === 'postprocessing') {
+      handlers.onPostprocessing?.();
+    } else if (event === 'replace') {
+      const payload = parseStreamJson<{ text?: string }>(data);
+      if (typeof payload.text === 'string') handlers.onReplace?.(payload.text);
     } else if (event === 'done') {
       const payload = parseStreamJson<{ session?: RoleplaySessionView }>(data);
       if (!isRecord(payload?.session)) {

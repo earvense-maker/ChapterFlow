@@ -13,14 +13,19 @@ const router = Router();
 router.post('/projects/:id/generate', async (req, res, next) => {
   try {
     const body = parseGenerateRequest(req.body);
+    await assertViewpointCharacterExists(req.params.id, body.viewpointCharacterId);
     const record = await generationService.generateScene(req.params.id, {
       wish: body.wish,
       mode: body.mode,
+      viewpointCharacterId: body.viewpointCharacterId ?? null,
     });
     res.json(record);
   } catch (err) {
     if (err instanceof GenerateRequestValidationError) {
       return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
+    if (err instanceof InvalidViewpointCharacterError) {
+      return res.status(400).json({ error: err.message, code: err.code, retryable: false });
     }
     if (err instanceof refineAutomationService.RefineAutomationError) {
       return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
@@ -56,9 +61,15 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
   // NOTE: SSE ヘッダー送信前に preflight する。ヘッダー送信後は HTTP ステータスを
   // 返せないため、通常はここで 409 を返す。ヘッダー送信後の狭い競合窓でサービス層が
   // 拒否した場合だけ、下の catch で同じ code の SSE error イベントへ縮退する。
+  // 視点人物の検証も、400 を返せるこの位置で行う。
   try {
+    await assertViewpointCharacterExists(req.params.id, body.viewpointCharacterId);
     await refineAutomationService.assertGenerationNotBlockedByMaintenance(req.params.id);
   } catch (err) {
+    if (err instanceof InvalidViewpointCharacterError) {
+      res.status(400).json({ error: err.message, code: err.code, retryable: false });
+      return;
+    }
     if (err instanceof refineAutomationService.RefineAutomationError) {
       res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
       return;
@@ -102,6 +113,7 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
       {
         wish: body.wish,
         mode: body.mode,
+        viewpointCharacterId: body.viewpointCharacterId ?? null,
         abortSignal: abortController.signal,
       },
       (text) => send('chunk', { text })
@@ -154,14 +166,19 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
 router.post('/projects/:id/regenerate', async (req, res, next) => {
   try {
     const body = parseGenerateRequest(req.body, 'regenerate');
+    await assertViewpointCharacterExists(req.params.id, body.viewpointCharacterId);
     const record = await generationService.generateScene(req.params.id, {
       wish: body.wish,
       mode: 'regenerate',
+      viewpointCharacterId: body.viewpointCharacterId ?? null,
     });
     res.json(record);
   } catch (err) {
     if (err instanceof GenerateRequestValidationError) {
       return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
+    if (err instanceof InvalidViewpointCharacterError) {
+      return res.status(400).json({ error: err.message, code: err.code, retryable: false });
     }
     if (err instanceof refineAutomationService.RefineAutomationError) {
       return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
@@ -180,14 +197,19 @@ router.post('/projects/:id/regenerate', async (req, res, next) => {
 router.post('/projects/:id/variate', async (req, res, next) => {
   try {
     const body = parseGenerateRequest(req.body, 'variate');
+    await assertViewpointCharacterExists(req.params.id, body.viewpointCharacterId);
     const record = await generationService.generateScene(req.params.id, {
       wish: body.wish,
       mode: 'variate',
+      viewpointCharacterId: body.viewpointCharacterId ?? null,
     });
     res.json(record);
   } catch (err) {
     if (err instanceof GenerateRequestValidationError) {
       return res.status(400).json({ error: err.message, code: 'invalid_generate_request' });
+    }
+    if (err instanceof InvalidViewpointCharacterError) {
+      return res.status(400).json({ error: err.message, code: err.code, retryable: false });
     }
     if (err instanceof refineAutomationService.RefineAutomationError) {
       return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
@@ -426,7 +448,7 @@ function parseGenerateRequest(
     throw new GenerateRequestValidationError('生成リクエストの形式が不正です。');
   }
 
-  const body = value as { wish?: unknown; mode?: unknown };
+  const body = value as { wish?: unknown; mode?: unknown; viewpointCharacterId?: unknown };
   const wish = body.wish === undefined ? '' : body.wish;
   if (typeof wish !== 'string') {
     throw new GenerateRequestValidationError('生成指示は文字列で入力してください。');
@@ -441,5 +463,37 @@ function parseGenerateRequest(
   if (mode !== 'continue' && mode !== 'regenerate' && mode !== 'variate') {
     throw new GenerateRequestValidationError('生成モードが不正です。');
   }
-  return { wish, mode };
+
+  // NOTE: 未指定・null はどちらも「自動」。旧クライアントはこのフィールドを送らない。
+  const rawViewpoint = body.viewpointCharacterId;
+  if (rawViewpoint !== undefined && rawViewpoint !== null && typeof rawViewpoint !== 'string') {
+    throw new GenerateRequestValidationError('視点人物の指定が不正です。');
+  }
+  const viewpointCharacterId =
+    typeof rawViewpoint === 'string' && rawViewpoint.trim() ? rawViewpoint.trim() : null;
+
+  return { wish, mode, viewpointCharacterId };
 }
+
+// NOTE: 人物検証専用APIは追加せず、生成 route が既存の readCharacters で確かめる
+// （設計書 6.4）。存在しないIDのまま生成すると視点指定が黙って無視されるため、
+// 400 で返して利用者に選び直させる。
+async function assertViewpointCharacterExists(
+  projectId: string,
+  viewpointCharacterId: string | null | undefined
+): Promise<void> {
+  if (!viewpointCharacterId) return;
+  const characters = await storage.readCharacters(projectId);
+  if (characters.some((character) => character.characterId === viewpointCharacterId)) return;
+  throw new InvalidViewpointCharacterError();
+}
+
+class InvalidViewpointCharacterError extends Error {
+  readonly code = 'invalid_viewpoint_character';
+  constructor() {
+    super('指定された視点人物がこの作品に存在しません。');
+    this.name = 'InvalidViewpointCharacterError';
+  }
+}
+
+export { InvalidViewpointCharacterError };

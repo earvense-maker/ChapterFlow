@@ -13,7 +13,14 @@ export default defineConfig({
     // 既定の5秒はワーカー並列時のWindowsで不足し、処理速度を検証していない
     // テスト（storyStateのrefresh待ちなど）が散発的にタイムアウトしていた。
     testTimeout: 20_000,
-    include: ['tests/unit/**/*.test.ts', 'tests/unit/**/*.test.tsx', 'tests/integration/**/*.test.ts'],
+    include: [
+      'tests/unit/**/*.test.ts',
+      'tests/unit/**/*.test.tsx',
+      'tests/integration/**/*.test.ts',
+      // NOTE: 公開Web版のテスト。CIでは npm run web:test で単独実行し、Electron版の
+      // ジョブと独立して成否が出るようにしている（設計書 4.1）。
+      'tests/web/**/*.test.ts',
+    ],
     exclude: ['node_modules', 'dist', 'tests/e2e/**'],
   },
   resolve: {

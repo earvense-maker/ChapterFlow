@@ -7,6 +7,8 @@ import type { GenerationRecord, ReaderState } from '../../src/shared/types';
 
 vi.mock('../../src/client/clientApi', () => ({
   api: {
+    // NOTE: 視点セレクト用の人物一覧。取得できなくても「自動」は選べる想定なので空で足りる。
+    getCharacters: vi.fn().mockResolvedValue([]),
     generate: vi.fn(),
     generateStream: vi.fn(),
     createExpression: vi.fn(),
@@ -83,6 +85,7 @@ describe('Reader interactions', () => {
       expect(generate).toHaveBeenCalledWith('proj-reader-interaction', {
         wish: '',
         mode: 'continue',
+        viewpointCharacterId: null,
       })
     );
   });
@@ -180,6 +183,7 @@ describe('Reader interactions', () => {
       expect(generate).toHaveBeenCalledWith('proj-reader-interaction', {
         wish: '',
         mode: 'continue',
+        viewpointCharacterId: null,
       })
     );
     expect(generate).toHaveBeenCalledTimes(1);
@@ -270,6 +274,7 @@ describe('Reader interactions', () => {
       expect(generate).toHaveBeenCalledWith('proj-reader-interaction', {
         wish: '雨音を強めたい',
         mode: 'regenerate',
+        viewpointCharacterId: null,
       })
     );
     await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(2));

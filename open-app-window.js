@@ -1,6 +1,11 @@
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import http from 'node:http';
+import https from 'node:https';
 import { pathToFileURL } from 'node:url';
+
+// 1回の生存確認がハングしたときに待つ上限。ポーリング間隔より長く、起動待ち全体より十分短く。
+const PROBE_TIMEOUT_MS = 2_000;
 
 export async function openAppWindow() {
   // NOTE: 既定URLは vite.config.ts と同じ VITE_DEV_PORT を参照する。5173固定だと、
@@ -65,16 +70,44 @@ export function launchDetachedBrowser(
   child.unref();
 }
 
+// NOTE: グローバルの fetch(undici) はコネクションプールをプロセス終了まで保持する。その解放が
+// detached で起動したブラウザのハンドルと競合し、Node 24 / Windows では libuv のアサーションで
+// プロセスが自爆する(2026-07-27、0xC0000409 で dev 全体が巻き添えで停止)。プールを持たない
+// node:http を agent:false で使い、1回ごとにソケットを閉じ切ることで、終了時に残る handle を無くす。
+export function probeOnce(targetUrl, timeoutMs = PROBE_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    let target;
+    try {
+      target = new URL(targetUrl);
+    } catch {
+      settle(false);
+      return;
+    }
+
+    const client = target.protocol === 'https:' ? https : http;
+    const req = client.request(target, { method: 'HEAD', agent: false, timeout: timeoutMs }, (res) => {
+      // HEAD に本体は無いが、'end' を発火させてソケットを確実に解放するため読み捨てる。
+      res.resume();
+      settle(typeof res.statusCode === 'number' && res.statusCode < 500);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => settle(false));
+    req.end();
+  });
+}
+
 // NOTE: 5xx は「まだ準備できていない」扱い。Vite の proxy は API に繋がらない間 5xx を
 // 返すので、これで API 起動待ちを表現できる。401/404 等は到達している証拠なので ready 扱い。
 async function waitForResponse(targetUrl, deadline) {
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch(targetUrl, { method: 'HEAD' });
-      if (res.status < 500) return true;
-    } catch {
-      // サーバー起動待ち
-    }
+    if (await probeOnce(targetUrl)) return true;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return false;

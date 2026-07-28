@@ -24,14 +24,31 @@ import {
   ModelClientError,
 } from './modelGenerationService.js';
 import {
-  buildRoleplaySystemInstructions,
+  buildRoleplaySystemInstructionsWithReport,
   buildRoleplayUserPrompt,
+  measureRoleplayVariablePrompt,
   ROLEPLAY_RECENT_MESSAGES,
   ROLEPLAY_RECENT_MESSAGES_MAX_CHARS,
   ROLEPLAY_STYLE_HEADING,
   ROLEPLAY_SUMMARY_MAX_CHARS,
+  ROLEPLAY_SYSTEM_MAX_CHARS,
+  ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS,
   ROLEPLAY_WORLD_MAX_CHARS,
 } from './roleplayPromptBuilder.js';
+import {
+  checkPromptTokenBudget,
+  tokensToReducibleChars,
+} from '../prompts/promptBudget.js';
+import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
+import { estimateMaxOutputTokens } from '../utils/outputLength.js';
+import { findNgMatches } from '../../shared/ngDetection.js';
+import type { PromptBudgetReport } from '../../shared/types/generation.js';
+import { rewriteAllNgOccurrences } from './ngTextRewriteService.js';
+import { readAppSettings } from './appSettingsService.js';
+import {
+  DEFAULT_NG_AUTO_REWRITE_SETTINGS,
+  normalizeNgAutoRewriteSettings,
+} from '../../shared/defaults.js';
 import {
   normalizeActivePresetIds,
   ROLEPLAY_PRESET_CATEGORY_ORDER,
@@ -48,7 +65,10 @@ import type {
   ActivePresets,
   Character,
   FinishReason,
+  NgAutoRewriteSettings,
+  NgExpression,
   PresetsFile,
+  RoleplayGenerationWarning,
   Project,
   RoleplayAppliedSettings,
   RoleplayContextSnapshot,
@@ -339,10 +359,12 @@ async function buildContextSnapshot(input: {
   );
   // NOTE: 小説向けの未編集デフォルト本文はロールプレイ固定規則と競合するため除外する。
   // 利用者が編集した基本文だけを会話へ引き継ぐ。
+  //
+  // 「現在版との完全一致」だけで判定していたため、旧版のまま保存されたプロジェクトでは
+  // 未編集の小説プロンプトがそのまま会話へ流れていた（P0）。既知の全旧版を hash 照合する
+  // identifyBaseInstruction 経由の baseSource で判定する。
   const projectSystemPrompt =
-    resolution.baseSystemPrompt === resolution.defaultBaseSystemPrompt
-      ? ''
-      : resolution.baseSystemPrompt;
+    resolution.baseSource === 'custom' ? resolution.baseSystemPrompt : '';
   // NOTE: 小説用カテゴリ（語り・章の幕引きなど）は地の文と章立てを前提にしており、
   // 会話に流すと応答形式と衝突する。ロールプレイ用カテゴリだけをレンダリングする。
   const stylePresetPrompt = await renderPresets(
@@ -351,7 +373,7 @@ async function buildContextSnapshot(input: {
     ROLEPLAY_STYLE_HEADING
   );
   const appliedSettings = await buildAppliedSettings(activePresetIds, capturedAt);
-  return {
+  const snapshot: RoleplayContextSnapshot = {
     character: { ...input.character },
     otherCharacters: input.otherCharacters.map((c) => ({
       characterId: c.characterId,
@@ -373,6 +395,20 @@ async function buildContextSnapshot(input: {
     customSystemPrompt: resolution.customSystemPrompt,
     capturedAt,
   };
+
+  // NOTE: セッション作成時点の system prompt 縮小結果を設定詳細から確認できるようにする
+  // （設計書 6.1 / 6.3）。ここで組み立てを1度だけ余分に行うが、以後の各turnは
+  // この snapshot から同じ結果を再現するので、保存しておく価値がある。
+  const systemReport = buildRoleplaySystemInstructionsWithReport({ snapshot });
+  snapshot.appliedSettings = {
+    ...appliedSettings,
+    promptBudgetReport: {
+      maxChars: ROLEPLAY_SYSTEM_MAX_CHARS,
+      assembledChars: systemReport.systemInstructions.length,
+      entries: systemReport.entries,
+    },
+  };
+  return snapshot;
 }
 
 // NOTE: rpResponseStyle はロールプレイ規則へ直接埋め込むため、プリセット本文として
@@ -687,6 +723,11 @@ export async function archiveRoleplaySession(
 
 export type RoleplayStreamEvent =
   | { type: 'chunk'; text: string }
+  // NOTE: 保存前の後処理中であることをUIへ伝える。ここで待たせるのは NG 検出と
+  // 局所リライトのぶんだけで、検出ゼロなら即 done へ進む（設計書 6.3）。
+  | { type: 'postprocessing' }
+  // NOTE: 保存済み本文の先行通知。最終正は done.session と再接続後の GET。
+  | { type: 'replace'; text: string }
   | { type: 'done'; session: RoleplaySessionView }
   | {
       type: 'error';
@@ -771,13 +812,38 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
   } = ticket;
 
   try {
+    // NOTE: NG語は Phase 2 の予算判定にも要る（Phase A 期間は【表現上の注意】が
+    // 可変プロンプトに載るため）。要約より前に解決しておく。
+    const project = await storage.readProject(input.projectId);
+    const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
+      input.projectId,
+      project
+    ).catch(() => undefined);
+    const caps = resolveOutputCaps(project?.roleplayOutputChars);
+    // NOTE: 検出には ID が要るので、文字列配列ではなく登録オブジェクトごと読む。
+    const ngExpressions = await expressionService
+      .resolveActiveNgExpressions(input.projectId)
+      .catch((err) => {
+        console.warn('Roleplay: failed to resolve banned expressions', {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return [] as NgExpression[];
+      });
+    const bannedExpressions = ngExpressions.map((expression) => expression.text);
+
     // Phase 2: 要約（必要な場合のみ）。mutex 外・in-flight 保持中に実施。
     let effectiveSession: RoleplaySession;
+    let didSyncSummary: boolean;
     try {
-      effectiveSession = await runSummaryIfNeeded({
+      const summarized = await runSummaryIfNeeded({
         session: postUserSession,
         excludeCharacterMessageId: previousCharacterMessageId,
+        bannedExpressions,
       });
+      effectiveSession = summarized.session;
+      didSyncSummary = summarized.didSyncSummary;
     } catch (err) {
       if (err instanceof RoleplayServiceError) {
         yield {
@@ -794,41 +860,30 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
       throw err;
     }
 
-    // Phase 3: 最新の project 設定と NG を読み、プロンプトを組み立てる。
-    const project = await storage.readProject(input.projectId);
-    const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
-      input.projectId,
-      project
-    ).catch(() => undefined);
-    const caps = resolveOutputCaps(project?.roleplayOutputChars);
-    const bannedExpressions = await expressionService
-      .resolveBannedExpressions(input.projectId)
-      .catch((err) => {
-        console.warn('Roleplay: failed to resolve banned expressions', {
-          projectId: input.projectId,
-          sessionId: input.sessionId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return [] as string[];
-      });
-
-    const promptMessages = selectPromptMessagesForGeneration(effectiveSession, {
-      excludeCharacterMessageId: previousCharacterMessageId,
-    });
-    const prompt = {
-      systemInstructions: buildRoleplaySystemInstructions({
-        snapshot: effectiveSession.contextSnapshot,
+    // Phase 3: プロンプトを組み立て、文字数とトークンの両方で上限を検証する。
+    let prompt: Awaited<ReturnType<typeof buildTurnPrompt>>;
+    try {
+      prompt = await buildTurnPrompt({
+        session: effectiveSession,
+        excludeCharacterMessageId: previousCharacterMessageId,
         outputLength: caps.outputLength,
-      }),
-      userPrompt: buildRoleplayUserPrompt({
-        snapshot: effectiveSession.contextSnapshot,
-        scenario: effectiveSession.scenario,
-        conversationSummary: effectiveSession.conversationSummary,
-        recentMessages: promptMessages,
-        relationshipState: effectiveSession.relationshipState,
         bannedExpressions,
-      }),
-    };
+      });
+    } catch (err) {
+      if (err instanceof RoleplayServiceError) {
+        yield {
+          type: 'error',
+          error: {
+            error: err.message,
+            code: err.code,
+            retryable: err.retryable,
+            revision: err.revision,
+          },
+        };
+        return;
+      }
+      throw err;
+    }
 
     const abortController = new AbortController();
     const forward = () => abortController.abort();
@@ -965,6 +1020,42 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
       return;
     }
 
+    // Phase 3.5: 保存前のNG検出と局所リライト（設計書 5.5）。
+    // プロンプトへ登録NG語を列挙する代わりに、出力後へ決定的な検出を置いた。
+    // 語をモデルへ見せると「〇〇ではなく」の否定形で本文へ漏れるため。
+    let postprocessed = finalText;
+    let warnings: RoleplayGenerationWarning[] = [];
+    // 検出は純関数なので先に走らせる。ヒット0件なら追加のモデル呼び出しも
+    // postprocessing 表示も発生させない（通常ターンに遅延を足さない）。
+    if (findNgMatches(finalText, ngExpressions).length > 0) {
+      yield { type: 'postprocessing' };
+      const result = await runNgPostprocess({
+        session: effectiveSession,
+        text: finalText,
+        expressions: ngExpressions,
+        outputLength: caps.outputLength,
+        abortSignal: input.abortSignal ?? null,
+      });
+      postprocessed = result.text;
+      warnings = result.warnings;
+    }
+
+    // NOTE: 後処理は追加のモデル呼び出しを挟むので、その間に停止されうる。
+    // ここで確認しないと、停止したのに応答が保存されて会話が進む（レビュー指摘 P2-5）。
+    // 保存前に抜けるので、末尾の user 発言から再生成できる状態が残る。
+    if (input.abortSignal?.aborted) {
+      yield {
+        type: 'error',
+        error: {
+          error: '応答生成が中断されました。',
+          code: 'aborted',
+          retryable: false,
+          revision: expectedRevisionForCommit,
+        },
+      };
+      return;
+    }
+
     // Phase 4: commitTurn で mutex 内 revision 再検査 + 保存。
     try {
       const committed = await commitTurn({
@@ -972,10 +1063,17 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
         sessionId: input.sessionId,
         workingSession: effectiveSession,
         expectedRevisionForCommit,
-        characterText: finalText,
+        characterText: postprocessed,
         kind: input.kind,
         previousCharacterMessageId,
+        warnings,
+        budgetReport: prompt.budgetReport,
       });
+      // NOTE: 保存に成功してから replace を出す。先に出すと、保存が競合で失敗したときに
+      // 画面だけ書き換わって保存本文と食い違う（設計書 5.5 の原子性）。
+      if (postprocessed !== finalText) {
+        yield { type: 'replace', text: postprocessed };
+      }
       // NOTE: 生成中も作品設定は編集できる。開始前の fingerprint を使うと、完了直後だけ
       // 設定差分バッジが消えるため、done view の構築直前にもう一度比較元を読む。
       const latestSettingsFingerprint = await resolveCurrentSettingsFingerprint(
@@ -986,7 +1084,11 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
         session: toRoleplaySessionView(committed, latestSettingsFingerprint),
       };
       // NOTE: 応答保存後に非同期要約を走らせる（設計書 3.5）。エラーは無視する。
-      startBackgroundSummary(input.projectId, input.sessionId);
+      // ただし同じ turn で同期要約を実施済みなら起動しない。連続で要約が走ると
+      // 同一 turn 中に2回モデルを呼び、要約が要約を上書きする（設計書 5.2）。
+      if (!didSyncSummary) {
+        startBackgroundSummary(input.projectId, input.sessionId);
+      }
     } catch (err) {
       if (err instanceof RoleplayServiceError) {
         yield {
@@ -1196,6 +1298,8 @@ async function commitTurn(input: {
   characterText: string;
   kind: 'send' | 'regenerate';
   previousCharacterMessageId: string | null;
+  warnings?: RoleplayGenerationWarning[];
+  budgetReport?: PromptBudgetReport;
 }): Promise<RoleplaySession> {
   return await withSessionLock(input.sessionId, async () => {
     const latest = await loadRoleplaySessionOrThrow(input.projectId, input.sessionId);
@@ -1224,6 +1328,12 @@ async function commitTurn(input: {
       role: 'character',
       content: input.characterText,
       createdAt: now,
+      // NOTE: warning が無いターンでフィールドごと省くのは、既存 session の
+      // JSON を無駄に膨らませないため。読み側は欠損を空配列として扱う。
+      ...(input.warnings && input.warnings.length > 0
+        ? { generationWarnings: input.warnings }
+        : {}),
+      ...(input.budgetReport ? { promptBudgetReport: input.budgetReport } : {}),
     };
     let nextMessages: RoleplayMessage[];
     if (input.kind === 'regenerate' && input.previousCharacterMessageId) {
@@ -1300,6 +1410,234 @@ function selectPromptMessagesForGeneration(
   return afterCursor.slice(-ROLEPLAY_SUMMARY_THRESHOLD);
 }
 
+// ===== NG後処理（設計書 5.5） =====
+
+/**
+ * 応答本文のNG表現を、アプリ設定の上限まで局所リライトし、結果を再検証する。
+ *
+ * 自動書き換えが無効・上限超過・収束失敗のいずれでも本文は失わず、warning を残して
+ * 保存する。ここで応答ごと捨てると、利用者は「NG語が1つ入っていた」だけで
+ * 会話のターンを丸ごと失うことになる。
+ */
+async function runNgPostprocess(input: {
+  session: RoleplaySession;
+  text: string;
+  expressions: NgExpression[];
+  /** 通常生成と同じ目安字数。既定値を使うと本文とリライトで長さ指示が食い違う。 */
+  outputLength: number;
+  abortSignal: AbortSignal | null;
+}): Promise<{ text: string; warnings: RoleplayGenerationWarning[] }> {
+  const settings = await readNgAutoRewriteSettings();
+  const detectedIds = Array.from(
+    new Set(findNgMatches(input.text, input.expressions).map((match) => match.expressionId))
+  );
+
+  if (!settings.enabled || settings.maxRewritesPerGeneration <= 0) {
+    return {
+      text: input.text,
+      warnings: [{ code: 'ng_expression_detected', expressionIds: detectedIds }],
+    };
+  }
+
+  const systemInstructions = buildRoleplaySystemInstructionsWithReport({
+    snapshot: input.session.contextSnapshot,
+    outputLength: input.outputLength,
+  }).systemInstructions;
+
+  try {
+    const result = await rewriteAllNgOccurrences({
+      provider: input.session.model.provider,
+      modelName: input.session.model.modelName,
+      systemInstructions,
+      text: input.text,
+      expressions: input.expressions,
+      maxRewrites: settings.maxRewritesPerGeneration,
+      abortSignal: input.abortSignal,
+    });
+
+    if (result.unresolvedExpressionIds.length === 0) {
+      return { text: result.text, warnings: [] };
+    }
+    return {
+      text: result.text,
+      warnings: [
+        { code: 'ng_rewrite_failed', expressionIds: result.unresolvedExpressionIds },
+      ],
+    };
+  } catch (err) {
+    // NOTE: 書き換えの失敗で応答を捨てない。元の本文＋warning で保存する。
+    console.warn('Roleplay: NG auto-rewrite failed; keeping the original response', {
+      sessionId: input.session.sessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      text: input.text,
+      warnings: [{ code: 'ng_rewrite_failed', expressionIds: detectedIds }],
+    };
+  }
+}
+
+async function readNgAutoRewriteSettings(): Promise<NgAutoRewriteSettings> {
+  try {
+    const settings = await readAppSettings();
+    return normalizeNgAutoRewriteSettings(settings.ngAutoRewrite);
+  } catch (err) {
+    console.warn('Roleplay: failed to read NG auto-rewrite settings; using defaults', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return DEFAULT_NG_AUTO_REWRITE_SETTINGS;
+  }
+}
+
+// ===== プロンプト組み立てと二次トークン確認 =====
+
+/** provider 実測を使う場合の最大計測回数（設計書 3.1）。無制限に外部APIを呼ばない。 */
+const ROLEPLAY_TOKEN_MEASUREMENTS_MAX = 3;
+
+/**
+ * 文字数上限を満たしたうえで、system と結合した状態で選択モデルのトークン上限も検証する
+ * （設計書 5.2 末尾）。ロールプレイを 128k 級モデル限定にせず、32k/64k のモデルでも
+ * 「収まらないなら stream を開始しない」を保証する。
+ */
+async function buildTurnPrompt(input: {
+  session: RoleplaySession;
+  excludeCharacterMessageId: string | null;
+  outputLength: number;
+  bannedExpressions: string[];
+}): Promise<{
+  systemInstructions: string;
+  userPrompt: string;
+  budgetReport: PromptBudgetReport;
+}> {
+  const { session } = input;
+  const system = buildRoleplaySystemInstructionsWithReport({
+    snapshot: session.contextSnapshot,
+    outputLength: input.outputLength,
+  });
+  if (system.overflowByChars > 0) {
+    throw new RoleplayServiceError(
+      `固定規則と対象キャラクターの最低情報だけでシステム上限を${system.overflowByChars}字超えています。キャラクター設定を短くしてください。`,
+      'roleplay_system_prompt_too_large',
+      false,
+      400,
+      session.revision
+    );
+  }
+
+  const allMessages = selectPromptMessagesForGeneration(session, {
+    excludeCharacterMessageId: input.excludeCharacterMessageId,
+  });
+
+  const limits = await resolveModelTokenLimits(session.model.provider, session.model.modelName);
+  const estimatedMaxOutputTokens = estimateMaxOutputTokens(
+    input.outputLength,
+    Math.min(limits.contextWindowTokens, limits.outputTokenLimit ?? limits.contextWindowTokens)
+  );
+
+  // NOTE: 縮小の回数は「進捗があるか」で決める。固定回数（3回）で打ち切ると、
+  // 短い発言が4件以上並ぶだけで、まだ落とせるのに roleplay_context_budget_exceeded に
+  // なる（レビュー指摘 P1-3）。外部APIの呼びすぎは provider 実測の回数だけで抑える。
+  let messages = allMessages;
+  let providerMeasurements = 0;
+  for (;;) {
+    const built = buildRoleplayUserPrompt({
+      snapshot: session.contextSnapshot,
+      scenario: session.scenario,
+      conversationSummary: session.conversationSummary,
+      recentMessages: messages,
+      relationshipState: session.relationshipState,
+      bannedExpressions: input.bannedExpressions,
+    });
+    if (!built.ok) {
+      // 同期要約は Phase 2 で使い切っている。ここでの超過は明示エラー。
+      throw new RoleplayServiceError(
+        `会話プロンプトが上限を${built.overByChars}字超えています。長い発言や舞台設定を短くしてから再送信してください。`,
+        'roleplay_prompt_budget_exceeded',
+        true,
+        503,
+        session.revision
+      );
+    }
+
+    // provider 実測は上限回数まで。以降は保守的推定で判定を続ける
+    // （推定は必ず安全側なので、実測を諦めても過大に通すことはない）。
+    const providerTokens =
+      providerMeasurements < ROLEPLAY_TOKEN_MEASUREMENTS_MAX
+        ? await countPromptTokens(
+            session.model.provider,
+            session.model.modelName,
+            system.systemInstructions,
+            built.prompt
+          )
+        : null;
+    if (providerTokens) providerMeasurements += 1;
+    const check = checkPromptTokenBudget({
+      systemInstructions: system.systemInstructions,
+      userPrompt: built.prompt,
+      contextWindowTokens: limits.contextWindowTokens,
+      ...(limits.inputTokenLimit === undefined
+        ? {}
+        : { inputTokenLimit: limits.inputTokenLimit }),
+      estimatedMaxOutputTokens,
+      providerTokens: providerTokens?.tokens ?? null,
+    });
+    if (check.ok) {
+      return {
+        systemInstructions: system.systemInstructions,
+        userPrompt: built.prompt,
+        budgetReport: {
+          maxChars: ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS,
+          assembledChars: system.systemInstructions.length + built.prompt.length,
+          tokenCheck: check.tokenCheck,
+          entries: [
+            ...system.entries,
+            ...built.entries,
+            {
+              sectionId: 'roleplay.recentMessages',
+              originalChars: allMessages.length,
+              includedChars: messages.length,
+              action: messages.length === allMessages.length ? 'full' : 'truncated',
+            },
+          ],
+        },
+      };
+    }
+
+    // 最新1件（今回のユーザー発言）まで削っても収まらないなら、これ以上縮められない。
+    if (messages.length <= 1) break;
+
+    const reducible = tokensToReducibleChars(check.overByTokens, built.prompt);
+    const next = dropOldestMessagesByChars(messages, reducible);
+    // 進捗が無い（1件も減らない）なら無限ループになるので打ち切る。
+    if (next.length >= messages.length) break;
+    messages = next;
+  }
+
+  throw new RoleplayServiceError(
+    'この会話は選択中のモデルの文脈上限に収まりません。より上限の大きいモデルへ切り替えるか、キャラクター設定・舞台設定を短くしてください。',
+    'roleplay_context_budget_exceeded',
+    false,
+    400,
+    session.revision
+  );
+}
+
+// NOTE: 少なくとも最新1件（今回のユーザー発言）は必ず残す。全部落とすと
+// 「何に応答するのか」が消えて、モデルが直前の文脈だけで無関係な返答を作る。
+function dropOldestMessagesByChars(
+  messages: RoleplayMessage[],
+  reducibleChars: number
+): RoleplayMessage[] {
+  let dropped = 0;
+  let index = 0;
+  while (index < messages.length - 1 && dropped < reducibleChars) {
+    dropped += messages[index].content.length;
+    index += 1;
+  }
+  // 1件も落とせない見積もりでも、必ず1件は落として前進させる（無限ループ防止）。
+  return messages.slice(Math.max(1, index));
+}
+
 // ===== 予算判定と同期要約 =====
 
 // NOTE: performSummary の結果を「不要」「成功」「失敗」で区別する（review §追加設計不整合）。
@@ -1320,15 +1658,41 @@ interface BudgetJudgement {
   overCount: boolean;
   overChars: boolean;
   totalChars: number;
+  /** 完成予定 user prompt の文字数（見出し・区切り・最終指示を含む）。 */
+  promptChars: number;
+  overPromptBudget: boolean;
 }
 
-function judgeBudget(afterCursor: RoleplayMessage[]): BudgetJudgement {
+/**
+ * 予算超過の判定は、会話履歴だけの合計ではなく「完成予定の user prompt 全体」で行う
+ * （設計書 5.2）。scenario・関係性・要約・全見出し・区切り・最終指示を含めないと、
+ * 履歴の合計は上限内なのに完成プロンプトが 24,000 字を超える組み合わせを見逃す。
+ */
+function judgeBudget(
+  session: RoleplaySession,
+  afterCursor: RoleplayMessage[],
+  bannedExpressions: string[]
+): BudgetJudgement {
   const totalChars = afterCursor.reduce((sum, m) => sum + m.content.length, 0);
+  const promptChars = measureRoleplayVariablePrompt({
+    snapshot: session.contextSnapshot,
+    scenario: session.scenario,
+    conversationSummary: session.conversationSummary,
+    recentMessages: afterCursor.slice(-ROLEPLAY_SUMMARY_THRESHOLD),
+    relationshipState: session.relationshipState,
+    bannedExpressions,
+  });
   return {
     overCount: afterCursor.length > ROLEPLAY_SUMMARY_THRESHOLD,
     overChars: totalChars > ROLEPLAY_RECENT_MESSAGES_MAX_CHARS,
     totalChars,
+    promptChars,
+    overPromptBudget: promptChars > ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS,
   };
+}
+
+function isOverBudget(judged: BudgetJudgement): boolean {
+  return judged.overCount || judged.overChars || judged.overPromptBudget;
 }
 
 // NOTE: runTurn の Phase 2。mutex 外で呼ぶ。要約が不要なら session をそのまま返す。
@@ -1337,15 +1701,18 @@ function judgeBudget(afterCursor: RoleplayMessage[]): BudgetJudgement {
 async function runSummaryIfNeeded(input: {
   session: RoleplaySession;
   excludeCharacterMessageId: string | null;
-}): Promise<RoleplaySession> {
+  bannedExpressions: string[];
+}): Promise<{ session: RoleplaySession; didSyncSummary: boolean }> {
   const { session } = input;
   const afterCursor = messagesAfterCursor(session, input.excludeCharacterMessageId);
-  const judged = judgeBudget(afterCursor);
+  const judged = judgeBudget(session, afterCursor, input.bannedExpressions);
 
-  if (!judged.overCount && !judged.overChars) {
-    return session;
+  if (!isOverBudget(judged)) {
+    return { session, didSyncSummary: false };
   }
 
+  // NOTE: 同期要約モデル呼び出しは 1 send あたり最大1回（設計書 5.2）。古いメッセージの
+  // fold と既存 summary の再圧縮を別呼び出しに分けず、performSummary へまとめて渡す。
   const outcome = await performSummary(session, afterCursor);
   if (outcome.kind === 'llm_failed' || outcome.kind === 'empty_result') {
     throw new RoleplayServiceError(
@@ -1387,31 +1754,48 @@ async function runSummaryIfNeeded(input: {
       404,
       session.revision
     );
-    const stillNeeded = judgeBudget(messagesAfterCursor(latest, input.excludeCharacterMessageId));
-    if (stillNeeded.overCount || stillNeeded.overChars) {
-      // 別経路の要約でも予算に収まらない → 明示エラー
-      throw new RoleplayServiceError(
-        '会話履歴が長すぎて要約できませんでした。時間をおいて再試行してください。',
-        'summary_failed',
-        true,
-        latest.revision
-      );
+    const stillNeeded = judgeBudget(
+      latest,
+      messagesAfterCursor(latest, input.excludeCharacterMessageId),
+      input.bannedExpressions
+    );
+    if (isOverBudget(stillNeeded)) {
+      throw budgetExceededError(stillNeeded, latest.revision);
     }
-    return latest;
+    return { session: latest, didSyncSummary: true };
   }
 
-  // 再判定: マージ後 latest でまだ予算内か（他タブが新規発言を積んでいる可能性）
-  const revalidate = judgeBudget(messagesAfterCursor(merged, input.excludeCharacterMessageId));
-  if (revalidate.overCount || revalidate.overChars) {
-    throw new RoleplayServiceError(
-      '会話履歴が長すぎて要約できませんでした。時間をおいて再試行してください。',
-      'summary_failed',
+  // 再判定: マージ後 latest でまだ予算内か（他タブが新規発言を積んでいる可能性）。
+  // ここで再度要約へ入らないのが「同じ send 内で要約ループを繰り返さない」契約。
+  const revalidate = judgeBudget(
+    merged,
+    messagesAfterCursor(merged, input.excludeCharacterMessageId),
+    input.bannedExpressions
+  );
+  if (isOverBudget(revalidate)) {
+    throw budgetExceededError(revalidate, merged.revision);
+  }
+  return { session: merged, didSyncSummary: true };
+}
+
+function budgetExceededError(judged: BudgetJudgement, revision: number): RoleplayServiceError {
+  if (judged.overPromptBudget) {
+    const over = judged.promptChars - ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS;
+    return new RoleplayServiceError(
+      `会話プロンプトが上限を${over}字超えています。長い発言や舞台設定を短くしてから再送信してください。`,
+      'roleplay_prompt_budget_exceeded',
       true,
       503,
-      merged.revision
+      revision
     );
   }
-  return merged;
+  return new RoleplayServiceError(
+    '会話履歴が長すぎて要約できませんでした。時間をおいて再試行してください。',
+    'summary_failed',
+    true,
+    503,
+    revision
+  );
 }
 
 // NOTE: mutex 内でカーソル一致を確認してからマージ保存する。stale なら null を返す。

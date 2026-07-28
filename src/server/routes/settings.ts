@@ -9,6 +9,7 @@ import {
 import * as projectService from '../services/projectService.js';
 import { withProjectWriteLock } from '../services/generationService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+import { identifyBaseInstruction } from '../prompts/baseInstruction.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import { loadStyleSamples } from '../prompts/styleSamplePresets.js';
 import { isValidCharacterInput } from '../../shared/characterSchema.js';
@@ -119,10 +120,17 @@ router.put('/projects/:id/presets', async (req, res, next) => {
         nextFile.customSystemPrompt,
         nextFile.baseSystemPrompt
       );
+      // NOTE: 保存経路でだけ source/version を更新する。単純な read では書き換えない
+      // （設計書 5.4）。読むたびにファイルが変わると、差分バックアップや同期が無駄に走る。
+      const identified = identifyBaseInstruction(baseSystemPrompt);
       const normalizedFile: PresetsFile = {
         ...nextFile,
         baseSystemPrompt,
         customSystemPrompt,
+        baseSystemPromptSource: identified.source,
+        ...(identified.version === undefined
+          ? {}
+          : { baseSystemPromptVersion: identified.version }),
       };
       await storage.writePresets(req.params.id, normalizedFile);
       // NOTE: プロンプト編集も作品の更新として一覧順へ反映する。プリセット選択値は

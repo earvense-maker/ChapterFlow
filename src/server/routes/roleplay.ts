@@ -157,6 +157,8 @@ async function runStreamRoute(
 
     const flushEvent = (event: roleplayService.RoleplayStreamEvent) => {
       if (event.type === 'chunk') send('chunk', { text: event.text });
+      else if (event.type === 'postprocessing') send('postprocessing', {});
+      else if (event.type === 'replace') send('replace', { text: event.text });
       else if (event.type === 'done') send('done', { session: event.session });
       else if (event.type === 'error') send('error', event.error);
     };

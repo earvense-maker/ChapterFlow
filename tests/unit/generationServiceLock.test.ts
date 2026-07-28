@@ -245,7 +245,13 @@ describe('generationService project write lock', () => {
     );
 
     await generationService.acceptGeneration(project.projectId, generationId);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // NOTE: 背景ジョブがモデル呼び出しへ到達するのを待つ。固定 setTimeout(0) では
+    // スイート全体を並列実行したときに到達前へ進み、resolveModel が未代入のまま落ちる。
+    // 待つべきは「時間」ではなく「モデルが呼ばれたこと」なので条件待ちにする。
+    await vi.waitUntil(() => typeof resolveModel === 'function', {
+      timeout: 5000,
+      interval: 5,
+    });
 
     let lockEntered = false;
     const lockPromise = withDataDirLock(async () => {
