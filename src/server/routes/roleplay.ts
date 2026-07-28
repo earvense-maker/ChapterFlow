@@ -31,6 +31,7 @@ router.post('/projects/:id/roleplay/sessions', async (req, res, next) => {
       projectId: req.params.id,
       characterId: body.characterId,
       scenario: body.scenario,
+      userPersona: body.userPersona,
     });
     res.status(201).json({ session: view });
   } catch (err) {

@@ -14,10 +14,12 @@ import { useConfirm } from './ConfirmDialog';
 import { useNotificationCenter } from './NotificationCenter';
 import type {
   Character,
+  CreateRoleplaySessionBody,
   GenerationNotificationSettings,
   Project,
   RoleplaySessionSummary,
   RoleplaySessionView,
+  RoleplayUserPersona,
 } from '@shared/types';
 
 interface Props {
@@ -27,10 +29,19 @@ interface Props {
   onOpenTechSettings: () => void;
 }
 
-interface StartConversationInput {
-  characterId: string;
-  scenario?: string;
-}
+type StartConversationInput = CreateRoleplaySessionBody;
+
+const PINNED_ROLEPLAY_SETTING_CATEGORIES = new Set([
+  'rpResponseStyle',
+  'rpDistance',
+  'rpMood',
+]);
+
+const ACTION_POLICY_LABELS: Record<RoleplayUserPersona['actionPolicy'], string> = {
+  strict: '補完しない',
+  conservative: '控えめに補完',
+  collaborative: '自然に補完',
+};
 
 export default function RoleplayWorkspace({
   projectId,
@@ -56,6 +67,7 @@ export default function RoleplayWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   // NOTE: キャラ発言の選択→NG登録。Reader.tsx と同型の UX で、
   // 1〜30 字だけをフローティングボタンの対象にする（本編と同じ制約）。
   const [selectedText, setSelectedText] = useState('');
@@ -83,6 +95,7 @@ export default function RoleplayWorkspace({
     setIsStreaming(false);
     setIsStopping(false);
     setIsRegenerate(false);
+    setIsCreatingSession(false);
     setStreamingText('');
     return () => {
       mountedRef.current = false;
@@ -155,6 +168,10 @@ export default function RoleplayWorkspace({
   }, [activeSession?.messages.length, streamingText]);
 
   const currentCharacterName = activeSession?.characterName ?? '';
+  const pinnedAppliedSettings =
+    activeSession?.appliedSettings?.presets.filter((preset) =>
+      PINNED_ROLEPLAY_SETTING_CATEGORIES.has(preset.category)
+    ) ?? [];
 
   const resetStreamState = useCallback(() => {
     setStreamingText('');
@@ -180,6 +197,7 @@ export default function RoleplayWorkspace({
       const expectedProjectId = projectId;
       setError(null);
       setShowNewModal(false);
+      setIsCreatingSession(true);
       try {
         const res = await api.createRoleplaySession(projectId, input);
         if (!mountedRef.current || projectIdRef.current !== expectedProjectId) return;
@@ -192,10 +210,29 @@ export default function RoleplayWorkspace({
         if (mountedRef.current && projectIdRef.current === expectedProjectId) {
           setError(err instanceof Error ? err.message : '会話を開始できませんでした');
         }
+      } finally {
+        if (mountedRef.current && projectIdRef.current === expectedProjectId) {
+          setIsCreatingSession(false);
+        }
       }
     },
     [projectId]
   );
+
+  const handleRestartWithCurrentSettings = useCallback(async () => {
+    if (!activeSession || isCreatingSession || isStreaming || isStopping) return;
+    await handleStartConversation({
+      characterId: activeSession.characterId,
+      scenario: activeSession.scenario,
+      userPersona: activeSession.userPersona,
+    });
+  }, [
+    activeSession,
+    handleStartConversation,
+    isCreatingSession,
+    isStopping,
+    isStreaming,
+  ]);
 
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
@@ -653,7 +690,9 @@ export default function RoleplayWorkspace({
           onClick={() => setShowNewModal(true)}
           className="primary"
           style={{ margin: '0 0.75rem 0.5rem' }}
-          disabled={characters.length === 0}
+          disabled={
+            characters.length === 0 || isCreatingSession || isStreaming || isStopping
+          }
         >
           + 新しい会話
         </button>
@@ -675,7 +714,12 @@ export default function RoleplayWorkspace({
                 }}
                 title={s.scenario || undefined}
               >
-                <div style={styles.sessionItemTitle}>{s.characterName}</div>
+                <div style={styles.sessionItemTitle}>
+                  <span>{s.characterName}</span>
+                  {s.settingsChanged && (
+                    <span style={styles.settingsChangedBadge}>設定変更あり</span>
+                  )}
+                </div>
                 {s.scenario && (
                   <div style={styles.sessionItemScenario}>{s.scenario}</div>
                 )}
@@ -713,14 +757,43 @@ export default function RoleplayWorkspace({
                 {activeSession.scenario && (
                   <div style={styles.scenario}>舞台: {activeSession.scenario}</div>
                 )}
+                {pinnedAppliedSettings.length > 0 && (
+                  <div style={styles.settingPills} aria-label="使用中の主な設定">
+                    {pinnedAppliedSettings.map((preset) => (
+                      <span
+                        key={preset.category}
+                        style={styles.settingPill}
+                        data-roleplay-setting-category={preset.category}
+                      >
+                        {preset.categoryLabel}: {preset.itemLabels.join('・') || '指定なし'}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <details style={styles.sessionDetails}>
+                  <summary>使用中の設定と関係性</summary>
+                  <div style={styles.sessionDetailsContent}>
+                    <SessionSettingsDetails session={activeSession} />
+                  </div>
+                </details>
               </div>
-              <button
-                onClick={handleArchive}
-                style={styles.linkButton}
-                disabled={isStreaming || isStopping}
-              >
-                アーカイブ
-              </button>
+              <div style={styles.headerActions}>
+                {activeSession.settingsChanged && (
+                  <button
+                    onClick={() => void handleRestartWithCurrentSettings()}
+                    disabled={isCreatingSession || isStreaming || isStopping}
+                  >
+                    {isCreatingSession ? '新しい会話を作成中…' : '現在の設定で新しい会話'}
+                  </button>
+                )}
+                <button
+                  onClick={handleArchive}
+                  style={styles.linkButton}
+                  disabled={isStreaming || isStopping || isCreatingSession}
+                >
+                  アーカイブ
+                </button>
+              </div>
             </div>
 
             <div
@@ -848,6 +921,7 @@ export default function RoleplayWorkspace({
           scenarioSeeds={project?.scenarioSeeds ?? []}
           onCancel={() => setShowNewModal(false)}
           onStart={handleStartConversation}
+          isCreating={isCreatingSession}
         />
       )}
 
@@ -908,6 +982,96 @@ interface NewSessionModalProps {
   scenarioSeeds: string[];
   onCancel: () => void;
   onStart: (input: StartConversationInput) => Promise<void>;
+  isCreating: boolean;
+}
+
+function SessionSettingsDetails({ session }: { session: RoleplaySessionView }) {
+  const persona = session.userPersona;
+  const relationship = session.relationshipState;
+  const presets = session.appliedSettings?.presets ?? [];
+
+  return (
+    <>
+      <section>
+        <h4 style={styles.detailHeading}>適用設定</h4>
+        {session.appliedSettings?.capturedAt && (
+          <p style={styles.detailEmpty}>記録日時: {session.appliedSettings.capturedAt}</p>
+        )}
+        {presets.length > 0 ? (
+          <ul style={styles.detailList}>
+            {presets.map((preset) => (
+              <li key={preset.category}>
+                <strong>{preset.categoryLabel}</strong>: {preset.itemLabels.join('・') || '指定なし'}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p style={styles.detailEmpty}>記録されている設定はありません。</p>
+        )}
+      </section>
+
+      <section>
+        <h4 style={styles.detailHeading}>ユーザーペルソナ</h4>
+        {persona ? (
+          <dl style={styles.detailGrid}>
+            {persona.name && <DetailItem label="名前" value={persona.name} />}
+            {persona.relationship && <DetailItem label="関係" value={persona.relationship} />}
+            {persona.preferredAddress && (
+              <DetailItem label="呼ばれ方" value={persona.preferredAddress} />
+            )}
+            {persona.knownFacts && <DetailItem label="既知情報" value={persona.knownFacts} />}
+            <DetailItem label="行動補完" value={ACTION_POLICY_LABELS[persona.actionPolicy]} />
+          </dl>
+        ) : (
+          <p style={styles.detailEmpty}>設定されていません。</p>
+        )}
+      </section>
+
+      <section>
+        <h4 style={styles.detailHeading}>関係性</h4>
+        {relationship ? (
+          <>
+            <dl style={styles.detailGrid}>
+              <DetailItem label="信頼" value={String(relationship.trust)} />
+              <DetailItem label="親密さ" value={String(relationship.intimacy)} />
+              <DetailItem label="緊張" value={String(relationship.tension)} />
+              {relationship.currentAddress && (
+                <DetailItem label="現在の呼び方" value={relationship.currentAddress} />
+              )}
+            </dl>
+            <DetailStringList label="約束" values={relationship.promises} />
+            <DetailStringList label="未解決の話題" values={relationship.unresolvedTopics} />
+          </>
+        ) : (
+          <p style={styles.detailEmpty}>まだ関係性の記録はありません。</p>
+        )}
+      </section>
+    </>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={styles.detailItem}>
+      <dt style={styles.detailTerm}>{label}</dt>
+      <dd style={styles.detailDescription}>{value}</dd>
+    </div>
+  );
+}
+
+function DetailStringList({ label, values }: { label: string; values: string[] }) {
+  return (
+    <div style={{ marginTop: '0.5rem' }}>
+      <strong>{label}</strong>
+      {values.length > 0 ? (
+        <ul style={styles.detailList}>
+          {values.map((value, index) => <li key={`${index}-${value}`}>{value}</li>)}
+        </ul>
+      ) : (
+        <span style={styles.detailEmpty}> なし</span>
+      )}
+    </div>
+  );
 }
 
 function NewSessionModal({
@@ -915,18 +1079,35 @@ function NewSessionModal({
   scenarioSeeds,
   onCancel,
   onStart,
+  isCreating,
 }: NewSessionModalProps) {
   const [characterId, setCharacterId] = useState<string>(
     characters[0]?.characterId ?? ''
   );
   const [scenario, setScenario] = useState('');
+  const [personaName, setPersonaName] = useState('');
+  const [relationship, setRelationship] = useState('');
+  const [preferredAddress, setPreferredAddress] = useState('');
+  const [knownFacts, setKnownFacts] = useState('');
+  const [actionPolicy, setActionPolicy] =
+    useState<RoleplayUserPersona['actionPolicy']>('conservative');
   const [starting, setStarting] = useState(false);
 
   const handleStart = async () => {
     if (!characterId) return;
     setStarting(true);
     try {
-      await onStart({ characterId, scenario: scenario.trim() || undefined });
+      await onStart({
+        characterId,
+        scenario: scenario.trim() || undefined,
+        userPersona: {
+          name: personaName.trim() || undefined,
+          relationship: relationship.trim() || undefined,
+          preferredAddress: preferredAddress.trim() || undefined,
+          knownFacts: knownFacts.trim() || undefined,
+          actionPolicy,
+        },
+      });
     } finally {
       setStarting(false);
     }
@@ -934,8 +1115,13 @@ function NewSessionModal({
 
   return (
     <div style={styles.modalBackdrop}>
-      <div style={styles.modal}>
-        <h3>新しい会話を始める</h3>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-roleplay-session-title"
+        style={styles.modal}
+      >
+        <h3 id="new-roleplay-session-title">新しい会話を始める</h3>
         <div style={{ marginBottom: '1rem' }}>
           <label style={styles.label}>
             相手キャラクター
@@ -979,16 +1165,72 @@ function NewSessionModal({
             />
           </label>
         </div>
+        <details style={styles.personaDetails}>
+          <summary>あなたの情報（任意）</summary>
+          <div style={styles.personaFields}>
+            <label style={styles.label}>
+              名前
+              <input
+                value={personaName}
+                onChange={(e) => setPersonaName(e.target.value)}
+                maxLength={80}
+                style={styles.input}
+              />
+            </label>
+            <label style={styles.label}>
+              キャラクターとの関係
+              <input
+                value={relationship}
+                onChange={(e) => setRelationship(e.target.value)}
+                maxLength={200}
+                style={styles.input}
+              />
+            </label>
+            <label style={styles.label}>
+              呼ばれ方
+              <input
+                value={preferredAddress}
+                onChange={(e) => setPreferredAddress(e.target.value)}
+                maxLength={80}
+                style={styles.input}
+              />
+            </label>
+            <label style={styles.label}>
+              キャラクターが知っていること
+              <textarea
+                value={knownFacts}
+                onChange={(e) => setKnownFacts(e.target.value)}
+                maxLength={1000}
+                rows={3}
+                style={styles.textarea}
+              />
+            </label>
+            <label style={styles.label}>
+              あなたの行動の補完
+              <select
+                value={actionPolicy}
+                onChange={(e) =>
+                  setActionPolicy(e.target.value as RoleplayUserPersona['actionPolicy'])
+                }
+                style={styles.select}
+              >
+                <option value="strict">補完しない</option>
+                <option value="conservative">控えめに補完</option>
+                <option value="collaborative">自然に補完</option>
+              </select>
+            </label>
+          </div>
+        </details>
         <div style={styles.modalActions}>
-          <button onClick={onCancel} disabled={starting}>
+          <button onClick={onCancel} disabled={starting || isCreating}>
             キャンセル
           </button>
           <button
             className="primary"
             onClick={handleStart}
-            disabled={!characterId || starting}
+            disabled={!characterId || starting || isCreating}
           >
-            {starting ? '開始中…' : '会話を始める'}
+            {starting || isCreating ? '開始中…' : '会話を始める'}
           </button>
         </div>
       </div>
@@ -1050,6 +1292,19 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     marginBottom: '0.15rem',
     color: 'var(--text)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.4rem',
+  },
+  settingsChangedBadge: {
+    flexShrink: 0,
+    padding: '0.08rem 0.4rem',
+    borderRadius: '999px',
+    background: 'var(--accent)',
+    color: '#ffffff',
+    fontSize: '0.68rem',
+    fontWeight: 600,
   },
   sessionItemScenario: {
     fontSize: '0.8rem',
@@ -1091,6 +1346,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid var(--border)',
     paddingBottom: '0.5rem',
     marginBottom: '0.5rem',
+    gap: '0.75rem',
   },
   characterName: {
     fontSize: '1.1rem',
@@ -1100,6 +1356,70 @@ const styles: Record<string, React.CSSProperties> = {
   scenario: {
     fontSize: '0.85rem',
     color: 'var(--text-muted)',
+  },
+  settingPills: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: '0.35rem',
+    marginTop: '0.45rem',
+  },
+  settingPill: {
+    padding: '0.15rem 0.55rem',
+    borderRadius: '999px',
+    border: '1px solid var(--border)',
+    background: 'var(--bg)',
+    color: 'var(--text)',
+    fontSize: '0.75rem',
+  },
+  sessionDetails: {
+    marginTop: '0.45rem',
+    fontSize: '0.8rem',
+    color: 'var(--text-muted)',
+  },
+  sessionDetailsContent: {
+    marginTop: '0.5rem',
+    padding: '0.65rem',
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    background: 'var(--surface)',
+    color: 'var(--text)',
+    minWidth: '280px',
+    maxWidth: '560px',
+  },
+  headerActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: '0.4rem',
+  },
+  detailHeading: {
+    margin: '0.6rem 0 0.25rem',
+    fontSize: '0.82rem',
+  },
+  detailList: {
+    margin: '0.2rem 0',
+    paddingLeft: '1.2rem',
+  },
+  detailEmpty: {
+    margin: '0.2rem 0',
+    color: 'var(--text-muted)',
+  },
+  detailGrid: {
+    margin: 0,
+  },
+  detailItem: {
+    display: 'grid',
+    gridTemplateColumns: '7rem minmax(0, 1fr)',
+    gap: '0.5rem',
+    marginTop: '0.25rem',
+  },
+  detailTerm: {
+    color: 'var(--text-muted)',
+  },
+  detailDescription: {
+    margin: 0,
+    whiteSpace: 'pre-wrap',
   },
   chatArea: {
     flex: 1,
@@ -1204,6 +1524,8 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: '480px',
     border: '1px solid var(--border)',
     boxShadow: '0 10px 30px rgba(0,0,0,0.35)',
+    maxHeight: '90vh',
+    overflowY: 'auto',
   },
   label: {
     display: 'block',
@@ -1218,6 +1540,27 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border)',
     background: 'var(--bg)',
     color: 'var(--text)',
+  },
+  input: {
+    width: '100%',
+    marginTop: '0.35rem',
+    padding: '0.45rem 0.5rem',
+    borderRadius: '6px',
+    border: '1px solid var(--border)',
+    background: 'var(--bg)',
+    color: 'var(--text)',
+    boxSizing: 'border-box',
+  },
+  personaDetails: {
+    marginTop: '0.25rem',
+    padding: '0.65rem',
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+  },
+  personaFields: {
+    display: 'grid',
+    gap: '0.75rem',
+    marginTop: '0.75rem',
   },
   scenarioChips: {
     display: 'flex',

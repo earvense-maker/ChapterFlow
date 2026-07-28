@@ -1,9 +1,47 @@
 import type { CharacterId, ProjectId } from './ids.js';
 import type { Character } from './character.js';
+import type { ActivePresets } from './project.js';
 
 export type RoleplaySessionId = string;
 export type RoleplayMessageRole = 'user' | 'character';
 export type RoleplaySessionStatus = 'active' | 'archived';
+
+export type RoleplayUserActionPolicy = 'strict' | 'conservative' | 'collaborative';
+
+// NOTE: 会話相手としてのユーザー像。セッション開始時に contextSnapshot へ固定し、
+// 後から同名の作品設定が変わっても進行中の会話を変質させない。
+export interface RoleplayUserPersona {
+  name?: string;
+  relationship?: string;
+  preferredAddress?: string;
+  knownFacts?: string;
+  actionPolicy: RoleplayUserActionPolicy;
+}
+
+export interface RoleplayAppliedPreset {
+  category: keyof ActivePresets;
+  categoryLabel: string;
+  itemLabels: string[];
+}
+
+// NOTE: contextSnapshot のうち UI へ安全に公開できる作風設定だけを保持する。
+// 生の system prompt やキャラクターの secrets は含めない。
+export interface RoleplayAppliedSettings {
+  capturedAt: string;
+  presets: RoleplayAppliedPreset[];
+}
+
+// NOTE: 会話要約と同時に更新するセッションローカルの派生状態。数値は UI 用の
+// 0〜100 スケールで、プロンプトには段階表現へ変換して渡す。
+export interface RoleplayRelationshipState {
+  trust: number;
+  intimacy: number;
+  tension: number;
+  currentAddress?: string;
+  promises: string[];
+  unresolvedTopics: string[];
+  updatedAt: string;
+}
 
 export interface RoleplayMessage {
   messageId: string;
@@ -27,6 +65,12 @@ export interface RoleplayContextSnapshot {
   // NOTE: 作風設定「応答の形」(rpResponseStyle) の本文。ロールプレイ規則へ直接埋め込む。
   // 未指定の旧セッションは DEFAULT_ROLEPLAY_RESPONSE_STYLE_INSTRUCTION で従来通りに動く。
   responseStyleInstruction?: string;
+  // NOTE: prose-mixed など応答形式ごとの固定規則分岐に使う。旧セッションは optional。
+  responseStyleId?: string;
+  userPersona?: RoleplayUserPersona;
+  // NOTE: 現在設定との差分判定用。入力値のハッシュだけを保存し、生プロンプトは公開しない。
+  settingsFingerprint?: string;
+  appliedSettings?: RoleplayAppliedSettings;
   customSystemPrompt: string;
   capturedAt: string;
 }
@@ -46,6 +90,7 @@ export interface RoleplaySession {
   // NOTE: 派生データ更新の時刻。会話の updatedAt とは分離し、要約完了で
   // 一覧順やユーザー向け revision を進めない。
   summaryUpdatedAt?: string;
+  relationshipState?: RoleplayRelationshipState;
   model: { provider: string; modelName: string };
   revision: number;
   createdAt: string;
@@ -56,6 +101,9 @@ export interface RoleplaySession {
 // characterName はサーバー側で snapshot から取り出して付与する。
 export type RoleplaySessionView = Omit<RoleplaySession, 'contextSnapshot'> & {
   characterName: string;
+  userPersona?: RoleplayUserPersona;
+  appliedSettings?: RoleplayAppliedSettings;
+  settingsChanged: boolean;
 };
 
 export interface RoleplaySessionSummary {
@@ -66,6 +114,7 @@ export interface RoleplaySessionSummary {
   status: RoleplaySessionStatus;
   messageCount: number;
   lastExcerpt: string;
+  settingsChanged?: boolean;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -74,6 +123,7 @@ export interface RoleplaySessionSummary {
 export interface CreateRoleplaySessionBody {
   characterId: string;
   scenario?: string;
+  userPersona?: RoleplayUserPersona;
 }
 
 export interface SendRoleplayMessageBody {

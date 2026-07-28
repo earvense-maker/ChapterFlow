@@ -38,7 +38,9 @@ const CURRENT_PRESET_CATEGORY_MARKERS = [
   ...ROLEPLAY_PRESET_CATEGORY_ORDER,
 ] as const;
 
-const presetIds = {
+// NOTE: default-presets.json と正規化許可リストの双方向ドリフトをテストするため公開する。
+// 実行時ロジックとテストが別々のID一覧を持たないことが目的。
+export const BUILT_IN_PRESET_ID_SETS = {
   narration: new Set(['first-person', 'third-close', 'third-objective']),
   aftertaste: new Set(['heartwarming', 'poignant', 'searing', 'uplifting', 'eerie', 'comical']),
   emotionDisplay: new Set(['restrained', 'expressive']),
@@ -76,26 +78,77 @@ export function normalizeActivePresetIds(raw: unknown): ActivePresets {
 
 function normalizeCurrentPresetIds(source: Record<string, unknown>): ActivePresets {
   const result: ActivePresets = { ...DEFAULT_ACTIVE_PRESET_IDS };
-  const narration = asKnownString(source.narration, presetIds.narration);
+  const narration = asKnownString(source.narration, BUILT_IN_PRESET_ID_SETS.narration);
   if (narration) result.narration = narration;
-  const responseStyle = asKnownString(source.rpResponseStyle, presetIds.rpResponseStyle);
+  const responseStyle = asKnownString(
+    source.rpResponseStyle,
+    BUILT_IN_PRESET_ID_SETS.rpResponseStyle
+  );
   if (responseStyle) result.rpResponseStyle = responseStyle;
 
-  const aftertaste = normalizeMultiSelect(source.aftertaste, presetIds.aftertaste);
+  const aftertaste = normalizeMultiSelect(
+    source.aftertaste,
+    BUILT_IN_PRESET_ID_SETS.aftertaste
+  );
   if (aftertaste.length > 0) result.aftertaste = aftertaste;
-  const rpMood = normalizeMultiSelect(source.rpMood, presetIds.rpMood);
+  const rpMood = normalizeMultiSelect(source.rpMood, BUILT_IN_PRESET_ID_SETS.rpMood);
   if (rpMood.length > 0) result.rpMood = rpMood;
 
-  assignKnownString(result, 'emotionDisplay', source.emotionDisplay, presetIds.emotionDisplay);
-  assignKnownString(result, 'sceneProgression', source.sceneProgression, presetIds.sceneProgression);
-  assignKnownString(result, 'chapterEnding', source.chapterEnding, presetIds.chapterEnding);
-  assignKnownString(result, 'painLevel', source.painLevel, presetIds.painLevel);
-  assignKnownString(result, 'intimacy', source.intimacy, presetIds.intimacy);
-  assignKnownString(result, 'rpInitiative', source.rpInitiative, presetIds.rpInitiative);
-  assignKnownString(result, 'rpDistance', source.rpDistance, presetIds.rpDistance);
-  assignKnownString(result, 'rpEmotionDisplay', source.rpEmotionDisplay, presetIds.rpEmotionDisplay);
-  assignKnownString(result, 'rpPainLevel', source.rpPainLevel, presetIds.rpPainLevel);
-  assignKnownString(result, 'rpIntimacy', source.rpIntimacy, presetIds.rpIntimacy);
+  assignKnownString(
+    result,
+    'emotionDisplay',
+    source.emotionDisplay,
+    BUILT_IN_PRESET_ID_SETS.emotionDisplay
+  );
+  assignKnownString(
+    result,
+    'sceneProgression',
+    source.sceneProgression,
+    BUILT_IN_PRESET_ID_SETS.sceneProgression
+  );
+  assignKnownString(
+    result,
+    'chapterEnding',
+    source.chapterEnding,
+    BUILT_IN_PRESET_ID_SETS.chapterEnding
+  );
+  assignKnownString(
+    result,
+    'painLevel',
+    source.painLevel,
+    BUILT_IN_PRESET_ID_SETS.painLevel
+  );
+  assignKnownString(result, 'intimacy', source.intimacy, BUILT_IN_PRESET_ID_SETS.intimacy);
+  assignKnownString(
+    result,
+    'rpInitiative',
+    source.rpInitiative,
+    BUILT_IN_PRESET_ID_SETS.rpInitiative
+  );
+  assignKnownString(
+    result,
+    'rpDistance',
+    source.rpDistance,
+    BUILT_IN_PRESET_ID_SETS.rpDistance
+  );
+  assignKnownString(
+    result,
+    'rpEmotionDisplay',
+    source.rpEmotionDisplay,
+    BUILT_IN_PRESET_ID_SETS.rpEmotionDisplay
+  );
+  assignKnownString(
+    result,
+    'rpPainLevel',
+    source.rpPainLevel,
+    BUILT_IN_PRESET_ID_SETS.rpPainLevel
+  );
+  assignKnownString(
+    result,
+    'rpIntimacy',
+    source.rpIntimacy,
+    BUILT_IN_PRESET_ID_SETS.rpIntimacy
+  );
   return result;
 }
 
@@ -111,7 +164,10 @@ function migrateLegacyPresetIds(source: Record<string, unknown>): ActivePresets 
     result.narration = 'third-close';
   }
 
-  const legacyIntimacy = asKnownString(source.intimacy, presetIds.intimacy);
+  const legacyIntimacy = asKnownString(
+    source.intimacy,
+    BUILT_IN_PRESET_ID_SETS.intimacy
+  );
   if (legacyIntimacy) result.intimacy = legacyIntimacy;
 
   const distance = asString(source.distance);
