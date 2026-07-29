@@ -36,6 +36,10 @@ import type {
   RefineAutomationRun,
   RefineAutomationSettingsResponse,
   RefineChatResponse,
+  RefineConsultationTarget,
+  RefineFindingDispositionResponse,
+  RefineFindingDispositionStatus,
+  RefineResponseMode,
   RefineReviewStatus,
   RefineScanResult,
   RefineSession,
@@ -341,11 +345,31 @@ export const api = {
   getRefineSession: (id: string) => request<RefineSession>(`/projects/${id}/refine/session`),
   resetRefineSession: (id: string) =>
     request<RefineSession>(`/projects/${id}/refine/session`, { method: 'DELETE' }),
-  sendRefineMessage: (id: string, content: string) =>
+  // NOTE: responseMode を省略すると サーバー側で 'auto' 扱い。相談導線（開始ボタン・
+  // 候補ボタン・調整相談）からは必ず 'consult' か 'prepare-patch' を明示する。
+  sendRefineMessage: (
+    id: string,
+    content: string,
+    options?: { responseMode?: RefineResponseMode; target?: RefineConsultationTarget }
+  ) =>
     request<RefineChatResponse>(`/projects/${id}/refine/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        ...(options?.responseMode ? { responseMode: options.responseMode } : {}),
+        ...(options?.target ? { target: options.target } : {}),
+      }),
     }),
+  updateRefineFindingDisposition: (
+    id: string,
+    fingerprint: string,
+    status: RefineFindingDispositionStatus,
+    note?: string
+  ) =>
+    request<RefineFindingDispositionResponse>(
+      `/projects/${id}/refine/findings/${encodeURIComponent(fingerprint)}/disposition`,
+      { method: 'PUT', body: JSON.stringify({ status, ...(note ? { note } : {}) }) }
+    ),
   applyRefinePatch: (id: string, patchId: string) =>
     request<RefineApplyResponse>(`/projects/${id}/refine/patches/${patchId}/apply`, {
       method: 'POST',

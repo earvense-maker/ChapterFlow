@@ -76,7 +76,7 @@ export function useMaintenanceNotifications(): void {
             const clickTarget = {
               kind: 'settingsFocus' as const,
               projectId,
-              focus: { section: 'refine-history' as const, automationRunId: status.runId },
+              focus: { section: 'ai-consultation' as const, automationRunId: status.runId },
             };
             if (status.phase === 'awaitingAcceptance') {
               notify(settings, {

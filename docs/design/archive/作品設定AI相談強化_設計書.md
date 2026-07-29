@@ -114,7 +114,9 @@ type Tab = 'work' | 'ai' | 'memory' | 'tech';
 - `記憶`: 現行どおり。
 - `生成設定`: 現行どおり。
 
-タブ表示は `AI相談` とし、長い `AIと相談して編集` は説明文にだけ使う。未処理の気づきがある場合は件数バッジを付ける。件数は最新scanのうち `resolved` または `intentional-gap` でない項目数とする。ゼロの場合はバッジを表示しない。
+タブ表示は `AI相談` とし、長い `AIと相談して編集` は説明文にだけ使う。未処理の気づきがある場合は件数バッジを付ける。
+
+件数は「最新scanのfindingのうち、有効なdispositionを持たないものの数」とする。`deferred` / `intentional-gap` / `resolved` はいずれもバッジから外す。各statusがいつ再びバッジへ戻るかは 5.3 のdisposition規則に従う。ゼロの場合はバッジを表示しない。
 
 ### 3.2 作品設定タブ
 
@@ -177,7 +179,17 @@ PCの基本構成:
 
 ### 3.5 AIからの気づき
 
-右側の `AIからの気づき` は相談テーマの受信箱とする。各カードに次を置く。
+右側の `AIからの気づき` は相談テーマの受信箱とする。
+
+設定走査の起動導線もこのカードに置く。現行の走査は明示ボタンだけで実行するトークン方針なので、`作品設定` タブから走査結果を外す際に起動口を失わないようにする。カードのヘッダーへ次を置く。
+
+- `気づきを走査` / `再走査` ボタン（`manualActionsBlocked` 中は無効）
+- 最終走査時刻
+- `RefineReviewStatus.needsReview` のときのナッジ文（現行 `buildRefineNudgeMessage` を再利用）
+
+走査の実行状態、走査エラー、`RefineScanResult.lastError` もこのカード内に表示する。走査結果の `coreConcept` は気づき一覧の上に置く。
+
+各findingカードに次を置く。
 
 - 相談する
 - 今は保留
@@ -282,6 +294,8 @@ assistant応答は0〜4件の `suggestedActions` を返せる。
 
 通常の候補は定型文を次のuserメッセージとして送る。`変更候補を作る` だけは `responseMode: 'prepare-patch'` を明示する。
 
+`suggestedActions[].responseMode` が省略、または `consult` / `prepare-patch` 以外だった場合、サーバー正規化で `consult` を補う。候補ボタンから `auto` を送れるようにしない。`auto` は自由入力欄からの送信だけに限定する（4.5）ため、モデルが省略した候補が意図せずパッチを作れる状態にはしない。
+
 ### 4.5 パッチを作る条件
 
 通常の相談で毎回パッチを作らない。一方、従来の「年齢を28歳に設定して」のような直接編集も維持する。
@@ -313,7 +327,9 @@ export type RefineTurnIntent =
 - requestの `responseMode === 'prepare-patch'`
 - requestの `responseMode === 'auto'` かつ、出力の `turnIntent === 'direct-edit'`
 
-`consult` でpatchが返っても破棄し、警告ログだけ残す。`auto` でモデルが誤って `direct-edit` と判定しても、patchカードが出るだけで自動反映はしない。ユーザーが相談だけを明示的に開始した導線はすべて `consult` を使い、`auto` は自由入力欄からの送信に限定する。
+上記以外の組み合わせ、すなわち `consult` でpatchが返った場合と、`auto` で `turnIntent` が `direct-edit` 以外（`explore` / `clarify` / `prepare-patch` / 欠落 / 未知の値）だった場合は、いずれもpatchを破棄して警告ログだけ残す。`auto + prepare-patch` を採用しないのは、パッチ作成の合意はクライアント側の明示操作でしか成立しないという一次境界を崩さないためである。
+
+`auto` でモデルが誤って `direct-edit` と判定しても、patchカードが出るだけで自動反映はしない。ユーザーが相談だけを明示的に開始した導線はすべて `consult` を使い、`auto` は自由入力欄からの送信に限定する。
 
 `prepare-patch` でpatchが0件だった場合は、無条件にモデルを再試行しない。安全な差分を作れない、合意内容が不足している、または変更済みで差分がない可能性があるため、assistantの `visibleReply` に理由と次の操作を表示する。JSON解析失敗または必須形式欠落の場合だけ、既存の再試行可能エラーとして扱う。
 
@@ -417,9 +433,12 @@ consultationState?: RefineConsultationState;
 
 migration保存に失敗した場合はリクエストをエラーにし、途中まで書き換えたsessionを返さない。`safeWriteJson` により旧ファイルを維持し、次回読み込み時に再試行する。
 
+migrationはファイルを書き換えるので、必ず `withSessionLock` の内側で行う。現行の `GET /refine/session` は `getOrCreateRefineSession` をロック外で呼ぶため、自動レビューrunと同時に走るとlost updateになり得る。schema 3 では書き換える範囲が増えるので、この読み取り経路もsession lockの内側へ入れる。
+
 `resetRefineSession` は次の扱いとする。
 
 - 手動相談messagesと相談notesは消す。
+- `conversationSummary` も消す。要約は手動相談の内容そのものなので、messagesを消して要約だけ残すと、存在しない会話を前提にした相談が続く。
 - `findingDispositions` は維持する。意図的な空白や解決済み判断を履歴リセットで失わない。
 - 現行どおりauto-scan由来の監査message / patchは維持する。
 
@@ -436,7 +455,15 @@ scanごとにfinding IDや説明文が変わっても判断を引き継げるよ
 
 AIがfingerprintを生成しない。topicが未知または欠落した場合は `other` へ正規化する。既存キャッシュでfingerprintがない場合は読み込み時にサーバーが計算する。
 
-同じ対象・kind・topicに複数findingがある場合は、scan正規化時に一つへ統合する。`intentional-gap` を選べるのは `undefined` または `suggestion` かつtopicが `other` でないfindingだけとする。`contradiction` は将来状況が変わり得るため、永続的なintentional-gapにはできない。
+target種別ごとの安定識別子は次とする。
+
+- `world` / `systemPrompt` / `storyState`: kind文字列だけ。
+- `character`: `characterId`。`characterName` はリネームで変わるので使わない。
+- `other`: 安定識別子を持たない。`label` はモデルが毎回書き起こす自由文なので、fingerprintの素材にしない。
+
+このため target kind が `other` のfindingは、fingerprintがscanをまたいで安定しない。`other` のfindingには永続的な `intentional-gap` と `resolved` を選ばせず、当該scan内だけ有効な `deferred` のみ許可する。UI上も `意図的な空白として残す` と `解決済みにする` を出さない。
+
+同じ対象・kind・topicに複数findingがある場合は、scan正規化時に一つへ統合する。`intentional-gap` を選べるのは、target kindが `other` でなく、findingのkindが `undefined` または `suggestion` で、topicが `other` でないfindingだけとする。`contradiction` は将来状況が変わり得るため、永続的なintentional-gapにはできない。
 
 dispositionの扱い:
 
@@ -449,6 +476,8 @@ dispositionの扱い:
 ### 5.4 会話要約
 
 現行のプロンプト投入履歴は直近10件、保存上限は24件である。長い相談で採用・却下した方向を失わないよう、assistant応答が12件を超えた後は `conversationSummary` を最大1,200字で更新する。
+
+要約のために別のモデル呼び出しは行わない。サーバーがsession内のassistantメッセージ数を数え、閾値を超えている場合だけ、そのターンのプロンプトへ「既存要約を踏まえて `conversationSummary` を更新せよ」という指示と現在の要約本文を含める。モデルは通常の相談応答と同じJSONの `conversationSummary` フィールドで新しい要約を返す。閾値未満のターンではこの指示を出さず、モデルが `conversationSummary` を返しても無視する。`preference-hypothesis` の畳み込みも同じ指示文の中で依頼する。
 
 要約に含めるもの:
 
@@ -485,7 +514,7 @@ export interface RefineChatRequest {
 - `patch` targetは当該session内のpatchと照合する。
 - 不正targetは400で返し、モデルを呼ばない。
 
-`RefineChatResponse` に `suggestedActions` を重複して持たせず、`assistantMessage.suggestedActions` を正本とする。
+`RefineChatResponse` に `suggestedActions` を重複して持たせず、`assistantMessage.suggestedActions` を正本とする。現行の `newPatches` は既存クライアントの描画経路が使っているのでそのまま残す。
 
 finding判断更新用に次を追加する。
 
@@ -566,13 +595,27 @@ body: { status: 'deferred' | 'intentional-gap' | 'resolved', note?: string }
 サーバー側の正規化:
 
 - `visibleReply`: 空なら読み取り失敗メッセージ。最大6,000字。
-- `suggestedActions`: 最大4件。label最大40字、message最大1,000字。
+- `suggestedActions`: 最大4件。label最大40字、message最大1,000字。`responseMode` が省略または未知の値なら `consult` を補う（4.4）。labelまたはmessageが空の項目は捨てる。
 - `consultationStatePatch.add`: 最大8件。ID・時刻・sourceMessageIdはサーバー採番。
 - `archiveIds`: session lock内で、読み直した現在sessionに存在するactiveなnote IDだけ許可する。存在しないID、重複ID、すでにarchivedのIDは無視して警告ログを残し、ターン全体は失敗させない。
 - `conversationSummary`: 最大1,200字。
 - `patches`: 現行の最大6件とoperation検証を維持し、4.5の条件で採用可否を決める。
 
 モデルが自然文だけを返した場合は、setup相談と同様に壊れたJSON断片でないことを確認したうえで `visibleReply` として表示する。自然文フォールバックではstate、suggestedActions、patchesを更新しない。
+
+### 6.5 出力枠
+
+現行の相談チャットは `OUTPUT_LENGTH = 2000` で、`visibleReply` を1〜3文に制限した前提の値である。本改修の `visibleReply` は複数案とその理由を含むため長くなり、さらに `suggestedActions`・`consultationStatePatch`・`conversationSummary`・`patches` が同じJSONに載る。枠が足りないとJSONが途中で切れ、応答全体がパース失敗になる。
+
+`responseMode` ごとに出力枠を変える。
+
+- `consult`: 3,000
+- `auto`: 3,000
+- `prepare-patch`: 4,000
+
+要約更新ターン（5.4 の閾値超過時）はさらに +1,200 する。
+
+出力枠の不足でJSONが切れた場合は、現行の `finishReason === 'length'` 用の案内文をそのまま使う。相談モードで頻発する場合に備え、失敗メッセージには生成設定タブで出力字数を上げる誘導を残す。
 
 ### 6.4 変更候補の説明
 
@@ -660,6 +703,7 @@ export interface SettingsFocusTarget {
 - `src/client/components/RefineChatPanel.tsx`
 - `src/client/components/RefineAutomationSettingsCard.tsx`
 - `src/client/components/NotificationCenter.tsx`
+- `src/client/hooks/useMaintenanceNotifications.ts`
 - `src/client/App.tsx`
 - `src/client/clientApi.ts`
 - `src/client/styles/settings.css`
@@ -713,12 +757,15 @@ export interface SettingsFocusTarget {
 
 ### Phase 3: 相談状態と気づき判断
 
-1. `RefineSession` schema 3 migrationを追加する。
+1. `RefineSession` schema 3 migrationを追加し、GET経路のmigrationをsession lockへ入れる。
 2. 確定・候補・未確定・好み仮説を保存する。
 3. 会話要約を追加する。
-4. finding fingerprintとdispositionを追加する。
-5. `意図的な空白` を後続scanへ引き継ぐ。
-6. `調整を相談` を追加する。
+4. scan出力スキーマへ `topic` を追加し、`refineScanService` の正規化でfingerprintを計算する。
+5. finding dispositionのAPIと保存を追加する。
+6. `意図的な空白` を後続scanへ引き継ぐ。
+7. `調整を相談` を追加する。
+
+バッジ件数は最新scan（`refineScan.json`）とdisposition（`refineSession.json`）の両方を突き合わせて求める。現在scanを読むのは `WorkSettingsTab` だけなので、`SettingPanel` まで取得を持ち上げ、`作品設定` と `AI相談` の両タブで同じ値を使う。
 
 ### Phase 4: 本文根拠の強化
 
@@ -745,7 +792,12 @@ export interface SettingsFocusTarget {
 - 自然文だけのモデル応答を会話へ表示し、stateとpatchを更新しない。
 - conversation summaryが上限内で更新される。
 - finding fingerprintがscanをまたいで安定する。
+- target kindが `other` のfindingへ intentional-gap / resolved を設定できない。
 - intentional-gapが未処理件数へ戻らない。
+- deferredは当該scanの間だけ未処理件数から外れ、再走査で戻る。
+- `suggestedActions` の `responseMode` 欠落・未知値が `consult` へ補われる。
+- `auto` で `turnIntent` が `direct-edit` 以外の場合、patchを破棄する。
+- resetでconversationSummaryも消える。
 - 存在しないcharacter / finding / patch targetを400で拒否する。
 - finding disposition更新と自動scanがlost updateを起こさない。
 
@@ -753,6 +805,7 @@ export interface SettingsFocusTarget {
 
 - `作品設定 / AI相談 / 記憶 / 生成設定` の4タブを操作できる。
 - 作品設定タブに相談チャット本体が表示されない。
+- AI相談タブの気づき欄から走査を起動でき、走査中・エラー・ナッジが表示される。
 - 人物の相談ボタンからAI相談へ移動し、対象チップが表示される。
 - AI返答が中央チャットへ表示される。
 - findingを相談しても返答が右欄へ混入しない。
@@ -797,6 +850,7 @@ export interface SettingsFocusTarget {
 - 意図的な空白として残したfindingが、同じ内容で未処理へ戻り続けない。
 - 既存refine session、auto-scan監査、通知、自動レビュー取り消しを壊さない。
 - AI相談タブを開いただけではモデルAPIを呼ばない。
+- 設定走査は `AI相談` タブの明示ボタンからだけ実行される。
 
 ---
 
@@ -812,6 +866,8 @@ export interface SettingsFocusTarget {
 | 好み仮説がユーザー属性として固定される | 作品内sessionに限定し、明言と食い違えば破棄する |
 | 長い相談で過去の採否を忘れる | 構造化notesとconversation summaryを併用する |
 | 本文投入でプロンプトが肥大化する | finding evidence、StoryState、必要抜粋の順で予算選択する |
+| 出力が長くJSONが途中で切れる | responseMode別に出力枠を広げ、length失敗時は現行の案内文で誘導する |
+| targetが `other` のfindingで判断が毎回消える | `other` には永続dispositionを許可せず、deferredだけにする |
 | 既存の自動レビューとlost updateが起きる | maintenance guardとsession lockを全更新経路で共用する |
 | UI分割で直接編集後の表示が古くなる | タブ切替時またはpatch反映後にworld / charactersを再取得する |
 

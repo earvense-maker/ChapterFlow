@@ -40,8 +40,6 @@ vi.mock('../../src/client/components/ConfirmDialog', () => ({
 }));
 
 // 重い子コンポーネントは自前の API 取得や描画を持つのでスタブ化する。
-vi.mock('../../src/client/components/RefineChatPanel', () => ({ default: () => <div /> }));
-vi.mock('../../src/client/components/RefineAutomationSettingsCard', () => ({ default: () => <div /> }));
 vi.mock('../../src/client/components/StyleVariationSettingsCard', () => ({ default: () => <div /> }));
 vi.mock('../../src/client/components/CharacterTraitsEditor', () => ({ default: () => <div /> }));
 vi.mock('../../src/client/components/PresetSelector', () => ({ default: () => <div /> }));
@@ -106,6 +104,8 @@ function renderPanel() {
       onError={noop}
       onFlashMessage={noop}
       onProjectUpdated={noop}
+      onConsultRequest={noop}
+      onRefineInputChanged={noop}
     />
   );
 }

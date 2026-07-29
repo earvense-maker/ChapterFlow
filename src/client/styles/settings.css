@@ -649,11 +649,6 @@
   font-size: 0.85rem;
 }
 
-.refine-scan-button {
-  padding: 0.35rem 0.85rem;
-  font-size: 0.85rem;
-}
-
 .refine-review-nudge {
   margin: 0 0 0.5rem;
   padding: 0.55rem 0.75rem;
@@ -804,43 +799,6 @@
   border-color: rgba(107, 142, 159, 0.35);
 }
 
-.refine-chat-tabs {
-  display: flex;
-  gap: 0.25rem;
-  margin-top: 0.55rem;
-  border-bottom: 1px solid var(--border);
-}
-
-.refine-chat-tabs button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  background: transparent;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: var(--radius) var(--radius) 0 0;
-  color: var(--text-muted);
-  padding: 0.45rem 0.75rem;
-  font-size: 0.88rem;
-}
-
-.refine-chat-tabs button.active {
-  background: rgba(107, 142, 159, 0.08);
-  border-color: var(--border);
-  color: var(--text);
-  position: relative;
-  top: 1px;
-}
-
-.refine-chat-tabs span {
-  min-width: 1.45rem;
-  padding: 0.05rem 0.4rem;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.05);
-  font-size: 0.72rem;
-  text-align: center;
-}
-
 .refine-chat-scroll {
   max-height: clamp(260px, 42vh, 520px);
   overflow-y: auto;
@@ -850,10 +808,6 @@
   border-top: none;
   border-radius: 0 0 var(--radius) var(--radius);
   background: rgba(0, 0, 0, 0.015);
-}
-
-.refine-findings-scroll .refine-findings-list {
-  margin-top: 0;
 }
 
 .refine-chat-messages {
@@ -969,12 +923,6 @@
 
 .automation-run-time {
   color: var(--text-muted);
-}
-
-.refine-automation-empty {
-  color: var(--text-muted);
-  font-size: 0.85rem;
-  margin: 0 0 0.5rem;
 }
 
 .refine-automation-orphan-runs {
@@ -1306,4 +1254,192 @@
 
 .ng-expression-float-button:hover {
   background: var(--accent-hover);
+}
+
+/* ===== AI相談タブ ===== */
+
+.settings-panel--wide {
+  max-width: 1200px;
+}
+
+/* NOTE: PC は「中央のチャット + 右の気づき」。狭い画面では一列にし、
+   DOM 順（会話 → 入力 → 補助情報）のまま縦に積む。読み上げ順を崩さないため、
+   grid の order でも列を入れ替えない。 */
+.ai-consultation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .ai-consultation-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.ai-consultation-main,
+.ai-consultation-side {
+  min-width: 0;
+}
+
+.settings-tab-badge {
+  display: inline-block;
+  min-width: 1.4rem;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(107, 142, 159, 0.25);
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.refine-conversation {
+  position: relative;
+}
+
+/* NOTE: 上部に内側タブが無くなったので、スクロール枠の上辺も描く。 */
+.refine-conversation .refine-chat-scroll {
+  border-top: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.refine-conversation-live {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.refine-conversation-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.refine-conversation-pending {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.refine-conversation-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.refine-conversation-starters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.refine-conversation-starters button {
+  font-size: 0.82rem;
+  padding: 0.35rem 0.7rem;
+}
+
+.refine-new-reply-button {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 1.2rem;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+}
+
+.refine-suggested-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-right: 1.5rem;
+}
+
+.refine-suggested-actions button {
+  font-size: 0.82rem;
+  padding: 0.3rem 0.65rem;
+}
+
+.refine-suggested-actions.history {
+  list-style: none;
+  padding: 0;
+  margin: 0 1.5rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  gap: 0.6rem;
+}
+
+.refine-consult-target {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px dashed rgba(107, 142, 159, 0.6);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+
+.refine-consult-target-label {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.refine-consult-target button {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+}
+
+.refine-maintenance-note {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.refine-core-concept {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.refine-finding.handled {
+  opacity: 0.65;
+}
+
+.refine-finding.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.refine-patch-stale-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* NOTE: 差分は色だけで伝えない。変更前 / 変更後をラベルでも出す。 */
+.refine-patch-change-label {
+  display: inline-block;
+  margin-right: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.06);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.automation-run-summary > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  cursor: pointer;
+}
+
+.automation-run-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
 }

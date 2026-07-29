@@ -65,7 +65,7 @@ function Harness({ clickLog }: { clickLog: NotificationClickTarget[] }) {
             dedupeKey: 'dedupe-persistent',
             title: '要確認',
             body: '確認してください',
-            clickTarget: { kind: 'settingsFocus', projectId: 'proj-2', focus: { section: 'refine-history' } },
+            clickTarget: { kind: 'settingsFocus', projectId: 'proj-2', focus: { section: 'ai-consultation' } },
             persistent: true,
           })
         }

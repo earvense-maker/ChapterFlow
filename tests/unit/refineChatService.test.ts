@@ -105,7 +105,7 @@ describe('refineChatService session lifecycle', () => {
 
     const migrated = await refineChatService.getOrCreateRefineSession(projectId);
 
-    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.schemaVersion).toBe(3);
     expect(migrated.patches.map((patch) => patch.status)).toEqual([
       'stale',
       'applied',
@@ -154,10 +154,7 @@ describe('refineChatService sendRefineMessage', () => {
       ],
     });
 
-    const result = await refineChatService.sendRefineMessage(
-      projectId,
-      '秋葉の年齢を30歳に変えて'
-    );
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '秋葉の年齢を30歳に変えて' });
     expect(result.newPatches).toHaveLength(1);
     expect(result.newPatches[0].status).toBe('pending');
     expect(result.assistantMessage.patchIds).toEqual([result.newPatches[0].patchId]);
@@ -184,15 +181,28 @@ describe('refineChatService sendRefineMessage', () => {
       ],
     });
 
-    const result = await refineChatService.sendRefineMessage(projectId, '何か変えて');
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '何か変えて' });
     expect(result.newPatches).toEqual([]);
   });
 
-  it('falls back gracefully on non-JSON response', async () => {
+  it('shows a plain-text reply as-is without touching state or patches', async () => {
     const projectId = await createTrackedProject();
     mockAssistantResponse(null, 'これはJSONではありません。');
 
-    const result = await refineChatService.sendRefineMessage(projectId, '相談');
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+    expect(result.newPatches).toEqual([]);
+    // NOTE: 壊れた JSON 断片ではないと判定できたので、本文としてそのまま見せる。
+    expect(result.assistantMessage.content).toBe('これはJSONではありません。');
+    expect(result.assistantMessage.suggestedActions).toBeUndefined();
+    expect(result.session.consultationState?.notes).toEqual([]);
+    expect(result.session.lastError).toBeNull();
+  });
+
+  it('reports a parse failure when the reply looks like broken JSON', async () => {
+    const projectId = await createTrackedProject();
+    mockAssistantResponse(null, '{"visibleReply": "途中で切れ');
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
     expect(result.newPatches).toEqual([]);
     expect(result.session.lastError).toContain('解釈できません');
   });
@@ -201,7 +211,7 @@ describe('refineChatService sendRefineMessage', () => {
     const projectId = await createTrackedProject();
     mockAssistantResponse(null, '');
 
-    const result = await refineChatService.sendRefineMessage(projectId, 'テスト');
+    const result = await refineChatService.sendRefineMessage(projectId, { content: 'テスト' });
     expect(result.newPatches).toEqual([]);
     expect(result.session.lastError).toContain('空の応答');
   });
@@ -221,6 +231,7 @@ describe('refineChatService sendRefineMessage', () => {
       null,
       JSON.stringify({
         visibleReply: '更新します。',
+        turnIntent: 'direct-edit',
         patches: [
           {
             summary: '更新',
@@ -232,7 +243,7 @@ describe('refineChatService sendRefineMessage', () => {
       })
     );
 
-    const result = await refineChatService.sendRefineMessage(projectId, 'x');
+    const result = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
     expect(result.newPatches).toHaveLength(1);
     expect(result.session.lastError).toBeNull();
   });
@@ -254,7 +265,7 @@ describe('refineChatService sendRefineMessage', () => {
       retryable: false,
     });
 
-    await refineChatService.sendRefineMessage(projectId, '雑談');
+    await refineChatService.sendRefineMessage(projectId, { content: '雑談' });
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0].responseMimeType).toBe('application/json');
     expect(spy.mock.calls[0][0].userPrompt).toContain(
@@ -277,11 +288,11 @@ describe('refineChatService sendRefineMessage', () => {
         },
       ],
     });
-    const first = await refineChatService.sendRefineMessage(projectId, '長崎を追加');
+    const first = await refineChatService.sendRefineMessage(projectId, { content: '長崎を追加' });
     expect(first.newPatches[0].status).toBe('pending');
 
     mockAssistantResponse({ visibleReply: '別の話題', patches: [] });
-    const second = await refineChatService.sendRefineMessage(projectId, '別の話');
+    const second = await refineChatService.sendRefineMessage(projectId, { content: '別の話' });
     const stalePatch = second.session.patches.find(
       (p) => p.patchId === first.newPatches[0].patchId
     );
@@ -293,7 +304,7 @@ describe('refineChatService sendRefineMessage', () => {
     const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText');
 
     await expect(
-      refineChatService.sendRefineMessage(projectId, 'あ'.repeat(4001))
+      refineChatService.sendRefineMessage(projectId, { content: 'あ'.repeat(4001) })
     ).rejects.toMatchObject({ code: 'message_too_long', status: 400 });
     expect(generateSpy).not.toHaveBeenCalled();
   });
@@ -328,7 +339,7 @@ describe('refineChatService applyRefinePatch', () => {
         },
       ],
     });
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
     const patchId = send.newPatches[0].patchId;
     const applied = await refineChatService.applyRefinePatch(projectId, patchId);
     expect(applied.patch.status).toBe('applied');
@@ -366,7 +377,7 @@ describe('refineChatService applyRefinePatch', () => {
       ],
     });
 
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
     await refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId);
 
     const stored = await storage.readCharacters(projectId);
@@ -391,7 +402,7 @@ describe('refineChatService applyRefinePatch', () => {
         },
       ],
     });
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
     const patchId = send.newPatches[0].patchId;
 
     await expect(
@@ -425,7 +436,7 @@ describe('refineChatService applyRefinePatch', () => {
         },
       ],
     });
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
 
     await refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId);
 
@@ -454,7 +465,7 @@ describe('refineChatService applyRefinePatch', () => {
         },
       ],
     });
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
 
     await expect(
       refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId)
@@ -474,7 +485,7 @@ describe('refineChatService applyRefinePatch', () => {
         },
       ],
     });
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
 
     await refineChatService.applyRefinePatch(projectId, send.newPatches[0].patchId);
     await expect(storage.readWorld(projectId)).resolves.toEqual({
@@ -510,7 +521,7 @@ describe('refineChatService applyRefinePatch', () => {
         },
       ],
     });
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
     const patchId = send.newPatches[0].patchId;
     vi.spyOn(storage, 'writeCharacters').mockRejectedValueOnce(new Error('disk full'));
 
@@ -535,7 +546,7 @@ describe('refineChatService applyRefinePatch', () => {
         },
       ],
     });
-    const send = await refineChatService.sendRefineMessage(projectId, 'x');
+    const send = await refineChatService.sendRefineMessage(projectId, { content: 'x' });
     const patchId = send.newPatches[0].patchId;
 
     const rejected = await refineChatService.rejectRefinePatch(projectId, patchId);
@@ -767,10 +778,21 @@ describe('refineChatService applyRefinePatch — draft-only auto-scan guard', ()
 interface AssistantPayload {
   visibleReply: string;
   patches: Array<Record<string, unknown>>;
+  turnIntent?: string;
+  suggestedActions?: Array<Record<string, unknown>>;
+  consultationStatePatch?: Record<string, unknown>;
+  conversationSummary?: string;
 }
 
 function mockAssistantResponse(payload: AssistantPayload | null, rawText?: string) {
-  const text = rawText ?? '```json\n' + JSON.stringify(payload) + '\n```';
+  // NOTE: 既定の responseMode は 'auto'。auto でパッチが通るのは turnIntent が
+  // 'direct-edit' のときだけなので、パッチを含むケースでは既定で direct-edit を補う。
+  // turnIntent を明示したケースはそのまま尊重する。
+  const normalized =
+    payload && payload.patches.length > 0 && payload.turnIntent === undefined
+      ? { ...payload, turnIntent: 'direct-edit' }
+      : payload;
+  const text = rawText ?? '```json\n' + JSON.stringify(normalized) + '\n```';
   vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
     text,
     finishReason: 'stop',

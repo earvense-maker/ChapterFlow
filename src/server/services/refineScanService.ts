@@ -8,6 +8,11 @@ import { reloadCredentials } from './credentialService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import { readStoryStateDiffs, withStoryStateLock } from './storyStateService.js';
 import { readStoryStateBacklog } from './generationService.js';
+import { normalizeRefineFindingTopic } from '../../shared/refineFinding.js';
+import {
+  createRefineFindingFingerprint,
+  ensureFindingFingerprints,
+} from './refineFindingFingerprint.js';
 import type {
   Character,
   EpisodeId,
@@ -76,7 +81,8 @@ export class RefineScanError extends Error {
 export async function readCachedRefineScan(
   projectId: string
 ): Promise<RefineScanResult | null> {
-  return storage.readRefineScan(projectId);
+  const scan = await storage.readRefineScan(projectId);
+  return scan ? ensureFindingFingerprints(scan) : null;
 }
 
 export async function scanProjectSettings(
@@ -589,6 +595,7 @@ function buildScanPrompt(input: BuildScanPromptInput): {
     '      "target": { "kind": "world" | "systemPrompt" | "storyState" }',
     '                | { "kind": "character", "characterId": "<id>", "characterName": "<name>" }',
     '                | { "kind": "other", "label": "<短い対象名>" },',
+    '      "topic": "motivation | past | goal | relationship | secret | speech | world-rule | timeline | state | other",',
     '      "message": "気づきを1〜2文で",',
     '      "detail": "根拠や補足（省略可）",',
     hasAcceptedSceneEvidence
@@ -611,9 +618,16 @@ function buildScanPrompt(input: BuildScanPromptInput): {
     '- initialState は開始時点の状態であり、storyState の現在と食い違うこと自体は正常。矛盾として指摘しない。',
     '- description / relationshipNotes / world が storyState の現在と食い違う場合は、物語の進行による陳腐化として contradiction で指摘し、suggestedFix に現状を反映した書き換え案を書く。',
     '',
+    'topic の選び方（何についての気づきかを1語で分類する）:',
+    '- motivation: 動機・望み。past: 過去・来歴。goal: 目的・目標。relationship: 人物間の関係。',
+    '- secret: 秘密・隠している面。speech: 口調・話し方。world-rule: 世界の規則・設定。',
+    '- timeline: 時系列・時間の整合。state: 現在状態。other: 上のどれにも当てはまらない。',
+    '- topic は一覧の語のみを使う。迷ったら other にする。',
+    '',
     'ルール:',
     `- findings は最大 ${MAX_FINDINGS} 件。重要度の高い順に並べる。`,
     '- character を対象にする場合、characterId は必ず入力の <人物> 節の id を使う。',
+    '- 同じ対象・同じ kind・同じ topic の指摘を複数に分けない。1件へまとめる。',
     '- 「文字数を増やしましょう」のような些末な指摘は書かない。',
     '- 気になる点がなければ findings: [] を返す。',
     '- JSON 以外の文字（挨拶、まとめ、Markdown 見出し）は一切含めない。',
@@ -817,13 +831,16 @@ function buildParseFailureMessage(
   ].join('\n');
 }
 
-function normalizeFindings(
+export function normalizeFindings(
   raw: unknown[],
   characters: Character[],
   acceptedSceneEvidence: AcceptedSceneEvidence[] = []
 ): RefineFinding[] {
   const characterById = new Map(characters.map((c) => [c.characterId, c]));
   const result: RefineFinding[] = [];
+  // NOTE: 同じ対象・kind・topic の finding が複数出ると fingerprint が衝突し、
+  // 片方への判断がもう片方にも効いてしまう。走査の正規化時に先勝ちで1件へ統合する。
+  const seenFingerprints = new Set<string>();
   for (const item of raw) {
     if (!isRecord(item)) continue;
     const kindRaw = typeof item.kind === 'string' ? item.kind.toLowerCase() : '';
@@ -838,20 +855,34 @@ function normalizeFindings(
         ? truncate(asString(item.suggestedFix), SUGGESTED_FIX_MAX_CHARS)
         : '';
     const evidence = normalizeEvidence(item.evidence, acceptedSceneEvidence);
+    const topic = normalizeRefineFindingTopic(item.topic);
+
+    const id = generateTimestampId('finding');
+    const fingerprint = createRefineFindingFingerprint({
+      id,
+      kind: kindRaw as RefineFindingKind,
+      target,
+      topic,
+    });
+    if (seenFingerprints.has(fingerprint)) continue;
+    seenFingerprints.add(fingerprint);
 
     result.push({
-      id: generateTimestampId('finding'),
+      id,
       kind: kindRaw as RefineFindingKind,
       target,
       message,
       ...(detail ? { detail } : {}),
       ...(suggestedFix ? { suggestedFix } : {}),
       ...(evidence.length ? { evidence } : {}),
+      topic,
+      fingerprint,
     });
     if (result.length >= MAX_FINDINGS) break;
   }
   return result;
 }
+
 
 function normalizeEvidence(
   raw: unknown,

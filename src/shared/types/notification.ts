@@ -27,9 +27,12 @@ export interface GenerationNotificationSettings {
 export type NotificationEventType = keyof GenerationNotificationEvents;
 
 // NOTE: URL router が無いため、通知クリック時の遷移先を state として明示的に運ぶ。
-// 現状は作品設定 → 作品設定相談 → 履歴 の1箇所のみが対象。
+// 遷移先は AI相談タブ（会話タイムライン + 気づき受信箱）の1箇所のみ。
+// 旧 'refine-history' はクライアント内 state だけで運ばれていたため、生成側
+// (useMaintenanceNotifications) と消費側を同時に更新すれば互換処理は不要。
 export interface SettingsFocusTarget {
-  section: 'refine-history';
+  section: 'ai-consultation';
   automationRunId?: string;
   patchId?: string;
+  findingId?: string;
 }

@@ -20,6 +20,22 @@ export interface RefineFindingEvidence {
   quote: string;
 }
 
+// NOTE: finding の「話題」。scan のたびに id と自然文 message は変わるので、
+// ユーザーの判断（意図的な空白など）を scan をまたいで引き継ぐための安定キー
+// (fingerprint) の材料にする。モデルには限られた語彙だけを選ばせ、未知の値は
+// 'other' へ正規化する。
+export type RefineFindingTopic =
+  | 'motivation'
+  | 'past'
+  | 'goal'
+  | 'relationship'
+  | 'secret'
+  | 'speech'
+  | 'world-rule'
+  | 'timeline'
+  | 'state'
+  | 'other';
+
 export interface RefineFinding {
   id: string;
   kind: RefineFindingKind;
@@ -29,6 +45,12 @@ export interface RefineFinding {
   // NOTE: Phase 3 でチャット雛形の初期値として使う。Phase 2 では表示のみ。
   suggestedFix?: string;
   evidence?: RefineFindingEvidence[];
+  topic?: RefineFindingTopic;
+  // NOTE: サーバーが kind + target の安定識別子 + topic から計算する。AI には
+  // 作らせない。target.kind === 'other' は安定識別子を持たないため、
+  // fingerprint は計算するが永続 disposition の対象にはしない
+  // (refineFindingFingerprint.supportsPersistentDisposition を参照)。
+  fingerprint?: string;
 }
 
 export interface RefineScanResult {
@@ -66,6 +88,70 @@ export interface RefineReviewStatus {
 // デタッチ回避のため、明示的にインライン編集で書く方針）。
 export type RefineMessageRole = 'user' | 'assistant' | 'system';
 
+// NOTE: パッチ生成可否の一次境界。クライアントが「どの導線から送ったか」を宣言する。
+// - auto: 自由入力欄からの送信のみ。モデルが direct-edit と判定したときだけパッチを許す。
+// - consult: 相談開始ボタン・候補ボタン・調整相談。パッチを作らせない。
+// - prepare-patch: ユーザーが変更候補作成を明示的に選んだ状態。
+// モデルが返す turnIntent は二次境界にすぎず、これ単独でパッチは通らない。
+export type RefineResponseMode = 'auto' | 'consult' | 'prepare-patch';
+
+// NOTE: モデルが自己申告するターンの性格。会話表示と監査、および auto モードでの
+// パッチ可否判定に使う。
+export type RefineTurnIntent = 'explore' | 'clarify' | 'direct-edit' | 'prepare-patch';
+
+// NOTE: assistant 応答に添える「次の相談候補」ボタン。message を次の user 発話として
+// 送る。responseMode は consult / prepare-patch のみ許可し、欠落・未知値は consult へ
+// 正規化する（候補ボタン経由で auto を送れると 4.5 の一次境界が崩れるため）。
+export interface RefineSuggestedAction {
+  label: string;
+  message: string;
+  responseMode?: Exclude<RefineResponseMode, 'auto'>;
+}
+
+export type RefineConsultationNoteKind =
+  | 'confirmed'
+  | 'candidate'
+  | 'undecided'
+  | 'preference-hypothesis';
+
+export interface RefineConsultationNote {
+  noteId: string;
+  kind: RefineConsultationNoteKind;
+  text: string;
+  sourceMessageId: string;
+  createdAt: string;
+  status: 'active' | 'archived';
+}
+
+export type RefineFindingDispositionStatus = 'deferred' | 'intentional-gap' | 'resolved';
+
+export interface RefineFindingDisposition {
+  fingerprint: string;
+  status: RefineFindingDispositionStatus;
+  note?: string;
+  updatedAt: string;
+  // NOTE: resolved は「この設定内容を確認した結果、対応済み」という判断なので、
+  // 設定が変われば再評価する。判断時点の scan の reviewedStaticInputHash を持ち、
+  // 一致する間だけ未処理件数から外す。
+  staticInputHash?: string | null;
+  // NOTE: deferred（今は保留）は当該 scan の間だけ有効。fingerprint 自体は scan を
+  // またいで安定するので、これが無いと「次回 scan で再表示」が実現できない。
+  scanGeneratedAt?: string | null;
+}
+
+export interface RefineConsultationState {
+  notes: RefineConsultationNote[];
+  conversationSummary?: string;
+  findingDispositions: RefineFindingDisposition[];
+}
+
+export type RefineConsultationTarget =
+  | { kind: 'world'; section?: 'foundation' | 'initialSituation' }
+  | { kind: 'character'; characterId: CharacterId; field?: string }
+  | { kind: 'finding'; findingId: string; fingerprint: string }
+  | { kind: 'patch'; patchId: string }
+  | { kind: 'general' };
+
 export interface RefineMessage {
   messageId: string;
   role: RefineMessageRole;
@@ -77,6 +163,13 @@ export interface RefineMessage {
   // NOTE: 自動レビュー run が合成したシステムメッセージにのみ設定。通知クリック時に
   // 該当run/messageへスクロールするための参照。
   automationRunId?: string;
+  // NOTE: レスポンスではなく message 側に保存する。再読み込み後も候補を描画できる
+  // ようにするため。ただし押せるのは「session 内で最後のメッセージ」の候補だけで、
+  // その判定は messages の並びだけから再現する（RefineChatResponse には持たせない）。
+  suggestedActions?: RefineSuggestedAction[];
+  target?: RefineConsultationTarget;
+  turnIntent?: RefineTurnIntent;
+  responseMode?: RefineResponseMode;
 }
 
 // NOTE: world.md への「アンカー置換」オペレーション。anchor は world 本文中に
@@ -151,7 +244,7 @@ export interface RefinePatch {
 }
 
 export interface RefineSession {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   sessionId: string;
   projectId: ProjectId;
   usedModel: { provider: string; modelName: string };
@@ -161,12 +254,26 @@ export interface RefineSession {
   createdAt: string;
   updatedAt: string;
   lastError: string | null;
+  // NOTE: schema 3 で追加。schema 1/2 の既存ファイルには存在しないので、読み込み時に
+  // 空の notes / dispositions で補完する。
+  consultationState?: RefineConsultationState;
+}
+
+export interface RefineChatRequest {
+  content: string;
+  responseMode?: RefineResponseMode;
+  target?: RefineConsultationTarget;
 }
 
 export interface RefineChatResponse {
   session: RefineSession;
   assistantMessage: RefineMessage;
   newPatches: RefinePatch[];
+}
+
+export interface RefineFindingDispositionResponse {
+  session: RefineSession;
+  disposition: RefineFindingDisposition;
 }
 
 export interface RefineApplyResponse {

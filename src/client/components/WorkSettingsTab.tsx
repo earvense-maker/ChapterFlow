@@ -5,13 +5,10 @@ import {
   KNOWLEDGE_WARN_CHARS,
   SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
 } from '@shared/types';
-import RefineChatPanel from './RefineChatPanel';
-import RefineAutomationSettingsCard from './RefineAutomationSettingsCard';
 import StyleVariationSettingsCard from './StyleVariationSettingsCard';
 import CharacterTraitsEditor from './CharacterTraitsEditor';
 import PresetSelector, { type PresetCategory } from './PresetSelector';
 import {
-  buildRefineNudgeMessage,
   clearRemovedPresetValues,
   deriveStyleTags,
   extractExcerpt,
@@ -26,9 +23,7 @@ import type {
   Character,
   PresetsFile,
   Project,
-  RefineReviewStatus,
-  RefineScanResult,
-  SettingsFocusTarget,
+  RefineConsultationTarget,
   StyleSamplePreset,
   SystemPromptPreview,
   WorldContent,
@@ -40,11 +35,22 @@ interface Props {
   onError: (msg: string | null) => void;
   onFlashMessage: (msg: string) => void;
   onProjectUpdated: (project: Project) => void;
-  focusTarget?: SettingsFocusTarget | null;
-  onFocusTargetConsumed?: () => void;
+  // NOTE: 相談導線。押しても送信せず、AI相談タブへ移って対象チップを出すだけ。
+  onConsultRequest: (target: RefineConsultationTarget) => void;
+  // NOTE: 直接編集で走査の鮮度が変わるので、保存のたびに親へ再計算を促す。
+  // 走査ナッジの表示は AI相談タブ側が担当する。
+  onRefineInputChanged: () => void;
+  focusDetailTab?: DetailSettingsTab | null;
+  onFocusDetailTabConsumed?: () => void;
 }
 
-type DetailSettingsTab = 'basic' | 'style' | 'world' | 'characters' | 'story' | 'knowledge';
+export type DetailSettingsTab =
+  | 'basic'
+  | 'style'
+  | 'world'
+  | 'characters'
+  | 'story'
+  | 'knowledge';
 type WorldArea = keyof WorldContent;
 
 const roleOptions: { value: Character['role']; label: string }[] = [
@@ -64,8 +70,10 @@ export default function WorkSettingsTab({
   onError,
   onFlashMessage,
   onProjectUpdated,
-  focusTarget,
-  onFocusTargetConsumed,
+  onConsultRequest,
+  onRefineInputChanged,
+  focusDetailTab,
+  onFocusDetailTabConsumed,
 }: Props) {
   const confirmAction = useConfirm();
   const [categories, setCategories] = useState<Record<string, PresetCategory> | null>(null);
@@ -127,11 +135,6 @@ export default function WorkSettingsTab({
     confirmAction,
   });
 
-  const [refineScan, setRefineScan] = useState<RefineScanResult | null>(null);
-  const [refineReviewStatus, setRefineReviewStatus] = useState<RefineReviewStatus | null>(null);
-  const [scanning, setScanning] = useState(false);
-  const [scanError, setScanError] = useState<string | null>(null);
-
   const [loading, setLoading] = useState(false);
 
   // NOTE: 資料タブの状態とハンドラはカスタムフックへ切り出し済み。同名で分割代入する
@@ -183,8 +186,15 @@ export default function WorkSettingsTab({
     onFlashMessage,
     setLoading,
     confirmAction,
-    refreshRefineReviewStatus,
+    refreshRefineReviewStatus: async () => onRefineInputChanged(),
   });
+
+  useEffect(() => {
+    if (!focusDetailTab) return;
+    setDetailSettingsTab(focusDetailTab);
+    onFocusDetailTabConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusDetailTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -245,19 +255,6 @@ export default function WorkSettingsTab({
         setGeneratedSystemPrompt(promptPreview.generatedSystemPrompt);
         setIsSystemPromptCustomized(promptPreview.isCustomized);
 
-        // NOTE: 前回の scan 結果があれば表示。無ければ null のまま。
-        // 起動時に scan は自動実行しない（トークン消費を明示ボタンに限定）。
-        const [cachedScan, reviewStatus] = await Promise.all([
-          api.getRefineScan(projectId).catch(() => null),
-          api.getRefineReviewStatus(projectId).catch(() => null),
-        ]);
-        if (!cancelled && cachedScan) {
-          setRefineScan(cachedScan);
-          // NOTE: キャッシュ済み結果に lastError が入っていれば、それも UI に見せる。
-          if (cachedScan.lastError) setScanError(cachedScan.lastError);
-        }
-        if (!cancelled) setRefineReviewStatus(reviewStatus);
-
         // NOTE: 見本ギャラリー。取得失敗時は空配列のまま（select 非表示にする）。
         try {
           const samples = await api.getStyleSamples();
@@ -293,36 +290,6 @@ export default function WorkSettingsTab({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // NOTE: パッチ反映後に world / characters を再取得して UI を最新化。
-  // 編集中の draft は上書きしないよう、編集モード時は skip する。
-  async function refreshWorldAndCharacters() {
-    const requestId = ++worldRefreshRequestId.current;
-    try {
-      const [worldData, charsData] = await Promise.all([
-        api.getWorld(projectId),
-        api.getCharacters(projectId),
-      ]);
-      if (requestId === worldRefreshRequestId.current) {
-        setWorld(worldData);
-        if (!foundationEditing) setFoundationDraft(worldData.foundation);
-        if (!initialSituationEditing) setInitialSituationDraft(worldData.initialSituation);
-      }
-      setCharacters(charsData);
-      if (!charactersEditing) setCharactersDraft(charsData);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : '再読み込みに失敗しました');
-    }
-  }
-
-  async function refreshRefineReviewStatus() {
-    try {
-      setRefineReviewStatus(await api.getRefineReviewStatus(projectId));
-    } catch {
-      // NOTE: status が取れなくても既存の scan 表示や設定編集は妨げない。
-      setRefineReviewStatus(null);
-    }
-  }
-
   async function handleSaveWorldArea(area: WorldArea) {
     try {
       setLoading(true);
@@ -333,7 +300,7 @@ export default function WorkSettingsTab({
       setWorld(next);
       if (area === 'foundation') setFoundationEditing(false);
       else setInitialSituationEditing(false);
-      void refreshRefineReviewStatus();
+      onRefineInputChanged();
       onFlashMessage(`${area === 'foundation' ? '世界の土台' : '開始時点の状況'}を保存しました`);
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -360,7 +327,7 @@ export default function WorkSettingsTab({
       setCharacters(savedCharacters);
       setCharactersDraft(savedCharacters);
       setCharactersEditing(false);
-      void refreshRefineReviewStatus();
+      onRefineInputChanged();
       onFlashMessage('人物設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -387,7 +354,7 @@ export default function WorkSettingsTab({
       setProjectDetailsDraft(next);
       setProjectDetailsEditing(false);
       onProjectUpdated(updated);
-      void refreshRefineReviewStatus();
+      onRefineInputChanged();
       onFlashMessage('詳細設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -510,7 +477,7 @@ export default function WorkSettingsTab({
       setGeneratedSystemPrompt(preview.generatedSystemPrompt);
       setIsSystemPromptCustomized(preview.isCustomized);
       setSystemPromptEditing(false);
-      void refreshRefineReviewStatus();
+      onRefineInputChanged();
       onFlashMessage('システムプロンプトを保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -523,25 +490,6 @@ export default function WorkSettingsTab({
     setSystemPromptDraft(presets.customSystemPrompt ?? '');
     setBaseSystemPromptDraft(presets.baseSystemPrompt ?? defaultBaseSystemPrompt);
     setSystemPromptEditing(false);
-  }
-
-  async function handleScanRefine() {
-    try {
-      setScanning(true);
-      setScanError(null);
-      const result = await api.scanRefine(projectId);
-      setRefineScan(result);
-      await refreshRefineReviewStatus();
-      if (result.lastError) {
-        setScanError(result.lastError);
-      } else {
-        onFlashMessage('作品設定を再走査しました');
-      }
-    } catch (err) {
-      setScanError(err instanceof Error ? err.message : '走査に失敗しました');
-    } finally {
-      setScanning(false);
-    }
   }
 
   async function handlePresetChange(nextActivePresetIds: Project['activePresetIds']) {
@@ -578,7 +526,7 @@ export default function WorkSettingsTab({
         customSystemPrompt: preview.customSystemPrompt,
       });
       if (!systemPromptEditing) setSystemPromptDraft(preview.customSystemPrompt);
-      void refreshRefineReviewStatus();
+      onRefineInputChanged();
       onFlashMessage('作風設定を保存しました');
     } catch (err) {
       onError(err instanceof Error ? err.message : '保存に失敗しました');
@@ -614,44 +562,14 @@ export default function WorkSettingsTab({
   const isBaseSystemPromptCustomized =
     (presets.baseSystemPrompt ?? defaultBaseSystemPrompt).trim() !==
     defaultBaseSystemPrompt.trim();
-  const refineNudgeMessage = refineReviewStatus?.needsReview
-    ? buildRefineNudgeMessage(refineReviewStatus)
-    : null;
   const initialStateLabel = isRoleplay ? '会話開始時点の状態' : '初期状態（物語開始時点）';
 
   if (!categories) return <div className="loading">読み込み中…</div>;
 
   return (
     <div>
-      {/* AI と相談して編集 */}
-      {refineNudgeMessage && (
-        <div className="refine-review-nudge" role="status">
-          {refineNudgeMessage}
-        </div>
-      )}
-      <RefineChatPanel
-        projectId={projectId}
-        characters={characters}
-        refineScan={refineScan}
-        scanning={scanning}
-        scanError={scanError}
-        onScanRefine={handleScanRefine}
-        onSettingsChanged={() => {
-          void refreshWorldAndCharacters();
-          void refreshRefineReviewStatus();
-        }}
-        focusTarget={focusTarget}
-        onFocusTargetConsumed={onFocusTargetConsumed}
-      />
-      {!isRoleplay && (
-        <RefineAutomationSettingsCard
-          projectId={projectId}
-          project={project}
-          onError={onError}
-          onFlashMessage={onFlashMessage}
-        />
-      )}
-
+      {/* NOTE: 相談チャット・走査結果・自動レビュー設定は AI相談タブへ移した。
+          ここは直接編集の正本に徹し、各対象から相談へ渡す導線だけを置く。 */}
       <section className="summary-card detail-settings-card">
         <header className="summary-card-header">
           <h2>詳細設定</h2>
@@ -1040,17 +958,26 @@ export default function WorkSettingsTab({
             )}
           </div>
           {!activeWorldEditing && (
-            <CardEditButton
-              onClick={() => {
-                if (worldSubTab === 'foundation') {
-                  setFoundationDraft(world.foundation);
-                  setFoundationEditing(true);
-                } else {
-                  setInitialSituationDraft(world.initialSituation);
-                  setInitialSituationEditing(true);
-                }
-              }}
-            />
+            <>
+              <button
+                type="button"
+                className="summary-card-edit"
+                onClick={() => onConsultRequest({ kind: 'world', section: worldSubTab })}
+              >
+                💬 この世界設定を相談
+              </button>
+              <CardEditButton
+                onClick={() => {
+                  if (worldSubTab === 'foundation') {
+                    setFoundationDraft(world.foundation);
+                    setFoundationEditing(true);
+                  } else {
+                    setInitialSituationDraft(world.initialSituation);
+                    setInitialSituationEditing(true);
+                  }
+                }}
+              />
+            </>
           )}
         </header>
         <div className="detail-settings-tabs" role="tablist" aria-label="世界設定の領域">
@@ -1190,6 +1117,15 @@ export default function WorkSettingsTab({
                         {(missingDescription || !c.name.trim()) && (
                           <span className="settings-badge warn">要記入 ⚠</span>
                         )}
+                        <button
+                          type="button"
+                          className="summary-card-edit"
+                          onClick={() =>
+                            onConsultRequest({ kind: 'character', characterId: c.characterId })
+                          }
+                        >
+                          💬 この人物を深掘り
+                        </button>
                       </div>
                       <dl className="character-summary-fields">
                         <div>

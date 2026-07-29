@@ -6,7 +6,7 @@ import * as postGenerationMaintenanceService from '../services/postGenerationMai
 import * as projectService from '../services/projectService.js';
 import { withProjectWriteLock } from '../services/generationService.js';
 import { assertGenerationNotBlockedByMaintenance } from '../services/refineAutomationGuard.js';
-import type { RefineAutomationSettings } from '../types/index.js';
+import type { RefineAutomationSettings, RefineChatRequest } from '../types/index.js';
 
 const router = Router();
 
@@ -63,7 +63,9 @@ router.get('/projects/:id/refine/status', async (req, res, next) => {
 
 router.get('/projects/:id/refine/session', async (req, res, next) => {
   try {
-    const session = await refineChatService.getOrCreateRefineSession(req.params.id);
+    // NOTE: 読み取りに見えるが、migration と新規作成でファイルを書く。自動レビュー run と
+    // の lost update を避けるため session lock を通す版を使う。
+    const session = await refineChatService.readRefineSessionForClient(req.params.id);
     res.json(session);
   } catch (err) {
     if (handleRefineError(err, res)) return;
@@ -83,10 +85,42 @@ router.delete('/projects/:id/refine/session', async (req, res, next) => {
 
 router.post('/projects/:id/refine/messages', async (req, res, next) => {
   try {
-    const body = (req.body ?? {}) as { content?: unknown };
+    const body = (req.body ?? {}) as {
+      content?: unknown;
+      responseMode?: unknown;
+      target?: unknown;
+    };
     const content = typeof body.content === 'string' ? body.content : '';
     await assertGenerationNotBlockedByMaintenance(req.params.id);
-    const result = await refineChatService.sendRefineMessage(req.params.id, content);
+    // NOTE: responseMode / target の検証はサービス側が正本（不正 target はモデルを
+    // 呼ぶ前に 400）。ここでは型の受け渡しだけ行う。
+    const result = await refineChatService.sendRefineMessage(req.params.id, {
+      content,
+      responseMode: body.responseMode as RefineChatRequest['responseMode'],
+      target: body.target as RefineChatRequest['target'],
+    });
+    res.json(result);
+  } catch (err) {
+    if (handleRefineError(err, res)) return;
+    next(err);
+  }
+});
+
+router.put('/projects/:id/refine/findings/:fingerprint/disposition', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as { status?: unknown; note?: unknown };
+    const status = body.status;
+    if (status !== 'deferred' && status !== 'intentional-gap' && status !== 'resolved') {
+      return res
+        .status(400)
+        .json({ error: '不正な判断です。', code: 'invalid_finding_disposition' });
+    }
+    const result = await refineChatService.updateRefineFindingDisposition(
+      req.params.id,
+      req.params.fingerprint,
+      status,
+      typeof body.note === 'string' ? body.note : undefined
+    );
     res.json(result);
   } catch (err) {
     if (handleRefineError(err, res)) return;

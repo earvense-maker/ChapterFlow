@@ -46,13 +46,6 @@ const { apiMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/client/clientApi', () => ({ api: apiMock }));
-vi.mock('../../src/client/components/RefineChatPanel', () => ({
-  default: ({ onSettingsChanged }: { onSettingsChanged: () => void }) => (
-    <button type="button" onClick={onSettingsChanged}>
-      mock-refine-refresh
-    </button>
-  ),
-}));
 
 const project: Project = {
   schemaVersion: 1,
@@ -106,6 +99,8 @@ describe('WorkSettingsTab world areas', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -146,47 +141,6 @@ describe('WorkSettingsTab world areas', () => {
     );
   });
 
-  it('ignores a stale refine refresh that resolves after an area save', async () => {
-    let resolveRefresh!: (world: { foundation: string; initialSituation: string }) => void;
-    apiMock.getWorld
-      .mockResolvedValueOnce({ foundation: '魔法法則', initialSituation: '停戦中' })
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveRefresh = resolve;
-          })
-      );
-    apiMock.updateWorldArea.mockResolvedValueOnce({
-      foundation: '新しい魔法法則',
-      initialSituation: 'refineで更新済み',
-    });
-    render(
-      <WorkSettingsTab
-        projectId={project.projectId}
-        project={project}
-        onError={vi.fn()}
-        onFlashMessage={vi.fn()}
-        onProjectUpdated={vi.fn()}
-      />
-    );
-
-    fireEvent.click(await screen.findByRole('tab', { name: '世界' }));
-    fireEvent.click(screen.getByRole('button', { name: 'mock-refine-refresh' }));
-    await waitFor(() => expect(apiMock.getWorld).toHaveBeenCalledTimes(2));
-
-    fireEvent.click(screen.getByRole('tab', { name: '世界の土台' }));
-    fireEvent.click(screen.getByRole('button', { name: /編集/ }));
-    fireEvent.change(screen.getByPlaceholderText(/魔法法則・地理・文化・宇宙観/), {
-      target: { value: '新しい魔法法則' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: '保存' }));
-    await screen.findByText('新しい魔法法則');
-
-    resolveRefresh({ foundation: '古い魔法法則', initialSituation: '古い状況' });
-    fireEvent.click(screen.getByRole('tab', { name: '開始時点の状況' }));
-    expect(await screen.findByText('refineで更新済み')).toBeInTheDocument();
-    expect(screen.queryByText('古い状況')).not.toBeInTheDocument();
-  });
   it('uses the normalized character response returned by the save API', async () => {
     const character = {
       characterId: 'char-1',
@@ -208,6 +162,8 @@ describe('WorkSettingsTab world areas', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -257,6 +213,8 @@ describe('WorkSettingsTab style sample gallery', () => {
           onError={vi.fn()}
           onFlashMessage={vi.fn()}
           onProjectUpdated={vi.fn()}
+          onConsultRequest={vi.fn()}
+          onRefineInputChanged={vi.fn()}
         />
       </ConfirmProvider>
     );
@@ -320,6 +278,8 @@ describe('WorkSettingsTab system prompt additions', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -358,6 +318,8 @@ describe('WorkSettingsTab system prompt additions', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -392,6 +354,8 @@ describe('WorkSettingsTab system prompt additions', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -446,6 +410,8 @@ describe('WorkSettingsTab system prompt additions', () => {
         onError={onError}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -486,6 +452,8 @@ describe('WorkSettingsTab system prompt additions', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -541,6 +509,8 @@ describe('WorkSettingsTab system prompt additions', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
@@ -587,6 +557,8 @@ describe('WorkSettingsTab system prompt additions', () => {
         onError={vi.fn()}
         onFlashMessage={vi.fn()}
         onProjectUpdated={vi.fn()}
+        onConsultRequest={vi.fn()}
+        onRefineInputChanged={vi.fn()}
       />
     );
 
