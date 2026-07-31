@@ -8,6 +8,16 @@ describe('buildIntimateVocalDirection', () => {
       primaryText: '二人が身体を重ねる場面を続けて',
     });
     expect(active).toContain('【今回の場面だけの発声演出】');
+    expect(active).toContain('約3倍の頻度と文量');
+    expect(active).toContain('反応全体のおよそ半数');
+    expect(active).toContain('「あ・え」系');
+    expect(active).toContain('「い」系');
+    expect(active).toContain('「う・ん」系');
+    expect(active).toContain('「お」系');
+    expect(active).toContain('【言語の崩壊】');
+    expect(active).toContain('【物理同期】');
+    expect(active).toContain('促音「っ」');
+    expect(active).toContain('三点リーダー、長音、波線');
 
     expect(
       buildIntimateVocalDirection({
