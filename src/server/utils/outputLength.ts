@@ -24,6 +24,15 @@ export function getApproximateOutputRange(outputLength: number): ApproximateOutp
   };
 }
 
+// NOTE: JSON を返させるタスク共通の出力枠。本文向けの estimateMaxOutputTokens は
+// 「目標字数 × 3 + 2048」で、+2048 の思考マージンは Gemini 2.5 世代を想定した値。
+// 実測では deepseek-v4-flash が本文ゼロのまま思考だけで 12,248 トークン使い切り、
+// 走査の枠（約10,898）を上回って finishReason=length の空応答になった。JSON 自体は
+// 数千トークンで足りるので、超過分はすべて思考の余裕として渡す。
+// プロバイダーのハードキャップは resolveMaxOutputTokens が clamp するため、
+// キャップの小さい OpenAI 系（16,384）へ渡しても不正な値にはならない。
+export const JSON_TASK_MAX_OUTPUT_TOKENS = 40_000;
+
 export function estimateMaxOutputTokens(outputLength: number, maxTokens: number): number {
   // NOTE: 日本語は1文字≒1.5〜2.5トークン、加えて Gemini 2.5系 は thinking で
   // 出力枠を消費するため、指定字数×3 + 2048 の余裕を持たせないと本文が途中

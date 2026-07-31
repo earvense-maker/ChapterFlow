@@ -3,6 +3,7 @@ import * as refineScanService from '../../src/server/services/refineScanService'
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
+import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../../src/server/utils/outputLength';
 import type {
   Character,
   RefineScanResult,
@@ -109,6 +110,18 @@ describe('refineScanService', () => {
     const cached = await refineScanService.readCachedRefineScan(projectId);
     expect(cached).not.toBeNull();
     expect(cached!.lastError).toContain('解釈できません');
+  });
+
+  it('asks for a JSON-sized output budget instead of deriving it from the target length', async () => {
+    const projectId = await createTrackedProject();
+    const generate = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValue({ text: '{"coreConcept":"","findings":[]}', finishReason: 'stop', retryable: false });
+
+    await refineScanService.scanProjectSettings(projectId);
+
+    // NOTE: 字数からの推定（約9,500）だと推論モデルの思考で使い切って空応答になる。
+    expect(generate.mock.calls[0][0].maxOutputTokens).toBe(JSON_TASK_MAX_OUTPUT_TOKENS);
   });
 
   it('surfaces empty response with a targeted hint', async () => {

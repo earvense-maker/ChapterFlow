@@ -4,6 +4,7 @@ import { effectiveRefineAutomationMode } from '../types/index.js';
 import { nowIso } from '../utils/date.js';
 import { generateTimestampId } from '../utils/id.js';
 import { renderAutomationEvidenceCharacters } from '../utils/automationEvidence.js';
+import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import * as storage from './storageService.js';
 import { reloadCredentials } from './credentialService.js';
@@ -366,6 +367,8 @@ async function scanGenerationForAutomation(snapshot: AutomationScanSnapshot): Pr
       temperature: SCAN_TEMPERATURE,
       timeoutMs: SCAN_TIMEOUT_MS,
       modelName: snapshot.project.activeModelName,
+      // NOTE: 字数からの推定に任せると思考で枠を使い切って空応答になる。JSON 前提の枠を渡す。
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
       responseMimeType: 'application/json',
     });
   } catch (error) {

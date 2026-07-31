@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
 import * as storage from './storageService.js';
 import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
@@ -159,6 +160,8 @@ async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineSca
       temperature: TEMPERATURE,
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
+      // NOTE: 字数からの推定に任せると思考で枠を使い切って空応答になる。JSON 前提の枠を渡す。
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
       // NOTE: Structured JSON output を有効化。前置き文や思考モードでの空応答を減らす。
       responseMimeType: 'application/json',
     });

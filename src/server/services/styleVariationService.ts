@@ -5,6 +5,7 @@ import {
   normalizeStyleVariationSettings,
 } from '../../shared/defaults.js';
 import { STYLE_PROFILE_SCHEMA_VERSION } from '../../shared/types/index.js';
+import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
 import type {
   GenerationRecord,
   GenerationStyleProfile,
@@ -245,7 +246,11 @@ export async function analyzeAcceptedGenerationStyle(
       temperature: 0.1,
       timeoutMs: ANALYSIS_TIMEOUT_MS,
       modelName: project.activeModelName,
-      maxOutputTokens: 700,
+      // NOTE: 旧値 700。JSON 自体は 700 で足りるが、推論モデルはその枠を思考で先に
+      // 使い切るため本文が空になり、parseStyleTrace が "Unexpected end of JSON input"
+      // で落ちていた。超過分は思考の余裕。ここは採用のたびに走るので、思考トークンの
+      // 課金が気になる場合は真っ先に絞る候補。
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
       responseMimeType: 'application/json',
     });
     observedUsage = result.rawUsage;
