@@ -3,6 +3,7 @@ import { GeminiAdapter } from './geminiAdapter.js';
 import { DeepSeekAdapter } from './deepseekAdapter.js';
 import { XAIAdapter } from './xaiAdapter.js';
 import { OpenRouterAdapter } from './openrouterAdapter.js';
+import { MimoAdapter } from './mimoAdapter.js';
 import type { ModelAdapter } from './modelAdapter.js';
 
 // NOTE: ModelAdapter は状態を持たないため、プロセス単一のインスタンスを全サービスで
@@ -14,6 +15,7 @@ export const adapterMap: Record<string, ModelAdapter> = {
   deepseek: new DeepSeekAdapter(),
   xai: new XAIAdapter(),
   openrouter: new OpenRouterAdapter(),
+  mimo: new MimoAdapter(),
 };
 
 export const adapterList: ModelAdapter[] = Object.values(adapterMap);

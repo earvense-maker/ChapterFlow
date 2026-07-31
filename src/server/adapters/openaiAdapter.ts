@@ -22,6 +22,14 @@ interface OpenAIAdapterOptions {
   includeStreamOptions?: boolean;
   omitPenaltyFields?: boolean;
   extraHeaders?: Record<string, string>;
+  // NOTE: OpenAI 互換を名乗るプロバイダーでも出力上限のフィールド名が割れている。
+  // 旧 max_tokens しか読まない実装と、新 max_completion_tokens しか読まない実装が
+  // あり、無視される側を送ると上限が効かず生成が伸び続ける。既定は互換性が広い
+  // max_tokens のまま、ドキュメントが新名を使うプロバイダーだけ切り替える。
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  // NOTE: JSON モード（response_format）は互換 API でも未対応のことがある。false に
+  // すると送らず、各サービスのフェンス対応パーサ側の頑健化に任せる。
+  supportsJsonResponseFormat?: boolean;
 }
 
 export class OpenAIAdapter implements ModelAdapter {
@@ -32,6 +40,8 @@ export class OpenAIAdapter implements ModelAdapter {
   private readonly includeStreamOptions: boolean;
   private readonly omitPenaltyFields: boolean;
   private readonly extraHeaders: Record<string, string>;
+  private readonly maxTokensField: 'max_tokens' | 'max_completion_tokens';
+  private readonly supportsJsonResponseFormat: boolean;
 
   constructor(options: OpenAIAdapterOptions = {}) {
     this.providerName = options.providerName ?? PROVIDER_NAME;
@@ -41,6 +51,8 @@ export class OpenAIAdapter implements ModelAdapter {
     this.includeStreamOptions = options.includeStreamOptions ?? true;
     this.omitPenaltyFields = options.omitPenaltyFields ?? false;
     this.extraHeaders = options.extraHeaders ?? {};
+    this.maxTokensField = options.maxTokensField ?? 'max_tokens';
+    this.supportsJsonResponseFormat = options.supportsJsonResponseFormat ?? true;
   }
 
   async *generateTextStream(request: AdapterGenerateRequest): AsyncGenerator<AdapterGenerateStreamEvent> {
@@ -77,7 +89,7 @@ export class OpenAIAdapter implements ModelAdapter {
             { role: 'user', content: request.userPrompt },
           ],
           temperature: request.temperature,
-          max_tokens: resolveMaxOutputTokens(request, this.maxCompletionTokens),
+          [this.maxTokensField]: resolveMaxOutputTokens(request, this.maxCompletionTokens),
           stream: true,
           ...(this.includeStreamOptions ? { stream_options: { include_usage: true } } : {}),
           ...(!this.omitPenaltyFields && request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
@@ -88,7 +100,7 @@ export class OpenAIAdapter implements ModelAdapter {
             : {}),
           // NOTE: 構造化 JSON 出力。OpenAI互換プロバイダーは response_format で
           // JSON モードを指定できる。scan/chat が使う。
-          ...(request.responseMimeType === 'application/json'
+          ...(this.supportsJsonResponseFormat && request.responseMimeType === 'application/json'
             ? { response_format: { type: 'json_object' } }
             : {}),
         }),
@@ -200,7 +212,7 @@ export class OpenAIAdapter implements ModelAdapter {
             { role: 'user', content: request.userPrompt },
           ],
           temperature: request.temperature,
-          max_tokens: resolveMaxOutputTokens(request, this.maxCompletionTokens),
+          [this.maxTokensField]: resolveMaxOutputTokens(request, this.maxCompletionTokens),
           ...(!this.omitPenaltyFields && request.frequencyPenalty !== undefined && request.frequencyPenalty !== 0
             ? { frequency_penalty: request.frequencyPenalty }
             : {}),
@@ -209,7 +221,7 @@ export class OpenAIAdapter implements ModelAdapter {
             : {}),
           // NOTE: 構造化 JSON 出力。OpenAI互換プロバイダーは response_format で
           // JSON モードを指定できる。scan/chat が使う。
-          ...(request.responseMimeType === 'application/json'
+          ...(this.supportsJsonResponseFormat && request.responseMimeType === 'application/json'
             ? { response_format: { type: 'json_object' } }
             : {}),
         }),

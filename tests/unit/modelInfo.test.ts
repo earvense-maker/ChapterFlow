@@ -27,11 +27,26 @@ describe('modelInfoService', () => {
       'openai',
       'xai',
       'openrouter',
+      'mimo',
     ]);
     expect(defaultModelForProvider('gemini')).toBe('gemini-3.6-flash');
     expect(defaultModelForProvider('deepseek')).toBe('deepseek-v4-pro');
     expect(defaultModelForProvider('xai')).toBe('grok-4.3');
     expect(defaultModelForProvider('openrouter')).toBe('google/gemma-4-31b-it:free');
+    expect(defaultModelForProvider('mimo')).toBe('mimo-v2.5');
+  });
+
+  it('uses catalog limits for MiMo models and infers the series for unlisted ones', async () => {
+    const pro = await resolveModelTokenLimits('mimo', 'mimo-v2.5-pro');
+    const unlisted = await resolveModelTokenLimits('mimo', 'mimo-v2.5-pro-ultraspeed');
+
+    expect(pro).toMatchObject({
+      contextWindowTokens: 1_000_000,
+      outputTokenLimit: 128_000,
+      source: 'catalog',
+    });
+    // カタログ未収録でも 128k 既定へ落とさず、系列の公称値を使う。
+    expect(unlisted).toMatchObject({ contextWindowTokens: 1_000_000, outputTokenLimit: 128_000 });
   });
 
   it('uses catalog limits for current Grok models', async () => {

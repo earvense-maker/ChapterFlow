@@ -59,6 +59,14 @@ const PROVIDERS: ModelProviderInfo[] = [
     apiKeyHelp:
       'OpenRouter APIキーを保存します。既定は無料の google/gemma-4-31b-it:free です。無料モデルは提供終了・混雑の可能性があるため、利用できない場合はモデル名を変更してください。作品内容はOpenRouterと選択先のモデル事業者へ送信されます。OpenRouter側のPrivacy設定も確認してください（通常20回/分・50回/日）。',
   },
+  {
+    name: 'mimo',
+    label: 'Xiaomi MiMo',
+    defaultModel: 'mimo-v2.5',
+    apiKeyPlaceholder: 'sk-...',
+    apiKeyHelp:
+      'Xiaomi MiMo APIキー（従量課金の sk- 形式）を保存します。OpenAI互換APIとして利用し、作品内容はXiaomiへ送信されます。既定は安価な mimo-v2.5、より高性能な旗艦モデルを使う場合は mimo-v2.5-pro を指定してください。Token Plan の tp- 形式キーは接続先が別のため利用できません。',
+  },
 ];
 
 // NOTE: DeepSeek は公式に一覧APIを持たないため、値はドキュメント記載の実測に寄せる。
@@ -111,6 +119,21 @@ const CATALOG_LIMITS: Record<string, Record<string, Omit<ModelTokenLimits, 'sour
     'gpt-5.4-mini': {
       contextWindowTokens: 400_000,
       inputTokenLimit: 400_000,
+      outputTokenLimit: 128_000,
+    },
+  },
+  // NOTE: MiMo は一覧APIの有無を確認できていないため、公式ドキュメントのモデル表
+  // （mimo-v2.5 系はいずれも context 1M / output 128K）をそのまま持つ。
+  // mimo-v2 系は 2026-06-30 に提供終了しているので載せない。
+  mimo: {
+    'mimo-v2.5-pro': {
+      contextWindowTokens: 1_000_000,
+      inputTokenLimit: 1_000_000,
+      outputTokenLimit: 128_000,
+    },
+    'mimo-v2.5': {
+      contextWindowTokens: 1_000_000,
+      inputTokenLimit: 1_000_000,
       outputTokenLimit: 128_000,
     },
   },
@@ -296,6 +319,17 @@ function inferModelTokenLimits(provider: string, modelName: string): ModelTokenL
       contextWindowTokens: 1_000_000,
       inputTokenLimit: 1_000_000,
       outputTokenLimit: 16_384,
+      source: 'inferred',
+    };
+  }
+
+  // NOTE: カタログ未収録の新しい mimo モデルでも、既定の 128k 扱いだと文脈残量を
+  // 過小に見積もる。系列としての公称値（1M / 128K）へ寄せる。
+  if (provider === 'mimo') {
+    return {
+      contextWindowTokens: 1_000_000,
+      inputTokenLimit: 1_000_000,
+      outputTokenLimit: 128_000,
       source: 'inferred',
     };
   }
