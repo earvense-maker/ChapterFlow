@@ -2,6 +2,8 @@ import type { EpisodeId, GenerationId, MemoryId, ProjectId, SceneId } from './id
 import type { StyleVariationSettings } from './style.js';
 import type { Character } from './character.js';
 import type { RefineAutomationSettings, RefineMaintenanceStatus } from './refineAutomation.js';
+// NOTE: roleplay.ts も project.ts を型参照するが、型のみの相互参照なので実行時の循環はない。
+import type { RoleplayUserPersona } from './roleplay.js';
 
 // NOTE: 小説用（narration〜intimacy）とロールプレイ用（rp*）で語彙が別物なため、
 // 同じ Record に同居させつつカテゴリ順（presetMigration の *_PRESET_CATEGORY_ORDER）で
@@ -56,6 +58,9 @@ export interface Project {
   projectType?: ProjectType;
   // NOTE: ロールプレイ会話開始時に提示するシナリオ候補（会話の舞台）。最大10件。
   scenarioSeeds?: string[];
+  // NOTE: ロールプレイの「あなた（ユーザー）」の既定像。新しい会話を始めるときの初期値に
+  // なるだけで、進行中の会話には影響しない（会話ごとの値は contextSnapshot に固定される）。
+  defaultUserPersona?: RoleplayUserPersona;
   // NOTE: ロールプレイ 1 応答の目安字数（プロンプトの outputLength に流し、hard cap も
   // ここから派生）。未指定なら DEFAULT_ROLEPLAY_OUTPUT_CHARS を使う。range 100〜500。
   roleplayOutputChars?: number;
@@ -130,6 +135,7 @@ export interface CreateProjectBody {
   projectType?: ProjectType;
   scenarioSeeds?: string[];
   roleplayOutputChars?: number;
+  defaultUserPersona?: RoleplayUserPersona;
   styleVariation?: StyleVariationSettings;
 }
 
@@ -148,5 +154,7 @@ export interface UpdateProjectBody {
   // ロールプレイ型プロジェクトで会話開始時のチップを追加編集するために更新可能。
   scenarioSeeds?: string[];
   roleplayOutputChars?: number;
+  // NOTE: null を渡すと既定ペルソナを消す（未設定に戻す）。
+  defaultUserPersona?: RoleplayUserPersona | null;
   styleVariation?: StyleVariationSettings;
 }

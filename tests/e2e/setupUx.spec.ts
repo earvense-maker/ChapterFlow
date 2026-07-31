@@ -437,6 +437,246 @@ test('初回の案内から候補を出し、試し書きをその場で調整�
   expect(chatTurn).toBe(2);
 });
 
+test('ロールプレイ入口はキャラ向けの案内で始まり、初回メッセージを確認して作品化できる', async ({
+  page,
+}) => {
+  let session = { ...createSession(), purpose: 'roleplay' as const };
+  let committedBody: {
+    plan: {
+      project: { title: string };
+      characters: Array<{ greeting?: string; dialogueExamples?: string[] }>;
+      firstWishSuggestion?: string;
+      defaultUserPersona?: Record<string, string>;
+    };
+    revision: number;
+  } | null = null;
+  const now = '2026-07-10T00:01:00.000Z';
+  let chatTurn = 0;
+  let createdPurpose: string | undefined;
+
+  await page.route('**/api/projects', async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route('**/api/models/providers', async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          name: 'deepseek',
+          label: 'DeepSeek',
+          defaultModel: 'deepseek-v4-flash',
+          apiKeyPlaceholder: 'sk-...',
+          apiKeyHelp: 'DeepSeek APIキー',
+          hasApiKey: true,
+        },
+      ],
+    });
+  });
+  await page.route('**/api/models/default', async (route) => {
+    await route.fulfill({ json: { provider: 'deepseek', modelName: 'deepseek-v4-flash' } });
+  });
+  await page.route('**/api/setup-sessions', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ json: [] });
+      return;
+    }
+    // NOTE: route ハンドラ内で expect すると失敗が握りつぶされるので、値だけ控えて後で検証する。
+    createdPurpose = route.request().postDataJSON()?.purpose;
+    await route.fulfill({
+      status: 201,
+      json: { sessionId: session.sessionId, session, suggestedActions: [] },
+    });
+  });
+  await page.route('**/api/setup-sessions/setup-e2e/messages/stream', async (route) => {
+    const body = route.request().postDataJSON() as { message: string };
+    const turn = chatTurn;
+    chatTurn += 1;
+    const userMessage = {
+      messageId: `msg-user-rp-${turn}`,
+      role: 'user',
+      content: body.message,
+      createdAt: now,
+    } as const;
+    const assistantMessage = {
+      messageId: `msg-assistant-rp-${turn}`,
+      role: 'assistant',
+      content: turn === 0 ? 'こんなキャラクターはどうでしょう。' : '口調をもう少し寄せました。',
+      createdAt: now,
+    } as const;
+    session = {
+      ...session,
+      revision: session.revision + 1,
+      messages: [...session.messages, userMessage, assistantMessage],
+      draft: {
+        ...session.draft,
+        characters: [
+          {
+            id: 'character-rp',
+            role: 'protagonist' as const,
+            name: '灯里',
+            label: '灯里',
+            description: '図書室の常連。',
+            speechStyle: 'ゆっくりした敬語',
+            greeting: 'あ、また来たんですね。',
+            dialogueExamples: ['その本、面白いですよ。'],
+            source: 'llm',
+            status: 'active' as const,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        scenarioSeeds: ['放課後の図書室で二人きり'],
+        // NOTE: 相談で「あなたが誰として話すか」も決まる（userPersonaUpdate 相当）。
+        userPersona: { name: '結衣', relationship: '同じ図書委員' },
+      },
+    };
+    await route.fulfill({
+      headers: { 'content-type': 'text/event-stream' },
+      body: `event: result\ndata: ${JSON.stringify({
+        session,
+        assistantMessage,
+        draft: session.draft,
+        // NOTE: モデルが intent 付き選択肢を返さないケース。クライアント側の
+        // フォールバック提案が出ることを確かめる。
+        suggestedActions: [],
+        revision: session.revision,
+      })}\n\n`,
+    });
+  });
+  await page.route('**/api/setup-sessions/setup-e2e/preview', async (route) => {
+    session = { ...session, revision: session.revision + 1 };
+    await route.fulfill({
+      json: { previewText: 'ユーザー: こんにちは\n灯里: あ、また来たんですね。', session, revision: session.revision },
+    });
+  });
+  await page.route('**/api/setup-sessions/setup-e2e/commit-plan', async (route) => {
+    session = { ...session, revision: session.revision + 1 };
+    await route.fulfill({
+      json: {
+        session,
+        revision: session.revision,
+        plan: {
+          project: {
+            title: '灯里と話す',
+            outputLength: 3000,
+            activePresetIds: {},
+            projectType: 'roleplay',
+          },
+          coreConcept: '図書室の常連と、閉室までの短い時間を過ごす。',
+          world: { foundation: '', initialSituation: '' },
+          characters: [
+            {
+              characterId: 'char-1',
+              name: '灯里',
+              role: 'protagonist',
+              description: '図書室の常連。',
+              greeting: 'あ、また来たんですね。',
+              dialogueExamples: ['その本、面白いですよ。'],
+            },
+          ],
+          memories: [],
+          storyState: {
+            schemaVersion: 1,
+            currentSituation: [],
+            characterStates: [],
+            importantEvents: [],
+            openThreads: [],
+            updatedAt: '2026-07-10T00:00:00.000Z',
+          },
+          customSystemPrompt: '',
+          scenarioSeeds: ['放課後の図書室で二人きり'],
+          defaultUserPersona: {
+            name: '結衣',
+            relationship: '同じ図書委員',
+            actionPolicy: 'conservative',
+          },
+        },
+      },
+    });
+  });
+  await page.route('**/api/setup-sessions/setup-e2e/commit', async (route) => {
+    committedBody = route.request().postDataJSON();
+    session = { ...session, status: 'committed', committedProjectId: 'proj-rp-e2e', revision: session.revision + 1 };
+    await route.fulfill({ json: { projectId: 'proj-rp-e2e', session } });
+  });
+  await page.route('**/api/projects/proj-rp-e2e', async (route) => {
+    await route.fulfill({ json: { projectId: 'proj-rp-e2e', title: '灯里と話す', projectType: 'roleplay' } });
+  });
+
+  await page.goto('/');
+  await page.getByRole('banner').getByRole('button', { name: 'キャラと話す作品を作る', exact: true }).click();
+
+  await expect(
+    page.getByText('どんなキャラクターと話したいですか？ 好きな口調や関係性だけでも大丈夫です。一緒に見つけましょう。')
+  ).toBeVisible();
+  expect(createdPurpose).toBe('roleplay');
+  await expect(page.getByLabel('キャラの種メモ')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'このキャラと話し始める', exact: true })).toBeDisabled();
+  await expect(page.getByPlaceholder('話したいキャラクターの雰囲気、口調、あなたとの関係、避けたい話題など')).toBeVisible();
+
+  await page.getByRole('button', { name: '好きなキャラ像から', exact: true }).click();
+
+  await expect(page.getByText('キャラクター「灯里」を追加', { exact: true })).toBeVisible();
+  await expect(
+    page.locator('.setup-draft-section').filter({ hasText: 'シナリオ（会話の舞台）' })
+  ).toContainText('放課後の図書室で二人きり');
+  await expect(page.getByPlaceholder('会話開始時の挨拶（1〜3文、最大500字）')).toHaveValue(
+    'あ、また来たんですね。'
+  );
+  const personaSection = page
+    .locator('.setup-draft-section')
+    .filter({ hasText: 'あなた（ユーザー）' });
+  await expect(personaSection.getByPlaceholder('キャラクターに名乗る名前')).toHaveValue('結衣');
+  await expect(page.getByText('あなた（ユーザー）を追加', { exact: true })).toBeVisible();
+  // NOTE: 小説専用の欄はロールプレイでは出ない。
+  await expect(page.locator('.setup-draft-section').filter({ hasText: '冒頭候補' })).toHaveCount(0);
+
+  await page
+    .getByPlaceholder('話したいキャラクターの雰囲気、口調、あなたとの関係、避けたい話題など')
+    .fill('もう少し砕けた口調がいいです。');
+  await page.getByRole('button', { name: '送る', exact: true }).click();
+  await expect(page.getByText('口調をもう少し寄せました。')).toBeVisible();
+
+  // モデルが intent を返さなくても、2往復目以降は次の一歩が出る。
+  const previewAction = page.getByRole('button', { name: '試しに少し話してみる', exact: true });
+  await expect(previewAction).toBeVisible();
+  await previewAction.click();
+  await expect(page.getByRole('heading', { name: '試し会話' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'もっと砕けた口調で', exact: true })).toBeVisible();
+
+  await page
+    .locator('.setup-header-actions')
+    .getByRole('button', { name: 'このキャラと話し始める', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', { name: '作品にする内容を確認' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('キャラクターの核')).toHaveValue('図書室の常連と、閉室までの短い時間を過ごす。');
+  await expect(dialog.getByLabel('第1話冒頭への希望')).toHaveCount(0);
+  await expect(dialog.getByLabel('キャラクター1の初回メッセージ')).toHaveValue('あ、また来たんですね。');
+
+  await expect(dialog.getByLabel('あなた・名前')).toHaveValue('結衣');
+  await expect(dialog.getByLabel('あなた・キャラクターとの関係')).toHaveValue('同じ図書委員');
+
+  await dialog.getByLabel('キャラクター1の初回メッセージ').fill('あ、来てくれたんですね。待ってました。');
+  await dialog.getByLabel('キャラクター1のセリフ例').fill('その本、面白いですよ。\nもう少しだけ、いてもいいですか。');
+  await dialog.getByLabel('あなた・呼ばれ方').fill('結衣先輩');
+  await dialog.getByRole('button', { name: 'このキャラと話し始める' }).click();
+
+  await expect.poll(() => committedBody?.plan.characters[0].greeting).toBe(
+    'あ、来てくれたんですね。待ってました。'
+  );
+  expect(committedBody?.plan.characters[0].dialogueExamples).toEqual([
+    'その本、面白いですよ。',
+    'もう少しだけ、いてもいいですか。',
+  ]);
+  expect(committedBody?.plan.firstWishSuggestion).toBeUndefined();
+  expect(committedBody?.plan.defaultUserPersona).toEqual({
+    name: '結衣',
+    relationship: '同じ図書委員',
+    preferredAddress: '結衣先輩',
+    actionPolicy: 'conservative',
+  });
+});
+
 function createSession() {
   return {
     schemaVersion: 1,

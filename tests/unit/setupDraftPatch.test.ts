@@ -357,4 +357,65 @@ describe('setupDraftPatchService', () => {
     });
     expect(cleared.characters[0].traits).toBeUndefined();
   });
+
+  it('merges userPersonaUpdate field by field and clears fields sent empty', () => {
+    const added = applySetupDraftPatch({
+      draft: createEmptySetupDraft(),
+      locks: [],
+      now,
+      patch: {
+        userPersonaUpdate: { name: '結衣', relationship: '幼馴染' },
+      },
+    });
+    expect(added.userPersona).toEqual({ name: '結衣', relationship: '幼馴染' });
+
+    // NOTE: 触れなかった項目は維持し、指定した項目だけ更新する。
+    const merged = applySetupDraftPatch({
+      draft: added,
+      locks: [],
+      now,
+      patch: { userPersonaUpdate: { preferredAddress: '結衣' } },
+    });
+    expect(merged.userPersona).toEqual({
+      name: '結衣',
+      relationship: '幼馴染',
+      preferredAddress: '結衣',
+    });
+
+    // NOTE: 空文字はその項目の削除。全部消えたらペルソナ自体を落とす。
+    const cleared = applySetupDraftPatch({
+      draft: merged,
+      locks: [],
+      now,
+      patch: {
+        userPersonaUpdate: { name: '', relationship: '', preferredAddress: '' },
+      },
+    });
+    expect(cleared.userPersona).toBeUndefined();
+  });
+
+  it('ignores userPersonaUpdate while the persona is locked', () => {
+    const base = applySetupDraftPatch({
+      draft: createEmptySetupDraft(),
+      locks: [],
+      now,
+      patch: { userPersonaUpdate: { name: '結衣' } },
+    });
+    const locks: SetupLock[] = [
+      {
+        lockId: 'lock-persona',
+        path: 'draft.userPersona',
+        reason: 'manual_edit',
+        createdAt: now,
+      },
+    ];
+
+    const updated = applySetupDraftPatch({
+      draft: base,
+      locks,
+      now,
+      patch: { userPersonaUpdate: { name: 'モデルが上書きした名前' } },
+    });
+    expect(updated.userPersona).toEqual({ name: '結衣' });
+  });
 });

@@ -675,6 +675,72 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.scenarioSeeds).toEqual(['ドラフトの舞台1', 'ドラフトの舞台2']);
   });
 
+  it('promotes the consultation user persona into the project default for roleplay', () => {
+    const roleplaySession: SetupSession = {
+      ...session(),
+      purpose: 'roleplay',
+      draft: {
+        ...createEmptySetupDraft(),
+        coreConcept: '幼馴染',
+        userPersona: {
+          name: '結衣',
+          relationship: '幼馴染',
+          preferredAddress: '結衣',
+          knownFacts: '同じ高校の3年生であることを知っている',
+        },
+      },
+    };
+
+    // NOTE: モデルが defaultUserPersona を返さなくても draft から拾う。
+    const fromDraft = normalizeSetupCommitData({
+      session: roleplaySession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: { project: { title: 'x' } },
+    });
+    expect(fromDraft.projectInput.defaultUserPersona).toEqual({
+      name: '結衣',
+      relationship: '幼馴染',
+      preferredAddress: '結衣',
+      knownFacts: '同じ高校の3年生であることを知っている',
+      actionPolicy: 'conservative',
+    });
+
+    // NOTE: モデル出力があればそちらを優先する。
+    const fromModel = normalizeSetupCommitData({
+      session: roleplaySession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: {
+        project: { title: 'x' },
+        defaultUserPersona: { name: '別名', relationship: '後輩', actionPolicy: 'strict' },
+      },
+    });
+    expect(fromModel.projectInput.defaultUserPersona).toEqual({
+      name: '別名',
+      relationship: '後輩',
+      actionPolicy: 'strict',
+    });
+  });
+
+  it('never sets a user persona for novel purpose', () => {
+    const novelSession: SetupSession = {
+      ...session(),
+      draft: {
+        ...createEmptySetupDraft(),
+        coreConcept: '事件もの',
+        userPersona: { name: '結衣' },
+      },
+    };
+    const normalized = normalizeSetupCommitData({
+      session: novelSession,
+      now,
+      presetIdsByCategory: defaultPresetIdsByCategory,
+      raw: { project: { title: 'x' }, defaultUserPersona: { name: '結衣' } },
+    });
+    expect(normalized.projectInput.defaultUserPersona).toBeUndefined();
+  });
+
   it('drops story event visibility IDs that do not match committed characters', () => {
     const normalized = normalizeSetupCommitData({
       session: session(),

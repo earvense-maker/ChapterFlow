@@ -3,6 +3,7 @@ import { nowIso } from '../utils/date.js';
 import {
   normalizeCharacterTraitsWithLegacy,
 } from '../../shared/characterSchema.js';
+import { ROLEPLAY_USER_PERSONA_LIMITS } from '../../shared/roleplayPersona.js';
 import type {
   CharacterRole,
   SetupDraft,
@@ -10,6 +11,7 @@ import type {
   SetupDraftCharacter,
   SetupDraftItemSource,
   SetupDraftItemStatus,
+  SetupDraftUserPersona,
   LegacySetupDraftPatchInput,
   SetupDraftTextItem,
   SetupDraftUndecided,
@@ -52,6 +54,7 @@ export function createEmptySetupDraft(): SetupDraft {
 export function normalizeSetupDraft(value: unknown, fallbackNow = nowIso()): SetupDraft {
   if (!isRecord(value)) return createEmptySetupDraft();
 
+  const userPersona = normalizeDraftUserPersona(value.userPersona);
   return {
     coreConcept: asString(value.coreConcept),
     confirmed: deduplicateAndFixItemIds(
@@ -89,7 +92,37 @@ export function normalizeSetupDraft(value: unknown, fallbackNow = nowIso()): Set
     ng: normalizeStringList(value.ng, LIMITS.ng),
     openingSeeds: normalizeStringList(value.openingSeeds, LIMITS.openingSeeds),
     scenarioSeeds: normalizeStringList(value.scenarioSeeds, LIMITS.scenarioSeeds),
+    ...(userPersona ? { userPersona } : {}),
   };
+}
+
+// NOTE: 相談draftのユーザーペルソナは actionPolicy を持たない（会話開始時に選ぶ）。
+// 上限だけ共有の ROLEPLAY_USER_PERSONA_LIMITS に合わせ、全項目が空なら undefined にする。
+function normalizeDraftUserPersona(value: unknown): SetupDraftUserPersona | undefined {
+  if (!isRecord(value)) return undefined;
+  const persona: SetupDraftUserPersona = {};
+  const name = truncateText(asString(value.name), ROLEPLAY_USER_PERSONA_LIMITS.name);
+  const relationship = truncateText(
+    asString(value.relationship),
+    ROLEPLAY_USER_PERSONA_LIMITS.relationship
+  );
+  const preferredAddress = truncateText(
+    asString(value.preferredAddress),
+    ROLEPLAY_USER_PERSONA_LIMITS.preferredAddress
+  );
+  const knownFacts = truncateText(
+    asString(value.knownFacts),
+    ROLEPLAY_USER_PERSONA_LIMITS.knownFacts
+  );
+  if (name) persona.name = name;
+  if (relationship) persona.relationship = relationship;
+  if (preferredAddress) persona.preferredAddress = preferredAddress;
+  if (knownFacts) persona.knownFacts = knownFacts;
+  return Object.keys(persona).length > 0 ? persona : undefined;
+}
+
+function truncateText(value: string, maxChars: number): string {
+  return value.length > maxChars ? value.slice(0, maxChars) : value;
 }
 
 export function applySetupDraftPatch(input: {
@@ -137,10 +170,41 @@ export function applySetupDraftPatch(input: {
   addStringItems(next.ng, patch.ngAdd, LIMITS.ng, input.locks, 'draft.ng');
   addStringItems(next.openingSeeds, patch.openingSeedsAdd, LIMITS.openingSeeds, input.locks, 'draft.openingSeeds');
   addStringItems(next.scenarioSeeds, patch.scenarioSeedsAdd, LIMITS.scenarioSeeds, input.locks, 'draft.scenarioSeeds');
+  applyUserPersonaUpdate(next, patch.userPersonaUpdate, input.locks);
   archiveIds(next, patch.archiveIds, input.locks, now);
 
   next.candidates = trimCandidates(next.candidates);
   return next;
+}
+
+// NOTE: ペルソナは1件しかないので add ではなくフィールド単位の差分更新にする。
+// 明示的に空文字を渡されたフィールドだけ消し、触れなかったフィールドは維持する。
+// 固定（draft.userPersona ロック）中は丸ごと無視する。
+function applyUserPersonaUpdate(
+  draft: SetupDraft,
+  update: unknown,
+  locks: SetupLock[]
+): void {
+  if (!isRecord(update)) return;
+  if (isPathLocked(locks, 'draft.userPersona')) return;
+
+  const merged: Record<string, unknown> = { ...(draft.userPersona ?? {}) };
+  for (const field of ['name', 'relationship', 'preferredAddress', 'knownFacts'] as const) {
+    if (!(field in update)) continue;
+    const value = asString(update[field]);
+    if (value) {
+      merged[field] = value;
+    } else {
+      delete merged[field];
+    }
+  }
+
+  const normalized = normalizeDraftUserPersona(merged);
+  if (normalized) {
+    draft.userPersona = normalized;
+  } else {
+    delete draft.userPersona;
+  }
 }
 
 function addTextItems(

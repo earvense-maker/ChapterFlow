@@ -31,6 +31,43 @@ describe('project settings validation', () => {
     expect(project.streamingEnabled).toBe(true);
   });
 
+  it('stores, updates and clears the roleplay default user persona', async () => {
+    const project = await projectService.createProject({
+      title: 'Persona Test',
+      projectType: 'roleplay',
+      defaultUserPersona: {
+        name: '結衣',
+        relationship: '幼馴染',
+        // NOTE: 空文字と未指定は「未設定」として落とす。
+        preferredAddress: '   ',
+        actionPolicy: 'strict',
+      },
+    });
+    createdProjectIds.push(project.projectId);
+
+    expect(project.defaultUserPersona).toEqual({
+      name: '結衣',
+      relationship: '幼馴染',
+      actionPolicy: 'strict',
+    });
+
+    const updated = await projectService.updateProject(project.projectId, {
+      defaultUserPersona: { name: '結衣', preferredAddress: '結衣先輩', actionPolicy: 'conservative' },
+    });
+    expect(updated.defaultUserPersona).toEqual({
+      name: '結衣',
+      preferredAddress: '結衣先輩',
+      actionPolicy: 'conservative',
+    });
+
+    // NOTE: null は「未設定へ戻す」。保存後の読み出しでも消えていること。
+    const cleared = await projectService.updateProject(project.projectId, {
+      defaultUserPersona: null,
+    });
+    expect(cleared.defaultUserPersona).toBeUndefined();
+    expect((await projectService.getProject(project.projectId))?.defaultUserPersona).toBeUndefined();
+  });
+
   it('keeps the required narration default for consultation projects', async () => {
     const project = await projectService.createProject({
       title: 'Consultation without defaults',

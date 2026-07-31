@@ -42,6 +42,11 @@ import {
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateMaxOutputTokens } from '../utils/outputLength.js';
 import { findNgMatches } from '../../shared/ngDetection.js';
+import {
+  DEFAULT_ROLEPLAY_USER_ACTION_POLICY,
+  isRoleplayUserActionPolicy,
+  ROLEPLAY_USER_PERSONA_LIMITS,
+} from '../../shared/roleplayPersona.js';
 import type { PromptBudgetReport } from '../../shared/types/generation.js';
 import { rewriteAllNgOccurrences } from './ngTextRewriteService.js';
 import { readAppSettings } from './appSettingsService.js';
@@ -77,7 +82,6 @@ import type {
   RoleplaySession,
   RoleplaySessionSummary,
   RoleplaySessionView,
-  RoleplayUserActionPolicy,
   RoleplayUserPersona,
 } from '../types/index.js';
 
@@ -92,18 +96,8 @@ const ROLEPLAY_RELATIONSHIP_LIST_MAX = 8;
 const ROLEPLAY_RELATIONSHIP_ITEM_MAX_CHARS = 160;
 const ROLEPLAY_RELATIONSHIP_MAX_STEP = 15;
 
-const ROLEPLAY_USER_PERSONA_LIMITS = {
-  name: 80,
-  relationship: 200,
-  preferredAddress: 80,
-  knownFacts: 1000,
-} as const;
-
-const ROLEPLAY_USER_ACTION_POLICIES = new Set<RoleplayUserActionPolicy>([
-  'strict',
-  'conservative',
-  'collaborative',
-]);
+// NOTE: 上限と既定方針は作品既定ペルソナ・相談draftと共有する（shared/roleplayPersona）。
+// ここでは「壊れた入力は 400 で知らせる」ため、共有の非throw正規化ではなく独自検証を使う。
 
 function resolveOutputCaps(projectOutputChars: number | undefined): {
   outputLength: number;
@@ -550,7 +544,11 @@ export async function createRoleplaySession(
     }
 
     const scenario = normalizeScenario(input.scenario);
-    const userPersona = normalizeUserPersona(input.userPersona);
+    // NOTE: 会話ごとの指定がなければ作品の既定ペルソナを使う。ここで解決した値は
+    // contextSnapshot に固定されるので、後から作品設定を変えても進行中の会話は変わらない。
+    const userPersona = normalizeUserPersona(
+      input.userPersona ?? project.defaultUserPersona
+    );
     const worldText = await storage.readWorldPromptText(input.projectId);
     const presets = await storage.readPresets(input.projectId);
 
@@ -621,11 +619,8 @@ function normalizeUserPersona(value: unknown): RoleplayUserPersona {
     );
   }
   const source = isRecord(value) ? value : {};
-  const actionPolicy = source.actionPolicy ?? 'conservative';
-  if (
-    typeof actionPolicy !== 'string' ||
-    !ROLEPLAY_USER_ACTION_POLICIES.has(actionPolicy as RoleplayUserActionPolicy)
-  ) {
+  const actionPolicy = source.actionPolicy ?? DEFAULT_ROLEPLAY_USER_ACTION_POLICY;
+  if (!isRoleplayUserActionPolicy(actionPolicy)) {
     throw new RoleplayServiceError(
       'ユーザー行動の補完方針が不正です。',
       'invalid_user_persona',
@@ -650,7 +645,7 @@ function normalizeUserPersona(value: unknown): RoleplayUserPersona {
       '既知情報',
       ROLEPLAY_USER_PERSONA_LIMITS.knownFacts
     ),
-    actionPolicy: actionPolicy as RoleplayUserActionPolicy,
+    actionPolicy,
   };
 }
 

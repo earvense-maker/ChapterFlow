@@ -360,6 +360,19 @@
   min-height: 54px;
 }
 
+/* NOTE: ユーザーペルソナ欄は「ラベル＋1行入力」を4つ縦に並べる単票。他セクションの
+   リスト行とは形が違うので、ラベルを小さく添える専用の並びにする。 */
+.setup-draft-persona-field {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--text-muted, #667);
+}
+
+.setup-draft-persona-field .setup-draft-textarea {
+  margin-top: 0.2rem;
+}
+
 .setup-draft-row-actions {
   display: flex;
   justify-content: flex-end;

@@ -208,4 +208,34 @@ describe('setupPromptBuilder', () => {
       expect(prompt).not.toContain('"fear"');
     }
   });
+
+  it('asks the roleplay consultation to settle who the user is, and novel never does', () => {
+    const roleplayChat = buildSetupChatPrompt({
+      session: { ...baseSession(), purpose: 'roleplay' },
+      userMessage: 'このキャラと話したい',
+    });
+    expect(roleplayChat.systemInstructions).toContain('ユーザー自身が「誰として」');
+    expect(roleplayChat.userPrompt).toContain('userPersonaUpdate');
+    expect(roleplayChat.userPrompt).toContain('勝手に名前や年齢を決めない');
+
+    const novelChat = buildSetupChatPrompt({
+      session: baseSession(),
+      userMessage: 'こんな話が読みたい',
+    });
+    expect(novelChat.systemInstructions).not.toContain('userPersonaUpdate');
+    expect(novelChat.userPrompt).not.toContain('userPersonaUpdate');
+
+    const roleplayCommit = buildSetupCommitPrompt({
+      session: { ...baseSession(), purpose: 'roleplay' },
+      presetIdsByCategory,
+    });
+    expect(roleplayCommit.systemInstructions).toContain('defaultUserPersona');
+    expect(roleplayCommit.userPrompt).toContain('"defaultUserPersona"');
+
+    const novelCommit = buildSetupCommitPrompt({
+      session: baseSession(),
+      presetIdsByCategory,
+    });
+    expect(novelCommit.userPrompt).not.toContain('defaultUserPersona');
+  });
 });

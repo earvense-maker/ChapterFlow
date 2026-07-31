@@ -1,4 +1,4 @@
-import type { CharacterRole, SetupDraft } from '@shared/types';
+import type { CharacterRole, SetupDraft, SetupPurpose } from '@shared/types';
 
 export type StringDraftSection =
   | 'relationshipSeeds'
@@ -24,20 +24,72 @@ export const ROLE_LABELS: Record<CharacterRole, string> = {
   other: 'その他',
 };
 
-export const DRAFT_STRING_SECTION_LABELS = {
-  relationshipSeeds: '関係性',
-  world: '世界観',
-  tone: '好み・文体',
-  ng: 'NG',
-  openingSeeds: '冒頭候補',
-  scenarioSeeds: 'シナリオ（会話の舞台）',
-} satisfies Record<StringDraftSection, string>;
+export interface DraftSectionLabels {
+  coreConcept: string;
+  confirmed: string;
+  candidates: string;
+  undecided: string;
+  characters: string;
+  userPersona: string;
+  strings: Record<StringDraftSection, string>;
+}
 
-export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): DraftChangeSummary[] {
+// NOTE: 種メモの見出しと「このターンのメモ更新」の文言は同じ語彙でないと、どの欄が
+// 変わったのか追えなくなる。両者をこの1テーブルから引く（用途別UIは設計書 1.5）。
+const DRAFT_SECTION_LABELS: Record<SetupPurpose, DraftSectionLabels> = {
+  novel: {
+    coreConcept: '作品の核',
+    confirmed: '決まってきたこと',
+    candidates: '候補',
+    undecided: '未確定',
+    characters: '人物',
+    userPersona: 'あなた（ユーザー）',
+    strings: {
+      relationshipSeeds: '関係性',
+      world: '世界観',
+      tone: '好み・文体',
+      ng: 'NG',
+      openingSeeds: '冒頭候補',
+      scenarioSeeds: 'シナリオ（会話の舞台）',
+    },
+  },
+  roleplay: {
+    coreConcept: 'キャラクターの核',
+    confirmed: '決まってきたこと',
+    candidates: '候補',
+    undecided: '未確定',
+    characters: 'キャラクター',
+    userPersona: 'あなた（ユーザー）',
+    strings: {
+      relationshipSeeds: 'あなたとの関係',
+      world: '世界観',
+      tone: '口調・雰囲気',
+      ng: 'NG',
+      openingSeeds: '冒頭候補',
+      scenarioSeeds: 'シナリオ（会話の舞台）',
+    },
+  },
+};
+
+export function draftSectionLabels(purpose: SetupPurpose = 'novel'): DraftSectionLabels {
+  return DRAFT_SECTION_LABELS[purpose] ?? DRAFT_SECTION_LABELS.novel;
+}
+
+export function collectDraftChanges(
+  previous: SetupDraft,
+  next: SetupDraft,
+  purpose: SetupPurpose = 'novel'
+): DraftChangeSummary[] {
   const summary: DraftChangeSummary[] = [];
+  const labels = draftSectionLabels(purpose);
 
   if (previous.coreConcept.trim() !== next.coreConcept.trim()) {
-    recordDraftChange(summary, 'coreConcept', previous.coreConcept.trim() ? 'updated' : 'added', '作品の核');
+    recordDraftChange(
+      summary,
+      'coreConcept',
+      previous.coreConcept.trim() ? 'updated' : 'added',
+      labels.coreConcept
+    );
   }
 
   collectItemChanges(
@@ -46,7 +98,7 @@ export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): Dra
     previous.confirmed,
     next.confirmed,
     (item) => JSON.stringify([item.text, item.reason ?? '', item.status]),
-    (item) => `決まってきたこと「${shortenDraftChangeText(item.text)}」`
+    (item) => `${labels.confirmed}「${shortenDraftChangeText(item.text)}」`
   );
   collectItemChanges(
     summary,
@@ -54,7 +106,7 @@ export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): Dra
     previous.candidates,
     next.candidates,
     (item) => JSON.stringify([item.title, item.summary, item.status]),
-    (item) => `候補「${shortenDraftChangeText(item.title || item.summary)}」`
+    (item) => `${labels.candidates}「${shortenDraftChangeText(item.title || item.summary)}」`
   );
   collectItemChanges(
     summary,
@@ -62,7 +114,7 @@ export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): Dra
     previous.undecided,
     next.undecided,
     (item) => JSON.stringify([item.text, item.reason ?? '', item.status]),
-    (item) => `未確定「${shortenDraftChangeText(item.text)}」`
+    (item) => `${labels.undecided}「${shortenDraftChangeText(item.text)}」`
   );
   collectItemChanges(
     summary,
@@ -79,15 +131,28 @@ export function collectDraftChanges(previous: SetupDraft, next: SetupDraft): Dra
         item.relationshipNotes ?? '',
         item.traits ?? [],
         item.secrets ?? '',
+        // NOTE: roleplay の要である初回メッセージ・セリフ例も差分判定に含める。
+        // 含めないと、この2欄だけが更新されたターンで更新バッジが出ない。
+        item.greeting ?? '',
+        item.dialogueExamples ?? [],
         item.status,
       ]),
-    (item) => `人物「${shortenDraftChangeText(item.label || item.name || ROLE_LABELS[item.role])}」`
+    (item) =>
+      `${labels.characters}「${shortenDraftChangeText(item.label || item.name || ROLE_LABELS[item.role])}」`
   );
 
-  for (const section of Object.keys(DRAFT_STRING_SECTION_LABELS) as StringDraftSection[]) {
+  // NOTE: ペルソナは単票なので、項目ごとではなく1件の追加/更新/削除として扱う。
+  const previousPersona = personaSignature(previous.userPersona);
+  const nextPersona = personaSignature(next.userPersona);
+  if (previousPersona !== nextPersona) {
+    const kind: DraftChangeKind = !nextPersona ? 'archived' : !previousPersona ? 'added' : 'updated';
+    recordDraftChange(summary, 'userPersona', kind, labels.userPersona);
+  }
+
+  for (const section of Object.keys(labels.strings) as StringDraftSection[]) {
     // NOTE: 古いテスト・保存データが scenarioSeeds を持たない場合の後方互換。
     // previous/next のいずれかが undefined でも空配列として扱う。
-    collectStringChanges(summary, section, previous[section] ?? [], next[section] ?? []);
+    collectStringChanges(summary, section, previous[section] ?? [], next[section] ?? [], labels);
   }
 
   return summary;
@@ -127,13 +192,14 @@ function collectStringChanges(
   summary: DraftChangeSummary[],
   section: StringDraftSection,
   previousValues: string[],
-  nextValues: string[]
+  nextValues: string[],
+  labels: DraftSectionLabels
 ) {
   const matchingPairs = findLongestCommonStringPairs(previousValues, nextValues);
   const movedPairs = collectMovedStringPairs(previousValues, nextValues, matchingPairs);
   const movedPreviousIndexes = new Set(movedPairs.map(([previousIndex]) => previousIndex));
   const movedNextIndexes = new Set(movedPairs.map(([, nextIndex]) => nextIndex));
-  const sectionLabel = DRAFT_STRING_SECTION_LABELS[section];
+  const sectionLabel = labels.strings[section];
 
   for (const [, nextIndex] of movedPairs.sort((a, b) => a[1] - b[1])) {
     const nextValue = nextValues[nextIndex];
@@ -162,7 +228,8 @@ function collectStringChanges(
       nextStart,
       nextEnd,
       movedPreviousIndexes,
-      movedNextIndexes
+      movedNextIndexes,
+      labels
     );
     previousStart = previousEnd + 1;
     nextStart = nextEnd + 1;
@@ -179,9 +246,10 @@ function collectStringChangeSegment(
   nextStart: number,
   nextEnd: number,
   movedPreviousIndexes: ReadonlySet<number>,
-  movedNextIndexes: ReadonlySet<number>
+  movedNextIndexes: ReadonlySet<number>,
+  labels: DraftSectionLabels
 ) {
-  const sectionLabel = DRAFT_STRING_SECTION_LABELS[section];
+  const sectionLabel = labels.strings[section];
   const previousSegmentIndexes = rangeIndexes(previousStart, previousEnd).filter(
     (index) => !movedPreviousIndexes.has(index)
   );
@@ -302,6 +370,17 @@ function recordDraftChange(
   text = `${label}を${draftChangeKindLabel(kind)}`
 ) {
   summary.push({ key, kind, text });
+}
+
+function personaSignature(persona: SetupDraft['userPersona']): string {
+  if (!persona) return '';
+  const parts = [
+    persona.name ?? '',
+    persona.relationship ?? '',
+    persona.preferredAddress ?? '',
+    persona.knownFacts ?? '',
+  ].map((value) => value.trim());
+  return parts.some((value) => value) ? JSON.stringify(parts) : '';
 }
 
 export function draftChangeKindLabel(kind: DraftChangeKind): string {

@@ -27,6 +27,9 @@ export function hasMeaningfulSetupContent(session: SetupSession): boolean {
       draft.tone.some((item) => item.trim()) ||
       draft.ng.some((item) => item.trim()) ||
       draft.openingSeeds.some((item) => item.trim()) ||
-      (draft.scenarioSeeds ?? []).some((item) => item.trim())
+      (draft.scenarioSeeds ?? []).some((item) => item.trim()) ||
+      // NOTE: ユーザーペルソナだけ埋めた状態でも「種メモに書いた」ことに変わりはない。
+      // ここに入れておかないと、画面に内容が見えているのに作品化ボタンが押せない。
+      Object.values(draft.userPersona ?? {}).some((value) => value?.trim())
   );
 }

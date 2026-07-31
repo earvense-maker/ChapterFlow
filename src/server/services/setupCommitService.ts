@@ -38,6 +38,7 @@ import {
   normalizeCharacterForStorage,
   normalizeCharacterTraits,
 } from '../../shared/characterSchema.js';
+import { normalizeUserPersonaFields } from '../../shared/roleplayPersona.js';
 
 const MIN_OUTPUT_LENGTH = 500;
 const MAX_OUTPUT_LENGTH = 10000;
@@ -110,6 +111,13 @@ export function normalizeSetupCommitPlan(input: {
             : input.session.draft.scenarioSeeds ?? []
         )
       : [];
+  // NOTE: ユーザーペルソナはモデル出力が空でも相談draftから拾う。逆に novel 用途では
+  // 保存先（Project.defaultUserPersona）が意味を持たないので必ず undefined にする。
+  const defaultUserPersona =
+    purpose === 'roleplay'
+      ? normalizeUserPersonaFields(raw.defaultUserPersona) ??
+        normalizeUserPersonaFields(input.session.draft.userPersona)
+      : undefined;
 
   const projectInput: CreateProjectBody = {
     title: truncate(
@@ -134,6 +142,7 @@ export function normalizeSetupCommitPlan(input: {
     customSystemPrompt: asString(raw.customSystemPrompt),
     projectType,
     scenarioSeeds,
+    ...(defaultUserPersona ? { defaultUserPersona } : {}),
   };
 
   const memories = mergeDraftPreferenceMemories(

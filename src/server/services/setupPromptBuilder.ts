@@ -25,6 +25,8 @@ function buildRoleplayChatSystemInstructions(): string {
     '初回メッセージは charactersAdd/charactersUpdate の greeting に入れてください。',
     '会話の舞台候補は scenarioSeedsAdd に入れてください。プロット段階の事件案を舞台候補に混ぜないでください。',
     'ユーザーとの関係は relationshipSeedsAdd を流用して短く記録してください。',
+    'ユーザー自身が「誰として」キャラの前に立つかも、会話が始まるまでに必ず確認してください。呼び名（キャラからどう呼ばれたいか）、キャラとの関係、キャラが既に知っていることの3点を、質問攻めにならないよう1〜2問でまとめて聞き、決まった内容を userPersonaUpdate に入れてください。',
+    'ユーザーが「おまかせ」「決めていない」と答えたら、案を1〜2個だけ出して選べるようにし、選ばれるまで userPersonaUpdate に確定として入れないでください。',
     '火種（事件・秘密・誤解）の提案は「会話が転がるきっかけ」として軽く扱い、プロットに発展させないでください。',
     'キャラ像とシナリオが最低限そろったら、「試しに少し話してみる」（intent:"preview"）と「このキャラと話し始める」（intent:"commit"）を suggestedActions に提案してください。通常の会話を続ける選択肢では intent を省略してください。',
     '決まったこと、候補、未確定を必ず区別してください。',
@@ -100,6 +102,12 @@ export function buildSetupChatPrompt(input: {
           toneAdd: ['口調・雰囲気の希望'],
           ngAdd: ['避けたいこと'],
           scenarioSeedsAdd: ['会話の舞台候補（例：放課後の教室で二人きり）'],
+          userPersonaUpdate: {
+            name: 'ユーザーが名乗る名前（決まっていなければ省略）',
+            relationship: 'ユーザーから見たキャラとの関係',
+            preferredAddress: 'キャラからの呼ばれ方（例：先輩、名前の呼び捨て）',
+            knownFacts: 'キャラが既にユーザーについて知っていること',
+          },
           archiveIds: ['不要になった候補ID'],
         }
       : {
@@ -150,6 +158,9 @@ export function buildSetupChatPrompt(input: {
     '- 軽い役には traits を無理に詰めず、0〜2個で構わない。',
     '- secrets は必要な人物だけに入れ、全員へ付けない。',
     '- scenarioSeedsAdd はプロットや事件案ではなく、会話が始まる舞台（場所・時間・状況）だけを入れる。',
+    '- userPersonaUpdate はユーザー本人の設定だけを入れる。キャラ側の情報を混ぜない。',
+    '- userPersonaUpdate に入れられるのは、ユーザーが選んだ・答えた内容だけである。勝手に名前や年齢を決めない。',
+    '- ユーザーが「決めない」と言った項目は userPersonaUpdate から省く（空文字で送ると消える）。',
     '- patchに含めるのは増分だけにする。',
     '- メッセージ数が12を超えている場合、conversationSummary にこれまでの流れ（採用・却下したキャラ像・関係性、ユーザーの好みの傾向）を800字以内で更新して返す。12件以下なら省略してよい。',
   ].join('\n');
@@ -265,6 +276,7 @@ export function buildSetupCommitPrompt(input: {
             '会話ログとdraftから、既存プロジェクト用の初期データへ変換してください。',
             '小説本文や会話サンプルの続きは生成しないでください。',
             'キャラクターごとに greeting（会話開始時の1〜3文の挨拶）と dialogueExamples（口調のfew-shot例、各1文の台詞形式）を必ず入れてください。',
+            'defaultUserPersona には、相談で決まった「ユーザーが誰として話すか」を入れてください。draft.userPersona がある場合はそれを正本にし、相談で決まっていない項目は省いてください。',
             'scenarioSeeds には会話の舞台候補（場所・時間・状況）を並べてください。プロットや事件を書かないでください。',
             'firstWishSuggestion は使いません。openingSeeds も無視してください。',
             'storyState は最小構成にしてください: currentSituation に会話開始時のキャラの状況を1〜2行、characterStates にキャラの初期状態を並べる。importantEvents / openThreads は空でよい。',
@@ -312,6 +324,8 @@ function buildCommitUserPrompt(input: {
           '- firstWishSuggestion は出力しない。',
           '- scenarioSeeds には会話の舞台候補（場所・時間・状況）を並べる。プロットや事件を書かない。',
           '- 各 character には greeting（1〜3文の挨拶）と dialogueExamples（口調のfew-shot例、各1文の台詞形式）を必ず入れる。',
+          '- defaultUserPersona は相談で決まった内容だけを入れる。決まっていない項目は省く。全項目が未定なら defaultUserPersona 自体を省く。',
+          '- defaultUserPersona.knownFacts には「キャラがユーザーについて既に知っていること」だけを書く。ユーザーの内面や願望を勝手に決めない。',
           '- traits は最大4件、各項目は { label, text } とする。labelは12文字以内、textは200文字以内にする。',
           '- 主要人物には会話を動かす traits を2〜4件、軽い役には必要な0〜2件を入れる。',
           '- 「見せない面」「秘密」は traits のラベルにせず、必要な場合だけ独立した secrets に入れる。',
@@ -487,6 +501,12 @@ function buildRoleplayCommitOutputExample(session: SetupSession): unknown {
       '会話の舞台候補1（例：放課後の教室で二人きり）',
       '会話の舞台候補2',
     ],
+    defaultUserPersona: {
+      name: 'ユーザーが名乗る名前（未定なら省略）',
+      relationship: 'ユーザーから見たキャラとの関係',
+      preferredAddress: 'キャラからの呼ばれ方',
+      knownFacts: 'キャラが既にユーザーについて知っていること',
+    },
   };
 }
 

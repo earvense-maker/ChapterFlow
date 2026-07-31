@@ -15,19 +15,49 @@ import {
   formatRelativeTime,
   formatStoryDiffSummary,
 } from './workSettings/workSettingsHelpers';
+import {
+  USER_PERSONA_FIELDS,
+  type UserPersonaFieldKey,
+} from './setupWorkspace/userPersonaFields';
 import { useKnowledgeManager } from './workSettings/useKnowledgeManager';
 import { useStoryStatePanel } from './workSettings/useStoryStatePanel';
 import { useSystemPromptPresetManager } from './workSettings/useSystemPromptPresetManager';
 import SystemPromptPresetLibrary from './workSettings/SystemPromptPresetLibrary';
+import { DEFAULT_ROLEPLAY_USER_ACTION_POLICY } from '@shared/roleplayPersona';
 import type {
   Character,
   PresetsFile,
   Project,
   RefineConsultationTarget,
+  RoleplayUserPersona,
   StyleSamplePreset,
   SystemPromptPreview,
   WorldContent,
 } from '@shared/types';
+
+type UserPersonaDraft = Record<UserPersonaFieldKey, string>;
+
+function toPersonaDraft(persona: RoleplayUserPersona | undefined): UserPersonaDraft {
+  return {
+    name: persona?.name ?? '',
+    relationship: persona?.relationship ?? '',
+    preferredAddress: persona?.preferredAddress ?? '',
+    knownFacts: persona?.knownFacts ?? '',
+  };
+}
+
+// NOTE: 全項目が空なら null を送って「未設定へ戻す」。actionPolicy は会話ごとの選択なので
+// 既存値を保てず、作品側では既定値を持たせておく。
+function fromPersonaDraft(
+  draft: UserPersonaDraft,
+  actionPolicy: RoleplayUserPersona['actionPolicy'] = DEFAULT_ROLEPLAY_USER_ACTION_POLICY
+): RoleplayUserPersona | null {
+  const entries = USER_PERSONA_FIELDS.map(({ key }) => [key, draft[key].trim()] as const).filter(
+    ([, value]) => value.length > 0
+  );
+  if (entries.length === 0) return null;
+  return { ...Object.fromEntries(entries), actionPolicy };
+}
 
 interface Props {
   projectId: string;
@@ -87,9 +117,12 @@ export default function WorkSettingsTab({
   const [initialSituationEditing, setInitialSituationEditing] = useState(false);
   const [initialSituationExpanded, setInitialSituationExpanded] = useState(false);
   const worldRefreshRequestId = useRef(0);
+  // NOTE: ロールプレイ作品では「あなた（ユーザー）」の既定像も基本情報として編集する。
+  // 保存値は新しい会話の初期値になるだけで、進行中の会話には影響しない。
   const [projectDetails, setProjectDetails] = useState({
     title: project.title,
     coreConcept: project.coreConcept ?? '',
+    userPersona: toPersonaDraft(project.defaultUserPersona),
   });
   const [projectDetailsDraft, setProjectDetailsDraft] = useState(projectDetails);
   const [projectDetailsEditing, setProjectDetailsEditing] = useState(false);
@@ -345,10 +378,23 @@ export default function WorkSettingsTab({
     try {
       setLoading(true);
       onError(null);
-      const updated = await api.updateProject(projectId, projectDetailsDraft);
+      const updated = await api.updateProject(projectId, {
+        title: projectDetailsDraft.title,
+        coreConcept: projectDetailsDraft.coreConcept,
+        // NOTE: 小説作品では送らない。全項目が空なら null で「未設定へ戻す」。
+        ...(isRoleplay
+          ? {
+              defaultUserPersona: fromPersonaDraft(
+                projectDetailsDraft.userPersona,
+                project.defaultUserPersona?.actionPolicy
+              ),
+            }
+          : {}),
+      });
       const next = {
         title: updated.title,
         coreConcept: updated.coreConcept ?? '',
+        userPersona: toPersonaDraft(updated.defaultUserPersona),
       };
       setProjectDetails(next);
       setProjectDetailsDraft(next);
@@ -664,6 +710,17 @@ export default function WorkSettingsTab({
                 <dt>作品の核</dt>
                 <dd>{projectDetails.coreConcept || <span className="summary-field-missing">未記入</span>}</dd>
               </div>
+              {isRoleplay &&
+                USER_PERSONA_FIELDS.map((field) => (
+                  <div key={field.key}>
+                    <dt>あなた・{field.label}</dt>
+                    <dd>
+                      {projectDetails.userPersona[field.key] || (
+                        <span className="summary-field-missing">未記入</span>
+                      )}
+                    </dd>
+                  </div>
+                ))}
             </dl>
           </>
         )}
@@ -688,6 +745,30 @@ export default function WorkSettingsTab({
               placeholder="作品の核"
               rows={3}
             />
+            {isRoleplay && (
+              <>
+                <p className="settings-help">
+                  あなた（ユーザー）の既定設定です。新しい会話を始めるときの初期値になります。進行中の会話は変わりません。
+                </p>
+                {USER_PERSONA_FIELDS.map((field) => (
+                  <label key={field.key}>
+                    あなた・{field.label}
+                    <textarea
+                      value={projectDetailsDraft.userPersona[field.key]}
+                      onChange={(e) =>
+                        setProjectDetailsDraft((current) => ({
+                          ...current,
+                          userPersona: { ...current.userPersona, [field.key]: e.target.value },
+                        }))
+                      }
+                      placeholder={field.placeholder}
+                      maxLength={field.maxLength}
+                      rows={field.rows ?? 1}
+                    />
+                  </label>
+                ))}
+              </>
+            )}
             <div className="summary-card-actions">
               <button onClick={handleCancelProjectDetails} disabled={loading}>
                 キャンセル

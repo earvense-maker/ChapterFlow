@@ -48,4 +48,9 @@ describe('hasMeaningfulSetupContent', () => {
     ).toBe(true);
     expect(hasMeaningfulSetupContent(session({ scenarioSeeds: ['雨宿り中の会話'] }))).toBe(true);
   });
+
+  it('accepts a draft that only defines who the user plays', () => {
+    expect(hasMeaningfulSetupContent(session({ userPersona: { name: '結衣' } }))).toBe(true);
+    expect(hasMeaningfulSetupContent(session({ userPersona: { name: '  ' } }))).toBe(false);
+  });
 });

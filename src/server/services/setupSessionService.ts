@@ -1053,6 +1053,10 @@ function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPla
     storyState: normalized.storyState,
     customSystemPrompt: projectInput.customSystemPrompt ?? '',
     scenarioSeeds: projectInput.scenarioSeeds ?? [],
+    // NOTE: novel 用途では normalizeSetupCommitPlan が undefined にしている。
+    ...(projectInput.defaultUserPersona
+      ? { defaultUserPersona: projectInput.defaultUserPersona }
+      : {}),
   };
 }
 

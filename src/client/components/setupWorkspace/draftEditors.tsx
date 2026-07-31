@@ -8,15 +8,17 @@ import { useEffect, useMemo, useState } from 'react';
 import CharacterTraitsEditor from '../CharacterTraitsEditor';
 
 import {
-  DRAFT_STRING_SECTION_LABELS,
   draftChangeKindLabel,
   draftItemChangeKey,
+  draftSectionLabels,
   draftStringChangeKey,
   ROLE_LABELS,
   type DraftChangeKind,
   type DraftChanges,
   type StringDraftSection,
 } from './draftChanges';
+
+import { USER_PERSONA_FIELDS } from './userPersonaFields';
 
 import type {
   CharacterRole,
@@ -26,6 +28,7 @@ import type {
   SetupDraftCharacter,
   SetupDraftTextItem,
   SetupDraftUndecided,
+  SetupDraftUserPersona,
 } from '@shared/types';
 
 export interface PendingDescriptor {
@@ -38,6 +41,7 @@ function DraftChangeBadge({ kind }: { kind: DraftChangeKind }) {
 
 export function CoreConceptEditor({
   dirtyKey,
+  title,
   value,
   disabled,
   locked,
@@ -47,6 +51,7 @@ export function CoreConceptEditor({
   onToggleLock,
 }: {
   dirtyKey: string;
+  title: string;
   value: string;
   disabled: boolean;
   locked: boolean;
@@ -71,7 +76,7 @@ export function CoreConceptEditor({
   return (
     <section className={`setup-draft-section${changeKind ? ' is-recently-updated' : ''}`}>
       <div className="setup-draft-section-header">
-        <h3>作品の核</h3>
+        <h3>{title}</h3>
         <div className="setup-draft-section-actions">
           {changeKind && <DraftChangeBadge kind={changeKind} />}
           <button type="button" onClick={onToggleLock} disabled={disabled}>
@@ -86,6 +91,81 @@ export function CoreConceptEditor({
         placeholder="まだ決まっていません"
         disabled={disabled}
       />
+      <div className="setup-draft-row-actions">
+        <button type="button" onClick={() => onSave(draftValue)} disabled={disabled || !changed}>
+          保存
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// NOTE: ロールプレイ相談でだけ出る「あなた（ユーザー）」欄。項目が4つの単票なので、
+// 他セクションのような追加・アーカイブは持たず、まとめて保存する形にする。
+export function DraftUserPersonaEditor({
+  dirtyKey,
+  value,
+  disabled,
+  locked,
+  changeKind,
+  onDirtyChange,
+  onSave,
+  onToggleLock,
+}: {
+  dirtyKey: string;
+  value: SetupDraftUserPersona | undefined;
+  disabled: boolean;
+  locked: boolean;
+  changeKind?: DraftChangeKind;
+  onDirtyChange: (key: string, dirty: boolean) => void;
+  onSave: (value: SetupDraftUserPersona) => void;
+  onToggleLock: () => void;
+}) {
+  const [draftValue, setDraftValue] = useState<SetupDraftUserPersona>(value ?? {});
+
+  useEffect(() => {
+    setDraftValue(value ?? {});
+  }, [value?.name, value?.relationship, value?.preferredAddress, value?.knownFacts]);
+
+  const changed = USER_PERSONA_FIELDS.some(
+    ({ key }) => (draftValue[key] ?? '').trim() !== (value?.[key] ?? '').trim()
+  );
+
+  useEffect(() => {
+    onDirtyChange(dirtyKey, changed);
+    return () => onDirtyChange(dirtyKey, false);
+  }, [changed, dirtyKey, onDirtyChange]);
+
+  return (
+    <section className={`setup-draft-section${changeKind ? ' is-recently-updated' : ''}`}>
+      <div className="setup-draft-section-header">
+        <h3>あなた（ユーザー）</h3>
+        <div className="setup-draft-section-actions">
+          {changeKind && <DraftChangeBadge kind={changeKind} />}
+          <button type="button" onClick={onToggleLock} disabled={disabled}>
+            {locked ? '固定解除' : '固定'}
+          </button>
+        </div>
+      </div>
+      <p className="setup-draft-placeholder">
+        会話であなたが誰として話すか。作品化すると、新しい会話の初期値になります。
+      </p>
+      {USER_PERSONA_FIELDS.map((field) => (
+        <label key={field.key} className="setup-draft-persona-field">
+          {field.label}
+          <textarea
+            className="setup-draft-textarea compact"
+            value={draftValue[field.key] ?? ''}
+            onChange={(event) =>
+              setDraftValue((current) => ({ ...current, [field.key]: event.target.value }))
+            }
+            placeholder={field.placeholder}
+            maxLength={field.maxLength}
+            rows={field.rows ?? 1}
+            disabled={disabled}
+          />
+        </label>
+      ))}
       <div className="setup-draft-row-actions">
         <button type="button" onClick={() => onSave(draftValue)} disabled={disabled || !changed}>
           保存
@@ -633,7 +713,7 @@ export function DraftCharacterList({
   return (
     <section className="setup-draft-section">
       <div className="setup-draft-section-header">
-        <h3>人物</h3>
+        <h3>{draftSectionLabels(purpose).characters}</h3>
         <button type="button" onClick={onAdd} disabled={disabled}>
           +追加
         </button>
@@ -1047,6 +1127,7 @@ function PendingCharacterRow({
 
 export function DraftStringList({
   section,
+  purpose,
   items,
   disabled,
   changes,
@@ -1061,6 +1142,7 @@ export function DraftStringList({
   onSavePending,
 }: {
   section: StringDraftSection;
+  purpose: 'novel' | 'roleplay';
   items: string[];
   disabled: boolean;
   changes: DraftChanges;
@@ -1074,7 +1156,7 @@ export function DraftStringList({
   onCancelPending: (id: string) => void;
   onSavePending: (id: string, value: string) => void;
 }) {
-  const title = DRAFT_STRING_SECTION_LABELS[section];
+  const title = draftSectionLabels(purpose).strings[section];
   const isEmpty = items.length === 0 && pendingRows.length === 0;
   return (
     <section className="setup-draft-section">

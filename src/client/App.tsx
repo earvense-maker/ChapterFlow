@@ -158,7 +158,11 @@ export default function App() {
       )}
       {view === 'new' && <ProjectForm onCreated={handleCreateProject} onCancel={handleBackToList} />}
       {view === 'setup' && (
+        // NOTE: SetupWorkspace は購読中セッションを purpose 別に一度だけ読み込む。key を
+        // 付けて用途が変わったら必ず作り直し、小説の相談状態が残ったまま roleplay 表示に
+        // なる事故を防ぐ。
         <SetupWorkspace
+          key={setupPurpose}
           purpose={setupPurpose}
           onCreated={handleCreateProject}
           onCancel={handleBackToList}

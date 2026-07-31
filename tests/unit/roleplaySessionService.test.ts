@@ -184,6 +184,63 @@ describe('roleplaySessionService', () => {
     expect(capturedUserPrompt).toContain('ユウ: 僕のこと、覚えてる？');
   });
 
+  it('falls back to the project default user persona when the request omits one', async () => {
+    const project = await makeRoleplayProject();
+    await projectService.updateProject(project.projectId, {
+      defaultUserPersona: {
+        name: '結衣',
+        relationship: '同じ図書委員',
+        preferredAddress: '結衣',
+        knownFacts: '毎週金曜に当番が一緒',
+        actionPolicy: 'strict',
+      },
+    });
+    let capturedSystemInstructions = '';
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
+      capturedSystemInstructions = request.systemInstructions;
+      return streamChunks(['うん、覚えてる。']);
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'こんにちは',
+        revision: created.revision,
+      })
+    );
+
+    expect(created.userPersona).toEqual({
+      name: '結衣',
+      relationship: '同じ図書委員',
+      preferredAddress: '結衣',
+      knownFacts: '毎週金曜に当番が一緒',
+      actionPolicy: 'strict',
+    });
+    expect(capturedSystemInstructions).toContain('毎週金曜に当番が一緒');
+  });
+
+  it('keeps an explicitly cleared persona instead of the project default', async () => {
+    const project = await makeRoleplayProject();
+    await projectService.updateProject(project.projectId, {
+      defaultUserPersona: { name: '結衣', actionPolicy: 'conservative' },
+    });
+
+    // NOTE: 会話開始モーダルで全項目を空にした場合は「名無しで話す」意思表示なので、
+    // 既定ペルソナで埋め戻さない。
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+      userPersona: { actionPolicy: 'conservative' },
+    });
+
+    expect(created.userPersona?.name).toBeUndefined();
+  });
+
   it('exposes captured settings and flags sessions after roleplay settings change', async () => {
     const project = await makeRoleplayProject();
     const created = await roleplayService.createRoleplaySession({

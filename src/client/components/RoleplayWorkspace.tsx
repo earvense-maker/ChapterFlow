@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type RoleplayStreamHandlers } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import { useNotificationCenter } from './NotificationCenter';
+import { DEFAULT_ROLEPLAY_USER_ACTION_POLICY } from '@shared/roleplayPersona';
 import type {
   Character,
   CreateRoleplaySessionBody,
@@ -966,6 +967,7 @@ export default function RoleplayWorkspace({
         <NewSessionModal
           characters={characters}
           scenarioSeeds={project?.scenarioSeeds ?? []}
+          defaultUserPersona={project?.defaultUserPersona}
           onCancel={() => setShowNewModal(false)}
           onStart={handleStartConversation}
           isCreating={isCreatingSession}
@@ -1027,6 +1029,8 @@ export default function RoleplayWorkspace({
 interface NewSessionModalProps {
   characters: Character[];
   scenarioSeeds: string[];
+  // NOTE: 作品の既定ペルソナ。会話ごとに上書きできるので初期値としてだけ使う。
+  defaultUserPersona?: RoleplayUserPersona;
   onCancel: () => void;
   onStart: (input: StartConversationInput) => Promise<void>;
   isCreating: boolean;
@@ -1124,6 +1128,7 @@ function DetailStringList({ label, values }: { label: string; values: string[] }
 function NewSessionModal({
   characters,
   scenarioSeeds,
+  defaultUserPersona,
   onCancel,
   onStart,
   isCreating,
@@ -1132,13 +1137,24 @@ function NewSessionModal({
     characters[0]?.characterId ?? ''
   );
   const [scenario, setScenario] = useState('');
-  const [personaName, setPersonaName] = useState('');
-  const [relationship, setRelationship] = useState('');
-  const [preferredAddress, setPreferredAddress] = useState('');
-  const [knownFacts, setKnownFacts] = useState('');
-  const [actionPolicy, setActionPolicy] =
-    useState<RoleplayUserPersona['actionPolicy']>('conservative');
+  // NOTE: 作品の既定ペルソナを初期値にする。ここでの編集はこの会話にだけ効き、
+  // 作品側の既定は変わらない（変えたい場合は作品設定から）。
+  const [personaName, setPersonaName] = useState(defaultUserPersona?.name ?? '');
+  const [relationship, setRelationship] = useState(defaultUserPersona?.relationship ?? '');
+  const [preferredAddress, setPreferredAddress] = useState(
+    defaultUserPersona?.preferredAddress ?? ''
+  );
+  const [knownFacts, setKnownFacts] = useState(defaultUserPersona?.knownFacts ?? '');
+  const [actionPolicy, setActionPolicy] = useState<RoleplayUserPersona['actionPolicy']>(
+    defaultUserPersona?.actionPolicy ?? DEFAULT_ROLEPLAY_USER_ACTION_POLICY
+  );
   const [starting, setStarting] = useState(false);
+  const hasDefaultPersona = Boolean(
+    defaultUserPersona?.name ||
+      defaultUserPersona?.relationship ||
+      defaultUserPersona?.preferredAddress ||
+      defaultUserPersona?.knownFacts
+  );
 
   const handleStart = async () => {
     if (!characterId) return;
@@ -1212,9 +1228,16 @@ function NewSessionModal({
             />
           </label>
         </div>
-        <details style={styles.personaDetails}>
+        {/* NOTE: 既定ペルソナがある作品では中身が入っているので、開いた状態で見せる。
+            未設定の作品では従来どおり畳んでおき、会話開始の手数を増やさない。 */}
+        <details style={styles.personaDetails} open={hasDefaultPersona}>
           <summary>あなたの情報（任意）</summary>
           <div style={styles.personaFields}>
+            {hasDefaultPersona && (
+              <p style={styles.detailEmpty}>
+                作品の既定を読み込みました。この会話だけ変えたい場合はここで編集できます。
+              </p>
+            )}
             <label style={styles.label}>
               名前
               <input

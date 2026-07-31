@@ -2,6 +2,7 @@ import type { ProjectId } from './ids.js';
 import type { ActivePresets, ProjectType, WorldContent } from './project.js';
 import type { Character, CharacterRole, CharacterTrait } from './character.js';
 import type { Memory } from './memory.js';
+import type { RoleplayUserPersona } from './roleplay.js';
 import type { StoryState } from './storyState.js';
 
 export type SetupSessionId = string;
@@ -86,6 +87,16 @@ export interface SetupDraftCharacter {
   updatedAt: string;
 }
 
+// NOTE: ロールプレイ相談で決める「あなた（ユーザー）が誰として話すか」。作品化時に
+// Project.defaultUserPersona へ昇格する。actionPolicy は相談では扱わず、会話開始時の
+// 選択に任せるため持たない（相談で決めるのは人物像だけ）。
+export interface SetupDraftUserPersona {
+  name?: string;
+  relationship?: string;
+  preferredAddress?: string;
+  knownFacts?: string;
+}
+
 export interface SetupDraft {
   coreConcept: string;
   confirmed: SetupDraftTextItem[];
@@ -99,6 +110,8 @@ export interface SetupDraft {
   openingSeeds: string[];
   // NOTE: ロールプレイ用途の会話舞台候補。novel 用途では常に空配列。
   scenarioSeeds: string[];
+  // NOTE: ロールプレイ用途のみ。novel 用途では常に undefined。
+  userPersona?: SetupDraftUserPersona;
 }
 
 export interface SetupLock {
@@ -173,6 +186,9 @@ export interface SetupDraftPatch {
   openingSeedsAdd?: string[];
   // NOTE: ロールプレイ用途。会話の舞台候補を追加する。
   scenarioSeedsAdd?: string[];
+  // NOTE: ロールプレイ用途。ユーザー側の立ち位置は1件だけなので add ではなく差分更新。
+  // 指定したフィールドだけ上書きし、空文字を渡したフィールドは消す。
+  userPersonaUpdate?: SetupDraftUserPersona;
   archiveIds?: string[];
 }
 
@@ -291,6 +307,8 @@ export interface SetupCommitPlan {
   customSystemPrompt: string;
   // NOTE: ロールプレイ用途の会話舞台候補。novel 用途では常に空配列。
   scenarioSeeds?: string[];
+  // NOTE: ロールプレイ用途の「あなた」の既定像。novel 用途では常に未設定。
+  defaultUserPersona?: RoleplayUserPersona;
 }
 
 export interface SetupCommitPlanResponse {

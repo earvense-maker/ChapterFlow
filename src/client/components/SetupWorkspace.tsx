@@ -7,6 +7,7 @@ import PresetSelector, { type PresetCategory } from './PresetSelector';
 import { useNotificationCenter } from './NotificationCenter';
 import {
   collectDraftChanges,
+  draftSectionLabels,
   type DraftChanges,
   type DraftChangeSummary,
   type StringDraftSection,
@@ -22,6 +23,7 @@ import {
   DraftCharacterList,
   DraftStringList,
   DraftTextList,
+  DraftUserPersonaEditor,
   type PendingDescriptor,
 } from './setupWorkspace/draftEditors';
 import SetupCommitDialog from './setupWorkspace/SetupCommitDialog';
@@ -38,6 +40,7 @@ import type {
   SetupDraftCharacter,
   SetupDraftTextItem,
   SetupDraftUndecided,
+  SetupDraftUserPersona,
   SetupLock,
   SetupSession,
   SetupSuggestedAction,
@@ -58,24 +61,103 @@ const DEFAULT_PROJECT_SETTINGS = {
   activePresetIds: {},
 };
 
-const COLD_START_ACTIONS: SetupSuggestedAction[] = [
-  {
-    label: '好きな作品の雰囲気から',
-    message: '好きな作品の雰囲気から考えたいです。私に合いそうな雰囲気をいくつか提案してください。',
-  },
-  {
-    label: '関係性から決めたい',
-    message: '関係性から決めたいです。読みたくなる二人の関係性をいくつか提案してください。',
-  },
-  {
-    label: 'おまかせで候補を出して',
-    message: 'おまかせで候補を出して。読みたくなる物語の方向を3つくらい提案してください。',
-  },
-];
+// NOTE: 相談画面の文言は用途ごとに入れ替える。roleplay 入口では「読みたい物語」語彙が
+// 実際に決めること（キャラ像・口調・関係性）とずれて相談の方向を誤らせるため、
+// キャラクター側の語彙へ寄せる（設計書 1.5 の用途別UI）。novel 側は現状維持。
+interface SetupPurposeCopy {
+  welcome: string;
+  emptyChat: string;
+  inputPlaceholder: string;
+  previewLabel: string;
+  previewStyleHints: string[];
+  previewHintPlaceholder: string;
+  coldStartActions: SetupSuggestedAction[];
+  draftPanelTitle: string;
+  commitLabel: string;
+  // NOTE: モデルが intent 付き選択肢を返さなかったターンで補うフォールバック用。
+  // ラベルは相談プロンプト側の語彙（setupPromptBuilder）と合わせる。
+  previewAction: SetupSuggestedAction;
+  commitAction: SetupSuggestedAction;
+}
 
-const PREVIEW_STYLE_HINTS = ['もっと軽く', 'しっとり', '会話多め'];
+const SETUP_COPY: Record<'novel' | 'roleplay', SetupPurposeCopy> = {
+  novel: {
+    welcome: 'どんな物語を読みたいですか？ 好きな雰囲気や関係性だけでも大丈夫です。一緒に見つけましょう。',
+    emptyChat: 'メモをもとに、読みたい物語の続きを相談できます。',
+    inputPlaceholder: '読みたい物語の雰囲気、好きな関係性、避けたい展開など',
+    previewLabel: '試し書き',
+    previewStyleHints: ['もっと軽く', 'しっとり', '会話多め'],
+    previewHintPlaceholder: '例: 地の文を短めに',
+    coldStartActions: [
+      {
+        label: '好きな作品の雰囲気から',
+        message: '好きな作品の雰囲気から考えたいです。私に合いそうな雰囲気をいくつか提案してください。',
+      },
+      {
+        label: '関係性から決めたい',
+        message: '関係性から決めたいです。読みたくなる二人の関係性をいくつか提案してください。',
+      },
+      {
+        label: 'おまかせで候補を出して',
+        message: 'おまかせで候補を出して。読みたくなる物語の方向を3つくらい提案してください。',
+      },
+    ],
+    draftPanelTitle: '作品の種メモ',
+    commitLabel: 'この内容で作品を作る',
+    previewAction: {
+      label: '試し書きで温度を見る',
+      message: '現在の内容で試し書きを作ってください。',
+      intent: 'preview',
+    },
+    commitAction: {
+      label: 'このまま作品にする',
+      message: 'この内容で作品にしてください。',
+      intent: 'commit',
+    },
+  },
+  roleplay: {
+    welcome:
+      'どんなキャラクターと話したいですか？ 好きな口調や関係性だけでも大丈夫です。一緒に見つけましょう。',
+    emptyChat: 'メモをもとに、話したいキャラクター像の続きを相談できます。',
+    inputPlaceholder: '話したいキャラクターの雰囲気、口調、あなたとの関係、避けたい話題など',
+    previewLabel: '試し会話',
+    previewStyleHints: ['もっと砕けた口調で', 'もっと落ち着いた口調で', '距離感を近く'],
+    previewHintPlaceholder: '例: 一人称を「僕」に',
+    coldStartActions: [
+      {
+        label: '好きなキャラ像から',
+        message: '好きなキャラクター像から考えたいです。私に合いそうなキャラ像をいくつか提案してください。',
+      },
+      {
+        label: '関係性から決めたい',
+        message: '関係性から決めたいです。私とキャラクターの関係をいくつか提案してください。',
+      },
+      {
+        label: 'おまかせで候補を出して',
+        message: 'おまかせで候補を出して。話してみたくなるキャラクターを3つくらい提案してください。',
+      },
+    ],
+    draftPanelTitle: 'キャラの種メモ',
+    commitLabel: 'このキャラと話し始める',
+    previewAction: {
+      label: '試しに少し話してみる',
+      message: '現在の内容で試しに少し話してみてください。',
+      intent: 'preview',
+    },
+    commitAction: {
+      label: 'このキャラと話し始める',
+      message: 'この内容で作品にしてください。',
+      intent: 'commit',
+    },
+  },
+};
+
+// NOTE: roleplay は3〜5往復で会話開始まで到達させたいので、モデルが intent 付きの
+// 選択肢を返さなかったターンでも、2往復目以降は自前で次の一歩を出す。
+const FALLBACK_ACTION_MIN_MESSAGES = 4;
 
 export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel, onOpenSettings }: Props) {
+  const copy = SETUP_COPY[purpose];
   const confirmAction = useConfirm();
   const notificationCenter = useNotificationCenter();
   const [notificationSettings, setNotificationSettings] = useState<GenerationNotificationSettings | null>(
@@ -342,7 +424,25 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   const busy = sending || savingDraft || previewing || committing || creatingNew || Boolean(commitPlan);
   const hasUnsavedDraftEdits = dirtyDraftEditKeys.size > 0;
   const isColdStart = Boolean(session && session.messages.length === 0 && !hasMeaningfulContent);
-  const visibleSuggestedActions = isColdStart ? COLD_START_ACTIONS : suggestedActions;
+  const visibleSuggestedActions = useMemo<SetupSuggestedAction[]>(() => {
+    if (isColdStart) return copy.coldStartActions;
+    if (
+      !session ||
+      !hasMeaningfulContent ||
+      session.messages.length < FALLBACK_ACTION_MIN_MESSAGES
+    ) {
+      return suggestedActions;
+    }
+    // NOTE: モデルが同じ intent を返しているときは重複させない（ラベル違いでも1つに保つ）。
+    const fallbacks = [copy.previewAction, copy.commitAction].filter(
+      (fallback) =>
+        !suggestedActions.some(
+          (action) => action.intent === fallback.intent || action.label === fallback.label
+        )
+    );
+    return fallbacks.length > 0 ? [...suggestedActions, ...fallbacks] : suggestedActions;
+  }, [isColdStart, copy, session, hasMeaningfulContent, suggestedActions]);
+  const sectionLabels = useMemo(() => draftSectionLabels(purpose), [purpose]);
   const draftChanges = useMemo<DraftChanges>(
     () => Object.fromEntries(draftChangeSummary.map(({ key, kind }) => [key, kind])),
     [draftChangeSummary]
@@ -372,7 +472,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     options: { preserveSummaryOnRevisionOnly?: boolean } = {}
   ) {
     setSession(nextSession);
-    const changes = collectDraftChanges(previousSession.draft, nextSession.draft);
+    const changes = collectDraftChanges(previousSession.draft, nextSession.draft, purpose);
     const revisionChanged = nextSession.revision !== previousSession.revision;
     if (changes.length > 0 || (revisionChanged && !options.preserveSummaryOnRevisionOnly)) {
       setDraftChangeSummary(changes);
@@ -613,7 +713,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   async function handlePreview(styleHint = '') {
     if (!session || previewing || modelUnavailable) return;
     if (hasUnsavedDraftEdits) {
-      setError('メモに未保存の変更があります。保存してから試し書きしてください。');
+      setError(`メモに未保存の変更があります。保存してから${copy.previewLabel}してください。`);
       return;
     }
     try {
@@ -624,7 +724,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       rememberSetupSession(result.session.sessionId, purpose);
       setPreviewText(result.previewText);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '試し書きに失敗しました');
+      setError(err instanceof Error ? err.message : `${copy.previewLabel}に失敗しました`);
     } finally {
       setPreviewing(false);
     }
@@ -637,7 +737,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       return;
     }
     if (!hasMeaningfulContent) {
-      setError('作品の種がまだありません。相談するか、作品の種メモを入力してください。');
+      setError(`作品の種がまだありません。相談するか、${copy.draftPanelTitle}を入力してください。`);
       return;
     }
     try {
@@ -889,7 +989,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             アプリ設定
           </button>
           <button type="button" onClick={() => void handlePreview()} disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable}>
-            {previewing ? <GeneratingLabel text="試し書き中..." /> : '試し書き'}
+            {previewing ? <GeneratingLabel text={`${copy.previewLabel}中...`} /> : copy.previewLabel}
           </button>
           <button
             type="button"
@@ -897,11 +997,11 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             className="primary"
             onClick={handleCommit}
             disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable || !hasMeaningfulContent}
-            title={!hasMeaningfulContent ? '相談するか、作品の種メモを入力してください' : undefined}
+            title={!hasMeaningfulContent ? `相談するか、${copy.draftPanelTitle}を入力してください` : undefined}
           >
             {committing ? (
               <GeneratingLabel text={commitStage === 'saving' ? '作品を保存中...' : '設定を整理中...'} />
-            ) : 'この内容で作品を作る'}
+            ) : copy.commitLabel}
           </button>
         </div>
       </header>
@@ -1004,7 +1104,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             {isColdStart ? (
               <article className="setup-message assistant setup-welcome-message">
                 <div className="setup-message-role">相談相手</div>
-                <p>どんな物語を読みたいですか？ 好きな雰囲気や関係性だけでも大丈夫です。一緒に見つけましょう。</p>
+                <p>{copy.welcome}</p>
               </article>
             ) : session && session.messages.length > 0 ? (
               session.messages.map((entry) => (
@@ -1017,7 +1117,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               ))
             ) : (
               <div className="setup-empty-chat">
-                <p>メモをもとに、読みたい物語の続きを相談できます。</p>
+                <p>{copy.emptyChat}</p>
               </div>
             )}
             {(isStreaming || streamingMessage) && (
@@ -1079,7 +1179,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             <textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder="読みたい物語の雰囲気、好きな関係性、避けたい展開など"
+              placeholder={copy.inputPlaceholder}
               disabled={busy || modelUnavailable}
             />
             {isStreaming ? (
@@ -1098,11 +1198,11 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
           </form>
         </section>
 
-        <aside className="setup-draft-panel" aria-label="作品の種メモ">
-          <h2>作品の種メモ</h2>
+        <aside className="setup-draft-panel" aria-label={copy.draftPanelTitle}>
+          <h2>{copy.draftPanelTitle}</h2>
           {hasUnsavedDraftEdits && (
             <div className="setup-draft-unsaved">
-              メモに未保存の変更があります。保存してから相談・試し書き・作品化できます。
+              メモに未保存の変更があります。保存してから相談・{copy.previewLabel}・作品化できます。
             </div>
           )}
           {hasDraftChanges && (
@@ -1121,6 +1221,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             <>
               <CoreConceptEditor
                 dirtyKey="draft.coreConcept"
+                title={sectionLabels.coreConcept}
                 value={draft.coreConcept}
                 disabled={busy}
                 locked={pathLocked('draft.coreConcept')}
@@ -1135,7 +1236,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
 
               />
               <DraftTextList
-                title="決まってきたこと"
+                title={sectionLabels.confirmed}
                 items={draft.confirmed.filter((item) => item.status === 'active')}
                 disabled={busy}
                 changes={draftChanges}
@@ -1234,7 +1335,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                 onMixSelected={sendMixedCandidates}
               />
               <DraftTextList
-                title="未確定"
+                title={sectionLabels.undecided}
                 items={draft.undecided.filter((item) => item.status === 'active')}
                 disabled={busy}
                 changes={draftChanges}
@@ -1347,6 +1448,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               />
               <DraftStringList
                 section="world"
+                purpose={purpose}
                 items={draft.world}
                 disabled={busy}
                 changes={draftChanges}
@@ -1367,6 +1469,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               />
               <DraftStringList
                 section="relationshipSeeds"
+                purpose={purpose}
                 items={draft.relationshipSeeds}
                 disabled={busy}
                 changes={draftChanges}
@@ -1387,6 +1490,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               />
               <DraftStringList
                 section="tone"
+                purpose={purpose}
                 items={draft.tone}
                 disabled={busy}
                 changes={draftChanges}
@@ -1407,6 +1511,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               />
               <DraftStringList
                 section="ng"
+                purpose={purpose}
                 items={draft.ng}
                 disabled={busy}
                 changes={draftChanges}
@@ -1430,6 +1535,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               {purpose === 'novel' && (
                 <DraftStringList
                   section="openingSeeds"
+                  purpose={purpose}
                   items={draft.openingSeeds}
                   disabled={busy}
                   changes={draftChanges}
@@ -1449,11 +1555,37 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                   }}
                 />
               )}
+              {/* NOTE: roleplay 用途のみ。ユーザー側の立ち位置は作品化で
+                    Project.defaultUserPersona へ昇格し、会話開始時の初期値になる。 */}
+              {purpose === 'roleplay' && (
+                <DraftUserPersonaEditor
+                  dirtyKey="draft.userPersona"
+                  value={draft.userPersona}
+                  disabled={busy}
+                  locked={pathLocked('draft.userPersona')}
+                  changeKind={draftChanges.userPersona}
+                  onDirtyChange={markDraftDirty}
+                  onSave={(value) =>
+                    saveDraft((nextDraft) => {
+                      const trimmed = trimUserPersona(value);
+                      if (trimmed) {
+                        nextDraft.userPersona = trimmed;
+                      } else {
+                        delete nextDraft.userPersona;
+                      }
+                    }, ['draft.userPersona'])
+                  }
+                  onToggleLock={() =>
+                    toggleLock('draft.userPersona', !pathLocked('draft.userPersona'))
+                  }
+                />
+              )}
               {/* NOTE: roleplay 用途では会話舞台候補（scenarioSeeds）を編集できる。
                     novel では常に空配列なので非表示。 */}
               {purpose === 'roleplay' && (
                 <DraftStringList
                   section="scenarioSeeds"
+                  purpose={purpose}
                   items={draft.scenarioSeeds ?? []}
                   disabled={busy}
                   changes={draftChanges}
@@ -1482,12 +1614,12 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
           )}
           {previewText && (
             <section className="setup-preview">
-              <h3>試し書き</h3>
+              <h3>{copy.previewLabel}</h3>
               <LightMarkdown text={previewText} />
               <div className="setup-preview-adjustments">
                 <p>もう少し好みに寄せる</p>
                 <div className="setup-preview-adjustment-chips">
-                  {PREVIEW_STYLE_HINTS.map((styleHint) => (
+                  {copy.previewStyleHints.map((styleHint) => (
                     <button
                       key={styleHint}
                       type="button"
@@ -1508,10 +1640,10 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                   <label>
                     自由に指定
                     <input
-                      aria-label="試し書きの調整"
+                      aria-label={`${copy.previewLabel}の調整`}
                       value={previewStyleHint}
                       onChange={(event) => setPreviewStyleHint(event.target.value)}
-                      placeholder="例: 地の文を短めに"
+                      placeholder={copy.previewHintPlaceholder}
                       disabled={busy || modelUnavailable}
                     />
                   </label>
@@ -1531,6 +1663,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       {commitPlan && (
         <SetupCommitDialog
           plan={commitPlan}
+          purpose={purpose}
           error={commitError}
           committing={committing}
           onPlanChange={(update) =>
@@ -1632,6 +1765,16 @@ async function findRestorableSetupSession(
 
   const session = await api.getSetupSession(latestActive.sessionId).catch(() => null);
   return session?.status === 'active' ? session : null;
+}
+
+// NOTE: 空欄だけのペルソナは「未設定」と同じなので、保存前に落として undefined にする。
+function trimUserPersona(value: SetupDraftUserPersona): SetupDraftUserPersona | undefined {
+  const trimmed: SetupDraftUserPersona = {};
+  for (const key of ['name', 'relationship', 'preferredAddress', 'knownFacts'] as const) {
+    const text = value[key]?.trim();
+    if (text) trimmed[key] = text;
+  }
+  return Object.keys(trimmed).length > 0 ? trimmed : undefined;
 }
 
 function cloneDraft(draft: SetupDraft): SetupDraft {

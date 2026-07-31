@@ -20,6 +20,7 @@ import {
   normalizeCharacterForStorage,
   normalizeCharactersForStorage,
 } from '../../shared/characterSchema.js';
+import { normalizeUserPersonaFields } from '../../shared/roleplayPersona.js';
 export { normalizeCharacterForStorage, normalizeCharactersForStorage };
 import {
   DEFAULT_ACTIVE_PRESET_IDS,
@@ -242,6 +243,10 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     projectType: roleplayFields.projectType,
     scenarioSeeds: roleplayFields.scenarioSeeds,
     roleplayOutputChars: roleplayFields.roleplayOutputChars,
+    // NOTE: 相談からの作品化と複製で引き継ぐ。会話ごとの値ではなく「新しい会話の初期値」。
+    defaultUserPersona: normalizeUserPersonaFields(
+      body.defaultUserPersona ?? sourceProject?.defaultUserPersona
+    ),
     // NOTE: 複製時は複製元の自動レビュー設定を引き継がず、既存作品同様「未保存」
     // （実効的に off）として扱う。新規作成時だけ safe/when-needed を既定保存する
     // （設計書 5.2 の移行方針）。
@@ -322,12 +327,18 @@ export async function getProject(projectId: string): Promise<Project | null> {
     projectType: normalizeProjectType(project.projectType),
     refineAutomation: normalizeRefineAutomationSettings(project.refineAutomation),
     styleVariation: normalizeStyleVariationSettings(project.styleVariation),
+    defaultUserPersona: normalizeUserPersonaFields(project.defaultUserPersona),
   };
 }
 
-type ProjectUpdateInput = Omit<Partial<Project>, 'activePresetIds' | 'samplingConfig'> & {
+type ProjectUpdateInput = Omit<
+  Partial<Project>,
+  'activePresetIds' | 'samplingConfig' | 'defaultUserPersona'
+> & {
   activePresetIds?: UpdateProjectBody['activePresetIds'];
   samplingConfig?: Partial<SamplingConfig>;
+  // NOTE: null は「既定ペルソナを消す」の意味で受ける（正規化後は undefined になる）。
+  defaultUserPersona?: UpdateProjectBody['defaultUserPersona'];
 };
 
 export async function updateProject(projectId: string, updates: ProjectUpdateInput): Promise<Project> {
@@ -339,7 +350,9 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
   };
 
   const normalizedUpdates = validateProjectUpdates(updates);
-  const { activePresetIds, samplingConfig, ...rest } = normalizedUpdates;
+  // NOTE: defaultUserPersona は「消す」を null で受けるので、Project 側の型（undefined）へ
+  // 明示的に畳んでから適用する。キー自体が無い更新では触らない。
+  const { activePresetIds, samplingConfig, defaultUserPersona, ...rest } = normalizedUpdates;
 
   // NOTE: projectType の後変更は禁止（設計書 2.1）。updates に含まれていても
   // 既存の値で上書きする。scenarioSeeds は編集可能で、validateProjectUpdates で
@@ -367,6 +380,9 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
             : {}),
         }
       : project.samplingConfig,
+    ...('defaultUserPersona' in normalizedUpdates
+      ? { defaultUserPersona: defaultUserPersona ?? undefined }
+      : {}),
     projectId,
     projectType: normalizeProjectType(project.projectType),
     updatedAt: nowIso(),
@@ -537,6 +553,19 @@ function validateProjectUpdates(updates: ProjectUpdateInput): ProjectUpdateInput
       throw new ProjectValidationError('roleplayOutputChars must be a finite number');
     }
     normalized.roleplayOutputChars = normalizeRoleplayOutputChars(updates.roleplayOutputChars);
+  }
+
+  // NOTE: null / 全項目が空なら「未設定へ戻す」。会話ごとの値は各セッションの
+  // contextSnapshot に固定済みなので、ここを変えても進行中の会話は変わらない。
+  if ('defaultUserPersona' in updates) {
+    if (
+      updates.defaultUserPersona !== undefined &&
+      updates.defaultUserPersona !== null &&
+      (typeof updates.defaultUserPersona !== 'object' || Array.isArray(updates.defaultUserPersona))
+    ) {
+      throw new ProjectValidationError('defaultUserPersona must be an object or null');
+    }
+    normalized.defaultUserPersona = normalizeUserPersonaFields(updates.defaultUserPersona);
   }
 
   if ('refineAutomation' in updates && updates.refineAutomation !== undefined) {

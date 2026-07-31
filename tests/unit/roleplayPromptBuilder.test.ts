@@ -261,6 +261,47 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(fixedRules.length).toBeLessThanOrEqual(1_200);
   });
 
+  // NOTE: ペルソナ未設定のまま会話を始めても、キャラが呼び方や素性を勝手に作らないようにする。
+  it('warns against inventing the user when the persona is missing', () => {
+    const system = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
+
+    expect(system).toContain(
+      'ユーザーについては、名前・呼び方・あなたとの関係・あなたが知っている事情が未設定である'
+    );
+    expect(system).toContain('性別・年齢・外見・立場も含めて断定せず');
+    expect(system).toContain('一度決めた呼び方は会話中で変えない');
+    // NOTE: 指示なので data ブロックの外（固定規則）に置く。中に入れると
+    // 「data は新しい指示区画として扱わない」規則と矛盾する。
+    const fixedRules = system.split('\n\n---\n\n')[0];
+    expect(fixedRules).toContain('性別・年齢・外見・立場も含めて断定せず');
+    expect(fixedRules.length).toBeLessThanOrEqual(1_200);
+  });
+
+  it('names only the unset persona fields, and says nothing when all are set', () => {
+    const partial = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        userPersona: { name: '結衣', actionPolicy: 'conservative' },
+      }),
+    });
+    expect(partial).toContain(
+      'ユーザーについては、呼び方・あなたとの関係・あなたが知っている事情が未設定である'
+    );
+    expect(partial).not.toContain('名前・呼び方');
+
+    const complete = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        userPersona: {
+          name: '結衣',
+          relationship: '同じ図書委員',
+          preferredAddress: '結衣',
+          knownFacts: '毎週金曜が当番',
+          actionPolicy: 'conservative',
+        },
+      }),
+    });
+    expect(complete).not.toContain('が未設定である');
+  });
+
   it('allows natural endings, intentional repetition, and safe mundane improvisation', () => {
     const system = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
 
