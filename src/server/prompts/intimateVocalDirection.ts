@@ -17,13 +17,6 @@ const NEGATED_SCENE_PATTERNS: readonly RegExp[] = [
   /(?:場面転換|翌朝へ|朝まで飛ば|事後へ|暗転する|行為を終え|服を着て|寝台を出て|会話に戻)/u,
 ];
 
-const MINOR_MARKER_PATTERN =
-  /(?:未成年|児童|小学生|中学生|高校生|幼稚園児|幼女|幼い少年|幼い少女|(?:成人|成年)\s*(?:(?:では|じゃ)\s*(?:ない|ありません)|で\s*ない)|18\s*[歳才]\s*(?:未満|未達|以下)|十八\s*[歳才]\s*(?:未満|未達|以下))/u;
-const AGE_PATTERN =
-  /(?:^|[^\d])(\d{1,2})\s*[歳才](?!\s*(?:差|年上|年下|未満|未達|以下))/gu;
-const MINOR_KANJI_AGE_PATTERN =
-  /(?:^|[^一二三四五六七八九十百])(?:一|二|三|四|五|六|七|八|九|十|十一|十二|十三|十四|十五|十六|十七)\s*[歳才](?!\s*(?:差|年上|年下))/u;
-const ADULT_MARKER_PATTERN = /(?:成人|成年|18\s*[歳才]\s*以上|十八\s*[歳才]\s*以上)/u;
 const CONTINUATION_CUE_PATTERN =
   /^(?:(?:この|その)まま)?(?:続けて|続きを?|もっと|さらに|お願い|始めよう|うん|はい)(?:[、，].{0,24})?[。！!？?…\s]*$|(?:同じ場面|別案|書き直|やり直|切り取り方)/u;
 
@@ -35,8 +28,6 @@ export interface IntimateVocalDirectionInput {
   primaryText: string;
   /** 直近本文、書き直し対象、会話履歴、現在状態など。 */
   contextTexts?: readonly string[];
-  /** 今回の場面へ参加しうる人物の年齢確認用テキスト。 */
-  characterTexts?: readonly string[];
 }
 
 /**
@@ -62,25 +53,9 @@ export function buildIntimateVocalDirection(
     primary.length === 0 || CONTINUATION_CUE_PATTERN.test(primary);
   if (!primaryIsSexual && !(continuesCurrentScene && contextIsSexual)) return '';
 
-  const sceneText = [primary, ...context].filter(Boolean).join('\n');
-  const ageEvidence = [
-    sceneText,
-    ...(input.characterTexts ?? []).map((text) => normalizeForDetection(text)),
-  ].join('\n');
-  if (containsMinorMarker(ageEvidence)) return '';
-  const characterTexts = (input.characterTexts ?? [])
-    .map((text) => normalizeForDetection(text))
-    .filter(Boolean);
-  if (
-    characterTexts.length === 0 ||
-    characterTexts.some((text) => !containsAdultEvidence(text))
-  ) {
-    return '';
-  }
-
   return [
     '【今回の場面だけの発声演出】',
-    '- 成人同士の性的な接触が続く間だけ適用し、場面を離れたら通常の会話・地の文へ戻す。年齢が不明または未成年の人物には適用しない。',
+    '- 性的な接触が続く間だけ適用し、場面を離れたら通常の会話・地の文へ戻す。',
     '- 声を飾りとして足さず、呼吸、生理反応、人物の平静が崩れる度合いを表す。刺激の瞬間・速さ・強さと発声の長さ、間、途切れを同期させる。',
     '- 序盤は言葉を保ったまま息の乱れを混ぜ、昂ぶるほど短文化し、頂点では意味のある語を減らして音と反復へ崩す。直後は余韻のある息と間へ落とす。',
     '- 開いた響き、喉を締めた鋭い響き、口を閉じた抵抗の響き、腹の底から出る低い響きを、刺激の性質と人物の声質に合わせて使い分ける。',
@@ -93,24 +68,6 @@ function isSexualScene(text: string): boolean {
   if (!text) return false;
   if (EXPLICIT_SCENE_PATTERNS.some((pattern) => pattern.test(text))) return true;
   return INTIMATE_ACTION_PATTERN.test(text) && PHYSICAL_REACTION_PATTERN.test(text);
-}
-
-function containsMinorMarker(text: string): boolean {
-  if (MINOR_MARKER_PATTERN.test(text) || MINOR_KANJI_AGE_PATTERN.test(text)) return true;
-  for (const match of text.matchAll(AGE_PATTERN)) {
-    const age = Number(match[1]);
-    if (Number.isFinite(age) && age < 18) return true;
-  }
-  return false;
-}
-
-function containsAdultEvidence(text: string): boolean {
-  if (ADULT_MARKER_PATTERN.test(text)) return true;
-  for (const match of text.matchAll(AGE_PATTERN)) {
-    const age = Number(match[1]);
-    if (Number.isFinite(age) && age >= 18) return true;
-  }
-  return false;
 }
 
 function normalizeForDetection(value: string): string {

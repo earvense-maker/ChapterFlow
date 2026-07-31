@@ -188,22 +188,9 @@ describe('buildPrompt', () => {
     const active = await buildPrompt({
       project: directProject,
       state: makeState(),
-      wish: '成人した二人が身体を重ねる場面を続けて',
+      wish: '二人が身体を重ねる場面を続けて',
       memories: [],
-      characters: [
-        {
-          characterId: 'char-adult-a',
-          name: 'ミナ',
-          role: 'protagonist',
-          description: '24歳の成人女性。',
-        },
-        {
-          characterId: 'char-adult-b',
-          name: 'ユウ',
-          role: 'deuteragonist',
-          description: '26歳の成人男性。',
-        },
-      ],
+      characters: [],
       worldText: '',
     });
     expect(active.userPrompt).toContain('【今回の場面だけの発声演出】');

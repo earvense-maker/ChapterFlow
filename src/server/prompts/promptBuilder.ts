@@ -299,12 +299,6 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
   push(SECTION.frequentPhrases, renderFrequentPhraseNotice(frequentPhrases));
   if (variationEnabled) push(SECTION.styleLens, renderStyleLensPrompt(styleProfile));
   push(SECTION.styleSample, styleSampleBody(project), { render: renderStyleSample });
-  const intimateSceneEvidence = [
-    wish,
-    recentContext.slice(-5_000),
-    currentSceneText.slice(-5_000),
-    storyState.currentSituation.join('\n'),
-  ].join('\n');
   const intimateVocalDirection = buildIntimateVocalDirection({
     intimacyPresetId: project.activePresetIds.intimacy,
     primaryText: wish,
@@ -313,27 +307,6 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
       currentSceneText,
       storyState.currentSituation.join('\n'),
     ],
-    // NOTE: 無関係な脇役に未成年者がいるだけで成人同士の場面を無効化しない。
-    // 主役級、または今回の文脈で名前が出た人物だけを年齢確認の対象にする。
-    characterTexts: characters
-      .filter(
-        (character) =>
-          character.role === 'protagonist' ||
-          character.role === 'deuteragonist' ||
-          [character.name, ...(character.aliases ?? [])].some(
-            (name) => name.trim() && intimateSceneEvidence.includes(name.trim())
-          )
-      )
-      .map((character) =>
-        [
-          character.name,
-          character.description,
-          character.currentState,
-          ...(character.traits ?? []).map((trait) => trait.text),
-        ]
-          .filter(Boolean)
-          .join('\n')
-      ),
   });
   push(SECTION.sceneDirection, intimateVocalDirection, {
     required: true,

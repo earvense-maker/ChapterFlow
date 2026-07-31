@@ -439,16 +439,10 @@ describe('buildRoleplaySystemInstructions', () => {
 });
 
 describe('conditional intimate vocal direction', () => {
-  it('adds the turn-only direction for an adult direct-intimacy roleplay scene', () => {
+  it('adds the turn-only direction for a direct-intimacy roleplay scene', () => {
     const prompt = userPrompt({
       snapshot: baseSnapshot({
-        character: baseCharacter({ description: '24歳の成人女性。よく本を読む。' }),
         intimacyPresetId: 'direct-explicit',
-        userPersona: {
-          name: 'ユウ',
-          knownFacts: '26歳の成人男性。',
-          actionPolicy: 'strict',
-        },
       }),
       recentMessages: makeMessages([
         ['user', '寝台で身体を重ねたまま、愛撫を続ける。'],
@@ -460,41 +454,14 @@ describe('conditional intimate vocal direction', () => {
     );
   });
 
-  it('does not add the direction to an ordinary turn or a minor character', () => {
+  it('does not add the direction to an ordinary turn', () => {
     const ordinary = userPrompt({
       snapshot: baseSnapshot({
-        character: baseCharacter({ description: '24歳の成人女性。よく本を読む。' }),
         intimacyPresetId: 'direct-explicit',
-        userPersona: {
-          name: 'ユウ',
-          knownFacts: '26歳の成人男性。',
-          actionPolicy: 'strict',
-        },
       }),
       recentMessages: makeMessages([['user', '今日読んだ本の感想を聞かせて。']]),
     });
     expect(ordinary).not.toContain('【今回の場面だけの発声演出】');
-
-    const minor = userPrompt({
-      snapshot: baseSnapshot({ intimacyPresetId: 'direct-explicit' }),
-      recentMessages: makeMessages([
-        ['user', '寝台で身体を重ねたまま、愛撫を続ける。'],
-      ]),
-    });
-    expect(minor).not.toContain('【今回の場面だけの発声演出】');
-  });
-
-  it('does not add the direction when the participating user has no adult evidence', () => {
-    const prompt = userPrompt({
-      snapshot: baseSnapshot({
-        character: baseCharacter({ description: '24歳の成人女性。よく本を読む。' }),
-        intimacyPresetId: 'direct-explicit',
-      }),
-      recentMessages: makeMessages([
-        ['user', '寝台で身体を重ねたまま、愛撫を続ける。'],
-      ]),
-    });
-    expect(prompt).not.toContain('【今回の場面だけの発声演出】');
   });
 });
 

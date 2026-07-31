@@ -274,9 +274,7 @@ describe('roleplaySessionService', () => {
   });
 
   it('captures the roleplay intimacy preset id for turn-level scene directions', async () => {
-    const project = await makeRoleplayProject(
-      baseCharacter({ description: '24歳の成人女性。' })
-    );
+    const project = await makeRoleplayProject();
     await projectService.updateProject(project.projectId, {
       activePresetIds: {
         ...project.activePresetIds,

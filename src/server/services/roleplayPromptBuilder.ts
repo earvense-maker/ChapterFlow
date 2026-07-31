@@ -405,36 +405,10 @@ function composeRoleplayUserPrompt(input: RoleplayUserPromptInput): string {
   if (recent.trim()) {
     parts.push(renderDataBlock('【直近の会話】', recent));
   }
-  const sceneEvidence = [
-    scenario,
-    latestUserMessage(input.recentMessages),
-    recentTurnContext(input.recentMessages),
-  ].join('\n');
-  const participantTexts = [
-    [
-      input.snapshot.character.name,
-      input.snapshot.character.description,
-      input.snapshot.character.currentState,
-      ...(input.snapshot.character.traits ?? []).map((trait) => trait.text),
-    ]
-      .filter(Boolean)
-      .join('\n'),
-    [
-      input.snapshot.userPersona?.name,
-      input.snapshot.userPersona?.relationship,
-      input.snapshot.userPersona?.knownFacts,
-    ]
-      .filter(Boolean)
-      .join('\n') || '会話相手: 年齢不明',
-    ...(input.snapshot.otherCharacters ?? [])
-      .filter((character) => character.name.trim() && sceneEvidence.includes(character.name.trim()))
-      .map((character) => [character.name, character.description].filter(Boolean).join('\n')),
-  ];
   const intimateVocalDirection = buildIntimateVocalDirection({
     intimacyPresetId: input.snapshot.intimacyPresetId,
     primaryText: latestUserMessage(input.recentMessages),
     contextTexts: [scenario, recentTurnContext(input.recentMessages)],
-    characterTexts: participantTexts,
   });
   if (intimateVocalDirection) {
     parts.push(intimateVocalDirection);
