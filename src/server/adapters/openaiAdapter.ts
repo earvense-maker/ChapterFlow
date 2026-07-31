@@ -103,6 +103,7 @@ export class OpenAIAdapter implements ModelAdapter {
           ...(this.supportsJsonResponseFormat && request.responseMimeType === 'application/json'
             ? { response_format: { type: 'json_object' } }
             : {}),
+          ...this.extraBodyFields(request),
         }),
         signal: controller.signal,
       });
@@ -224,6 +225,7 @@ export class OpenAIAdapter implements ModelAdapter {
           ...(this.supportsJsonResponseFormat && request.responseMimeType === 'application/json'
             ? { response_format: { type: 'json_object' } }
             : {}),
+          ...this.extraBodyFields(request),
         }),
         signal: controller.signal,
       });
@@ -245,7 +247,8 @@ export class OpenAIAdapter implements ModelAdapter {
       const data = (await res.json()) as {
         model?: string;
         choices: Array<{
-          message?: { content?: string };
+          // NOTE: reasoning_content は DeepSeek 等の思考モデルが返す拡張フィールド。
+          message?: { content?: string; reasoning_content?: string };
           finish_reason?: string;
         }>;
         usage?: {
@@ -270,10 +273,19 @@ export class OpenAIAdapter implements ModelAdapter {
       const choice = data.choices?.[0];
       const text = choice?.message?.content?.trim() || '';
       const finishReason = mapFinishReason(choice?.finish_reason);
+      // NOTE: 思考モードのモデルは本文を content、思考を reasoning_content に分けて返す。
+      // 本文が空で reasoning_content だけが埋まっている状態は「モデルが答えを思考側へ
+      // 出してしまった」ことを意味し、空応答の原因として content だけ見ていても分からない。
+      const reasoningLength = choice?.message?.reasoning_content?.trim().length ?? 0;
+      const debugInfo =
+        !text && reasoningLength > 0
+          ? `content=empty reasoning_content=${reasoningLength}chars finish=${choice?.finish_reason ?? 'none'}`
+          : undefined;
 
       return {
         text,
         finishReason,
+        ...(debugInfo ? { debugInfo } : {}),
         rawUsage: data.usage
           ? {
               promptTokens: data.usage.prompt_tokens,
@@ -341,6 +353,13 @@ export class OpenAIAdapter implements ModelAdapter {
       Authorization: `Bearer ${apiKey}`,
       ...this.extraHeaders,
     };
+  }
+
+  // NOTE: OpenAI 互換を名乗っていても、思考モードの制御のようにプロバイダー独自の
+  // フィールドが必要な場面がある。共通のボディに条件分岐を足していくと読めなくなるので、
+  // 派生アダプタがここで差分だけを返す。共通フィールドより後に展開される。
+  protected extraBodyFields(_request: AdapterGenerateRequest): Record<string, unknown> {
+    return {};
   }
 }
 

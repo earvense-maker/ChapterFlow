@@ -391,6 +391,7 @@ async function scanGenerationForAutomation(snapshot: AutomationScanSnapshot): Pr
       modelName: snapshot.project.activeModelName,
       finishReason: result.finishReason,
       debugInfo: result.debugInfo,
+      rawUsage: result.rawUsage,
       textPreview: (result.text ?? '').slice(0, 400),
     });
     throw new Error(

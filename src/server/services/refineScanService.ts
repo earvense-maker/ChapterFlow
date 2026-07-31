@@ -212,6 +212,9 @@ async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineSca
       modelName: project.activeModelName,
       finishReason: adapterResult.finishReason,
       debugInfo: adapterResult.debugInfo,
+      // NOTE: 空応答の切り分けに必須。completionTokens > 0 なら「生成はされたが本文欄に
+      // 入らなかった」、0 なら「そもそも作られなかった」で原因がまったく違う。
+      rawUsage: adapterResult.rawUsage,
       textPreview: (adapterResult.text ?? '').slice(0, 400),
     });
   }
