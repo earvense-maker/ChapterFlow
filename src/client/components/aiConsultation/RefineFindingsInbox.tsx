@@ -24,10 +24,13 @@ interface Props {
   selectedFindingId: string | null;
   onScan: () => void;
   onConsult: (finding: RefineFinding) => void;
+  onApplySuggestion: (finding: RefineFinding) => void;
   onSetDisposition: (finding: RefineFinding, status: RefineFindingDispositionStatus) => void;
   onEditInWorkSettings: (finding: RefineFinding) => void;
 }
 
+// NOTE: deferred は UI から設定できなくなったが、以前保存された判断が残っているので
+// バッジ表示側の対応は残す（次回走査で自然に失効する）。
 const DISPOSITION_LABEL: Record<RefineFindingDispositionStatus, string> = {
   deferred: '保留中',
   'intentional-gap': '意図的な空白',
@@ -45,6 +48,7 @@ export default function RefineFindingsInbox({
   selectedFindingId,
   onScan,
   onConsult,
+  onApplySuggestion,
   onSetDisposition,
   onEditInWorkSettings,
 }: Props) {
@@ -82,6 +86,7 @@ export default function RefineFindingsInbox({
         busyFingerprint={busyFingerprint}
         selectedFindingId={selectedFindingId}
         onConsult={onConsult}
+        onApplySuggestion={onApplySuggestion}
         onSetDisposition={onSetDisposition}
         onEditInWorkSettings={onEditInWorkSettings}
       />
@@ -97,6 +102,7 @@ function FindingsBody({
   busyFingerprint,
   selectedFindingId,
   onConsult,
+  onApplySuggestion,
   onSetDisposition,
   onEditInWorkSettings,
 }: Pick<
@@ -108,6 +114,7 @@ function FindingsBody({
   | 'busyFingerprint'
   | 'selectedFindingId'
   | 'onConsult'
+  | 'onApplySuggestion'
   | 'onSetDisposition'
   | 'onEditInWorkSettings'
 >) {
@@ -182,15 +189,26 @@ function FindingsBody({
               </p>
             )}
             <div className="refine-finding-actions">
-              <button type="button" className="primary" onClick={() => onConsult(finding)} disabled={disabled}>
-                相談する
-              </button>
+              {/* NOTE: 走査が具体案（suggestedFix）を出したときだけ「そのまま採用」を出す。
+                  案が無い気づきでは何を修正するのかが決まらず、相談から始めるしかない。 */}
+              {finding.suggestedFix && (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => onApplySuggestion(finding)}
+                  disabled={disabled || !finding.fingerprint}
+                >
+                  提案通りに修正
+                </button>
+              )}
+              {/* NOTE: 強調は1カード1つに保つ。提案採用があるときはそちらを主導線にする。 */}
               <button
                 type="button"
-                onClick={() => onSetDisposition(finding, 'deferred')}
-                disabled={disabled || !finding.fingerprint}
+                className={finding.suggestedFix ? undefined : 'primary'}
+                onClick={() => onConsult(finding)}
+                disabled={disabled}
               >
-                今は保留
+                相談する
               </button>
               {/* NOTE: target が 'other' の気づきは fingerprint が走査をまたいで安定
                   しないため、永続的な判断を保存させない（保存できても次回は消える）。 */}

@@ -787,6 +787,10 @@
 .refine-finding-actions {
   margin-top: 0.5rem;
   display: flex;
+  /* NOTE: サイドカラムは狭く、ボタンも増えたので折り返す。ここを nowrap にすると
+     「作品設定で直接編集」がカードからはみ出す。 */
+  flex-wrap: wrap;
+  gap: 0.35rem;
   justify-content: flex-end;
 }
 

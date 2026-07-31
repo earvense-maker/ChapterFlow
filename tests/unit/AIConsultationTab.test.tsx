@@ -412,9 +412,39 @@ describe('AIConsultationTab', () => {
     });
     renderTab({ refineScan: scan });
 
-    expect(await screen.findByRole('button', { name: '今は保留' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: '相談する' })).toBeVisible();
     expect(screen.queryByRole('button', { name: '意図的な空白として残す' })).toBeNull();
     expect(screen.queryByRole('button', { name: '解決済みにする' })).toBeNull();
+  });
+
+  it('turns a scan suggestion into a change candidate with prepare-patch', async () => {
+    const scan = makeScan();
+    scan.findings[0].suggestedFix = '美咲の動機に「妹を探している」を書き足す。';
+    apiMock.sendRefineMessage.mockResolvedValue({
+      session: makeSession(),
+      assistantMessage: { messageId: 'm', role: 'assistant', content: 'ok', createdAt: '' },
+      newPatches: [],
+    });
+    renderTab({ refineScan: scan });
+
+    fireEvent.click(await screen.findByRole('button', { name: '提案通りに修正' }));
+
+    await waitFor(() => expect(apiMock.sendRefineMessage).toHaveBeenCalledTimes(1));
+    expect(apiMock.sendRefineMessage.mock.calls[0][1]).toContain(
+      '美咲の動機に「妹を探している」を書き足す。'
+    );
+    expect(apiMock.sendRefineMessage.mock.calls[0][2]).toMatchObject({
+      responseMode: 'prepare-patch',
+      target: { kind: 'finding', findingId: 'finding-1', fingerprint: 'fp-1' },
+    });
+  });
+
+  it('offers only consulting when the finding carries no concrete fix', async () => {
+    renderTab();
+
+    expect(await screen.findByRole('button', { name: '相談する' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '提案通りに修正' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '今は保留' })).toBeNull();
   });
 
   it('runs the settings scan from the findings inbox', async () => {

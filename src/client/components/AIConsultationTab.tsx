@@ -88,6 +88,7 @@ export default function AIConsultationTab({
   const [maintenancePhase, setMaintenancePhase] = useState<RefineMaintenancePhase | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const chatCardRef = useRef<HTMLElement>(null);
 
   const manualActionsBlocked =
     maintenancePhase !== null && MAINTENANCE_BLOCKING_PHASES.has(maintenancePhase);
@@ -281,6 +282,26 @@ export default function AIConsultationTab({
     inputRef.current?.focus();
   }
 
+  // NOTE: 走査の提案をそのまま採用する導線。prepare-patch で変更候補まで作り、反映自体は
+  // 既存のパッチカード（差分表示 →「反映する」）に任せる。ここで自動適用すると、
+  // 差分を確認しないまま world / 人物設定が書き換わり、手動パッチには取り消しが無い。
+  function handleApplyFindingSuggestion(finding: RefineFinding) {
+    if (!finding.fingerprint || !finding.suggestedFix) return;
+    const target: RefineConsultationTarget = {
+      kind: 'finding',
+      findingId: finding.id,
+      fingerprint: finding.fingerprint,
+    };
+    setConsultTarget(target);
+    // NOTE: 気づき一覧は別カラム（狭い画面では会話より下）にあるので、押しても結果が
+    // 見えないままになる。変更候補は会話側に出るため、送信と同時にそこへ寄せる。
+    chatCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    void send(
+      `この気づきについて、走査時の提案どおりに設定を修正する変更候補を作ってください。\n提案: ${finding.suggestedFix}`,
+      { responseMode: 'prepare-patch', target }
+    );
+  }
+
   function handleStartFindingConsultation(finding: RefineFinding) {
     if (!finding.fingerprint) return;
     void send(`この気づきについて相談したいです: ${finding.message}`, {
@@ -451,7 +472,7 @@ export default function AIConsultationTab({
       {/* NOTE: DOM 上は会話 → 入力 → 補助情報の順にする。狭い画面で一列化したとき、
           読み上げ順と視覚順がずれないようにするため（設計書 9）。 */}
       <div className="ai-consultation-main">
-        <section className="summary-card refine-chat-card">
+        <section className="summary-card refine-chat-card" ref={chatCardRef}>
           <header className="summary-card-header">
             <h2>AIと相談して編集</h2>
             <div className="summary-card-badges">
@@ -560,6 +581,7 @@ export default function AIConsultationTab({
           selectedFindingId={selectedFinding?.id ?? null}
           onScan={handleScan}
           onConsult={handleConsultFinding}
+          onApplySuggestion={handleApplyFindingSuggestion}
           onSetDisposition={handleSetDisposition}
           onEditInWorkSettings={(finding) => onEditInWorkSettings(finding.target)}
         />
