@@ -20,6 +20,7 @@ import {
   type AutomationPatchProposal,
 } from './refineAutomationService.js';
 import {
+  buildParseFailureMessage,
   getRefineReviewStatus,
   loadAcceptedSceneEvidence,
 } from './refineScanService.js';
@@ -377,7 +378,27 @@ async function scanGenerationForAutomation(snapshot: AutomationScanSnapshot): Pr
     throw new Error(result.errorMessage || '自動設定レビューのモデル応答が得られませんでした。');
   }
   const proposals = parseAutomationProposals(result.text, snapshot.characters, snapshot.generation.generationId);
-  if (!proposals) throw new Error('自動設定レビューの応答を JSON として解釈できませんでした。');
+  if (!proposals) {
+    // NOTE: 自動レビューは失敗しても run の errorMessage 一行しか残らない。finishReason を
+    // 落とすと「JSON が壊れている」ようにしか見えず、実際の原因（思考で出力枠を使い切って
+    // 本文が空、安全フィルタでブロック、など）へたどり着けない。手動走査と同じ診断を出す。
+    console.warn('Refine automation JSON parse failed', {
+      projectId: snapshot.projectId,
+      provider: snapshot.project.activeModelProvider,
+      modelName: snapshot.project.activeModelName,
+      finishReason: result.finishReason,
+      debugInfo: result.debugInfo,
+      textPreview: (result.text ?? '').slice(0, 400),
+    });
+    throw new Error(
+      `自動設定レビュー: ${buildParseFailureMessage(
+        result.text,
+        result.debugInfo,
+        result.finishReason,
+        snapshot.project.activeModelProvider
+      )}`
+    );
+  }
   return { proposals, evidenceSources };
 }
 

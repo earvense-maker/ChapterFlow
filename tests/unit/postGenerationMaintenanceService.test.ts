@@ -334,4 +334,38 @@ describe('post-generation maintenance', () => {
       'autorun-failed-patch'
     );
   });
+
+  it('records why the scan response was unusable instead of only "not JSON"', async () => {
+    const project = await createTrackedProject();
+    // NOTE: 実際に起きた失敗の再現。思考トークンで出力枠を使い切ったモデルは
+    // finishReason=length と空本文を返す。ここで finishReason を捨てると、原因が
+    // 「JSON が壊れている」としか記録されず追跡できなくなる。
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      if (request.systemInstructions.includes('生成後設定レビュー担当')) {
+        return {
+          text: '',
+          finishReason: 'length' as const,
+          debugInfo: 'finishReason=length usage=prompt:17946/completion:12248',
+          retryable: false,
+        };
+      }
+      if (request.systemInstructions.includes('物語状態')) {
+        return { text: '{}', finishReason: 'stop' as const, retryable: false };
+      }
+      return { text: '本文。', finishReason: 'stop' as const, retryable: false };
+    });
+
+    await generationService.generateScene(project.projectId, { wish: '続き', mode: 'continue' });
+    await waitForCondition(async () => {
+      const [run] = await refineAutomationService.listAutomationRuns(project.projectId);
+      return run?.status === 'failed';
+    });
+
+    const [run] = await refineAutomationService.listAutomationRuns(project.projectId);
+    expect(run.errorMessage).toContain('自動設定レビュー');
+    expect(run.errorMessage).toContain('空の応答');
+    // 出力枠切れという原因と、アダプタが拾った診断が残る。
+    expect(run.errorMessage).toContain('出力枠');
+    expect(run.errorMessage).toContain('completion:12248');
+  });
 });

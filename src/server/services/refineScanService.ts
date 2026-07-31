@@ -193,7 +193,12 @@ async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineSca
 
   const lastError = parsed
     ? null
-    : buildParseFailureMessage(adapterResult.text, adapterResult.debugInfo, adapterResult.finishReason);
+    : buildParseFailureMessage(
+        adapterResult.text,
+        adapterResult.debugInfo,
+        adapterResult.finishReason,
+        project.activeModelProvider
+      );
 
   // NOTE: パース失敗はサーバー側にも残しておくと後で追跡しやすい。
   // 応答テキストは長くなり得るので 400 字に切って出す。
@@ -805,18 +810,26 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   return null;
 }
 
-function buildParseFailureMessage(
+// NOTE: 走査・自動レビューの双方から使う。JSON パース失敗の見え方は経路が違っても
+// 同じ（空応答か、途中で切れた本文か）なので、診断文とその判断基準は1か所に置く。
+export function buildParseFailureMessage(
   rawText: string,
   debugInfo: string | undefined,
-  finishReason: string
+  finishReason: string,
+  provider?: string
 ): string {
   const trimmed = (rawText ?? '').trim();
+  // NOTE: 既に使っているプロバイダーへ「切り替えろ」と案内すると行き止まりになる。
+  const switchHint =
+    provider === 'deepseek'
+      ? '同じ DeepSeek でも別のモデルに切り替えると安定することがあります。'
+      : 'DeepSeek に切り替えると安定します。';
   if (!trimmed) {
     // NOTE: Gemini 2.5 系で thinking モードが maxOutputTokens を使い切ると
     // 起きる事故が最も多い。ユーザーに具体的な誘導を出す。
     const parts = ['AI が空の応答を返しました。'];
     if (finishReason === 'length') {
-      parts.push('思考モードで出力枠を使い切った可能性があります。技術設定タブから出力字数を大きくするか、DeepSeek に切り替えると安定します。');
+      parts.push(`思考モードで出力枠を使い切った可能性があります。技術設定タブから出力字数を大きくするか、${switchHint}`);
     } else if (finishReason === 'content_filter') {
       parts.push('安全フィルタでブロックされた可能性があります。DeepSeek への切り替えを試してください。');
     } else {
@@ -825,10 +838,15 @@ function buildParseFailureMessage(
     if (debugInfo) parts.push(`診断: ${debugInfo}`);
     return parts.join('\n');
   }
-  return [
-    'AI の応答を JSON として解釈できませんでした。もう一度お試しください。',
-    `応答の一部: ${truncate(trimmed, 200)}`,
-  ].join('\n');
+  const parts = ['AI の応答を JSON として解釈できませんでした。もう一度お試しください。'];
+  // NOTE: 本文はあるが finishReason=length のときは「壊れた JSON」ではなく「途中で
+  // 切れた JSON」。原因が違うので同じ文面にまとめない。
+  if (finishReason === 'length') {
+    parts.push(`出力枠を使い切って応答が途中で切れています。技術設定タブから出力字数を見直すか、${switchHint}`);
+  }
+  parts.push(`応答の一部: ${truncate(trimmed, 200)}`);
+  if (debugInfo) parts.push(`診断: ${debugInfo}`);
+  return parts.join('\n');
 }
 
 export function normalizeFindings(
