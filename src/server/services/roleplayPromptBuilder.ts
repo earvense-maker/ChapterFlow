@@ -32,6 +32,7 @@ import {
   normalizeLegacyRoleplayPromptLayers,
   normalizeRoleplayAdditionalInstructions,
 } from '../prompts/systemPrompt.js';
+import { buildIntimateVocalDirection } from '../prompts/intimateVocalDirection.js';
 
 export const ROLEPLAY_WORLD_MAX_CHARS = 2000;
 // NOTE: 旧実装の対象キャラ上限。実行時の上限は SYSTEM_SECTION_LIMITS の 4,000 が正で、
@@ -404,6 +405,40 @@ function composeRoleplayUserPrompt(input: RoleplayUserPromptInput): string {
   if (recent.trim()) {
     parts.push(renderDataBlock('【直近の会話】', recent));
   }
+  const sceneEvidence = [
+    scenario,
+    latestUserMessage(input.recentMessages),
+    recentTurnContext(input.recentMessages),
+  ].join('\n');
+  const participantTexts = [
+    [
+      input.snapshot.character.name,
+      input.snapshot.character.description,
+      input.snapshot.character.currentState,
+      ...(input.snapshot.character.traits ?? []).map((trait) => trait.text),
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    [
+      input.snapshot.userPersona?.name,
+      input.snapshot.userPersona?.relationship,
+      input.snapshot.userPersona?.knownFacts,
+    ]
+      .filter(Boolean)
+      .join('\n') || '会話相手: 年齢不明',
+    ...(input.snapshot.otherCharacters ?? [])
+      .filter((character) => character.name.trim() && sceneEvidence.includes(character.name.trim()))
+      .map((character) => [character.name, character.description].filter(Boolean).join('\n')),
+  ];
+  const intimateVocalDirection = buildIntimateVocalDirection({
+    intimacyPresetId: input.snapshot.intimacyPresetId,
+    primaryText: latestUserMessage(input.recentMessages),
+    contextTexts: [scenario, recentTurnContext(input.recentMessages)],
+    characterTexts: participantTexts,
+  });
+  if (intimateVocalDirection) {
+    parts.push(intimateVocalDirection);
+  }
   // NOTE: 登録NG語は main prompt へ列挙しない（設計書 5.5）。語をモデルへ見せると、
   // 指示に従おうとして「〇〇ではなく」の否定形で本文へ出してしまう。長文生成では
   // 指示側の影響が減衰する一方、語だけは最後まで参照可能なまま残るのも効いていた。
@@ -415,6 +450,20 @@ function composeRoleplayUserPrompt(input: RoleplayUserPromptInput): string {
   parts.push(`【指示】\n${characterName}として応答してください。`);
 
   return parts.join('\n\n---\n\n');
+}
+
+function latestUserMessage(messages: RoleplayMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') return messages[index].content;
+  }
+  return '';
+}
+
+function recentTurnContext(messages: RoleplayMessage[]): string {
+  return messages
+    .slice(-2)
+    .map((message) => message.content)
+    .join('\n');
 }
 
 // NOTE: 旧結合済み全文から抜き出した追記と、snapshot の customSystemPrompt が同一の

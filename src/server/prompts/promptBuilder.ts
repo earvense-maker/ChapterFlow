@@ -39,6 +39,7 @@ import { trimTrailingTextToSentenceBoundary } from '../utils/textBoundary.js';
 import { extractFrequentPhrases } from '../utils/phraseFrequency.js';
 import { renderStyleLensPrompt } from '../services/styleVariationService.js';
 import { normalizeStyleVariationSettings } from '../../shared/defaults.js';
+import { buildIntimateVocalDirection } from './intimateVocalDirection.js';
 import type { PromptBudgetEntry, PromptBudgetReport } from '../../shared/types/generation.js';
 import type {
   Character,
@@ -103,6 +104,7 @@ const SECTION = {
   frequentPhrases: 'user.frequentPhrases',
   styleLens: 'user.styleLens',
   styleSample: 'user.styleSample',
+  sceneDirection: 'user.sceneDirection',
   outputConditions: 'user.outputConditions',
   wish: 'user.wish',
 } as const;
@@ -297,6 +299,46 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
   push(SECTION.frequentPhrases, renderFrequentPhraseNotice(frequentPhrases));
   if (variationEnabled) push(SECTION.styleLens, renderStyleLensPrompt(styleProfile));
   push(SECTION.styleSample, styleSampleBody(project), { render: renderStyleSample });
+  const intimateSceneEvidence = [
+    wish,
+    recentContext.slice(-5_000),
+    currentSceneText.slice(-5_000),
+    storyState.currentSituation.join('\n'),
+  ].join('\n');
+  const intimateVocalDirection = buildIntimateVocalDirection({
+    intimacyPresetId: project.activePresetIds.intimacy,
+    primaryText: wish,
+    contextTexts: [
+      recentContext.slice(-2_000),
+      currentSceneText,
+      storyState.currentSituation.join('\n'),
+    ],
+    // NOTE: 無関係な脇役に未成年者がいるだけで成人同士の場面を無効化しない。
+    // 主役級、または今回の文脈で名前が出た人物だけを年齢確認の対象にする。
+    characterTexts: characters
+      .filter(
+        (character) =>
+          character.role === 'protagonist' ||
+          character.role === 'deuteragonist' ||
+          [character.name, ...(character.aliases ?? [])].some(
+            (name) => name.trim() && intimateSceneEvidence.includes(name.trim())
+          )
+      )
+      .map((character) =>
+        [
+          character.name,
+          character.description,
+          character.currentState,
+          ...(character.traits ?? []).map((trait) => trait.text),
+        ]
+          .filter(Boolean)
+          .join('\n')
+      ),
+  });
+  push(SECTION.sceneDirection, intimateVocalDirection, {
+    required: true,
+    minReserve: NOVEL_USER_PROMPT_MAX_CHARS,
+  });
   push(SECTION.outputConditions, renderOutputConditions(project, viewpointCharacter), {
     required: true,
     minReserve: NOVEL_USER_PROMPT_MAX_CHARS,

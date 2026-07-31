@@ -177,6 +177,57 @@ describe('buildPrompt', () => {
     expect(userPrompt.trimEnd().endsWith('もっと不穏に')).toBe(true);
   });
 
+  it('injects the vocal direction only for a current direct-intimacy scene', async () => {
+    const directProject = {
+      ...makeProject(),
+      activePresetIds: {
+        ...makeProject().activePresetIds,
+        intimacy: 'direct-soft',
+      },
+    };
+    const active = await buildPrompt({
+      project: directProject,
+      state: makeState(),
+      wish: '成人した二人が身体を重ねる場面を続けて',
+      memories: [],
+      characters: [
+        {
+          characterId: 'char-adult-a',
+          name: 'ミナ',
+          role: 'protagonist',
+          description: '24歳の成人女性。',
+        },
+        {
+          characterId: 'char-adult-b',
+          name: 'ユウ',
+          role: 'deuteragonist',
+          description: '26歳の成人男性。',
+        },
+      ],
+      worldText: '',
+    });
+    expect(active.userPrompt).toContain('【今回の場面だけの発声演出】');
+    expect(active.budgetReport.entries).toContainEqual(
+      expect.objectContaining({
+        sectionId: 'user.sceneDirection',
+        action: 'full',
+      })
+    );
+
+    const ordinary = await buildPrompt({
+      project: directProject,
+      state: makeState(),
+      wish: '朝食を食べながら今日の予定を話す',
+      memories: [],
+      characters: [],
+      worldText: '',
+    });
+    expect(ordinary.userPrompt).not.toContain('【今回の場面だけの発声演出】');
+    expect(ordinary.budgetReport.entries).not.toContainEqual(
+      expect.objectContaining({ sectionId: 'user.sceneDirection' })
+    );
+  });
+
   it('keeps exposure guidance when a work uses a custom base prompt', async () => {
     const { userPrompt } = await buildPrompt({
       project: { ...makeProject(), coreConcept: '喪失のあとにも残る小さな希望' },

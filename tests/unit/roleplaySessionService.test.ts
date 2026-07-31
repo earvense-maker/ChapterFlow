@@ -273,6 +273,25 @@ describe('roleplaySessionService', () => {
     );
   });
 
+  it('captures the roleplay intimacy preset id for turn-level scene directions', async () => {
+    const project = await makeRoleplayProject(
+      baseCharacter({ description: '24歳の成人女性。' })
+    );
+    await projectService.updateProject(project.projectId, {
+      activePresetIds: {
+        ...project.activePresetIds,
+        rpIntimacy: 'direct-explicit',
+      },
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(stored?.contextSnapshot.intimacyPresetId).toBe('direct-explicit');
+  });
+
   it('treats an omitted and explicit default base prompt as the same effective setting', async () => {
     const project = await makeRoleplayProject();
     const presets = await storage.readPresets(project.projectId);

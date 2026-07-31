@@ -379,6 +379,7 @@ async function buildContextSnapshot(input: {
     stylePresetPrompt,
     responseStyleInstruction: await resolveResponseStyleInstruction(activePresetIds),
     responseStyleId: activePresetIds.rpResponseStyle,
+    intimacyPresetId: activePresetIds.rpIntimacy,
     userPersona: input.userPersona,
     settingsFingerprint: buildSettingsFingerprint(
       activePresetIds,

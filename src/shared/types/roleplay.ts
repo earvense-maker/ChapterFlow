@@ -82,6 +82,9 @@ export interface RoleplayContextSnapshot {
   responseStyleInstruction?: string;
   // NOTE: prose-mixed など応答形式ごとの固定規則分岐に使う。旧セッションは optional。
   responseStyleId?: string;
+  // NOTE: 発声演出を各ターンの文脈に応じて条件付き注入するため、セッション開始時の
+  // 性的場面プリセットだけを ID で固定する。旧セッションでは optional。
+  intimacyPresetId?: string;
   userPersona?: RoleplayUserPersona;
   // NOTE: 現在設定との差分判定用。入力値のハッシュだけを保存し、生プロンプトは公開しない。
   settingsFingerprint?: string;
