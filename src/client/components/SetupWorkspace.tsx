@@ -949,11 +949,9 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
 
   return (
     <div className="setup-workspace">
-      {/* NOTE: React 18.3.1 では inert={true} は DOM に属性を書き出さず背面が不活性化
-          されない。空文字 '' なら inert="" として書き出され実際に効く。表示中だけ ''、
-          非表示時は undefined で属性ごと省く。aria-hidden は既知属性なので Boolean のまま。
-          詳細は src/client/react-inert.d.ts のコメント参照。 */}
-      <header className="setup-header" inert={commitPlan ? '' : undefined} aria-hidden={Boolean(commitPlan)}>
+      {/* NOTE: React 19 で inert が既知のboolean属性になったため、18時代の空文字回避
+          （src/client/react-inert.d.ts）は撤去済み。true で inert="" が書き出される。 */}
+      <header className="setup-header" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
         <div>
           <h1>
             {purpose === 'roleplay' ? 'キャラと話す作品を作る' : '相談して作る'}
@@ -1015,7 +1013,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         <section
           className="setup-model-bar"
           aria-label="この相談のモデル"
-          inert={commitPlan ? '' : undefined}
+          inert={Boolean(commitPlan)}
           aria-hidden={Boolean(commitPlan)}
         >
           <div>
@@ -1070,7 +1068,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         <section
           className="setup-model-bar setup-style-settings-bar"
           aria-label="この作品の作風設定"
-          inert={commitPlan ? '' : undefined}
+          inert={Boolean(commitPlan)}
           aria-hidden={Boolean(commitPlan)}
         >
           <details>
@@ -1098,7 +1096,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         </section>
       )}
 
-      <main className="setup-main" inert={commitPlan ? '' : undefined} aria-hidden={Boolean(commitPlan)}>
+      <main className="setup-main" inert={Boolean(commitPlan)} aria-hidden={Boolean(commitPlan)}>
           <section className="setup-chat" aria-label="相談チャット">
           <div className="setup-messages">
             {isColdStart ? (

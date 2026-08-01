@@ -5,6 +5,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # NOTE: react と react-dom は peer 依存で版を揃える必要があり、別PRに分かれると
+    # どちらも npm ci が ERESOLVE で落ちて永久にマージできない（#15/#16 で発生）。
+    # 型定義も同じ理由で同梱する。
+    groups:
+      react:
+        patterns:
+          - react
+          - react-dom
+          - '@types/react'
+          - '@types/react-dom'
 
   - package-ecosystem: github-actions
     directory: /
