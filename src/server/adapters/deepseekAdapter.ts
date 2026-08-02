@@ -22,13 +22,17 @@ export class DeepSeekAdapter extends OpenAIAdapter {
   // NOTE: v4 系は思考モードが既定で有効。JSON 出力と併用すると、モデルが最終回答まで
   // reasoning_content 側へ書いてしまい content が空で返る（deepseek-v4-flash で実際に
   // 発生: finishReason=stop・本文0字）。JSON を組み立てるだけの用途に長考は要らないので、
-  // responseMimeType=json のときだけ思考を切る。本文生成（responseMimeType なし）は
-  // 従来どおり思考ありのままにする。
+  // responseMimeType=json のときだけ思考を切る。本文生成ではプロバイダー既定値の
+  // 変更に影響されないよう、思考有効・reasoning effort high を明示する。
   protected override extraBodyFields(
     request: AdapterGenerateRequest
   ): Record<string, unknown> {
-    return request.responseMimeType === 'application/json'
-      ? { thinking: { type: 'disabled' } }
-      : {};
+    if (request.responseMimeType === 'application/json') {
+      return { thinking: { type: 'disabled' } };
+    }
+    if (request.modelName.trim().toLowerCase() === 'deepseek-v4-flash') {
+      return { thinking: { type: 'enabled' }, reasoning_effort: 'high' };
+    }
+    return {};
   }
 }

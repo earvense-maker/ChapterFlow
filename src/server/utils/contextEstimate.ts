@@ -1,4 +1,4 @@
-import { estimateMaxOutputTokens } from './outputLength.js';
+import { resolveNovelMaxOutputTokens } from './outputLength.js';
 import type { TokenCountSource, TokenLimitSource } from '../types/index.js';
 
 export interface ContextUsageEstimateInput {
@@ -45,8 +45,12 @@ export function estimateContextUsage(input: ContextUsageEstimateInput): ContextU
   );
   const promptTokens = input.promptTokenCount?.tokens ?? estimatedPromptTokens;
   const outputTokenLimit = modelLimits.outputTokenLimit ?? Math.min(contextWindowTokens, 16_384);
-  const estimatedMaxOutputTokens = estimateMaxOutputTokens(
-    input.outputLength,
+  const estimatedMaxOutputTokens = resolveNovelMaxOutputTokens(
+    {
+      provider: input.provider,
+      modelName: input.modelName,
+      outputLength: input.outputLength,
+    },
     Math.min(contextWindowTokens, outputTokenLimit)
   );
   const estimatedAvailableTokens = Math.max(

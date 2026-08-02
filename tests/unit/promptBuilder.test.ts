@@ -161,7 +161,7 @@ describe('buildPrompt', () => {
       worldText: '',
     });
     expect(userPrompt).toContain('【出力形式】');
-    expect(userPrompt).toContain('上限は約3400字。3000字前後を標準としつつ');
+    expect(userPrompt).toContain('上限は約3600字。3000字前後を標準としつつ');
     expect(userPrompt).toContain('すでに書いたことを別の言い方で繰り返して字数を稼がない');
     expect(userPrompt).toContain('場面が自然に閉じる位置で終える');
     expect(userPrompt).toContain('【今回の指示】');

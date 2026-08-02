@@ -1,7 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { estimateContextUsage } from '../../src/server/utils/contextEstimate';
+import { DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS } from '../../src/server/utils/outputLength';
 
 describe('estimateContextUsage', () => {
+  it('reports the same 100k output reservation used by DeepSeek V4 Flash prose', () => {
+    const result = estimateContextUsage({
+      provider: 'deepseek',
+      modelName: 'deepseek-v4-flash',
+      systemInstructions: 'system',
+      userPrompt: 'user',
+      outputLength: 3000,
+      summaryText: '',
+      recentContextText: '',
+      modelLimits: {
+        contextWindowTokens: 1_000_000,
+        outputTokenLimit: 384_000,
+        source: 'catalog',
+      },
+      promptTokenCount: { tokens: 1000, source: 'provider' },
+    });
+
+    expect(result.estimatedMaxOutputTokens).toBe(
+      DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS
+    );
+    expect(result.estimatedAvailableTokens).toBe(899_000);
+  });
+
   it('reports knowledgeChars without adding knowledge text to token totals twice', () => {
     const base = estimateContextUsage({
       provider: 'openai',

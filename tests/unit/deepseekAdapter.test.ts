@@ -50,10 +50,28 @@ describe('DeepSeekAdapter', () => {
   it('keeps thinking enabled for prose generation', async () => {
     const fetchMock = mockJsonResponse({ content: '本文。' });
 
-    await new DeepSeekAdapter().generateText(baseRequest);
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      maxOutputTokens: 100_000,
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('high');
+    expect(body.max_tokens).toBe(100_000);
+  });
+
+  it('does not force V4 Flash thinking fields onto other DeepSeek models', async () => {
+    const fetchMock = mockJsonResponse({ content: '本文。' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      modelName: 'deepseek-v4-pro',
+    });
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(body).not.toHaveProperty('thinking');
+    expect(body).not.toHaveProperty('reasoning_effort');
   });
 
   it('reports when the answer landed in reasoning_content instead of content', async () => {

@@ -4,9 +4,11 @@ import * as generationService from '../../src/server/services/generationService'
 import * as expressionService from '../../src/server/services/expressionService';
 import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
+import { DeepSeekAdapter } from '../../src/server/adapters/deepseekAdapter';
 import { OpenRouterAdapter } from '../../src/server/adapters/openrouterAdapter';
 import { ModelAdapterError } from '../../src/server/adapters/modelAdapter';
 import { withDataDirLock } from '../../src/server/services/dataDirLock';
+import { DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS } from '../../src/server/utils/outputLength';
 import type {
   AdapterGenerateStreamEvent,
   EpisodeRecord,
@@ -380,6 +382,56 @@ describe('generationService generation', () => {
     expect(record.responseText).toBe('上限まで生成された本文');
     expect(record.status).toBe('draft');
     expect(record.finishReason).toBe('length');
+  });
+
+  it('uses the same 100k DeepSeek budget for preflight and non-streaming generation', async () => {
+    const project = await createTrackedProject();
+    await projectService.updateProject(project.projectId, {
+      activeModelProvider: 'deepseek',
+      activeModelName: 'deepseek-v4-flash',
+    });
+    let requestMaxOutputTokens: number | undefined;
+    vi.spyOn(DeepSeekAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      requestMaxOutputTokens = request.maxOutputTokens;
+      return { text: 'DeepSeek本文', finishReason: 'stop', retryable: false };
+    });
+
+    const record = await generationService.generateScene(project.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+
+    expect(requestMaxOutputTokens).toBe(DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS);
+    expect(record.promptBudgetReport?.tokenCheck?.estimatedMaxOutputTokens).toBe(
+      DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS
+    );
+  });
+
+  it('passes the 100k DeepSeek budget through streaming generation', async () => {
+    const project = await createTrackedProject();
+    await projectService.updateProject(project.projectId, {
+      activeModelProvider: 'deepseek',
+      activeModelName: 'deepseek-v4-flash',
+    });
+    let requestMaxOutputTokens: number | undefined;
+    vi.spyOn(DeepSeekAdapter.prototype, 'generateTextStream').mockImplementation(
+      async function* (request) {
+        requestMaxOutputTokens = request.maxOutputTokens;
+        yield { type: 'chunk', text: 'DeepSeekストリーム本文' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    );
+
+    const record = await generationService.generateSceneStream(
+      project.projectId,
+      { wish: '続き', mode: 'continue' },
+      () => undefined
+    );
+
+    expect(requestMaxOutputTokens).toBe(DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS);
+    expect(record.promptBudgetReport?.tokenCheck?.estimatedMaxOutputTokens).toBe(
+      DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS
+    );
   });
 
   it('records the model actually selected by the OpenRouter free router', async () => {

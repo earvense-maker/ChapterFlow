@@ -60,7 +60,7 @@ import {
   NOVEL_TOTAL_PROMPT_MAX_CHARS,
   tokensToReducibleChars,
 } from '../prompts/promptBudget.js';
-import { estimateMaxOutputTokens } from '../utils/outputLength.js';
+import { resolveNovelMaxOutputTokens } from '../utils/outputLength.js';
 import type { PromptBudgetReport } from '../../shared/types/generation.js';
 import {
   buildReaderContextUsage,
@@ -239,6 +239,7 @@ async function generateSceneUnlocked(
     temperature,
     timeoutMs: TIMEOUT_MS,
     modelName: project.activeModelName,
+    maxOutputTokens: fitted.maxOutputTokens,
     frequencyPenalty: project.samplingConfig?.frequencyPenalty,
     presencePenalty: project.samplingConfig?.presencePenalty,
   });
@@ -451,6 +452,7 @@ async function generateSceneStreamUnlocked(
       temperature,
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
+      maxOutputTokens: fitted.maxOutputTokens,
       abortSignal: options.abortSignal,
       frequencyPenalty: project.samplingConfig?.frequencyPenalty,
       presencePenalty: project.samplingConfig?.presencePenalty,
@@ -583,13 +585,17 @@ const NOVEL_TOKEN_MEASUREMENTS_MAX = 3;
 async function fitPromptToTokenBudget(input: {
   project: Project;
   built: BuildPromptResult;
-}): Promise<{ built: BuildPromptResult; report: PromptBudgetReport }> {
+}): Promise<{ built: BuildPromptResult; report: PromptBudgetReport; maxOutputTokens: number }> {
   const limits = await resolveModelTokenLimits(
     input.project.activeModelProvider,
     input.project.activeModelName
   );
-  const estimatedMaxOutputTokens = estimateMaxOutputTokens(
-    input.project.outputLength,
+  const maxOutputTokens = resolveNovelMaxOutputTokens(
+    {
+      provider: input.project.activeModelProvider,
+      modelName: input.project.activeModelName,
+      outputLength: input.project.outputLength,
+    },
     Math.min(limits.contextWindowTokens, limits.outputTokenLimit ?? limits.contextWindowTokens)
   );
 
@@ -617,7 +623,7 @@ async function fitPromptToTokenBudget(input: {
       userPrompt: built.userPrompt,
       contextWindowTokens: limits.contextWindowTokens,
       ...(limits.inputTokenLimit === undefined ? {} : { inputTokenLimit: limits.inputTokenLimit }),
-      estimatedMaxOutputTokens,
+      estimatedMaxOutputTokens: maxOutputTokens,
       providerTokens: providerCount?.tokens ?? null,
     });
     lastCheck = check;
@@ -625,6 +631,7 @@ async function fitPromptToTokenBudget(input: {
     if (check.ok) {
       return {
         built,
+        maxOutputTokens,
         report: {
           ...built.budgetReport,
           assembledChars: totalChars,

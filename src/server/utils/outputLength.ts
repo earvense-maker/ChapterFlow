@@ -1,6 +1,8 @@
-const MIN_TOLERANCE = 100;
-const MAX_TOLERANCE = 500;
+const OUTPUT_TOLERANCE_RATE = 0.2;
+const OUTPUT_TOLERANCE_ROUNDING = 50;
 const DEFAULT_OUTPUT_LENGTH = 6000;
+
+export const DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS = 100_000;
 
 export interface ApproximateOutputRange {
   target: number;
@@ -11,9 +13,10 @@ export interface ApproximateOutputRange {
 
 export function getApproximateOutputRange(outputLength: number): ApproximateOutputRange {
   const target = normalizeOutputLength(outputLength);
-  const tolerance = Math.min(
-    MAX_TOLERANCE,
-    Math.max(MIN_TOLERANCE, Math.round((target * 0.125) / 50) * 50)
+  const tolerance = Math.max(
+    1,
+    Math.round((target * OUTPUT_TOLERANCE_RATE) / OUTPUT_TOLERANCE_ROUNDING) *
+      OUTPUT_TOLERANCE_ROUNDING
   );
 
   return {
@@ -40,6 +43,24 @@ export function estimateMaxOutputTokens(outputLength: number, maxTokens: number)
   const { upper } = getApproximateOutputRange(outputLength);
   const estimated = Math.ceil(upper * 3) + 2048;
   return Math.min(maxTokens, Math.max(4096, estimated));
+}
+
+export function resolveNovelMaxOutputTokens(
+  input: { provider: string; modelName: string; outputLength: number },
+  providerCap: number
+): number {
+  const provider = input.provider.trim().toLowerCase();
+  const modelName = input.modelName.trim().toLowerCase();
+
+  // NOTE: DeepSeek V4 Flash は本文の前に reasoning_content を生成し、その分も
+  // max_tokens を消費する。字数ベースの推定では本文へ移る前に枠を使い切ったため、
+  // 小説本文だけは思考と本文を合わせた固定枠を確保する。事前文脈計算とAPI送信で
+  // この戻り値を共有し、予約値と実際の上限が食い違わないようにする。
+  if (provider === 'deepseek' && modelName === 'deepseek-v4-flash') {
+    return Math.min(providerCap, DEEPSEEK_V4_FLASH_NOVEL_MAX_OUTPUT_TOKENS);
+  }
+
+  return estimateMaxOutputTokens(input.outputLength, providerCap);
 }
 
 // NOTE: 呼び出し側が明示的な max_tokens を渡したらそれを優先する。指定なしなら
