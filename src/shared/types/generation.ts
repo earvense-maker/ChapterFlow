@@ -31,6 +31,8 @@ export interface PromptBudgetEntry {
   action: PromptBudgetAction;
 }
 
+// NOTE: 予算判定そのものは常に行われる。この型は「判定の内訳を記録に残す」ためのもので、
+// 保存は開発版限定（CHAPTERFLOW_DEV_DIAGNOSTICS）。リリース版のレコードには入らない。
 export interface PromptBudgetReport {
   maxChars: number;
   assembledChars: number;
@@ -51,6 +53,9 @@ export type GenerationStatus = 'draft' | 'accepted' | 'rejected' | 'superseded';
 
 // NOTE: モデルの推論本文は含めない。生成速度の切り分けに必要な時刻・件数・使用量だけを
 // GenerationRecord と一緒に永続化し、既存レコードとの互換性は optional field で保つ。
+// NOTE: 開発版限定。CHAPTERFLOW_DEV_DIAGNOSTICS が立っているときだけ記録されるため、
+// リリース版で作られたレコードにはこのフィールドが無い（読む側は必ず optional 扱いにする）。
+// 有効化の判定は src/server/utils/devDiagnostics.ts。
 export interface GenerationTelemetry {
   schemaVersion: 1;
   requestStartedAt: string;
@@ -91,6 +96,8 @@ export interface GenerationRecord {
   bannedExpressions?: string[];
   // NOTE: 'length' の場合は本文を失わず下書きとして残しつつ、UIで上限到達を通知する。
   finishReason?: FinishReason;
+  // NOTE: 以下2つは開発診断（GenerationTelemetry のコメント参照）とセットで記録され、
+  // リリース版では書かれない。generationMode は telemetry を読むための文脈情報。
   generationMode?: GenerateRequestBody['mode'];
   telemetry?: GenerationTelemetry;
   styleProfile?: GenerationStyleProfile;

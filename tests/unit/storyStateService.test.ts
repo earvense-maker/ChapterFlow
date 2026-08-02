@@ -314,6 +314,67 @@ describe('updateStoryStateFromAcceptedScene', () => {
     expect(diff.previousUpdatedAt).toBe(now);
   });
 
+  // NOTE: initialState は「まだ現在状態が無い人物」の足場。既存 characterStates に
+  // 現在状態がある人物へ重ねて渡すと、同じ prompt 内の新しい状態と競合する。
+  it('sends initialState only for characters without a tracked current state', async () => {
+    await storage.createProjectDir(projectId);
+    await storage.writeStoryState(
+      projectId,
+      storyState({
+        characterStates: [
+          {
+            characterId: 'char-tracked',
+            name: '追跡済み',
+            currentState: '負傷して街道を離れた',
+            knowledge: [],
+            relationships: [],
+            updatedAt: now,
+          },
+        ],
+      })
+    );
+    const characters: Character[] = [
+      {
+        characterId: 'char-tracked',
+        name: '追跡済み',
+        role: 'protagonist',
+        description: '',
+        currentState: '街道の宿で朝を迎えた',
+      },
+      {
+        characterId: 'char-untouched',
+        name: '未登場',
+        role: 'supporting',
+        description: '',
+        currentState: '遠い港町で船を待っている',
+      },
+    ];
+    let capturedUserPrompt = '';
+    const adapter: ModelAdapter = {
+      providerName: 'fake',
+      generateText: vi.fn(async (request) => {
+        capturedUserPrompt = request.userPrompt;
+        return { text: JSON.stringify({}), finishReason: 'stop', retryable: false };
+      }),
+      validateConnection: vi.fn(),
+    };
+
+    await updateStoryStateFromAcceptedScene({
+      project: project(),
+      adapter,
+      generation: generation(),
+      characters,
+      worldText: '',
+      timeoutMs: 1000,
+    });
+
+    // 現在状態が既にある人物の初期状態は渡さない。現在状態は既存JSON側に載っている。
+    expect(capturedUserPrompt).not.toContain('街道の宿で朝を迎えた');
+    expect(capturedUserPrompt).toContain('負傷して街道を離れた');
+    // まだ状態の無い人物は従来どおり初期状態を足場として渡す。
+    expect(capturedUserPrompt).toContain('遠い港町で船を待っている');
+  });
+
   it('requests JSON and retries once after an output-limit finish, even when the JSON is valid', async () => {
     await storage.createProjectDir(projectId);
     await storage.writeStoryState(projectId, storyState());

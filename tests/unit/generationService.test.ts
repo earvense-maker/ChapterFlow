@@ -188,8 +188,15 @@ async function writePendingRefreshScenario(
   return { firstGenerationId, secondGenerationId };
 }
 
+// NOTE: 開発診断は既定オフ（リリース版の状態）。有効時の挙動を見るテストだけが
+// これを呼び、afterEach で必ず未設定に戻す。
+function enableDevDiagnostics(): void {
+  process.env.CHAPTERFLOW_DEV_DIAGNOSTICS = '1';
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
+  delete process.env.CHAPTERFLOW_DEV_DIAGNOSTICS;
   await Promise.all(createdProjectIds.map((id) => storage.deleteProjectDir(id)));
   createdProjectIds.length = 0;
 });
@@ -364,6 +371,22 @@ describe('generationService generation', () => {
 
     expect(record.bannedExpressions).toContain('避けたい表現');
     expect(record.finishReason).toBe('stop');
+  });
+
+  it('records generation mode and telemetry when dev diagnostics are enabled', async () => {
+    enableDevDiagnostics();
+    const project = await createTrackedProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '生成された本文',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    const record = await generationService.generateScene(project.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+
     expect(record.generationMode).toBe('continue');
     expect(record.telemetry).toMatchObject({
       schemaVersion: 1,
@@ -372,6 +395,39 @@ describe('generationService generation', () => {
       contentChars: 7,
       contentChunks: 1,
     });
+  });
+
+  it('omits generation diagnostics from release builds', async () => {
+    const project = await createTrackedProject();
+    let receivedReasoningCallback = true;
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      receivedReasoningCallback = request.onReasoningChunk !== undefined;
+      return {
+        text: '生成された本文',
+        finishReason: 'stop',
+        retryable: false,
+        reasoningStats: { chars: 120, chunks: 4 },
+      };
+    });
+
+    const record = await generationService.generateScene(project.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+
+    // 診断が無効なら推論本文を集めるコールバック自体を渡さない。
+    expect(receivedReasoningCallback).toBe(false);
+    expect(record.telemetry).toBeUndefined();
+    expect(record.generationMode).toBeUndefined();
+    expect(record.promptBudgetReport).toBeUndefined();
+
+    const persisted = await storage.findGenerationRecord(project.projectId, record.generationId);
+    expect(persisted?.telemetry).toBeUndefined();
+    expect(persisted?.generationMode).toBeUndefined();
+    expect(persisted?.promptBudgetReport).toBeUndefined();
+    await expect(
+      storage.readGenerationReasoningSnapshot(project.projectId, record.generationId)
+    ).resolves.toBe('');
   });
 
   it('keeps a length-limited response as a draft and records why it ended', async () => {
@@ -393,6 +449,9 @@ describe('generationService generation', () => {
   });
 
   it('uses the same 100k DeepSeek budget for preflight and non-streaming generation', async () => {
+    // NOTE: 予算判定は常に走るが、その内訳を観測できるのは promptBudgetReport だけ。
+    // 判定の検証を続けるために診断を有効にする（判定自体はこのフラグに依存しない）。
+    enableDevDiagnostics();
     const project = await createTrackedProject();
     await projectService.updateProject(project.projectId, {
       activeModelProvider: 'deepseek',
@@ -416,6 +475,7 @@ describe('generationService generation', () => {
   });
 
   it('passes the 100k DeepSeek budget through streaming generation', async () => {
+    enableDevDiagnostics();
     const project = await createTrackedProject();
     await projectService.updateProject(project.projectId, {
       activeModelProvider: 'deepseek',
@@ -546,6 +606,7 @@ describe('generationService generation', () => {
   });
 
   it('persists generation mode, stream timings, reasoning aggregates, and provider usage', async () => {
+    enableDevDiagnostics();
     const project = await createTrackedProject();
     const reasoningText = 'REASONING_DIAGNOSTIC_SENTINEL';
     vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* (
@@ -615,6 +676,7 @@ describe('generationService generation', () => {
   });
 
   it('keeps a successful generation when reasoning diagnostic persistence fails', async () => {
+    enableDevDiagnostics();
     const project = await createTrackedProject();
     vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* (
       request
@@ -651,6 +713,48 @@ describe('generationService generation', () => {
         generationId: record.generationId,
       })
     );
+  });
+
+  it('does not write reasoning snapshots from streaming generations in release builds', async () => {
+    const project = await createTrackedProject();
+    const reasoningText = 'REASONING_DIAGNOSTIC_SENTINEL';
+    let receivedReasoningCallback = true;
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* (
+      request
+    ) {
+      receivedReasoningCallback = request.onReasoningChunk !== undefined;
+      request.onReasoningChunk?.(reasoningText);
+      yield { type: 'chunk', text: '計測対象の本文' };
+      yield {
+        type: 'done',
+        finishReason: 'stop',
+        streamMetrics: {
+          reasoningChars: 120,
+          reasoningChunks: 4,
+          contentChars: 7,
+          contentChunks: 1,
+        },
+      };
+    });
+    const writeReasoning = vi.spyOn(storage, 'writeGenerationReasoningSnapshot');
+
+    const record = await generationService.generateSceneStream(
+      project.projectId,
+      { wish: '続き', mode: 'continue' },
+      () => undefined
+    );
+
+    expect(receivedReasoningCallback).toBe(false);
+    expect(writeReasoning).not.toHaveBeenCalled();
+    expect(record.responseText).toBe('計測対象の本文');
+    expect(record.telemetry).toBeUndefined();
+    expect(record.generationMode).toBeUndefined();
+    expect(record.promptBudgetReport).toBeUndefined();
+
+    const persisted = await storage.findGenerationRecord(project.projectId, record.generationId);
+    expect(persisted?.telemetry).toBeUndefined();
+    expect(persisted?.promptBudgetReport).toBeUndefined();
+    expect(JSON.stringify(persisted)).not.toContain(reasoningText);
   });
 
   it('includes Gemini diagnostics in non-streaming content filter errors', async () => {

@@ -104,6 +104,25 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('放課後の教室に一人でいる');
   });
 
+  // NOTE: 初期状態は「会話が始まったばかり」の足場。要約が「今」を語り始めたら
+  // 役目が終わるので落とす。両方載せると序盤の状態へ引き戻す圧力になる。
+  it('drops the conversation-start state once a conversation summary exists', () => {
+    const beforeSummary = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
+    expect(beforeSummary).toContain('会話開始時点の状態');
+    expect(beforeSummary).toContain('放課後の教室に一人でいる');
+
+    const afterSummary = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot(),
+      hasConversationSummary: true,
+    });
+    expect(afterSummary).not.toContain('会話開始時点の状態');
+    expect(afterSummary).not.toContain('放課後の教室に一人でいる');
+    // 他の persona フィールドは要約後も残る。
+    expect(afterSummary).toContain('アリス');
+    expect(afterSummary).toContain('実は父と仲が悪い');
+    expect(afterSummary).toContain('静かに本を読みたい');
+  });
+
   it('includes the editable project base prompt captured for the session', () => {
     const system = buildRoleplaySystemInstructions({
       snapshot: baseSnapshot({

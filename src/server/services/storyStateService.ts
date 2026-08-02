@@ -1,6 +1,9 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
-import { normalizeComparableText } from '../utils/characterStateMatching.js';
+import {
+  matchStoryCharacterStates,
+  normalizeComparableText,
+} from '../utils/characterStateMatching.js';
 import * as storage from './storageService.js';
 import type { ModelAdapter } from '../adapters/modelAdapter.js';
 import type {
@@ -176,14 +179,28 @@ function buildUpdatePrompt(input: {
   characters: Character[];
   worldText: string;
 }): string {
-  const characterHints = input.characters.map((character) => ({
-    characterId: character.characterId,
-    name: character.name,
-    aliases: character.aliases ?? [],
-    role: character.role,
-    initialState: character.currentState || '',
-    relationshipNotes: character.relationshipNotes || '',
-  }));
+  // NOTE: initialState は「まだ現在状態が無い人物」の足場としてだけ渡す。既存JSONに
+  // その人物の characterStates があるなら、同じ prompt 内により新しい現在状態が載って
+  // いるので、開始時点の状態を並べると古い方へ引き戻す圧力になる。照合は promptBuilder の
+  // 現在状態スナップショットと同じ matchStoryCharacterStates を使い、両者がずれないようにする。
+  const matches = matchStoryCharacterStates(
+    input.characters,
+    input.previousState.characterStates
+  );
+  const characterHints = input.characters.map((character) => {
+    const trackedState = matches.byCharacterId.get(character.characterId);
+    const initialState = trackedState?.currentState.trim()
+      ? ''
+      : character.currentState || '';
+    return {
+      characterId: character.characterId,
+      name: character.name,
+      aliases: character.aliases ?? [],
+      role: character.role,
+      initialState,
+      relationshipNotes: character.relationshipNotes || '',
+    };
+  });
 
   return [
     '【既存の物語状態JSON】',

@@ -11,6 +11,11 @@ import os from 'node:os';
 const workerId = process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? 'main';
 process.env.CHAPTERFLOW_DATA_DIR = path.join(os.tmpdir(), 'chapterflow-vitest', workerId);
 
+// NOTE: 開発診断は既定オフがリリース版の前提。シェルに残った値でテストが
+// 「オフのはずの経路」を検証できなくなるのを防ぐため、明示的に消してから始める。
+// 有効時の挙動を見るテストは自分で立てて afterEach で戻す。
+delete process.env.CHAPTERFLOW_DEV_DIAGNOSTICS;
+
 import '@testing-library/jest-dom';
 
 // NOTE: Reader のスクロール復元を検証するテストで、jsdom 未実装の警告だけが

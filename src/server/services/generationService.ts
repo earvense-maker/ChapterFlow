@@ -1,5 +1,6 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { isDevDiagnosticsEnabled } from '../utils/devDiagnostics.js';
 import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
 import { buildPrompt, type BuildPromptResult } from '../prompts/promptBuilder.js';
@@ -323,6 +324,9 @@ async function generateSceneUnlocked(
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
 
+  // NOTE: 開発診断が無効なら onReasoningChunk 自体を渡さない。推論本文は本文より
+  // 長くなることがあり、リリース版で無駄に丸ごとメモリへ積むのを避ける。
+  const devDiagnostics = isDevDiagnosticsEnabled();
   const reasoningParts: string[] = [];
   const modelStartedMs = Date.now();
   const result = await generateWithAdapter(adapter, {
@@ -335,7 +339,9 @@ async function generateSceneUnlocked(
     maxOutputTokens: fitted.maxOutputTokens,
     frequencyPenalty: project.samplingConfig?.frequencyPenalty,
     presencePenalty: project.samplingConfig?.presencePenalty,
-    onReasoningChunk: (chunk) => reasoningParts.push(chunk),
+    ...(devDiagnostics
+      ? { onReasoningChunk: (chunk: string) => reasoningParts.push(chunk) }
+      : {}),
   });
   const modelCompletedMs = Date.now();
 
@@ -377,7 +383,9 @@ async function generateSceneUnlocked(
   const outputFilePath = storage.generationMdPath(projectId, generationId);
   const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
   await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
-  await persistGenerationReasoning(projectId, generationId, reasoningParts);
+  if (devDiagnostics) {
+    await persistGenerationReasoning(projectId, generationId, reasoningParts);
+  }
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -403,26 +411,32 @@ async function generateSceneUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason: result.finishReason,
-    generationMode: options.mode,
-    telemetry: buildGenerationTelemetry({
-      requestClock,
-      modelStartedMs,
-      modelCompletedMs,
-      usage: result.rawUsage,
-      streamMetrics: {
-        firstProviderEventAt: new Date(modelCompletedMs).toISOString(),
-        ...(result.reasoningStats?.chars
-          ? { firstReasoningAt: new Date(modelCompletedMs).toISOString() }
-          : {}),
-        ...(result.text.trim() ? { firstContentAt: new Date(modelCompletedMs).toISOString() } : {}),
-        reasoningChars: result.reasoningStats?.chars ?? 0,
-        reasoningChunks: result.reasoningStats?.chunks ?? 0,
-        contentChars: result.text.length,
-        contentChunks: result.text.trim() ? 1 : 0,
-      },
-    }),
+    ...(devDiagnostics
+      ? {
+          generationMode: options.mode,
+          telemetry: buildGenerationTelemetry({
+            requestClock,
+            modelStartedMs,
+            modelCompletedMs,
+            usage: result.rawUsage,
+            streamMetrics: {
+              firstProviderEventAt: new Date(modelCompletedMs).toISOString(),
+              ...(result.reasoningStats?.chars
+                ? { firstReasoningAt: new Date(modelCompletedMs).toISOString() }
+                : {}),
+              ...(result.text.trim()
+                ? { firstContentAt: new Date(modelCompletedMs).toISOString() }
+                : {}),
+              reasoningChars: result.reasoningStats?.chars ?? 0,
+              reasoningChunks: result.reasoningStats?.chunks ?? 0,
+              contentChars: result.text.length,
+              contentChunks: result.text.trim() ? 1 : 0,
+            },
+          }),
+          promptBudgetReport,
+        }
+      : {}),
     ...(styleProfile ? { styleProfile } : {}),
-    promptBudgetReport,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -554,6 +568,8 @@ async function generateSceneStreamUnlocked(
   const promptBudgetReport = fitted.report;
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
+  // NOTE: 非ストリーミング側と同じ理由で、無効時は推論本文を集めない。
+  const devDiagnostics = isDevDiagnosticsEnabled();
   const textParts: string[] = [];
   const reasoningParts: string[] = [];
   let finishReason: FinishReason = 'stop';
@@ -579,7 +595,9 @@ async function generateSceneStreamUnlocked(
       abortSignal: options.abortSignal,
       frequencyPenalty: project.samplingConfig?.frequencyPenalty,
       presencePenalty: project.samplingConfig?.presencePenalty,
-      onReasoningChunk: (chunk) => reasoningParts.push(chunk),
+      ...(devDiagnostics
+        ? { onReasoningChunk: (chunk: string) => reasoningParts.push(chunk) }
+        : {}),
     })) {
       throwIfAborted(options.abortSignal);
       if (event.type === 'chunk') {
@@ -652,7 +670,9 @@ async function generateSceneStreamUnlocked(
   const outputFilePath = storage.generationMdPath(projectId, generationId);
   const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
   await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
-  await persistGenerationReasoning(projectId, generationId, reasoningParts);
+  if (devDiagnostics) {
+    await persistGenerationReasoning(projectId, generationId, reasoningParts);
+  }
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -678,16 +698,20 @@ async function generateSceneStreamUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason,
-    generationMode: options.mode,
-    telemetry: buildGenerationTelemetry({
-      requestClock,
-      modelStartedMs,
-      modelCompletedMs,
-      usage: rawUsage,
-      streamMetrics: measuredStreamMetrics,
-    }),
+    ...(devDiagnostics
+      ? {
+          generationMode: options.mode,
+          telemetry: buildGenerationTelemetry({
+            requestClock,
+            modelStartedMs,
+            modelCompletedMs,
+            usage: rawUsage,
+            streamMetrics: measuredStreamMetrics,
+          }),
+          promptBudgetReport,
+        }
+      : {}),
     ...(styleProfile ? { styleProfile } : {}),
-    promptBudgetReport,
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);

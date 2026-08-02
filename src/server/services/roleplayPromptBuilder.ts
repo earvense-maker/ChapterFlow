@@ -162,6 +162,10 @@ export interface RoleplaySystemPromptInput {
   snapshot: RoleplayContextSnapshot;
   // NOTE: fixed rules 内に埋め込む目安字数。省略時は 250（後方互換）。
   outputLength?: number;
+  // NOTE: 会話要約が出来た後は persona card から「会話開始時点の状態」を落とす。
+  // 要約が「今」を語り始めた時点で初期状態は役目を終えており、両方載せると
+  // 序盤の状態へ引き戻す圧力になる。省略時は載せる（＝要約前の挙動）。
+  hasConversationSummary?: boolean;
 }
 
 export interface RoleplayUserPromptInput {
@@ -207,7 +211,9 @@ export function buildRoleplaySystemInstructionsWithReport(
     snapshot.responseStyleId,
     snapshot.userPersona
   )}`;
-  const personaCard = buildPersonaCard(character);
+  const personaCard = buildPersonaCard(character, {
+    includeInitialState: !input.hasConversationSummary,
+  });
 
   // NOTE: 「固定規則と対象キャラの名前だけで上限を超える」場合は組み立てを諦める
   // （設計書 5.1）。名前が入らない状態で会話を始めても、誰を演じるか決まらない。
@@ -535,14 +541,23 @@ function relationshipLevel(
  * 単純な先頭 slice と違い「口調の途中で切れる」ことが起きない。
  * 保存済みキャラクター本文は変更せず、実行時の描画だけを縮める。
  */
-function buildPersonaCard(character: Character): string {
+function buildPersonaCard(
+  character: Character,
+  options: { includeInitialState: boolean }
+): string {
   const lines: string[] = [];
   push(lines, '名前', character.name);
   const aliases = character.aliases?.filter((s) => s.trim()) ?? [];
   if (aliases.length > 0) push(lines, '別名', aliases.join(' / '));
   push(lines, '口調', character.speechStyle);
   push(lines, '概要', character.description);
-  push(lines, '会話開始時点の状態', character.currentState);
+  // NOTE: 要約が出来た後は落とす。判断は呼び出し側（RoleplaySystemPromptInput の
+  // hasConversationSummary）が持つ。ここを条件付きにした都合上、system prompt は
+  // 要約が初めて出来たターンで1度だけ変わり、プロバイダーのプロンプトキャッシュも
+  // その1回だけ切れる。以降はまた同一プレフィックスで安定する。
+  if (options.includeInitialState) {
+    push(lines, '会話開始時点の状態', character.currentState);
+  }
   if (character.secrets?.trim()) {
     // 秘密の扱いは固定規則から外し、この欄のラベルへ移した（設計書 5.3）。
     push(

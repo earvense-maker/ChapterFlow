@@ -93,8 +93,15 @@ beforeEach(() => {
   roleplayService.__resetInFlightForTesting();
 });
 
+// NOTE: 開発診断は既定オフ（リリース版の状態）。有効時の挙動を見るテストだけが
+// これを呼び、afterEach で必ず未設定に戻す。
+function enableDevDiagnostics(): void {
+  process.env.CHAPTERFLOW_DEV_DIAGNOSTICS = '1';
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
+  delete process.env.CHAPTERFLOW_DEV_DIAGNOSTICS;
   await Promise.all(
     createdProjectIds.map((projectId) => storage.deleteProjectDir(projectId).catch(() => undefined))
   );
@@ -130,6 +137,105 @@ describe('roleplaySessionService', () => {
     expect(spy).not.toHaveBeenCalled();
     expect(streamSpy).not.toHaveBeenCalled();
     expect(view.characterName).toBe('アリス');
+  });
+
+  it('omits prompt budget reports from release builds and records them for dev diagnostics', async () => {
+    const project = await makeRoleplayProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['わかったよ。'])
+    );
+
+    const released = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: released.sessionId,
+        message: '話そう',
+        revision: released.revision,
+      })
+    );
+    const releasedSession = await storage.readRoleplaySession(
+      project.projectId,
+      released.sessionId
+    );
+    expect(releasedSession?.contextSnapshot.appliedSettings?.promptBudgetReport).toBeUndefined();
+    expect(
+      releasedSession?.messages.some((message) => message.promptBudgetReport !== undefined)
+    ).toBe(false);
+
+    enableDevDiagnostics();
+    const diagnosed = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: diagnosed.sessionId,
+        message: '話そう',
+        revision: diagnosed.revision,
+      })
+    );
+    const diagnosedSession = await storage.readRoleplaySession(
+      project.projectId,
+      diagnosed.sessionId
+    );
+    expect(diagnosedSession?.contextSnapshot.appliedSettings?.promptBudgetReport).toBeDefined();
+    expect(
+      diagnosedSession?.messages.some((message) => message.promptBudgetReport !== undefined)
+    ).toBe(true);
+  });
+
+  // NOTE: 初期状態は会話が始まったばかりの足場。要約が「今」を語り始めたら落とす。
+  it('stops sending the conversation-start state once the session has a summary', async () => {
+    const project = await makeRoleplayProject(
+      baseCharacter({ currentState: '放課後の教室に一人でいる' })
+    );
+    let capturedSystemInstructions = '';
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
+      capturedSystemInstructions = request.systemInstructions;
+      return streamChunks(['わかったよ。']);
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '話そう',
+        revision: created.revision,
+      })
+    );
+    expect(capturedSystemInstructions).toContain('会話開始時点の状態');
+    expect(capturedSystemInstructions).toContain('放課後の教室に一人でいる');
+
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    if (!stored) throw new Error('Roleplay session not found');
+    await storage.writeRoleplaySession({
+      ...stored,
+      conversationSummary: '二人は放課後に何度も話し、打ち解けた。',
+    });
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'また話そう',
+        revision: latest.revision,
+      })
+    );
+    expect(capturedSystemInstructions).not.toContain('会話開始時点の状態');
+    expect(capturedSystemInstructions).not.toContain('放課後の教室に一人でいる');
+    // 演じるための他の情報は残り続ける。
+    expect(capturedSystemInstructions).toContain('アリス');
+    expect(capturedSystemInstructions).toContain('柔らかい丁寧語');
   });
 
   it('starts empty when the character has no greeting', async () => {

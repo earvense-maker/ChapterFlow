@@ -14,6 +14,7 @@
 
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { isDevDiagnosticsEnabled } from '../utils/devDiagnostics.js';
 import { createHash } from 'node:crypto';
 import * as storage from './storageService.js';
 import * as expressionService from './expressionService.js';
@@ -394,15 +395,19 @@ async function buildContextSnapshot(input: {
   // NOTE: セッション作成時点の system prompt 縮小結果を設定詳細から確認できるようにする
   // （設計書 6.1 / 6.3）。ここで組み立てを1度だけ余分に行うが、以後の各turnは
   // この snapshot から同じ結果を再現するので、保存しておく価値がある。
-  const systemReport = buildRoleplaySystemInstructionsWithReport({ snapshot });
-  snapshot.appliedSettings = {
-    ...appliedSettings,
-    promptBudgetReport: {
-      maxChars: ROLEPLAY_SYSTEM_MAX_CHARS,
-      assembledChars: systemReport.systemInstructions.length,
-      entries: systemReport.entries,
-    },
-  };
+  // NOTE: 開発診断が無効なら、この余分な組み立てごと省く。UI にはまだ出しておらず
+  // 保存しても読み手がいないため、リリース版でコストを払う理由がない。
+  if (isDevDiagnosticsEnabled()) {
+    const systemReport = buildRoleplaySystemInstructionsWithReport({ snapshot });
+    snapshot.appliedSettings = {
+      ...appliedSettings,
+      promptBudgetReport: {
+        maxChars: ROLEPLAY_SYSTEM_MAX_CHARS,
+        assembledChars: systemReport.systemInstructions.length,
+        entries: systemReport.entries,
+      },
+    };
+  }
   return snapshot;
 }
 
@@ -1329,7 +1334,12 @@ async function commitTurn(input: {
       ...(input.warnings && input.warnings.length > 0
         ? { generationWarnings: input.warnings }
         : {}),
-      ...(input.budgetReport ? { promptBudgetReport: input.budgetReport } : {}),
+      // NOTE: 予算レポートは開発診断限定。ターン数だけ session JSON に積み上がる一方で
+      // 読む導線が無いため、リリース版では保存しない。予算そのものの判定は
+      // buildTurnPrompt が常に行っており、この保存有無には影響しない。
+      ...(input.budgetReport && isDevDiagnosticsEnabled()
+        ? { promptBudgetReport: input.budgetReport }
+        : {}),
     };
     let nextMessages: RoleplayMessage[];
     if (input.kind === 'regenerate' && input.previousCharacterMessageId) {
@@ -1435,9 +1445,12 @@ async function runNgPostprocess(input: {
     };
   }
 
+  // NOTE: NGリライトもそのターンの system prompt と同一にする。ここだけ条件が
+  // ずれると、演じる前提が変わるうえプロバイダーのプロンプトキャッシュも共有できない。
   const systemInstructions = buildRoleplaySystemInstructionsWithReport({
     snapshot: input.session.contextSnapshot,
     outputLength: input.outputLength,
+    hasConversationSummary: Boolean(input.session.conversationSummary?.trim()),
   }).systemInstructions;
 
   try {
@@ -1506,9 +1519,13 @@ async function buildTurnPrompt(input: {
   budgetReport: PromptBudgetReport;
 }> {
   const { session } = input;
+  // NOTE: 会話要約が出来た時点で persona card の「会話開始時点の状態」を落とす。
+  // 要約は【これまでの会話の要約】として user prompt に入り「今」を語るので、
+  // 初期状態を並べて送り続けると序盤の状態へ引き戻す圧力になる。
   const system = buildRoleplaySystemInstructionsWithReport({
     snapshot: session.contextSnapshot,
     outputLength: input.outputLength,
+    hasConversationSummary: Boolean(session.conversationSummary?.trim()),
   });
   if (system.overflowByChars > 0) {
     throw new RoleplayServiceError(

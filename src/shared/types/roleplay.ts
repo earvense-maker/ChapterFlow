@@ -32,6 +32,8 @@ export interface RoleplayAppliedSettings {
   presets: RoleplayAppliedPreset[];
   // NOTE: セッション作成時の system prompt 縮小結果（設計書 6.1）。
   // 何が切り詰められたかを設定詳細から確認できるようにする。原文は含まない。
+  // NOTE: 開発版限定で記録する（PromptBudgetReport のコメント参照）。設定詳細への
+  // 表示導線はまだ無いため、リリース版のセッションにはこのフィールドが無い。
   promptBudgetReport?: PromptBudgetReport;
 }
 
@@ -62,6 +64,7 @@ export interface RoleplayMessage {
   generationWarnings?: RoleplayGenerationWarning[];
   // NOTE: この turn の結合済み system/user トークン確認と、縮小結果。
   // 「なぜ履歴が短くなったのか」を後から確認できるようにする（設計書 6.1）。
+  // NOTE: 開発版限定で記録する（PromptBudgetReport のコメント参照）。
   promptBudgetReport?: PromptBudgetReport;
 }
 
