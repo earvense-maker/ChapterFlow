@@ -31,6 +31,10 @@ export interface AdapterGenerateRequest {
   abortSignal?: AbortSignal;
   frequencyPenalty?: number;
   presencePenalty?: number;
+  // NOTE: Provider-specific reasoning is diagnostic data. Keep it on this
+  // server-internal callback instead of response/event types so it cannot
+  // accidentally leak into SSE payloads or generation records.
+  onReasoningChunk?: (chunk: string) => void;
   // NOTE: 明示的な最大出力トークン数。指定すると各アダプタは outputLength から
   // estimateMaxOutputTokens で導出する既定挙動をスキップし、この値（プロバイダー
   // ハードキャップで clamp）を使う。JSON 抽出のように「outputLength ベースの

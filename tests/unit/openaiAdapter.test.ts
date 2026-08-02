@@ -76,7 +76,7 @@ describe('OpenAIAdapter', () => {
     expect(body.max_tokens).toBe(8192);
   });
 
-  it('reports non-streaming reasoning aggregates and extended token usage without storing the text', async () => {
+  it('reports non-streaming reasoning aggregates and forwards reasoning only through the diagnostic callback', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -97,7 +97,11 @@ describe('OpenAIAdapter', () => {
       )
     );
 
-    const result = await new OpenAIAdapter().generateText(baseRequest);
+    const reasoningChunks: string[] = [];
+    const result = await new OpenAIAdapter().generateText({
+      ...baseRequest,
+      onReasoningChunk: (chunk) => reasoningChunks.push(chunk),
+    });
 
     expect(result).toMatchObject({
       text: '本文',
@@ -109,7 +113,9 @@ describe('OpenAIAdapter', () => {
         reasoningTokens: 20,
       },
     });
+    expect(reasoningChunks).toEqual(['内部推論']);
     expect(result).not.toHaveProperty('reasoningText');
+    expect(JSON.stringify(result)).not.toContain(reasoningChunks[0]);
   });
 
   it('sends frequency_penalty and presence_penalty when set', async () => {
@@ -175,7 +181,7 @@ describe('OpenAIAdapter', () => {
     expect(finishReason).toBe('stop');
   });
 
-  it('reports reasoning timing aggregates and extended token usage without exposing reasoning text', async () => {
+  it('reports reasoning timing aggregates and forwards stream reasoning only through the diagnostic callback', async () => {
     const blocks = [
       sseReasoningBlock('内部推論A'),
       sseReasoningBlock('内部推論B'),
@@ -202,7 +208,11 @@ describe('OpenAIAdapter', () => {
     );
 
     const events = [];
-    for await (const event of new OpenAIAdapter().generateTextStream(baseRequest)) {
+    const reasoningChunks: string[] = [];
+    for await (const event of new OpenAIAdapter().generateTextStream({
+      ...baseRequest,
+      onReasoningChunk: (chunk) => reasoningChunks.push(chunk),
+    })) {
       events.push(event);
     }
     const done = events.find((event) => event.type === 'done');
@@ -224,7 +234,12 @@ describe('OpenAIAdapter', () => {
         contentChunks: 1,
       },
     });
+    expect(reasoningChunks).toHaveLength(2);
+    expect(reasoningChunks.join('')).toHaveLength(10);
     expect(done).not.toHaveProperty('streamMetrics.reasoningText');
+    for (const chunk of reasoningChunks) {
+      expect(JSON.stringify(events)).not.toContain(chunk);
+    }
   });
 
   it('times out when no stream events arrive within timeoutMs', async () => {

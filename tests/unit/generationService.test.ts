@@ -547,8 +547,13 @@ describe('generationService generation', () => {
 
   it('persists generation mode, stream timings, reasoning aggregates, and provider usage', async () => {
     const project = await createTrackedProject();
-    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* () {
+    const reasoningText = 'REASONING_DIAGNOSTIC_SENTINEL';
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* (
+      request
+    ) {
       const eventAt = new Date().toISOString();
+      request.onReasoningChunk?.(reasoningText.slice(0, 12));
+      request.onReasoningChunk?.(reasoningText.slice(12));
       yield { type: 'chunk', text: '計測対象の本文' };
       yield {
         type: 'done',
@@ -597,10 +602,55 @@ describe('generationService generation', () => {
     expect(record.telemetry!.requestToModelMs).toBeGreaterThanOrEqual(0);
     expect(record.telemetry!.modelDurationMs).toBeGreaterThanOrEqual(0);
     expect(record.telemetry!.totalDurationMs).toBeGreaterThanOrEqual(0);
+    await expect(
+      storage.readGenerationReasoningSnapshot(project.projectId, record.generationId)
+    ).resolves.toBe(reasoningText);
 
     const persisted = await storage.findGenerationRecord(project.projectId, record.generationId);
     expect(persisted?.telemetry).toEqual(record.telemetry);
     expect(persisted?.generationMode).toBe('continue');
+    expect(JSON.stringify(persisted)).not.toContain(reasoningText);
+    expect(JSON.stringify(persisted)).not.toContain(reasoningText.slice(0, 12));
+    expect(JSON.stringify(persisted)).not.toContain(reasoningText.slice(12));
+  });
+
+  it('keeps a successful generation when reasoning diagnostic persistence fails', async () => {
+    const project = await createTrackedProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* (
+      request
+    ) {
+      request.onReasoningChunk?.('保存できない推論');
+      yield { type: 'chunk', text: '本文は成功' };
+      yield {
+        type: 'done',
+        finishReason: 'stop',
+        streamMetrics: {
+          reasoningChars: 8,
+          reasoningChunks: 1,
+          contentChars: 5,
+          contentChunks: 1,
+        },
+      };
+    });
+    vi.spyOn(storage, 'writeGenerationReasoningSnapshot').mockRejectedValueOnce(
+      new Error('diagnostic write failed')
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const record = await generationService.generateSceneStream(
+      project.projectId,
+      { wish: '続き', mode: 'continue' },
+      () => undefined
+    );
+
+    expect(record.responseText).toBe('本文は成功');
+    expect(warn).toHaveBeenCalledWith(
+      'Failed to save generation reasoning diagnostics',
+      expect.objectContaining({
+        projectId: project.projectId,
+        generationId: record.generationId,
+      })
+    );
   });
 
   it('includes Gemini diagnostics in non-streaming content filter errors', async () => {

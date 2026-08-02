@@ -152,6 +152,7 @@ export class OpenAIAdapter implements ModelAdapter {
           firstReasoningAt ??= new Date().toISOString();
           reasoningChars += reasoning.length;
           reasoningChunks += 1;
+          request.onReasoningChunk?.(reasoning);
         }
         const text = choice?.delta?.content;
         if (text) {
@@ -309,7 +310,9 @@ export class OpenAIAdapter implements ModelAdapter {
       // NOTE: 思考モードのモデルは本文を content、思考を reasoning_content に分けて返す。
       // 本文が空で reasoning_content だけが埋まっている状態は「モデルが答えを思考側へ
       // 出してしまった」ことを意味し、空応答の原因として content だけ見ていても分からない。
-      const reasoningLength = choice?.message?.reasoning_content?.trim().length ?? 0;
+      const reasoningContent = choice?.message?.reasoning_content ?? '';
+      const reasoningLength = reasoningContent.trim().length;
+      if (reasoningLength > 0) request.onReasoningChunk?.(reasoningContent);
       const debugInfo =
         !text && reasoningLength > 0
           ? `content=empty reasoning_content=${reasoningLength}chars finish=${choice?.finish_reason ?? 'none'}`

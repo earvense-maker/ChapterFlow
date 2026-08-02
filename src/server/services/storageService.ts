@@ -183,6 +183,11 @@ export function generationMdPath(projectId: string, generationId: string): strin
   return path.join(generationsDir(projectId), `${generationId}.md`);
 }
 
+export function generationReasoningPath(projectId: string, generationId: string): string {
+  assertSafePathSegment(generationId, 'generationId');
+  return path.join(generationsDir(projectId), `${generationId}.reasoning.txt`);
+}
+
 export function generationPromptPath(projectId: string, generationId: string): string {
   assertSafePathSegment(generationId, 'generationId');
   return path.join(generationsDir(projectId), `${generationId}.prompt.txt`);
@@ -716,6 +721,14 @@ export async function readGenerationPromptSnapshot(
   return text ?? '';
 }
 
+export async function readGenerationReasoningSnapshot(
+  projectId: string,
+  generationId: string
+): Promise<string> {
+  const text = await readTextFile(generationReasoningPath(projectId, generationId));
+  return text ?? '';
+}
+
 export async function writeGenerationMarkdown(
   projectId: string,
   generationId: string,
@@ -735,6 +748,17 @@ export async function writeGenerationPromptSnapshot(
   await withDataDirWrite(async () => {
     await ensureDir(generationsDir(projectId));
     await safeWriteFile(generationPromptPath(projectId, generationId), text);
+  });
+}
+
+export async function writeGenerationReasoningSnapshot(
+  projectId: string,
+  generationId: string,
+  text: string
+): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(generationsDir(projectId));
+    await safeWriteFile(generationReasoningPath(projectId, generationId), text);
   });
 }
 

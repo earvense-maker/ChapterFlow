@@ -186,6 +186,27 @@ function buildGenerationTelemetry(input: {
   };
 }
 
+async function persistGenerationReasoning(
+  projectId: string,
+  generationId: string,
+  reasoningParts: readonly string[]
+): Promise<void> {
+  const reasoningText = reasoningParts.join('');
+  if (!reasoningText.trim()) return;
+
+  try {
+    await storage.writeGenerationReasoningSnapshot(projectId, generationId, reasoningText);
+  } catch (error) {
+    // NOTE: Diagnostic persistence must never turn a successful prose
+    // generation into a failure. Do not include the reasoning text here.
+    console.warn('Failed to save generation reasoning diagnostics', {
+      projectId,
+      generationId,
+      error,
+    });
+  }
+}
+
 async function resolveStyleProfileForGeneration(
   project: Project,
   options: GenerateOptions,
@@ -302,6 +323,7 @@ async function generateSceneUnlocked(
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
 
+  const reasoningParts: string[] = [];
   const modelStartedMs = Date.now();
   const result = await generateWithAdapter(adapter, {
     systemInstructions,
@@ -313,6 +335,7 @@ async function generateSceneUnlocked(
     maxOutputTokens: fitted.maxOutputTokens,
     frequencyPenalty: project.samplingConfig?.frequencyPenalty,
     presencePenalty: project.samplingConfig?.presencePenalty,
+    onReasoningChunk: (chunk) => reasoningParts.push(chunk),
   });
   const modelCompletedMs = Date.now();
 
@@ -354,6 +377,7 @@ async function generateSceneUnlocked(
   const outputFilePath = storage.generationMdPath(projectId, generationId);
   const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
   await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
+  await persistGenerationReasoning(projectId, generationId, reasoningParts);
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -531,6 +555,7 @@ async function generateSceneStreamUnlocked(
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
   const textParts: string[] = [];
+  const reasoningParts: string[] = [];
   let finishReason: FinishReason = 'stop';
   let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
   let debugInfo: string | undefined;
@@ -554,6 +579,7 @@ async function generateSceneStreamUnlocked(
       abortSignal: options.abortSignal,
       frequencyPenalty: project.samplingConfig?.frequencyPenalty,
       presencePenalty: project.samplingConfig?.presencePenalty,
+      onReasoningChunk: (chunk) => reasoningParts.push(chunk),
     })) {
       throwIfAborted(options.abortSignal);
       if (event.type === 'chunk') {
@@ -626,6 +652,7 @@ async function generateSceneStreamUnlocked(
   const outputFilePath = storage.generationMdPath(projectId, generationId);
   const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
   await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
+  await persistGenerationReasoning(projectId, generationId, reasoningParts);
   const record: GenerationRecord = {
     generationId,
     sceneId,
