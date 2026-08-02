@@ -9,7 +9,11 @@ import * as storage from './storageService.js';
 import * as expressionService from './expressionService.js';
 import { reloadCredentials } from './credentialService.js';
 import { withProjectWriteLock } from './projectLock.js';
-import { rebuildEpisodeMarkdownForAcceptedGeneration } from './generationService.js';
+import {
+  invalidateContextSummaryForGenerationUnlocked,
+  rebuildEpisodeMarkdownForAcceptedGeneration,
+  startContextSummaryAfterAcceptance,
+} from './generationService.js';
 import type { NgRewriteResult } from '../types/index.js';
 
 // NOTE: 一文の取り出し・モデル呼び出し・決定的な再検証は ngTextRewriteService へ
@@ -139,8 +143,17 @@ async function rewriteNgOccurrenceUnlocked(
     before: original,
     after: accepted,
   });
+  const invalidatedSummary = await invalidateContextSummaryForGenerationUnlocked(
+    projectId,
+    generationId
+  );
   if (record.status === 'accepted') {
     await rebuildEpisodeMarkdownForAcceptedGeneration(projectId, generationId);
+  }
+  if (invalidatedSummary) {
+    // NOTE: 旧本文を含む要約を空にした後、現在の採用本文から背景で作り直す。件数閾値に
+    // 届かない間も、summarized IDを空にしたため改訂後本文はrecent contextへ残る。
+    startContextSummaryAfterAcceptance(projectId);
   }
 
   return {

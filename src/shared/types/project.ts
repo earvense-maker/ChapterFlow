@@ -86,6 +86,11 @@ export interface ProjectState {
   pendingMemoryCandidateIds: MemoryId[];
   storyStateRefresh?: StoryStateRefreshStatus;
   storyStateBacklogCount?: number;
+  // NOTE: 文脈要約へ畳み込み済みの採用生成。直近本文の窓から落ちた場面だけを畳むため、
+  // 「もう畳んだか」を持たないと同じ本文を要約へ二重に入れてしまう。storyState の
+  // processedGenerationIds と同じ持ち方で、watermark ではなく集合にする。採用し直しや
+  // 同一ID本文のリライト時は、旧本文を要約から差し引けないため集合と要約を全無効化する。
+  contextSummary?: ContextSummaryState;
   // NOTE: 生成後自動レビューの進行状況。scanning/applying/reverting のみ新規生成を
   // ブロックする（refineAutomationService.maintenanceBlocksGeneration）。
   refineMaintenance?: RefineMaintenanceStatus;
@@ -93,6 +98,14 @@ export interface ProjectState {
     readingPosition: number;
     fontSize: number;
   };
+}
+
+// NOTE: 要約は「流れ」担当で、設定・現在状態・情報状態は storyState が正本。
+// 役割が重複すると同じ事実へ二重にトークンを払うため、圧縮プロンプト側でも
+// storyState の守備範囲を列挙しないよう明示している。
+export interface ContextSummaryState {
+  summarizedGenerationIds: GenerationId[];
+  updatedAt: string;
 }
 
 export interface StoryStateRefreshStatus {

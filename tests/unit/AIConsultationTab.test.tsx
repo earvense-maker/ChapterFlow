@@ -174,16 +174,9 @@ describe('AIConsultationTab', () => {
     expect(apiMock.sendRefineMessage.mock.calls[0][2]).toMatchObject({ responseMode: 'auto' });
   });
 
-  it('shows a selected finding as a consultation theme without sending anything', async () => {
-    renderTab();
-
-    fireEvent.click(await screen.findByRole('button', { name: '相談する' }));
-
-    expect(await screen.findByText('相談テーマ')).toBeVisible();
-    expect(apiMock.sendRefineMessage).not.toHaveBeenCalled();
-  });
-
-  it('sends the selected finding as target once the user starts the consultation', async () => {
+  // NOTE: 相談テーマの常時表示バーは撤去した。対象は送信のたびに外れるので、
+  // 「付いている」ことは次の1回の送信に target が乗るかどうかで確かめる。
+  it('attaches the selected finding to the next message without sending anything', async () => {
     apiMock.sendRefineMessage.mockResolvedValue({
       session: makeSession(),
       assistantMessage: { messageId: 'm', role: 'assistant', content: 'ok', createdAt: '' },
@@ -192,7 +185,10 @@ describe('AIConsultationTab', () => {
     renderTab();
 
     fireEvent.click(await screen.findByRole('button', { name: '相談する' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'この気づきの相談を始める' }));
+    expect(apiMock.sendRefineMessage).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('相談を入力'), { target: { value: 'これはどう？' } });
+    fireEvent.click(screen.getByRole('button', { name: '送る' }));
 
     await waitFor(() => expect(apiMock.sendRefineMessage).toHaveBeenCalledTimes(1));
     expect(apiMock.sendRefineMessage.mock.calls[0][2]).toMatchObject({
@@ -247,7 +243,9 @@ describe('AIConsultationTab', () => {
     });
   });
 
-  it('keeps the consultation target after a send so the next action inherits it', async () => {
+  // NOTE: 常時表示バーを撤去したので、対象を解除する「外す」ボタンも無くなった。
+  // 代わりに送信のたびに外す。外れないと、見えないテーマが以降の全送信へ付き続ける。
+  it('clears the consultation target after a send', async () => {
     const session = makeSession();
     apiMock.sendRefineMessage.mockResolvedValue({
       session,
@@ -257,25 +255,29 @@ describe('AIConsultationTab', () => {
     renderTab();
 
     fireEvent.click(await screen.findByRole('button', { name: '相談する' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'この気づきの相談を始める' }));
+    fireEvent.change(screen.getByLabelText('相談を入力'), { target: { value: 'まずは相談' } });
+    fireEvent.click(screen.getByRole('button', { name: '送る' }));
     await waitFor(() => expect(apiMock.sendRefineMessage).toHaveBeenCalledTimes(1));
+    expect(apiMock.sendRefineMessage.mock.calls[0][2]).toMatchObject({
+      target: { kind: 'finding', findingId: 'finding-1', fingerprint: 'fp-1' },
+    });
 
-    // 相談テーマは残り、続けて送る発話にも同じ target が乗る。
-    expect(screen.getByText('相談テーマ')).toBeVisible();
-    fireEvent.change(screen.getByLabelText('相談を入力'), { target: { value: 'では B 案で' } });
+    fireEvent.change(screen.getByLabelText('相談を入力'), { target: { value: '別の話' } });
     fireEvent.click(screen.getByRole('button', { name: '送る' }));
 
     await waitFor(() => expect(apiMock.sendRefineMessage).toHaveBeenCalledTimes(2));
-    expect(apiMock.sendRefineMessage.mock.calls[1][2]).toMatchObject({
-      target: { kind: 'finding', findingId: 'finding-1', fingerprint: 'fp-1' },
-    });
+    expect(apiMock.sendRefineMessage.mock.calls[1][2]).not.toHaveProperty('target');
   });
 
   it('drops a consultation target whose finding disappeared after a rescan', async () => {
+    apiMock.sendRefineMessage.mockResolvedValue({
+      session: makeSession(),
+      assistantMessage: { messageId: 'm', role: 'assistant', content: 'ok', createdAt: '' },
+      newPatches: [],
+    });
     const { rerender, props } = renderTab();
 
     fireEvent.click(await screen.findByRole('button', { name: '相談する' }));
-    expect(await screen.findByText('相談テーマ')).toBeVisible();
 
     const rescanned = makeScan({
       generatedAt: '2026-07-28T09:00:00.000Z',
@@ -296,7 +298,15 @@ describe('AIConsultationTab', () => {
       </ConfirmProvider>
     );
 
-    await waitFor(() => expect(screen.queryByText('相談テーマ')).toBeNull());
+    // 消えた finding を抱えたまま送るとサーバーが 400 を返す。target が外れたことを、
+    // 次の送信に乗らないことで確かめる。
+    fireEvent.change(await screen.findByLabelText('相談を入力'), {
+      target: { value: '走査し直した後の質問' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '送る' }));
+
+    await waitFor(() => expect(apiMock.sendRefineMessage).toHaveBeenCalledTimes(1));
+    expect(apiMock.sendRefineMessage.mock.calls[0][2]).not.toHaveProperty('target');
   });
 
   it('retries the notification focus until the target element is rendered', async () => {

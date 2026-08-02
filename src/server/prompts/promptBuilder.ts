@@ -1,4 +1,5 @@
 import {
+  getContextGenerationIdsThroughCurrentScene,
   getContextSummary,
   getCurrentSceneReferenceText,
   getRecentContext,
@@ -152,13 +153,39 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
   const viewpointCharacter = resolveViewpointCharacter(input.viewpointCharacterId, characters);
   const storyState = await getStoryState(project.projectId);
 
+  const summarizedGenerationIds = state.contextSummary?.summarizedGenerationIds ?? [];
+  const eligibleGenerationIds = new Set(
+    await getContextGenerationIdsThroughCurrentScene(
+      project.projectId,
+      state.currentEpisodeId,
+      state.currentSceneId,
+      { includeCurrentScene: !isRewriteMode }
+    )
+  );
+  // NOTE: context_summary.md は作品につき1本なので、過去場面へ戻ると要約に未来場面が
+  // 含まれ得る。収録済みIDが現在位置prefixに収まる場合だけ要約を使い、収まらない回は
+  // summarized扱いも外して、可能な範囲を原文のrecent contextへ戻す。
+  const summaryFitsCurrentPosition =
+    summarizedGenerationIds.length > 0 &&
+    summarizedGenerationIds.every((generationId) => eligibleGenerationIds.has(generationId));
+  const activeSummarizedGenerationIds = summaryFitsCurrentPosition
+    ? new Set(summarizedGenerationIds)
+    : new Set<string>();
+
   const recentContext = await getRecentContext(
     project.projectId,
     state.currentEpisodeId,
     state.currentSceneId,
-    { includeCurrentScene: !isRewriteMode }
+    {
+      includeCurrentScene: !isRewriteMode,
+      // NOTE: 未要約の場面を通常枠の外でも残すために渡す。これが無いと、窓から落ちてから
+      // 要約へ畳まれるまでの数場面がプロンプトから消える。
+      summarizedGenerationIds: activeSummarizedGenerationIds,
+    }
   );
-  const contextSummary = await getContextSummary(project.projectId);
+  const contextSummary = summaryFitsCurrentPosition
+    ? await getContextSummary(project.projectId)
+    : '';
   const currentSceneText = isRewriteMode
     ? await getCurrentSceneReferenceText(
         project.projectId,

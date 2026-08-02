@@ -234,6 +234,154 @@ describe('getRecentContext', () => {
     await storage.deleteProjectDir(projectId);
   });
 
+  // NOTE: 要約は採用のたびに走るわけではない（何場面かまとめて畳む）。通常枠で打ち切ると
+  // 「窓から落ちたが要約にはまだ入っていない」場面が生まれ、その本文はどこからも参照でき
+  // なくなる。畳み終わるまでは通常枠を超えても残す、が不変条件。
+  it('keeps a fallen-out scene until it has been folded into the summary', async () => {
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Episode 1',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: ['scene-old', 'scene-new'].map((sceneId, index) => ({
+        sceneId,
+        episodeId,
+        order: index + 1,
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+        acceptedGenerationId: `gen-${sceneId}`,
+        draftGenerationIds: [],
+      })),
+    };
+    await storage.writeEpisodeRecord(projectId, episode);
+    // NOTE: 末尾から切り詰めるので、目印は各場面の末尾に置く。
+    await storage.appendGenerationLog(
+      projectId,
+      generation('gen-scene-old', 'scene-old', `${'あ'.repeat(30)}OLD_SCENE。`)
+    );
+    await storage.appendGenerationLog(
+      projectId,
+      generation('gen-scene-new', 'scene-new', `${'い'.repeat(60)}NEW_SCENE。`)
+    );
+
+    // 通常枠は新しい場面だけで埋まる。要約情報を渡さない＝「畳む対象を決める窓」。
+    const baseWindow = await getRecentContext(projectId, episodeId, 'scene-new', { maxChars: 50 });
+    expect(baseWindow).toContain('NEW_SCENE');
+    expect(baseWindow).not.toContain('OLD_SCENE');
+
+    // まだ畳まれていないので、通常枠を超えても本文側には残す。
+    const pendingWindow = await getRecentContext(projectId, episodeId, 'scene-new', {
+      maxChars: 50,
+      summarizedGenerationIds: new Set<string>(),
+    });
+    expect(pendingWindow).toContain('OLD_SCENE');
+    expect(pendingWindow).toContain('NEW_SCENE');
+
+    // 畳み終われば要約が引き継ぐので、本文からは外れる。
+    const foldedWindow = await getRecentContext(projectId, episodeId, 'scene-new', {
+      maxChars: 50,
+      summarizedGenerationIds: new Set(['gen-scene-old']),
+    });
+    expect(foldedWindow).not.toContain('OLD_SCENE');
+    expect(foldedWindow).toContain('NEW_SCENE');
+  });
+
+  it('keeps searching for older unsummarized scenes past summarized ones', async () => {
+    const episode: EpisodeRecord = {
+      episodeId,
+      title: 'Episode 1',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: ['old-hole', 'folded', 'recent'].map((sceneId, index) => ({
+        sceneId,
+        episodeId,
+        order: index + 1,
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+        acceptedGenerationId: `gen-${sceneId}`,
+        draftGenerationIds: [],
+      })),
+    };
+    await storage.writeEpisodeRecord(projectId, episode);
+    for (const [sceneId, marker] of [
+      ['old-hole', 'OLD_UNSUMMARIZED'],
+      ['folded', 'ALREADY_FOLDED'],
+      ['recent', 'RECENT'],
+    ] as const) {
+      await storage.appendGenerationLog(
+        projectId,
+        generation(`gen-${sceneId}`, sceneId, `${'あ'.repeat(60)}${marker}。`)
+      );
+    }
+
+    const context = await getRecentContext(projectId, episodeId, 'recent', {
+      maxChars: 50,
+      summarizedGenerationIds: new Set(['gen-folded']),
+    });
+
+    expect(context).toContain('RECENT');
+    expect(context).not.toContain('ALREADY_FOLDED');
+    expect(context).toContain('OLD_UNSUMMARIZED');
+  });
+
+  it('keeps previous-episode text until the cross-episode window pushes it out', async () => {
+    const previousEpisodeId = 'episode-previous';
+    await storage.writeEpisodeRecord(projectId, {
+      episodeId: previousEpisodeId,
+      title: 'Previous',
+      order: 0,
+      createdAt: '2026-07-01T00:00:00Z',
+      updatedAt: '2026-07-01T00:00:00Z',
+      scenes: [
+        {
+          sceneId: 'scene-previous',
+          episodeId: previousEpisodeId,
+          order: 1,
+          createdAt: '2026-07-01T00:00:00Z',
+          updatedAt: '2026-07-01T00:00:00Z',
+          acceptedGenerationId: 'gen-previous',
+          draftGenerationIds: [],
+        },
+      ],
+    });
+    await storage.appendGenerationLog(
+      projectId,
+      generation('gen-previous', 'scene-previous', 'PREVIOUS_EPISODE。')
+    );
+    await storage.writeEpisodeRecord(projectId, {
+      episodeId,
+      title: 'Current',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: [
+        {
+          sceneId: 'scene-current',
+          episodeId,
+          order: 1,
+          createdAt: '2026-07-02T00:00:00Z',
+          updatedAt: '2026-07-02T00:00:00Z',
+          acceptedGenerationId: 'gen-current',
+          draftGenerationIds: [],
+        },
+      ],
+    });
+    await storage.appendGenerationLog(
+      projectId,
+      generation('gen-current', 'scene-current', 'CURRENT_EPISODE。')
+    );
+
+    const context = await getRecentContext(projectId, episodeId, 'scene-current', {
+      maxChars: 100,
+      summarizedGenerationIds: new Set(),
+    });
+
+    expect(context).toContain('PREVIOUS_EPISODE');
+    expect(context).toContain('CURRENT_EPISODE');
+  });
+
   it('does not include accepted scenes after the current scene', async () => {
     const episode: EpisodeRecord = {
       episodeId,

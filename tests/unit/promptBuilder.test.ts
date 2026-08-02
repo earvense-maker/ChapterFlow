@@ -260,6 +260,7 @@ describe('buildPrompt', () => {
     const currentGenId = 'gen-current';
     const prevText = 'PREV_ACCEPTED_TEXT_SENTINEL';
     const currentText = 'CURRENT_ACCEPTED_TEXT_SENTINEL';
+    const futureSummary = 'CURRENT_SCENE_FUTURE_SUMMARY_SENTINEL';
 
     const episode: EpisodeRecord = {
       episodeId,
@@ -314,6 +315,10 @@ describe('buildPrompt', () => {
       ...makeState(),
       currentEpisodeId: episodeId,
       currentSceneId,
+      contextSummary: {
+        summarizedGenerationIds: [currentGenId],
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
     };
 
     await storage.deleteProjectDir(promptStateProjectId);
@@ -321,6 +326,7 @@ describe('buildPrompt', () => {
     await storage.writeEpisodeRecord(promptStateProjectId, episode);
     await storage.appendGenerationLog(promptStateProjectId, prevGeneration);
     await storage.appendGenerationLog(promptStateProjectId, currentGeneration);
+    await storage.writeContextSummary(promptStateProjectId, futureSummary);
 
     const buildFor = (mode: 'continue' | 'regenerate' | 'variate') =>
       buildPrompt({
@@ -341,6 +347,8 @@ describe('buildPrompt', () => {
 
     for (const mode of ['regenerate', 'variate'] as const) {
       const { userPrompt } = await buildFor(mode);
+      // 書き直し対象そのものを含む要約は、対象より前の未来情報なので投入しない。
+      expect(userPrompt).not.toContain(futureSummary);
       // 現在シーン本文はプロンプト全体で「対象場面」セクションに一度だけ出る
       const currentOccurrences = userPrompt.split(currentText).length - 1;
       expect(currentOccurrences).toBe(1);
@@ -923,6 +931,10 @@ describe('buildPrompt', () => {
       ...makeState(),
       currentEpisodeId: episodeId,
       currentSceneId: sceneId,
+      contextSummary: {
+        summarizedGenerationIds: [generationId],
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
     };
     const memories: Memory[] = [
       {

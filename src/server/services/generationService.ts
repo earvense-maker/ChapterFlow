@@ -8,8 +8,12 @@ import * as expressionService from './expressionService.js';
 import * as knowledgeService from './knowledgeService.js';
 import {
   buildEpisodeMarkdown,
+  getContextGenerationIdsThroughCurrentScene,
   getCurrentSceneReferenceGenerationId,
+  getRecentContextGenerationIds,
 } from '../prompts/contextAssembler.js';
+import { trimTrailingTextToSentenceBoundary } from '../utils/textBoundary.js';
+import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
 import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
@@ -105,6 +109,23 @@ function resolveTemperature(
 // モデルだと総時間側に当たりうるが、既定はストリーミングなので据え置き。
 const TIMEOUT_MS = 120_000;
 const SUMMARY_CHUNK_CHARS = 20_000;
+// NOTE: 要約はロールプレイの ROLEPLAY_SUMMARY_MAX_CHARS と同じ 6,000 字を上限にする。
+// 小説プロンプト全体 80,000 字（NOVEL_TOTAL_PROMPT_MAX_CHARS）に対して 7.5%、直近本文
+// 12,000 字の半分。上限を小さくすると再圧縮の回数が増えて事実がパラフレーズで摩耗する
+// ため、「小さいほど安全」ではないことに注意。
+const CONTEXT_SUMMARY_MAX_CHARS = 6_000;
+// NOTE: 圧縮呼び出しの出力枠。上限 6,000 字を書ける枠が無いと、上限を上げても
+// モデル側で頭打ちになる（以前は 1,800 字だった）。
+const CONTEXT_SUMMARY_OUTPUT_LENGTH = 6_000;
+// NOTE: 採用のたびに畳むと生成1回につきモデル呼び出しが1回増える。窓から落ちた場面が
+// この数だけ溜まってから畳むことで呼び出しを間引き、1回の要約が見る材料も増やす。
+// 明示実行（POST /context/compress）はこの閾値を使わず、1場面でも畳む。
+const CONTEXT_SUMMARY_MIN_PENDING = 3;
+
+// NOTE: 文脈要約はモデル呼び出し中に project write lock を手放すため、要約同士には
+// 専用の直列化が要る。手動圧縮と採用後ジョブが同じ旧要約から並行生成すると、遅く
+// 終わった方が新しい要約を上書きし、畳み済みIDだけが先へ進む可能性がある。
+const contextSummaryMutexes = new Map<string, Promise<void>>();
 
 export interface GenerateOptions {
   wish: string;
@@ -982,6 +1003,11 @@ export async function acceptGeneration(projectId: string, generationId?: string)
   } else if (result.refreshStoryState) {
     startStoryStateRefreshAfterAcceptance(projectId, result.record.generationId);
   }
+  if (result.newlyAccepted) {
+    // NOTE: 採用で場面が1つ増え、その分だけ古い場面が直近本文の窓から押し出される。
+    // 押し出された本文はここで畳まないと、どこにも残らないまま失われる。
+    startContextSummaryAfterAcceptance(projectId);
+  }
   const project = result.newlyAccepted ? await storage.readProject(projectId) : null;
   if (project) {
     // NOTE: trace解析はプロセス内キューで非同期実行する。解析中にプロセスが終了した
@@ -1035,6 +1061,17 @@ async function acceptGenerationUnlocked(
   if (!scene) throw new Error(`Scene not found: ${generation.sceneId}`);
 
   // 以前の採用があれば上書き
+  const previousAcceptedGenerationId = scene.acceptedGenerationId;
+  const invalidatesContextSummary = Boolean(
+    previousAcceptedGenerationId &&
+    previousAcceptedGenerationId !== generation.generationId &&
+    state.contextSummary?.summarizedGenerationIds.includes(previousAcceptedGenerationId)
+  );
+  if (invalidatesContextSummary) {
+    // NOTE: 旧採用本文は既存要約から差し引けない。新本文を旧要約へ足すと両案が混ざるため、
+    // 同一シーンの採用し直しでは全要約を空にし、採用完了後の背景ジョブで再構築する。
+    await storage.writeContextSummary(projectId, '');
+  }
   scene.acceptedGenerationId = generation.generationId;
   // 他のdraftをsupersededに
   for (const draftId of scene.draftGenerationIds) {
@@ -1095,6 +1132,14 @@ async function acceptGenerationUnlocked(
     lastAcceptedGenerationId: generation.generationId,
     selectedDraftGenerationId: generation.generationId,
     storyStateRefresh,
+    ...(invalidatesContextSummary
+      ? {
+          contextSummary: {
+            summarizedGenerationIds: [],
+            updatedAt: nowIso(),
+          },
+        }
+      : {}),
     ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
   });
 
@@ -1354,49 +1399,165 @@ async function navigateSceneUnlocked(
   return getReaderState(projectId);
 }
 
-export async function compressProjectContext(projectId: string): Promise<ContextCompressionResult> {
-  return withProjectWriteLock(projectId, () => compressProjectContextUnlocked(projectId));
+// NOTE: 収集 → モデル呼び出し → 保存 の3段に分け、モデル呼び出しの間だけプロジェクト
+// 書込みロックを手放す。要約は採用のたびに背景で走るようになったため、ロックを握ったまま
+// 最大 TIMEOUT_MS 待つと、その間ずっと生成・採用・自動レビューが止まる。
+// storyState 抽出が applyIfCurrent で取っているのと同じ形。
+export async function compressProjectContext(
+  projectId: string,
+  options: { minPending?: number } = {}
+): Promise<ContextCompressionResult> {
+  return withContextSummaryLock(projectId, async () => {
+    await reloadCredentials();
+    // NOTE: 収集は読み取りだけなので project write lock を取らない。採用のたびに走る
+    // 背景ジョブが「畳むものが無い」を確かめるためだけに生成・採用と競合するのを避ける。
+    // モデル実行中に採用内容が変わった場合は、保存前検証で検出して最新状態からやり直す。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const prepared = await prepareContextSummaryCompression(projectId, options);
+      const summary = await runContextSummaryCompression(prepared);
+      try {
+        return await withProjectWriteLock(projectId, () =>
+          persistContextSummary(projectId, prepared, summary)
+        );
+      } catch (err) {
+        if (!(err instanceof ContextSummaryStaleError) || attempt === 2) throw err;
+      }
+    }
+    throw new Error('Context summary retry loop exhausted');
+  });
 }
 
-async function compressProjectContextUnlocked(projectId: string): Promise<ContextCompressionResult> {
-  await reloadCredentials();
+async function withContextSummaryLock<T>(
+  projectId: string,
+  task: () => Promise<T>
+): Promise<T> {
+  const previous = contextSummaryMutexes.get(projectId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const next = previous.catch(() => undefined).then(() => current);
+  contextSummaryMutexes.set(projectId, next);
 
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (contextSummaryMutexes.get(projectId) === next) {
+      contextSummaryMutexes.delete(projectId);
+    }
+  }
+}
+
+class ContextSummaryStaleError extends GenerateError {
+  constructor() {
+    super(
+      '要約中に採用本文が更新されました。最新の本文でやり直してください。',
+      'context_compression_stale',
+      true
+    );
+    this.name = 'ContextSummaryStaleError';
+  }
+}
+
+// NOTE: 直近本文の窓から落ちて、まだ要約へ畳んでいない採用生成を物語順で返す。
+// 窓に残っている本文は原文がプロンプトに入っているので畳まない（二重計上になる）。
+async function collectPendingSummaryGenerations(
+  projectId: string,
+  state: ProjectState
+): Promise<GenerationRecord[]> {
+  const inWindow = await getRecentContextGenerationIds(
+    projectId,
+    state.currentEpisodeId,
+    state.currentSceneId
+  );
+  const summarized = new Set(state.contextSummary?.summarizedGenerationIds ?? []);
+  const eligibleGenerationIds = await getContextGenerationIdsThroughCurrentScene(
+    projectId,
+    state.currentEpisodeId,
+    state.currentSceneId
+  );
+
+  const pending: GenerationRecord[] = [];
+  for (const generationId of eligibleGenerationIds) {
+    if (inWindow.has(generationId) || summarized.has(generationId)) continue;
+    const generation = await findGeneration(projectId, generationId);
+    if (generation?.responseText.trim()) pending.push(generation);
+  }
+  return pending;
+}
+
+// NOTE: 設定・現在状態・伏線・情報の所在は storyState が構造化して保持し、プロンプトへ
+// 別枠で入る。ここで同じものを並べると同じ事実へ二重にトークンを払い、しかも要約側は
+// 古いまま残って storyState と食い違う。
+// NOTE: ただし禁止リストにはしない。流れを散文で書けば「誰が何を知って動いたか」は
+// 自然に混ざるもので、それを禁じると因果が書けなくなる。禁じるのは「一覧として並べる
+// こと」だけにして、流れに必要な範囲で触れるのは明示的に許可する。
+const CONTEXT_SUMMARY_SYSTEM_INSTRUCTIONS = [
+  'あなたは連載小説アプリの文脈要約係です。担当は「物語の流れ」です。',
+  '小説本文は書かず、要約だけを出力してください。',
+  'あなたが書くのは、場面と場面の繋がりです。',
+  '- どの場面から何がきっかけで次が起きたのか、という因果の筋',
+  '- 人物の関係と感情がどの場面を境にどう動いたのか',
+  '- 後の場面を読むために必要な、経緯としての文脈',
+  '事実の箇条書きではなく、時系列に沿った簡潔な散文で書いてください。',
+  '世界設定、人物の現在の状態、未回収の伏線、誰が何を知っているかは、別の仕組みが一覧として保持しています。',
+  'それらを改めて一覧や箇条書きで並べ直す必要はありません。流れを語るうえで必要な範囲で文中に含めるのは構いません。',
+  `全体で${CONTEXT_SUMMARY_MAX_CHARS}字以内に収めてください。`,
+].join('\n');
+
+interface PreparedContextSummaryCompression {
+  project: Project;
+  pending: GenerationRecord[];
+  existingSummary: string;
+}
+
+async function prepareContextSummaryCompression(
+  projectId: string,
+  options: { minPending?: number }
+): Promise<PreparedContextSummaryCompression> {
   const project = await storage.readProject(projectId);
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
-  if (!state.currentEpisodeId) {
-    throw new GenerateError('圧縮できる採用済み本文がまだありません。', 'no_context_to_compress', false);
+  if (!adapterMap[project.activeModelProvider]) {
+    throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
   }
 
+  const pending = await collectPendingSummaryGenerations(projectId, state);
+  if (pending.length < Math.max(1, options.minPending ?? 1)) {
+    throw new GenerateError(
+      '要約に畳める本文がまだありません。直近本文の枠に収まっている場面は、原文のままプロンプトへ入ります。',
+      'no_context_to_compress',
+      false
+    );
+  }
+
+  return { project, pending, existingSummary: await storage.readContextSummary(projectId) };
+}
+
+async function runContextSummaryCompression(
+  prepared: PreparedContextSummaryCompression
+): Promise<string> {
+  const { project } = prepared;
   const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
-  const episode = await storage.readEpisodeRecord(projectId, state.currentEpisodeId);
-  if (!episode) {
-    throw new GenerateError('圧縮できる採用済み本文がまだありません。', 'no_context_to_compress', false);
-  }
-
-  const acceptedText = await buildEpisodeMarkdown(projectId, episode);
-  if (!acceptedText.trim()) {
-    throw new GenerateError('圧縮できる採用済み本文がまだありません。', 'no_context_to_compress', false);
-  }
-
-  let summary = await storage.readContextSummary(projectId);
-  const chunks = splitTextIntoChunks(acceptedText, SUMMARY_CHUNK_CHARS);
+  let summary = prepared.existingSummary;
+  const chunks = splitTextIntoChunks(
+    prepared.pending.map((generation) => generation.responseText).join('\n\n'),
+    SUMMARY_CHUNK_CHARS
+  );
 
   for (const [index, chunk] of chunks.entries()) {
     const result = await generateWithAdapter(adapter, {
-      systemInstructions: [
-        'あなたは連載小説アプリの文脈圧縮係です。',
-        '本文の雰囲気を壊さず、次回生成に必要な事実だけを簡潔に整理してください。',
-        '小説本文を書かず、設定・人物・関係性・未解決の伏線・直近状況を箇条書き中心でまとめてください。',
-      ].join('\n'),
+      systemInstructions: CONTEXT_SUMMARY_SYSTEM_INSTRUCTIONS,
       userPrompt: [
-        `【既存の要約】\n${summary.trim() || 'なし'}`,
-        `【追加で圧縮する本文 ${index + 1}/${chunks.length}】\n${chunk}`,
-        '【出力】\n既存の要約と追加本文を統合した、次回生成用の要約だけを出力してください。',
+        `【これまでの流れの要約】\n${summary.trim() || 'なし'}`,
+        `【新たに畳む本文 ${index + 1}/${chunks.length}】\n${chunk}`,
+        '【出力】\nこれまでの要約に新しい本文の流れを統合した、更新後の要約だけを出力してください。',
       ].join('\n\n---\n\n'),
-      outputLength: 1800,
+      outputLength: CONTEXT_SUMMARY_OUTPUT_LENGTH,
       temperature: TEMPERATURE_SUMMARY,
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
@@ -1412,9 +1573,119 @@ async function compressProjectContextUnlocked(projectId: string): Promise<Contex
     summary = result.text.trim();
   }
 
+  // NOTE: 上限は指示でも伝えているが、超過分を黙って捨てると文の途中で切れる。
+  // 既存の文境界ヘルパーで末尾を整えてから保存する。
+  if (summary.length > CONTEXT_SUMMARY_MAX_CHARS) {
+    return trimTrailingTextToSentenceBoundary(summary.slice(0, CONTEXT_SUMMARY_MAX_CHARS));
+  }
+  return summary;
+}
+
+async function persistContextSummary(
+  projectId: string,
+  prepared: PreparedContextSummaryCompression,
+  summary: string
+): Promise<ContextCompressionResult> {
+  // NOTE: モデル呼び出し中は採用・採用取消・本文リライト・現在位置の変更を許す。
+  // IDだけでは同一generationの本文差し替えを検出できないため、最新状態からpendingを
+  // 選び直し、順序と本文まで一致するときだけ保存する。
+  const latestState = await storage.readState(projectId);
+  if (!latestState) throw new Error(`Project state not found: ${projectId}`);
+  const latestPending = await collectPendingSummaryGenerations(projectId, latestState);
+  const currentSummary = await storage.readContextSummary(projectId);
+  if (
+    currentSummary !== prepared.existingSummary ||
+    !sameSummaryInputs(prepared.pending, latestPending)
+  ) {
+    throw new ContextSummaryStaleError();
+  }
+
+  // NOTE: 要約の保存と「畳み済み」の記録は必ず同じロック区間で確定させる。片方だけ残ると、
+  // 同じ本文をもう一度畳む（重複）か、二度と畳まない（欠落）になる。
+  // モデル呼び出しの間ロックを手放しているので、state は必ず読み直してから統合する。
+  const summarized = new Set(latestState.contextSummary?.summarizedGenerationIds ?? []);
+  for (const generation of prepared.pending) summarized.add(generation.generationId);
+  const nextState: ProjectState = {
+    ...latestState,
+    contextSummary: {
+      summarizedGenerationIds: [...summarized],
+      updatedAt: nowIso(),
+    },
+  };
   await storage.writeContextSummary(projectId, summary);
-  const contextUsage = await buildReaderContextUsage(project, state, '');
+  await storage.writeState(projectId, nextState);
+  const contextUsage = await buildReaderContextUsage(prepared.project, nextState, '');
   return { summary, contextUsage };
+}
+
+function sameSummaryInputs(
+  prepared: readonly GenerationRecord[],
+  latest: readonly GenerationRecord[]
+): boolean {
+  return (
+    prepared.length === latest.length &&
+    prepared.every(
+      (generation, index) =>
+        generation.generationId === latest[index]?.generationId &&
+        generation.responseText === latest[index]?.responseText
+    )
+  );
+}
+
+// NOTE: generation本文はNGリライトで同じIDのまま変わる。すでに要約済みなら、そのIDだけ
+// 未要約へ戻しても既存要約から旧本文を差し引けないため、要約全体を破棄して現在の採用本文
+// から作り直す。この関数は呼び出し側が project write lock を保持して使う。
+export async function invalidateContextSummaryForGenerationUnlocked(
+  projectId: string,
+  generationId: string
+): Promise<boolean> {
+  const state = await storage.readState(projectId);
+  if (!state?.contextSummary?.summarizedGenerationIds.includes(generationId)) return false;
+
+  await storage.writeContextSummary(projectId, '');
+  await storage.writeState(projectId, {
+    ...state,
+    contextSummary: {
+      summarizedGenerationIds: [],
+      updatedAt: nowIso(),
+    },
+  });
+  return true;
+}
+
+// NOTE: 採用のたびに呼ぶ背景ジョブ。窓から落ちた場面が CONTEXT_SUMMARY_MIN_PENDING 件
+// 溜まるまでは何もしない（no_context_to_compress を握りつぶす）。要約の失敗が採用や
+// 本文生成を巻き込まないよう、storyState 抽出と同じく fire-and-forget にする。
+const contextSummaryJobs = new Map<string, Promise<void>>();
+const contextSummaryRerunRequests = new Set<string>();
+
+export function startContextSummaryAfterAcceptance(projectId: string): void {
+  if (contextSummaryJobs.has(projectId)) {
+    // NOTE: 実行中の採用通知を捨てると、その採用で閾値へ達したpendingが次の採用まで
+    // 要約されない。booleanの再実行要求に畳み、完了後に少なくとも1回は再確認する。
+    contextSummaryRerunRequests.add(projectId);
+    return;
+  }
+  const promise = runOutsideDataDirWrite(() =>
+    withDataDirWrite(async () => {
+      await compressProjectContext(projectId, { minPending: CONTEXT_SUMMARY_MIN_PENDING });
+    })
+  ).catch((err: unknown) => {
+    if (err instanceof GenerateError && err.code === 'no_context_to_compress') return;
+    console.warn('Context summary compression failed', {
+      projectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+  contextSummaryJobs.set(projectId, promise);
+  void promise.finally(() => {
+    if (contextSummaryJobs.get(projectId) !== promise) return;
+    contextSummaryJobs.delete(projectId);
+    // promiseが解決してからmapを消すまでの間に来た通知も、ここで拾って新しいジョブにする。
+    if (contextSummaryRerunRequests.delete(projectId)) {
+      startContextSummaryAfterAcceptance(projectId);
+    }
+  });
 }
 
 // NOTE: NG表現の局所リライトで採用済み本文が書き換わったときに、その本文を含む章の

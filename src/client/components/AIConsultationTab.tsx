@@ -6,7 +6,6 @@ import RefineConversation, {
   type ConversationStarter,
 } from './aiConsultation/RefineConversation';
 import RefineFindingsInbox from './aiConsultation/RefineFindingsInbox';
-import { formatFindingTarget } from './aiConsultation/consultationFormat';
 import type {
   Character,
   Project,
@@ -45,7 +44,6 @@ interface Props {
   onError: (message: string | null) => void;
   onFlashMessage: (message: string) => void;
 }
-
 const MAINTENANCE_BLOCKING_PHASES = new Set<RefineMaintenancePhase>([
   'scanning',
   'applying',
@@ -239,10 +237,13 @@ export default function AIConsultationTab({
       });
       onSessionChanged(result.session);
       setInput('');
-      // NOTE: 相談テーマ（consultTarget）は送信後も残す。ここで消すと、続けて押した
-      // 「この方向で変更候補を作る」に人物・finding が乗らず、本文根拠の投入条件も
-      // 外れて、対象を見失ったままパッチが作られる。外すのはユーザーの「外す」操作か、
-      // 対象が実在しなくなったときだけにする。
+      // NOTE: 相談テーマ（consultTarget）は送信のたびに外す。以前は「続けて押した
+      // 『この方向で変更候補を作る』に対象を乗せる」ため残していたが、そのために
+      // 入力欄の上へ常時バーを出す必要があり、表示を畳むと解除手段が無いまま
+      // 全送信へテーマが付き続ける状態になった。テーマを付ける導線（気づきの相談・
+      // 調整の相談）はいずれも押すたびに target を渡し直すので、残さなくても対象は
+      // 失われない。
+      setConsultTarget(null);
       setPendingResponseMode(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : '送信に失敗しました');
@@ -300,14 +301,6 @@ export default function AIConsultationTab({
       `この気づきについて、走査時の提案どおりに設定を修正する変更候補を作ってください。\n提案: ${finding.suggestedFix}`,
       { responseMode: 'prepare-patch', target }
     );
-  }
-
-  function handleStartFindingConsultation(finding: RefineFinding) {
-    if (!finding.fingerprint) return;
-    void send(`この気づきについて相談したいです: ${finding.message}`, {
-      responseMode: 'consult',
-      target: { kind: 'finding', findingId: finding.id, fingerprint: finding.fingerprint },
-    });
   }
 
   function handleDiscussAdjustment(patch: RefinePatch) {
@@ -511,34 +504,6 @@ export default function AIConsultationTab({
             onRetryRun={handleRetryRun}
           />
 
-          {consultTarget && (
-            <div className="refine-consult-target" role="status">
-              <span className="settings-badge">相談テーマ</span>
-              <span className="refine-consult-target-label">
-                {describeConsultTarget(consultTarget, characters, selectedFinding)}
-              </span>
-              {selectedFinding && (
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={actionsDisabled}
-                  onClick={() => handleStartFindingConsultation(selectedFinding)}
-                >
-                  この気づきの相談を始める
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setConsultTarget(null);
-                  setPendingResponseMode(null);
-                }}
-              >
-                外す
-              </button>
-            </div>
-          )}
-
           <form
             className="refine-chat-input"
             onSubmit={(event) => {
@@ -598,32 +563,4 @@ export default function AIConsultationTab({
       </div>
     </div>
   );
-}
-
-function describeConsultTarget(
-  target: RefineConsultationTarget,
-  characters: Character[],
-  finding: RefineFinding | null
-): string {
-  switch (target.kind) {
-    case 'general':
-      return '作品全体';
-    case 'world':
-      return target.section === 'foundation'
-        ? '世界設定 / 世界の土台'
-        : target.section === 'initialSituation'
-          ? '世界設定 / 開始時点の状況'
-          : '世界設定';
-    case 'character': {
-      const character = characters.find((c) => c.characterId === target.characterId);
-      const name = character?.name || target.characterId;
-      return target.field ? `人物: ${name} / ${target.field}` : `人物: ${name}`;
-    }
-    case 'finding':
-      return finding
-        ? `気づき（${formatFindingTarget(finding.target)}）: ${finding.message}`
-        : '気づき（最新の走査結果にありません）';
-    case 'patch':
-      return '変更候補の調整';
-  }
 }

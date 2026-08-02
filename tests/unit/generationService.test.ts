@@ -78,6 +78,54 @@ async function writeAcceptedScene(projectId: string, text: string): Promise<void
   }
 }
 
+// NOTE: 要約は「直近本文の窓から落ちた場面」だけを畳む。窓は現在の話の中しか見ないので、
+// 読み位置を次の話へ移すと、前の話の採用済み本文が落ちた状態を作れる。
+async function moveReaderToNextEpisode(projectId: string): Promise<void> {
+  const episodeId = 'ep-2';
+  const sceneId = 'scene-2';
+  const generationId = 'gen-window-filler';
+  await storage.writeEpisodeRecord(projectId, {
+    episodeId,
+    title: '第2章',
+    order: 2,
+    createdAt: '2026-07-03T00:00:00Z',
+    updatedAt: '2026-07-03T00:00:00Z',
+    scenes: [
+      {
+        sceneId,
+        episodeId,
+        order: 1,
+        createdAt: '2026-07-03T00:00:00Z',
+        updatedAt: '2026-07-03T00:00:00Z',
+        acceptedGenerationId: generationId,
+        draftGenerationIds: [generationId],
+      },
+    ],
+  });
+  // NOTE: 直近窓は話を跨いで選ぶ。前話の短い本文を確実に窓外へ出すため、現在話に
+  // 通常枠を満たす採用本文を置く。
+  await storage.appendGenerationLog(projectId, {
+    generationId,
+    sceneId,
+    episodeId,
+    request: { wish: '', outputLength: 12_100, previousContextText: '' },
+    responseText: `${'新'.repeat(12_000)}現在話の本文。`,
+    usedPresets: { narration: 'third-close' },
+    usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+    referencedMemoryIds: [],
+    status: 'accepted',
+    createdAt: '2026-07-03T00:00:00Z',
+    parentGenerationId: null,
+  });
+  const state = await storage.readState(projectId);
+  if (!state) throw new Error('state missing');
+  await storage.writeState(projectId, {
+    ...state,
+    currentEpisodeId: episodeId,
+    currentSceneId: sceneId,
+  });
+}
+
 async function writePendingRefreshScenario(
   project: Project,
   mode: 'next-scene' | 'replacement'
@@ -809,6 +857,7 @@ describe('generationService generation', () => {
       samplingConfig: { frequencyPenalty: 0.6, presencePenalty: 0.6 },
     });
     await writeAcceptedScene(project.projectId, 'これは圧縮対象の本文です。');
+    await moveReaderToNextEpisode(project.projectId);
 
     let capturedRequest: { frequencyPenalty?: number; presencePenalty?: number } | undefined;
     vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
@@ -825,9 +874,286 @@ describe('generationService generation', () => {
     expect(capturedRequest!.frequencyPenalty).toBeUndefined();
     expect(capturedRequest!.presencePenalty).toBeUndefined();
   });
+
+  // NOTE: 窓に残っている本文は原文がプロンプトへ入る。ここで畳むと同じ場面を
+  // 原文と要約の二重で払うことになる。
+  it('leaves scenes that are still inside the recent-context window unsummarized', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, 'まだ直近本文の枠に収まっている本文です。');
+    const compress = vi.spyOn(GeminiAdapter.prototype, 'generateText');
+
+    await expect(generationService.compressProjectContext(project.projectId)).rejects.toMatchObject({
+      code: 'no_context_to_compress',
+    });
+    expect(compress).not.toHaveBeenCalled();
+  });
+
+  it('folds a fallen-out scene once and does not fold it again', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '窓から落ちた本文です。');
+    await moveReaderToNextEpisode(project.projectId);
+
+    const capturedPrompts: string[] = [];
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      capturedPrompts.push(request.userPrompt);
+      return { text: '流れの要約', finishReason: 'stop', retryable: false };
+    });
+
+    const first = await generationService.compressProjectContext(project.projectId);
+    expect(first.summary).toBe('流れの要約');
+    expect(capturedPrompts).toHaveLength(1);
+    expect(capturedPrompts[0]).toContain('窓から落ちた本文です。');
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe('流れの要約');
+
+    const state = await storage.readState(project.projectId);
+    expect(state?.contextSummary?.summarizedGenerationIds).toContain('gen-1');
+
+    // 2回目は畳む対象が残っていない。
+    await expect(generationService.compressProjectContext(project.projectId)).rejects.toMatchObject({
+      code: 'no_context_to_compress',
+    });
+    expect(capturedPrompts).toHaveLength(1);
+  });
+
+  it('serializes concurrent context compression for the same project', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '同時圧縮の対象です。');
+    await moveReaderToNextEpisode(project.projectId);
+
+    let releaseModel!: () => void;
+    const modelGate = new Promise<void>((resolve) => {
+      releaseModel = resolve;
+    });
+    const generate = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockImplementation(async () => {
+        await modelGate;
+        return { text: '直列化された要約', finishReason: 'stop', retryable: false };
+      });
+
+    const first = generationService.compressProjectContext(project.projectId);
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
+    const secondOutcome = generationService
+      .compressProjectContext(project.projectId)
+      .then(
+        () => null,
+        (err: unknown) => err
+      );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(generate).toHaveBeenCalledTimes(1);
+    releaseModel();
+
+    await expect(first).resolves.toMatchObject({ summary: '直列化された要約' });
+    await expect(secondOutcome).resolves.toMatchObject({ code: 'no_context_to_compress' });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries when the accepted scene changes while context compression is running', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '差し替え前の本文です。');
+    await moveReaderToNextEpisode(project.projectId);
+
+    let releaseFirstModel!: () => void;
+    const firstModelGate = new Promise<void>((resolve) => {
+      releaseFirstModel = resolve;
+    });
+    const capturedPrompts: string[] = [];
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      capturedPrompts.push(request.userPrompt);
+      if (capturedPrompts.length === 1) {
+        await firstModelGate;
+        return { text: '古い本文から作った要約', finishReason: 'stop', retryable: false };
+      }
+      return { text: '差し替え後の要約', finishReason: 'stop', retryable: false };
+    });
+
+    const compression = generationService.compressProjectContext(project.projectId);
+    await vi.waitFor(() => expect(capturedPrompts).toHaveLength(1));
+
+    const episode = await storage.readEpisodeRecord(project.projectId, 'ep-1');
+    if (!episode) throw new Error('episode missing');
+    episode.scenes[0].acceptedGenerationId = 'gen-2';
+    episode.scenes[0].draftGenerationIds.push('gen-2');
+    await storage.writeEpisodeRecord(project.projectId, episode);
+    await storage.appendGenerationLog(project.projectId, {
+      generationId: 'gen-2',
+      sceneId: 'scene-1',
+      episodeId: 'ep-1',
+      request: { wish: '', outputLength: 1000, previousContextText: '' },
+      responseText: '差し替え後の本文です。',
+      usedPresets: { narration: 'third-close' },
+      usedModel: { provider: 'gemini', modelName: 'gemini-test' },
+      referencedMemoryIds: [],
+      status: 'accepted',
+      createdAt: '2026-07-04T00:00:00Z',
+      parentGenerationId: 'gen-1',
+    });
+    releaseFirstModel();
+
+    await expect(compression).resolves.toMatchObject({ summary: '差し替え後の要約' });
+    expect(capturedPrompts).toHaveLength(2);
+    expect(capturedPrompts[0]).toContain('差し替え前の本文です。');
+    expect(capturedPrompts[1]).toContain('差し替え後の本文です。');
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe('差し替え後の要約');
+    const state = await storage.readState(project.projectId);
+    expect(state?.contextSummary?.summarizedGenerationIds).toContain('gen-2');
+    expect(state?.contextSummary?.summarizedGenerationIds).not.toContain('gen-1');
+  });
+
+  it('retries when an accepted generation is rewritten during context compression', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, 'リライト前の本文です。');
+    await moveReaderToNextEpisode(project.projectId);
+
+    let releaseFirstModel!: () => void;
+    const firstModelGate = new Promise<void>((resolve) => {
+      releaseFirstModel = resolve;
+    });
+    const capturedPrompts: string[] = [];
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      capturedPrompts.push(request.userPrompt);
+      if (capturedPrompts.length === 1) {
+        await firstModelGate;
+        return { text: '古い本文の要約', finishReason: 'stop', retryable: false };
+      }
+      return { text: 'リライト後の要約', finishReason: 'stop', retryable: false };
+    });
+
+    const compression = generationService.compressProjectContext(project.projectId);
+    await vi.waitFor(() => expect(capturedPrompts).toHaveLength(1));
+    await storage.appendGenerationTextRevisionLog(
+      project.projectId,
+      'gen-1',
+      'リライト後の本文です。',
+      { reason: 'test-rewrite', before: '前', after: '後' }
+    );
+    releaseFirstModel();
+
+    await expect(compression).resolves.toMatchObject({ summary: 'リライト後の要約' });
+    expect(capturedPrompts).toHaveLength(2);
+    expect(capturedPrompts[0]).toContain('リライト前の本文です。');
+    expect(capturedPrompts[1]).toContain('リライト後の本文です。');
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe('リライト後の要約');
+  });
+
+  it('does not persist a summary when navigation moves its input back into the recent window', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '読み位置で窓へ戻る本文です。');
+    await moveReaderToNextEpisode(project.projectId);
+
+    let releaseModel!: () => void;
+    const modelGate = new Promise<void>((resolve) => {
+      releaseModel = resolve;
+    });
+    const generate = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockImplementation(async () => {
+        await modelGate;
+        return { text: '保存してはいけない要約', finishReason: 'stop', retryable: false };
+      });
+
+    const compression = generationService.compressProjectContext(project.projectId);
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+    await storage.writeState(project.projectId, {
+      ...state,
+      currentEpisodeId: 'ep-1',
+      currentSceneId: 'scene-1',
+    });
+    releaseModel();
+
+    await expect(compression).rejects.toMatchObject({ code: 'no_context_to_compress' });
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe('');
+    const latestState = await storage.readState(project.projectId);
+    expect(latestState?.contextSummary?.summarizedGenerationIds ?? []).not.toContain('gen-1');
+  });
+
+  it('invalidates the whole summary when an already-folded generation is rewritten', async () => {
+    const project = await createTrackedProject();
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+    await storage.writeContextSummary(project.projectId, '旧本文を含む要約');
+    await storage.writeState(project.projectId, {
+      ...state,
+      contextSummary: {
+        summarizedGenerationIds: ['gen-1', 'gen-older'],
+        updatedAt: '2026-07-03T00:00:00Z',
+      },
+    });
+
+    await expect(
+      generationService.invalidateContextSummaryForGenerationUnlocked(project.projectId, 'gen-1')
+    ).resolves.toBe(true);
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe('');
+    const latestState = await storage.readState(project.projectId);
+    expect(latestState?.contextSummary?.summarizedGenerationIds).toEqual([]);
+  });
+
+  it('keeps the summary within its cap and asks the model for flow rather than storyState facts', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '窓から落ちた本文です。');
+    await moveReaderToNextEpisode(project.projectId);
+
+    let capturedSystemInstructions = '';
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      capturedSystemInstructions = request.systemInstructions;
+      // 上限を超える応答を返すモデルを模す。100字ごとに文末を置き、境界で切れることも見る。
+      return {
+        text: `${'あ'.repeat(99)}。`.repeat(70),
+        finishReason: 'stop',
+        retryable: false,
+      };
+    });
+
+    const result = await generationService.compressProjectContext(project.projectId);
+
+    expect(result.summary.length).toBeLessThanOrEqual(6_000);
+    expect(result.summary.endsWith('。')).toBe(true);
+    // 要約が担うのは流れ。
+    expect(capturedSystemInstructions).toContain('因果の筋');
+    expect(capturedSystemInstructions).toContain('時系列に沿った簡潔な散文');
+    expect(capturedSystemInstructions).not.toContain('箇条書き中心');
+    // storyState と重複する一覧は作らせない。ただし禁止ではなく「並べ直す必要はない」に
+    // 留め、流れに必要な範囲で触れるのは許可する（禁止すると因果が書けなくなる）。
+    expect(capturedSystemInstructions).toContain('並べ直す必要はありません');
+    expect(capturedSystemInstructions).toContain('必要な範囲で文中に含めるのは構いません');
+  });
 });
 
 describe('generationService state operations', () => {
+  it('invalidates an old summary when a summarized scene accepts another draft', async () => {
+    const project = await createTrackedProject();
+    const { firstGenerationId, secondGenerationId } = await writePendingRefreshScenario(
+      project,
+      'replacement'
+    );
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+    await storage.writeContextSummary(project.projectId, '旧ドラフトを含む要約');
+    await storage.writeState(project.projectId, {
+      ...state,
+      contextSummary: {
+        summarizedGenerationIds: [firstGenerationId],
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    await generationService.acceptGeneration(project.projectId, secondGenerationId);
+
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe('');
+    const latestState = await storage.readState(project.projectId);
+    expect(latestState?.contextSummary?.summarizedGenerationIds).toEqual([]);
+    const episode = await storage.readEpisodeRecord(project.projectId, 'ep-pending-refresh');
+    expect(episode?.scenes[0].acceptedGenerationId).toBe(secondGenerationId);
+  });
+
   it('does not mark the pending accepted generation as processed during legacy story-state initialization', async () => {
     const project = await createTrackedProject();
     const episode: EpisodeRecord = {
