@@ -1,7 +1,7 @@
 import type { EpisodeId, GenerationId, MemoryId, SceneId } from './ids.js';
 import type { GenerationStyleProfile } from './style.js';
 import type { ActivePresets } from './project.js';
-import type { FinishReason } from './model.js';
+import type { AdapterGenerateResult, FinishReason } from './model.js';
 
 export interface GenerationRequest {
   wish: string;
@@ -49,6 +49,29 @@ export interface PromptBudgetReport {
 
 export type GenerationStatus = 'draft' | 'accepted' | 'rejected' | 'superseded';
 
+// NOTE: モデルの推論本文は含めない。生成速度の切り分けに必要な時刻・件数・使用量だけを
+// GenerationRecord と一緒に永続化し、既存レコードとの互換性は optional field で保つ。
+export interface GenerationTelemetry {
+  schemaVersion: 1;
+  requestStartedAt: string;
+  modelRequestStartedAt: string;
+  modelCompletedAt: string;
+  firstProviderEventAt?: string;
+  firstReasoningAt?: string;
+  firstContentAt?: string;
+  requestToModelMs: number;
+  modelDurationMs: number;
+  totalDurationMs: number;
+  timeToFirstProviderEventMs?: number;
+  timeToFirstReasoningMs?: number;
+  timeToFirstContentMs?: number;
+  reasoningChars?: number;
+  reasoningChunks?: number;
+  contentChars?: number;
+  contentChunks?: number;
+  usage?: AdapterGenerateResult['rawUsage'];
+}
+
 export interface GenerationRecord {
   generationId: GenerationId;
   sceneId: SceneId;
@@ -68,6 +91,8 @@ export interface GenerationRecord {
   bannedExpressions?: string[];
   // NOTE: 'length' の場合は本文を失わず下書きとして残しつつ、UIで上限到達を通知する。
   finishReason?: FinishReason;
+  generationMode?: GenerateRequestBody['mode'];
+  telemetry?: GenerationTelemetry;
   styleProfile?: GenerationStyleProfile;
   promptBudgetReport?: PromptBudgetReport;
 }

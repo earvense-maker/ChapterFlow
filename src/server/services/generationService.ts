@@ -37,6 +37,7 @@ import type {
   EpisodeRecord,
   FinishReason,
   GenerationRecord,
+  GenerationTelemetry,
   Project,
   ProjectState,
   ReaderState,
@@ -120,6 +121,71 @@ interface GeneratedSceneResult {
   maintenanceRunId?: string;
 }
 
+interface GenerationRequestClock {
+  startedAt: string;
+  startedMs: number;
+}
+
+function startGenerationRequestClock(): GenerationRequestClock {
+  const startedMs = Date.now();
+  return { startedAt: new Date(startedMs).toISOString(), startedMs };
+}
+
+function elapsedMs(startedMs: number, completedMs: number): number {
+  return Math.max(0, completedMs - startedMs);
+}
+
+function elapsedFromIso(startedMs: number, timestamp: string | undefined): number | undefined {
+  if (!timestamp) return undefined;
+  const completedMs = Date.parse(timestamp);
+  return Number.isFinite(completedMs) ? elapsedMs(startedMs, completedMs) : undefined;
+}
+
+function buildGenerationTelemetry(input: {
+  requestClock: GenerationRequestClock;
+  modelStartedMs: number;
+  modelCompletedMs: number;
+  usage?: AdapterGenerateResult['rawUsage'];
+  streamMetrics?: {
+    firstProviderEventAt?: string;
+    firstReasoningAt?: string;
+    firstContentAt?: string;
+    reasoningChars: number;
+    reasoningChunks: number;
+    contentChars: number;
+    contentChunks: number;
+  };
+}): GenerationTelemetry {
+  const metrics = input.streamMetrics;
+  const timeToFirstProviderEventMs = elapsedFromIso(input.modelStartedMs, metrics?.firstProviderEventAt);
+  const timeToFirstReasoningMs = elapsedFromIso(input.modelStartedMs, metrics?.firstReasoningAt);
+  const timeToFirstContentMs = elapsedFromIso(input.modelStartedMs, metrics?.firstContentAt);
+  return {
+    schemaVersion: 1,
+    requestStartedAt: input.requestClock.startedAt,
+    modelRequestStartedAt: new Date(input.modelStartedMs).toISOString(),
+    modelCompletedAt: new Date(input.modelCompletedMs).toISOString(),
+    ...(metrics?.firstProviderEventAt ? { firstProviderEventAt: metrics.firstProviderEventAt } : {}),
+    ...(metrics?.firstReasoningAt ? { firstReasoningAt: metrics.firstReasoningAt } : {}),
+    ...(metrics?.firstContentAt ? { firstContentAt: metrics.firstContentAt } : {}),
+    requestToModelMs: elapsedMs(input.requestClock.startedMs, input.modelStartedMs),
+    modelDurationMs: elapsedMs(input.modelStartedMs, input.modelCompletedMs),
+    totalDurationMs: elapsedMs(input.requestClock.startedMs, input.modelCompletedMs),
+    ...(timeToFirstProviderEventMs !== undefined ? { timeToFirstProviderEventMs } : {}),
+    ...(timeToFirstReasoningMs !== undefined ? { timeToFirstReasoningMs } : {}),
+    ...(timeToFirstContentMs !== undefined ? { timeToFirstContentMs } : {}),
+    ...(metrics
+      ? {
+          reasoningChars: metrics.reasoningChars,
+          reasoningChunks: metrics.reasoningChunks,
+          contentChars: metrics.contentChars,
+          contentChunks: metrics.contentChunks,
+        }
+      : {}),
+    ...(input.usage ? { usage: input.usage } : {}),
+  };
+}
+
 async function resolveStyleProfileForGeneration(
   project: Project,
   options: GenerateOptions,
@@ -148,6 +214,7 @@ export async function generateScene(
   projectId: string,
   options: GenerateOptions
 ): Promise<GenerationRecord> {
+  const requestClock = startGenerationRequestClock();
   // NOTE: 期限切れ lease の failed 正規化はロック取得を伴うため、
   // withProjectWriteLock の外側で行う必要がある（ガード内で再度 withProjectWriteLock
   // に入るとデッドロックする）。ここで先に guard を通しておけば、maintenance state を
@@ -155,14 +222,17 @@ export async function generateScene(
   // 次の withProjectWriteLock 取得時までに blocking phase が復活しても、ロック取得後の
   // 実処理は正常に直列化される（pipeline は自分のロック内で完結してから離す）。
   await assertGenerationNotBlockedByMaintenance(projectId);
-  const result = await withProjectWriteLock(projectId, () => generateSceneUnlocked(projectId, options));
+  const result = await withProjectWriteLock(projectId, () =>
+    generateSceneUnlocked(projectId, options, requestClock)
+  );
   startReservedPostGenerationMaintenance(projectId, result.record.generationId, result.maintenanceRunId);
   return result.record;
 }
 
 async function generateSceneUnlocked(
   projectId: string,
-  options: GenerateOptions
+  options: GenerateOptions,
+  requestClock: GenerationRequestClock
 ): Promise<GeneratedSceneResult> {
   await reloadCredentials();
 
@@ -232,6 +302,7 @@ async function generateSceneUnlocked(
 
   const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
 
+  const modelStartedMs = Date.now();
   const result = await generateWithAdapter(adapter, {
     systemInstructions,
     userPrompt,
@@ -243,6 +314,7 @@ async function generateSceneUnlocked(
     frequencyPenalty: project.samplingConfig?.frequencyPenalty,
     presencePenalty: project.samplingConfig?.presencePenalty,
   });
+  const modelCompletedMs = Date.now();
 
   if (result.finishReason === 'error' || result.finishReason === 'timeout') {
     throw new GenerateError(
@@ -307,6 +379,24 @@ async function generateSceneUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason: result.finishReason,
+    generationMode: options.mode,
+    telemetry: buildGenerationTelemetry({
+      requestClock,
+      modelStartedMs,
+      modelCompletedMs,
+      usage: result.rawUsage,
+      streamMetrics: {
+        firstProviderEventAt: new Date(modelCompletedMs).toISOString(),
+        ...(result.reasoningStats?.chars
+          ? { firstReasoningAt: new Date(modelCompletedMs).toISOString() }
+          : {}),
+        ...(result.text.trim() ? { firstContentAt: new Date(modelCompletedMs).toISOString() } : {}),
+        reasoningChars: result.reasoningStats?.chars ?? 0,
+        reasoningChunks: result.reasoningStats?.chunks ?? 0,
+        contentChars: result.text.length,
+        contentChunks: result.text.trim() ? 1 : 0,
+      },
+    }),
     ...(styleProfile ? { styleProfile } : {}),
     promptBudgetReport,
   };
@@ -347,12 +437,13 @@ export async function generateSceneStream(
   options: GenerateStreamOptions,
   onChunk: (chunk: string) => void
 ): Promise<GenerationRecord> {
+  const requestClock = startGenerationRequestClock();
   // NOTE: 非ストリーム側と同じく、期限切れ lease の failed 正規化のためロック外で
   // guard を通す。route 側にも preflight があるが、直接呼び出し（テスト等）でも
   // 同じ挙動を保証する。
   await assertGenerationNotBlockedByMaintenance(projectId);
   const result = await withProjectWriteLock(projectId, () =>
-    generateSceneStreamUnlocked(projectId, options, onChunk)
+    generateSceneStreamUnlocked(projectId, options, onChunk, requestClock)
   );
   startReservedPostGenerationMaintenance(projectId, result.record.generationId, result.maintenanceRunId);
   return result.record;
@@ -361,7 +452,8 @@ export async function generateSceneStream(
 async function generateSceneStreamUnlocked(
   projectId: string,
   options: GenerateStreamOptions,
-  onChunk: (chunk: string) => void
+  onChunk: (chunk: string) => void,
+  requestClock: GenerationRequestClock
 ): Promise<GeneratedSceneResult> {
   await reloadCredentials();
   throwIfAborted(options.abortSignal);
@@ -380,7 +472,7 @@ async function generateSceneStreamUnlocked(
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
   if (!adapter.generateTextStream) {
-    const result = await generateSceneUnlocked(projectId, options);
+    const result = await generateSceneUnlocked(projectId, options, requestClock);
     throwIfAborted(options.abortSignal);
     onChunk(result.record.responseText);
     return result;
@@ -443,7 +535,13 @@ async function generateSceneStreamUnlocked(
   let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
   let debugInfo: string | undefined;
   let resolvedModelName: string | undefined;
+  let streamMetrics: Parameters<typeof buildGenerationTelemetry>[0]['streamMetrics'];
+  let firstObservedEventAt: string | undefined;
+  let firstContentAt: string | undefined;
+  let contentChars = 0;
+  let contentChunks = 0;
 
+  const modelStartedMs = Date.now();
   try {
     for await (const event of generateTextStreamWithPenaltyRetry(adapter, {
       systemInstructions,
@@ -459,13 +557,20 @@ async function generateSceneStreamUnlocked(
     })) {
       throwIfAborted(options.abortSignal);
       if (event.type === 'chunk') {
+        const receivedAt = new Date().toISOString();
+        firstObservedEventAt ??= receivedAt;
+        firstContentAt ??= receivedAt;
+        contentChars += event.text.length;
+        contentChunks += 1;
         textParts.push(event.text);
         onChunk(event.text);
       } else {
+        firstObservedEventAt ??= new Date().toISOString();
         finishReason = event.finishReason;
         rawUsage = event.rawUsage;
         debugInfo = event.debugInfo;
         resolvedModelName = event.resolvedModelName;
+        streamMetrics = event.streamMetrics;
       }
     }
   } catch (err) {
@@ -474,6 +579,16 @@ async function generateSceneStreamUnlocked(
     }
     throw err;
   }
+  const modelCompletedMs = Date.now();
+  const measuredStreamMetrics = {
+    firstProviderEventAt: streamMetrics?.firstProviderEventAt ?? firstObservedEventAt,
+    firstReasoningAt: streamMetrics?.firstReasoningAt,
+    firstContentAt: streamMetrics?.firstContentAt ?? firstContentAt,
+    reasoningChars: streamMetrics?.reasoningChars ?? 0,
+    reasoningChunks: streamMetrics?.reasoningChunks ?? 0,
+    contentChars,
+    contentChunks,
+  };
 
   if (finishReason === 'error' || finishReason === 'timeout') {
     throw new GenerateError(mapErrorMessage(finishReason), finishReason, true);
@@ -536,6 +651,14 @@ async function generateSceneStreamUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason,
+    generationMode: options.mode,
+    telemetry: buildGenerationTelemetry({
+      requestClock,
+      modelStartedMs,
+      modelCompletedMs,
+      usage: rawUsage,
+      streamMetrics: measuredStreamMetrics,
+    }),
     ...(styleProfile ? { styleProfile } : {}),
     promptBudgetReport,
   };

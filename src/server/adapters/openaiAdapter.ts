@@ -121,6 +121,13 @@ export class OpenAIAdapter implements ModelAdapter {
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
       let resolvedModelName: string | undefined;
       let sawTerminalMarker = false;
+      let firstProviderEventAt: string | undefined;
+      let firstReasoningAt: string | undefined;
+      let firstContentAt: string | undefined;
+      let reasoningChars = 0;
+      let reasoningChunks = 0;
+      let contentChars = 0;
+      let contentChunks = 0;
 
       for await (const eventData of readServerSentEvents(res.body, resetTimeout)) {
         if (eventData === '[DONE]') {
@@ -129,6 +136,7 @@ export class OpenAIAdapter implements ModelAdapter {
         }
 
         const data = JSON.parse(eventData) as OpenAIStreamChunk;
+        firstProviderEventAt ??= new Date().toISOString();
         if (data.error) {
           const status = normalizeErrorStatus(data.error.code);
           throw new ModelAdapterError(
@@ -139,18 +147,25 @@ export class OpenAIAdapter implements ModelAdapter {
         }
         if (data.model) resolvedModelName = data.model;
         const choice = data.choices?.[0];
+        const reasoning = choice?.delta?.reasoning_content;
+        if (reasoning) {
+          firstReasoningAt ??= new Date().toISOString();
+          reasoningChars += reasoning.length;
+          reasoningChunks += 1;
+        }
         const text = choice?.delta?.content;
-        if (text) yield { type: 'chunk', text };
+        if (text) {
+          firstContentAt ??= new Date().toISOString();
+          contentChars += text.length;
+          contentChunks += 1;
+          yield { type: 'chunk', text };
+        }
         if (choice?.finish_reason) {
           finishReason = mapFinishReason(choice.finish_reason);
           sawTerminalMarker = true;
         }
         if (data.usage) {
-          rawUsage = {
-            promptTokens: data.usage.prompt_tokens,
-            completionTokens: data.usage.completion_tokens,
-            totalTokens: data.usage.total_tokens,
-          };
+          rawUsage = normalizeRawUsage(data.usage);
         }
       }
 
@@ -166,6 +181,21 @@ export class OpenAIAdapter implements ModelAdapter {
         type: 'done',
         finishReason,
         rawUsage,
+        // reasoning を返さない通常モデルでは既存 done event の形を変えない。本文側の
+        // first-content は generationService が全プロバイダー共通で計測する。
+        ...(reasoningChunks > 0
+          ? {
+              streamMetrics: {
+                ...(firstProviderEventAt ? { firstProviderEventAt } : {}),
+                ...(firstReasoningAt ? { firstReasoningAt } : {}),
+                ...(firstContentAt ? { firstContentAt } : {}),
+                reasoningChars,
+                reasoningChunks,
+                contentChars,
+                contentChunks,
+              },
+            }
+          : {}),
         ...(resolvedModelName ? { resolvedModelName } : {}),
       };
     } catch (err) {
@@ -255,6 +285,9 @@ export class OpenAIAdapter implements ModelAdapter {
           prompt_tokens: number;
           completion_tokens: number;
           total_tokens: number;
+          prompt_cache_hit_tokens?: number;
+          prompt_cache_miss_tokens?: number;
+          completion_tokens_details?: { reasoning_tokens?: number };
         };
         error?: OpenAIProviderError;
       };
@@ -281,18 +314,14 @@ export class OpenAIAdapter implements ModelAdapter {
         !text && reasoningLength > 0
           ? `content=empty reasoning_content=${reasoningLength}chars finish=${choice?.finish_reason ?? 'none'}`
           : undefined;
+      const reasoningStats = reasoningLength > 0 ? { chars: reasoningLength, chunks: 1 } : undefined;
 
       return {
         text,
         finishReason,
         ...(debugInfo ? { debugInfo } : {}),
-        rawUsage: data.usage
-          ? {
-              promptTokens: data.usage.prompt_tokens,
-              completionTokens: data.usage.completion_tokens,
-              totalTokens: data.usage.total_tokens,
-            }
-          : undefined,
+        rawUsage: data.usage ? normalizeRawUsage(data.usage) : undefined,
+        ...(reasoningStats ? { reasoningStats } : {}),
         retryable: finishReason === 'error',
         ...(data.model ? { resolvedModelName: data.model } : {}),
       };
@@ -374,6 +403,7 @@ interface OpenAIStreamChunk {
   choices?: Array<{
     delta?: {
       content?: string;
+      reasoning_content?: string;
     };
     finish_reason?: string;
   }>;
@@ -381,8 +411,28 @@ interface OpenAIStreamChunk {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
+    completion_tokens_details?: { reasoning_tokens?: number };
   } | null;
   error?: OpenAIProviderError;
+}
+
+function normalizeRawUsage(usage: NonNullable<OpenAIStreamChunk['usage']>): NonNullable<AdapterGenerateResult['rawUsage']> {
+  return {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+    ...(typeof usage.prompt_cache_hit_tokens === 'number'
+      ? { promptCacheHitTokens: usage.prompt_cache_hit_tokens }
+      : {}),
+    ...(typeof usage.prompt_cache_miss_tokens === 'number'
+      ? { promptCacheMissTokens: usage.prompt_cache_miss_tokens }
+      : {}),
+    ...(typeof usage.completion_tokens_details?.reasoning_tokens === 'number'
+      ? { reasoningTokens: usage.completion_tokens_details.reasoning_tokens }
+      : {}),
+  };
 }
 
 export function mapHttpStatus(status: number, body: { error?: OpenAIProviderError }): string {

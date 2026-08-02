@@ -364,6 +364,14 @@ describe('generationService generation', () => {
 
     expect(record.bannedExpressions).toContain('避けたい表現');
     expect(record.finishReason).toBe('stop');
+    expect(record.generationMode).toBe('continue');
+    expect(record.telemetry).toMatchObject({
+      schemaVersion: 1,
+      reasoningChars: 0,
+      reasoningChunks: 0,
+      contentChars: 7,
+      contentChunks: 1,
+    });
   });
 
   it('keeps a length-limited response as a draft and records why it ended', async () => {
@@ -535,6 +543,64 @@ describe('generationService generation', () => {
     expect(calls[1].frequencyPenalty).toBeUndefined();
     expect(chunks).toContain('再試行');
     expect(record.responseText).toBe('再試行');
+  });
+
+  it('persists generation mode, stream timings, reasoning aggregates, and provider usage', async () => {
+    const project = await createTrackedProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* () {
+      const eventAt = new Date().toISOString();
+      yield { type: 'chunk', text: '計測対象の本文' };
+      yield {
+        type: 'done',
+        finishReason: 'stop',
+        rawUsage: {
+          promptTokens: 200,
+          completionTokens: 75,
+          totalTokens: 275,
+          reasoningTokens: 50,
+        },
+        streamMetrics: {
+          firstProviderEventAt: eventAt,
+          firstReasoningAt: eventAt,
+          firstContentAt: eventAt,
+          reasoningChars: 120,
+          reasoningChunks: 4,
+          contentChars: 7,
+          contentChunks: 1,
+        },
+      };
+    });
+
+    const record = await generationService.generateSceneStream(
+      project.projectId,
+      { wish: '続き', mode: 'continue' },
+      () => undefined
+    );
+
+    expect(record.generationMode).toBe('continue');
+    expect(record.telemetry).toMatchObject({
+      schemaVersion: 1,
+      reasoningChars: 120,
+      reasoningChunks: 4,
+      contentChars: 7,
+      contentChunks: 1,
+      usage: {
+        promptTokens: 200,
+        completionTokens: 75,
+        totalTokens: 275,
+        reasoningTokens: 50,
+      },
+    });
+    expect(Date.parse(record.telemetry!.requestStartedAt)).not.toBeNaN();
+    expect(Date.parse(record.telemetry!.modelRequestStartedAt)).not.toBeNaN();
+    expect(Date.parse(record.telemetry!.modelCompletedAt)).not.toBeNaN();
+    expect(record.telemetry!.requestToModelMs).toBeGreaterThanOrEqual(0);
+    expect(record.telemetry!.modelDurationMs).toBeGreaterThanOrEqual(0);
+    expect(record.telemetry!.totalDurationMs).toBeGreaterThanOrEqual(0);
+
+    const persisted = await storage.findGenerationRecord(project.projectId, record.generationId);
+    expect(persisted?.telemetry).toEqual(record.telemetry);
+    expect(persisted?.generationMode).toBe('continue');
   });
 
   it('includes Gemini diagnostics in non-streaming content filter errors', async () => {

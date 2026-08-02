@@ -54,6 +54,13 @@ export interface AdapterGenerateResult {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    promptCacheHitTokens?: number;
+    promptCacheMissTokens?: number;
+    reasoningTokens?: number;
+  };
+  reasoningStats?: {
+    chars: number;
+    chunks: number;
   };
   errorCode?: string;
   errorMessage?: string;
@@ -80,4 +87,14 @@ export type AdapterGenerateStreamEvent =
       rawUsage?: AdapterGenerateResult['rawUsage'];
       debugInfo?: string;
       resolvedModelName?: string;
+      // NOTE: reasoning_content 自体は保存・転送せず、遅延診断に必要な集計値だけを返す。
+      streamMetrics?: {
+        firstProviderEventAt?: string;
+        firstReasoningAt?: string;
+        firstContentAt?: string;
+        reasoningChars: number;
+        reasoningChunks: number;
+        contentChars: number;
+        contentChunks: number;
+      };
     };

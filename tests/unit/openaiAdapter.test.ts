@@ -57,6 +57,10 @@ function sseChunkBlock(text: string): string {
   return `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
 }
 
+function sseReasoningBlock(text: string): string {
+  return `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: text } }] })}\n\n`;
+}
+
 describe('OpenAIAdapter', () => {
   it('uses an explicit maxOutputTokens value in the provider request', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -70,6 +74,42 @@ describe('OpenAIAdapter', () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.max_tokens).toBe(8192);
+  });
+
+  it('reports non-streaming reasoning aggregates and extended token usage without storing the text', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          choices: [
+            {
+              message: { content: '本文', reasoning_content: '内部推論' },
+              finish_reason: 'stop',
+            },
+          ],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 25,
+            total_tokens: 125,
+            completion_tokens_details: { reasoning_tokens: 20 },
+          },
+        })
+      )
+    );
+
+    const result = await new OpenAIAdapter().generateText(baseRequest);
+
+    expect(result).toMatchObject({
+      text: '本文',
+      reasoningStats: { chars: 4, chunks: 1 },
+      rawUsage: {
+        promptTokens: 100,
+        completionTokens: 25,
+        totalTokens: 125,
+        reasoningTokens: 20,
+      },
+    });
+    expect(result).not.toHaveProperty('reasoningText');
   });
 
   it('sends frequency_penalty and presence_penalty when set', async () => {
@@ -133,6 +173,58 @@ describe('OpenAIAdapter', () => {
 
     expect(received.join('')).toBe('あいう');
     expect(finishReason).toBe('stop');
+  });
+
+  it('reports reasoning timing aggregates and extended token usage without exposing reasoning text', async () => {
+    const blocks = [
+      sseReasoningBlock('内部推論A'),
+      sseReasoningBlock('内部推論B'),
+      sseChunkBlock('本文'),
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
+      `data: ${JSON.stringify({
+        choices: [],
+        usage: {
+          prompt_tokens: 120,
+          completion_tokens: 45,
+          total_tokens: 165,
+          prompt_cache_hit_tokens: 80,
+          prompt_cache_miss_tokens: 40,
+          completion_tokens_details: { reasoning_tokens: 30 },
+        },
+      })}\n\n`,
+      'data: [DONE]\n\n',
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+        Promise.resolve(sseResponse(blocks, 0, init.signal ?? undefined))
+      )
+    );
+
+    const events = [];
+    for await (const event of new OpenAIAdapter().generateTextStream(baseRequest)) {
+      events.push(event);
+    }
+    const done = events.find((event) => event.type === 'done');
+
+    expect(done).toMatchObject({
+      type: 'done',
+      rawUsage: {
+        promptTokens: 120,
+        completionTokens: 45,
+        totalTokens: 165,
+        promptCacheHitTokens: 80,
+        promptCacheMissTokens: 40,
+        reasoningTokens: 30,
+      },
+      streamMetrics: {
+        reasoningChars: 10,
+        reasoningChunks: 2,
+        contentChars: 2,
+        contentChunks: 1,
+      },
+    });
+    expect(done).not.toHaveProperty('streamMetrics.reasoningText');
   });
 
   it('times out when no stream events arrive within timeoutMs', async () => {
