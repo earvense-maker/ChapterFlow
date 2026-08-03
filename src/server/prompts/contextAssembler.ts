@@ -57,9 +57,21 @@ async function selectRecentContextGenerations(
   let charLimit = maxChars;
 
   // NOTE: When the reader is moved to an earlier scene, later scenes must not leak into the prompt.
-  for (const scene of [...contextScenes].reverse()) {
+  const newestFirstScenes = [...contextScenes].reverse();
+  // NOTE: 走査は通常枠を満たした時点で打ち切るが、本文の解決はまとめて先に済ませる。
+  // findGeneration は1件ごとに追記型ログ全体を読み直すため、ループ内で呼ぶと必要な
+  // 数場面ぶんログ走査が重なる。batch 版なら候補が何件でも1走査で、しかも全件そろった
+  // 時点で内部的に打ち切られる。
+  const generations = await storage.findGenerationRecords(
+    projectId,
+    newestFirstScenes.flatMap((scene) =>
+      scene.acceptedGenerationId ? [scene.acceptedGenerationId] : []
+    )
+  );
+
+  for (const scene of newestFirstScenes) {
     if (!scene.acceptedGenerationId) continue;
-    const generation = await findGeneration(projectId, scene.acceptedGenerationId);
+    const generation = generations.get(scene.acceptedGenerationId);
     if (!generation) continue;
     if (chars >= maxChars) {
       // 通常枠を使い切った後は、まだ要約に入っていない場面だけ延長して残す。
@@ -235,10 +247,16 @@ export async function buildEpisodeMarkdown(
   projectId: ProjectId,
   episode: EpisodeRecord
 ): Promise<string> {
+  // NOTE: 章 .md は採用のたびに作り直す。1場面ずつ findGeneration すると採用1回につき
+  // 場面数ぶんログ全体を読み直すことになるため、章内の採用IDをまとめて1走査で引く。
+  const acceptedIds = episode.scenes.flatMap((scene) =>
+    scene.acceptedGenerationId ? [scene.acceptedGenerationId] : []
+  );
+  const generations = await storage.findGenerationRecords(projectId, acceptedIds);
+
   const parts: string[] = [];
-  for (const scene of episode.scenes) {
-    if (!scene.acceptedGenerationId) continue;
-    const generation = await findGeneration(projectId, scene.acceptedGenerationId);
+  for (const generationId of acceptedIds) {
+    const generation = generations.get(generationId);
     if (generation) parts.push(generation.responseText);
   }
   return parts.join('\n\n');

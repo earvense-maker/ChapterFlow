@@ -1505,10 +1505,19 @@ async function collectPendingSummaryGenerations(
     state.currentSceneId
   );
 
+  // NOTE: 1件ずつ findGeneration すると、そのたびに追記型の generation ログ全体を
+  // 読み直して全行を JSON.parse する。要約を破棄した直後は pending が作品の全採用場面に
+  // なるため、この経路だけログ走査が場面数ぶん積み上がる（1万字級の連載で実測 15 秒超、
+  // parse は同期なのでその間サーバー全体が止まる）。batch 版は同じ解決規則のまま
+  // 1 走査で済むので、候補IDを先に絞ってからまとめて引く。
+  const pendingIds = eligibleGenerationIds.filter(
+    (generationId) => !inWindow.has(generationId) && !summarized.has(generationId)
+  );
+  const generations = await storage.findGenerationRecords(projectId, pendingIds);
+
   const pending: GenerationRecord[] = [];
-  for (const generationId of eligibleGenerationIds) {
-    if (inWindow.has(generationId) || summarized.has(generationId)) continue;
-    const generation = await findGeneration(projectId, generationId);
+  for (const generationId of pendingIds) {
+    const generation = generations.get(generationId);
     if (generation?.responseText.trim()) pending.push(generation);
   }
   return pending;

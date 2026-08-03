@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as storage from '../../src/server/services/storageService';
 import { getRecentContext } from '../../src/server/prompts/contextAssembler';
@@ -231,7 +231,51 @@ describe('getRecentContext', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await storage.deleteProjectDir(projectId);
+  });
+
+  // NOTE: findGenerationRecord は1件ごとに追記型ログ全体を読み直して全行を JSON.parse
+  // する。場面ごとに呼ぶと走査が場面数ぶん積み上がり、長い連載（10MB級のログ）では
+  // 採用や生成のたびに秒単位の同期処理になる。parse は同期なのでその間サーバー全体が
+  // 止まる。「場面が何件でもログ走査は1回」を不変条件として固定する。
+  it('resolves every scene text in a single generation-log scan', async () => {
+    const sceneIds = Array.from({ length: 8 }, (_, index) => `scene-${index}`);
+    await storage.writeEpisodeRecord(projectId, {
+      episodeId,
+      title: 'Episode 1',
+      order: 1,
+      createdAt: '2026-07-02T00:00:00Z',
+      updatedAt: '2026-07-02T00:00:00Z',
+      scenes: sceneIds.map((sceneId, index) => ({
+        sceneId,
+        episodeId,
+        order: index + 1,
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+        acceptedGenerationId: `gen-${sceneId}`,
+        draftGenerationIds: [],
+      })),
+    });
+    for (const sceneId of sceneIds) {
+      await storage.appendGenerationLog(
+        projectId,
+        generation(`gen-${sceneId}`, sceneId, `${sceneId}の本文。`)
+      );
+    }
+
+    const batched = vi.spyOn(storage, 'findGenerationRecords');
+    const perId = vi.spyOn(storage, 'findGenerationRecord');
+
+    const text = await getRecentContext(projectId, episodeId, 'scene-7', {
+      summarizedGenerationIds: new Set<string>(),
+    });
+
+    // 8場面すべてが本文に入ったうえで、走査は1回に収まっていること。
+    expect(text).toContain('scene-0の本文');
+    expect(text).toContain('scene-7の本文');
+    expect(batched).toHaveBeenCalledTimes(1);
+    expect(perId).not.toHaveBeenCalled();
   });
 
   // NOTE: 要約は採用のたびに走るわけではない（何場面かまとめて畳む）。通常枠で打ち切ると
