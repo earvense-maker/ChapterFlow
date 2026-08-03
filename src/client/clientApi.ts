@@ -202,8 +202,6 @@ export const api = {
     }),
   abandonSetupSession: (id: string) =>
     request<SetupSession>(`/setup-sessions/${id}/abandon`, { method: 'POST' }),
-  deleteSetupSession: (id: string) =>
-    request<{ ok: true }>(`/setup-sessions/${id}`, { method: 'DELETE' }),
   patchSetupSettings: (id: string, body: PatchSetupSettingsBody) =>
     request<PatchSetupSettingsResponse>(`/setup-sessions/${id}/settings`, {
       method: 'PATCH',
@@ -256,11 +254,6 @@ export const api = {
     request<Character[]>(`/projects/${id}/characters`, { method: 'PUT', body: JSON.stringify(characters) }),
 
   getWorld: (id: string) => request<WorldContent>(`/projects/${id}/world`),
-  updateWorld: (id: string, world: WorldContent) =>
-    request<WorldContent>(`/projects/${id}/world`, {
-      method: 'PUT',
-      body: JSON.stringify(world),
-    }),
   updateWorldArea: (id: string, area: keyof WorldContent, text: string) =>
     request<WorldContent>(`/projects/${id}/world/${area}`, {
       method: 'PATCH',
@@ -281,8 +274,6 @@ export const api = {
   getMemories: (id: string) => request<Memory[]>(`/projects/${id}/memories`),
   createMemory: (id: string, memory: CreateMemoryBody) =>
     request<Memory>(`/projects/${id}/memories`, { method: 'POST', body: JSON.stringify(memory) }),
-  updateMemory: (id: string, memoryId: string, memory: Partial<Memory>) =>
-    request<Memory>(`/projects/${id}/memories/${memoryId}`, { method: 'PUT', body: JSON.stringify(memory) }),
   deleteMemory: (id: string, memoryId: string) =>
     request<void>(`/projects/${id}/memories/${memoryId}`, { method: 'DELETE' }),
 
@@ -430,10 +421,6 @@ export const api = {
   ) => sendSetupMessageStream(id, body, handlers, abortSignal),
   acceptGeneration: (id: string, generationId: string) =>
     request<GenerationRecord>(`/projects/${id}/accept`, { method: 'POST', body: JSON.stringify({ generationId }) }),
-  rejectGeneration: (id: string, generationId: string) =>
-    request<GenerationRecord>(`/projects/${id}/reject`, { method: 'POST', body: JSON.stringify({ generationId }) }),
-  revertGeneration: (id: string) =>
-    request<GenerationRecord>(`/projects/${id}/revert`, { method: 'POST' }),
   navigateDraft: (id: string, direction: SceneNavigationDirection) =>
     request<GenerationRecord>(`/projects/${id}/navigate-draft`, {
       method: 'POST',
