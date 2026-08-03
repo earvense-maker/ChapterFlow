@@ -119,12 +119,16 @@ const CONTEXT_SUMMARY_MAX_CHARS = 6_000;
 const CONTEXT_SUMMARY_OUTPUT_LENGTH = 6_000;
 // NOTE: 採用のたびに畳むと生成1回につきモデル呼び出しが1回増える。窓から落ちた場面が
 // この数だけ溜まってから畳むことで呼び出しを間引き、1回の要約が見る材料も増やす。
-// 明示実行（POST /context/compress）はこの閾値を使わず、1場面でも畳む。
+// 既定（minPending 省略）は1場面でも畳む。要約は現在この閾値付きの背景ジョブからのみ
+// 走るので、既定側を使うのはテストだけ。手動導線を戻すならそちらが既定側の利用者になる。
 const CONTEXT_SUMMARY_MIN_PENDING = 3;
 
 // NOTE: 文脈要約はモデル呼び出し中に project write lock を手放すため、要約同士には
-// 専用の直列化が要る。手動圧縮と採用後ジョブが同じ旧要約から並行生成すると、遅く
-// 終わった方が新しい要約を上書きし、畳み済みIDだけが先へ進む可能性がある。
+// 専用の直列化が要る。2本が同じ旧要約から並行生成すると、遅く終わった方が新しい要約を
+// 上書きし、畳み済みIDだけが先へ進む可能性がある。
+// 現状 compressProjectContext の呼び出し元は startContextSummaryAfterAcceptance だけで、
+// そちらも projectId 単位で1本に絞っているため二重防御。export された入口なので、
+// 呼び出し元が増えたときに壊れないようここで閉じておく。
 const contextSummaryMutexes = new Map<string, Promise<void>>();
 
 export interface GenerateOptions {

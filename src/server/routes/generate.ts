@@ -295,22 +295,6 @@ router.post('/projects/:id/navigate-scene', async (req, res, next) => {
   }
 });
 
-router.post('/projects/:id/context/compress', async (req, res, next) => {
-  try {
-    const result = await generationService.compressProjectContext(req.params.id);
-    res.json(result);
-  } catch (err) {
-    if (err instanceof generationService.GenerateError) {
-      return res.status(503).json({
-        error: err.message,
-        code: err.code,
-        retryable: err.retryable,
-      });
-    }
-    next(err);
-  }
-});
-
 router.post('/projects/:id/story-state/refresh', async (req, res, next) => {
   try {
     const state = await generationService.refreshStoryState(req.params.id);

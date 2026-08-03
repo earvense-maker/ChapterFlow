@@ -2,7 +2,6 @@ import type {
   ArchiveRoleplaySessionBody,
   Character,
   CommitSetupBody,
-  ContextCompressionResult,
   CreateMemoryBody,
   CreateProjectBody,
   CreateRoleplaySessionBody,
@@ -447,8 +446,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ direction }),
     }),
-  compressContext: (id: string) =>
-    request<ContextCompressionResult>(`/projects/${id}/context/compress`, { method: 'POST' }),
   refreshStoryState: (id: string) =>
     request<ReaderState>(`/projects/${id}/story-state/refresh`, { method: 'POST' }),
 
