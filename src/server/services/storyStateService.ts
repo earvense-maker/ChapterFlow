@@ -100,6 +100,7 @@ export async function updateStoryStateFromAcceptedScene(input: {
   ];
   for (const [attemptIndex, attempt] of attempts.entries()) {
     const result = await input.adapter.generateText({
+      debugLabel: `storyState.extract.attempt${attemptIndex + 1}`,
       systemInstructions: buildSystemInstructions(),
       userPrompt,
       outputLength: attempt.outputLength,

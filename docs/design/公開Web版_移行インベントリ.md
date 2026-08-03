@@ -41,7 +41,7 @@ Phase 2 で `WebStorage` へ差し替えるだけで済む見込みの呼び出�
 - `src/server/services/knowledgeService.ts` — knowledgeContentPath
 - `src/server/services/shortcutService.ts` — episodeMdPath
 
-## 3. `node:fs` 依存（18件）
+## 3. `node:fs` 依存（19件）
 
 共有パッケージ（`packages/core`）へ入れられないモジュール（設計書 4.1）。
 
@@ -60,6 +60,7 @@ Phase 2 で `WebStorage` へ差し替えるだけで済む見込みの呼び出�
 - `src/server/services/shortcutService.ts`
 - `src/server/services/storageService.ts`
 - `src/server/utils/crashLog.ts`
+- `src/server/utils/devPromptDump.ts`
 - `src/server/utils/legacyDirResolver.ts`
 - `src/server/utils/pathSafety.ts`
 - `src/server/utils/safeWrite.ts`

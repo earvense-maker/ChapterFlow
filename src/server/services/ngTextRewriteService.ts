@@ -242,6 +242,7 @@ async function requestRewrite(input: RequestRewriteInput): Promise<string> {
   let result;
   try {
     result = await adapter.generateText({
+      debugLabel: 'ng.rewrite',
       systemInstructions: input.systemInstructions,
       userPrompt: parts.join('\n\n---\n\n'),
       outputLength: OUTPUT_LENGTH,

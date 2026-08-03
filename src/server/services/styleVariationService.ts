@@ -233,6 +233,7 @@ export async function analyzeAcceptedGenerationStyle(
     }
 
     const result = await runNonStreaming(project.activeModelProvider, {
+      debugLabel: 'style.traceAnalysis',
       systemInstructions:
         'あなたは日本語小説の文体パターンを監査する分析器です。本文の内容評価や改善提案をせず、指定JSONだけを返してください。',
       userPrompt: buildTraceAnalysisPrompt(generation.responseText, settings.motifExclusions),

@@ -372,6 +372,7 @@ async function sendRefineMessageUnlocked(
   let adapterResult;
   try {
     adapterResult = await adapter.generateText({
+      debugLabel: `refine.chat.${responseMode}`,
       systemInstructions,
       userPrompt,
       outputLength:

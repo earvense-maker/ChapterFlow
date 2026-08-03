@@ -44,6 +44,11 @@ export interface AdapterGenerateRequest {
   // 推定（+ Gemini thinking 分の 2048）だとキャップに張り付いて再試行の headroom
   // が消える」用途で使う。単位はトークン。指定しなければ従来通り。
   maxOutputTokens?: number;
+  // NOTE: 開発版限定のプロンプトダンプで「どの機能の呼び出しか」を示すラベル。
+  // アダプタは読まず、HTTP ボディにも載らない。生成の挙動には一切影響しない。
+  // 全アダプタ呼び出しが1つの入口（adapters/index.ts のラッパ）を通るので、
+  // ここに載せておかないとダンプ側で呼び出し元を特定できない。
+  debugLabel?: string;
   // NOTE: 'application/json' を指定するとプロバイダー側で構造化 JSON 出力を
   // 有効化する（Gemini: responseMimeType、OpenAI/DeepSeek: response_format）。
   // これで前置き文やコードフェンスが混ざる事故を減らせる。JSON.parse で直接

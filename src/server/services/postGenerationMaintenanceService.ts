@@ -361,6 +361,7 @@ async function scanGenerationForAutomation(snapshot: AutomationScanSnapshot): Pr
   let result;
   try {
     result = await adapter.generateText({
+      debugLabel: 'maintenance.scan',
       systemInstructions,
       userPrompt,
       outputLength: SCAN_OUTPUT_LENGTH,

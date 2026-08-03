@@ -314,6 +314,7 @@ async function runChatTurn(workingSession: SetupSession): Promise<SetupMessageRe
   });
 
   const result = await generateWithSessionModel(workingSession, {
+    debugLabel: 'setup.chat',
     systemInstructions,
     userPrompt,
     outputLength: CHAT_OUTPUT_LENGTH,
@@ -471,6 +472,7 @@ async function* runChatTurnStream(
   }
 
   const request = {
+    debugLabel: 'setup.chat.stream',
     systemInstructions,
     userPrompt,
     outputLength: CHAT_OUTPUT_LENGTH,
@@ -828,6 +830,7 @@ export async function generateSetupPreview(
 async function generateSetupPreviewText(session: SetupSession, instruction = '') {
   const { systemInstructions, userPrompt } = buildSetupPreviewPrompt(session, instruction);
   return generateWithSessionModel(session, {
+    debugLabel: 'setup.preview',
     systemInstructions,
     userPrompt,
     outputLength: PREVIEW_OUTPUT_LENGTH,
@@ -858,6 +861,7 @@ export async function createSetupCommitPlan(
     });
 
     const result = await generateWithSessionModel(session, {
+      debugLabel: 'setup.commitPlan',
       systemInstructions,
       userPrompt,
       outputLength: COMMIT_OUTPUT_LENGTH,
@@ -1099,6 +1103,9 @@ async function withSessionLock<T>(
 async function generateWithSessionModel(
   session: SetupSession,
   request: {
+    // NOTE: 開発版のプロンプトダンプ用ラベル。必須にして、呼び出しを増やしたときに
+    // 「どの相談画面の指示文か分からないダンプ」が黙って混ざるのを防ぐ。
+    debugLabel: string;
     systemInstructions: string;
     userPrompt: string;
     outputLength: number;

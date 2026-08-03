@@ -357,6 +357,7 @@ async function generateSceneUnlocked(
   const reasoningParts: string[] = [];
   const modelStartedMs = Date.now();
   const result = await generateWithAdapter(adapter, {
+    debugLabel: `novel.generate.${options.mode ?? 'continue'}`,
     systemInstructions,
     userPrompt,
     outputLength: project.outputLength,
@@ -612,6 +613,7 @@ async function generateSceneStreamUnlocked(
   const modelStartedMs = Date.now();
   try {
     for await (const event of generateTextStreamWithPenaltyRetry(adapter, {
+      debugLabel: `novel.generate.stream.${options.mode ?? 'continue'}`,
       systemInstructions,
       userPrompt,
       outputLength: project.outputLength,
@@ -1558,6 +1560,7 @@ async function runContextSummaryCompression(
 
   for (const [index, chunk] of chunks.entries()) {
     const result = await generateWithAdapter(adapter, {
+      debugLabel: 'novel.contextSummary',
       systemInstructions: CONTEXT_SUMMARY_SYSTEM_INSTRUCTIONS,
       userPrompt: [
         `【これまでの流れの要約】\n${summary.trim() || 'なし'}`,

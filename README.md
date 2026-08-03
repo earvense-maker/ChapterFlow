@@ -57,14 +57,28 @@ npm run dev:electron
   何字へ削ったか、トークン数が実測か推定かの内訳です。生成レコードとロールプレイの各ターン、
   およびロールプレイのセッション作成時スナップショットに記録します。
   縮小の判定自体はこのフラグに関係なく常に行われ、記録するかどうかだけが変わります。
+- `logs/prompts/<時刻>-<連番>-<ラベル>-<プロバイダー>.prompt.txt`: モデルへ実際に送った
+  指示文。`systemInstructions`（不変契約・ベース指示・カスタム指示・プリセット）と
+  `userPrompt` の両方を原文のまま、送信直前に書き出します。指示文そのものを推敲するための
+  出力です。ラベルで呼び出し元が分かります（`novel.generate.continue`、`roleplay.turn.stream`、
+  `refine.scan`、`setup.chat`、`maintenance.scan` など）。直近200件を保持し、古い分から
+  自動で消えます。
 
 `npm run dev` 以外の起動方法（`npm start`、`npm run dev:electron`、配布版exe）で一時的に
 有効化するときは環境変数を立てます。無効に戻すには `0` を指定するか変数を削除します。
 
 - `CHAPTERFLOW_DEV_DIAGNOSTICS`: `1` / `true` / `on` / `yes` で有効。既定は無効。
+- `CHAPTERFLOW_DEV_PROMPT_DUMP`: `0` / `false` / `off` / `no` で指示文ダンプだけを止めます。
+  上を有効にしたときの既定は有効。
+- `CHAPTERFLOW_DEV_PROMPT_DUMP_DIR`: 指示文ダンプの出力先。既定は起動ディレクトリの
+  `logs/prompts`。
 
-推論本文にはプロンプトの内容がほぼそのまま含まれます。有効にしたまま作品データを人へ
-渡さないでください。
+推論本文と指示文ダンプには、作品本文・人物設定・記憶がほぼそのまま含まれます（`logs/` は
+git 管理外ですが、内容は平文です）。有効にしたまま作品データやログを人へ渡さないでください。
+
+なお、小説生成の `userPrompt` だけは診断フラグと関係なく
+`<generationId>.prompt.txt` として作品データ側にも保存され続けます（前の文脈を復元するための
+スナップショットで、`systemInstructions` は含みません）。上のダンプとは別物です。
 
 ## テストとビルド
 

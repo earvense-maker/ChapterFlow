@@ -155,6 +155,7 @@ async function scanProjectSettingsUnlocked(projectId: string): Promise<RefineSca
   let adapterResult;
   try {
     adapterResult = await adapter.generateText({
+      debugLabel: 'refine.scan',
       systemInstructions,
       userPrompt,
       outputLength: OUTPUT_LENGTH,

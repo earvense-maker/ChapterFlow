@@ -885,6 +885,7 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
 
     try {
       for await (const event of runStreaming(provider, {
+        debugLabel: 'roleplay.turn.stream',
         systemInstructions: prompt.systemInstructions,
         userPrompt: prompt.userPrompt,
         outputLength: caps.outputLength,
@@ -1899,6 +1900,7 @@ async function performSummary(
   let result;
   try {
     result = await runNonStreaming(session.model.provider, {
+      debugLabel: 'roleplay.summaryFold',
       systemInstructions,
       userPrompt,
       outputLength: 1600,
