@@ -10,10 +10,10 @@ import * as expressionService from './expressionService.js';
 import { reloadCredentials } from './credentialService.js';
 import { withProjectWriteLock } from './projectLock.js';
 import {
-  invalidateContextSummaryForGenerationUnlocked,
   rebuildEpisodeMarkdownForAcceptedGeneration,
   startContextSummaryAfterAcceptance,
 } from './generationService.js';
+import { invalidateContextSummaryForGenerationUnlocked } from './acceptedTextDerivations.js';
 import type { NgRewriteResult } from '../types/index.js';
 
 // NOTE: 一文の取り出し・モデル呼び出し・決定的な再検証は ngTextRewriteService へ

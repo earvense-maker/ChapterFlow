@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as projectService from '../../src/server/services/projectService';
 import * as generationService from '../../src/server/services/generationService';
+import { invalidateContextSummaryForGenerationUnlocked } from '../../src/server/services/acceptedTextDerivations';
 import * as expressionService from '../../src/server/services/expressionService';
 import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
@@ -1084,7 +1085,7 @@ describe('generationService generation', () => {
     });
 
     await expect(
-      generationService.invalidateContextSummaryForGenerationUnlocked(project.projectId, 'gen-1')
+      invalidateContextSummaryForGenerationUnlocked(project.projectId, 'gen-1')
     ).resolves.toBe(true);
     await expect(storage.readContextSummary(project.projectId)).resolves.toBe('');
     const latestState = await storage.readState(project.projectId);
@@ -1183,6 +1184,21 @@ describe('generationService state operations', () => {
     await expect(storage.readContextSummary(project.projectId)).resolves.toBe('');
     const latestState = await storage.readState(project.projectId);
     expect(latestState?.contextSummary?.summarizedGenerationIds).toEqual([]);
+  });
+
+  // NOTE: 採用済みを却下できると、シーンの acceptedGenerationId が rejected を指した
+  // まま残り、派生データ（要約・物語状態・章 .md）の無効化を全て素通りする。
+  // 対応表（acceptedTextDerivations.ts）の「却下は draft のみ」をガードで保証する。
+  it('refuses to reject an accepted generation', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '採用済みの本文です。');
+
+    await expect(
+      generationService.rejectGeneration(project.projectId, 'gen-1')
+    ).rejects.toThrow(/cannot be rejected/);
+
+    const episode = await storage.readEpisodeRecord(project.projectId, 'ep-1');
+    expect(episode?.scenes[0].acceptedGenerationId).toBe('gen-1');
   });
 
   it('keeps the summary when unaccepting a scene that was never summarized', async () => {

@@ -14,6 +14,7 @@ import {
 } from '../prompts/contextAssembler.js';
 import { trimTrailingTextToSentenceBoundary } from '../utils/textBoundary.js';
 import { KeyedMutex } from '../utils/keyedMutex.js';
+import { invalidateContextSummaryOnAcceptedTextChangeUnlocked } from './acceptedTextDerivations.js';
 import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
 import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
@@ -1065,18 +1066,15 @@ async function acceptGenerationUnlocked(
   const scene = episode.scenes.find((s) => s.sceneId === generation.sceneId);
   if (!scene) throw new Error(`Scene not found: ${generation.sceneId}`);
 
-  // 以前の採用があれば上書き
+  // 以前の採用があれば上書き。旧採用本文は既存要約から差し引けないため、畳み込み済み
+  // なら全破棄→背景再構築になる（イベント×派生物の対応表は acceptedTextDerivations.ts）。
   const previousAcceptedGenerationId = scene.acceptedGenerationId;
-  const invalidatesContextSummary = Boolean(
-    previousAcceptedGenerationId &&
-    previousAcceptedGenerationId !== generation.generationId &&
-    state.contextSummary?.summarizedGenerationIds.includes(previousAcceptedGenerationId)
-  );
-  if (invalidatesContextSummary) {
-    // NOTE: 旧採用本文は既存要約から差し引けない。新本文を旧要約へ足すと両案が混ざるため、
-    // 同一シーンの採用し直しでは全要約を空にし、採用完了後の背景ジョブで再構築する。
-    await storage.writeContextSummary(projectId, '');
-  }
+  const invalidatedContextSummary =
+    previousAcceptedGenerationId && previousAcceptedGenerationId !== generation.generationId
+      ? await invalidateContextSummaryOnAcceptedTextChangeUnlocked(projectId, state, [
+          previousAcceptedGenerationId,
+        ])
+      : null;
   scene.acceptedGenerationId = generation.generationId;
   // 他のdraftをsupersededに
   for (const draftId of scene.draftGenerationIds) {
@@ -1137,14 +1135,7 @@ async function acceptGenerationUnlocked(
     lastAcceptedGenerationId: generation.generationId,
     selectedDraftGenerationId: generation.generationId,
     storyStateRefresh,
-    ...(invalidatesContextSummary
-      ? {
-          contextSummary: {
-            summarizedGenerationIds: [],
-            updatedAt: nowIso(),
-          },
-        }
-      : {}),
+    ...(invalidatedContextSummary ? { contextSummary: invalidatedContextSummary } : {}),
     ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
   });
 
@@ -1189,13 +1180,11 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
   // 残すと summarizedGenerationIds が現在位置prefix（getContextGenerationIdsThroughCurrentScene）
   // に収まらなくなり、promptBuilder の summaryFitsCurrentPosition が二度と真にならない。
   // 要約は背景で作られ続けるのにプロンプトへは一切入らない、という無言の停止になる。
-  // 旧本文を既存要約から差し引けないのは採用し直しと同じなので、扱いも揃えて全破棄する。
-  const invalidatesContextSummary = Boolean(
-    state.contextSummary?.summarizedGenerationIds.includes(acceptedId)
+  const invalidatedContextSummary = await invalidateContextSummaryOnAcceptedTextChangeUnlocked(
+    projectId,
+    state,
+    [acceptedId]
   );
-  if (invalidatesContextSummary) {
-    await storage.writeContextSummary(projectId, '');
-  }
 
   scene.acceptedGenerationId = null;
   await storage.writeEpisodeRecord(projectId, episode);
@@ -1224,14 +1213,7 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
     selectedDraftGenerationId: generation.generationId,
     lastAcceptedGenerationId:
       state.lastAcceptedGenerationId === acceptedId ? null : state.lastAcceptedGenerationId,
-    ...(invalidatesContextSummary
-      ? {
-          contextSummary: {
-            summarizedGenerationIds: [],
-            updatedAt: nowIso(),
-          },
-        }
-      : {}),
+    ...(invalidatedContextSummary ? { contextSummary: invalidatedContextSummary } : {}),
     ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
   };
   await storage.writeState(projectId, nextState);
@@ -1254,7 +1236,7 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
     );
   }
 
-  if (invalidatesContextSummary) {
+  if (invalidatedContextSummary) {
     // NOTE: 空にした要約を、採用が外れた後の本文から背景で作り直す。NGリライトの
     // 無効化と同じ形で、ここでは待たない（要約の失敗が採用取消を巻き込まないため）。
     startContextSummaryAfterAcceptance(projectId);
@@ -1279,6 +1261,14 @@ async function rejectGenerationUnlocked(
 
   const generation = await findGeneration(projectId, targetId);
   if (!generation) throw new Error(`Generation not found: ${targetId}`);
+
+  // NOTE: 却下できるのは draft だけ。採用済みを却下できてしまうと、シーンの
+  // acceptedGenerationId が rejected を指したまま残り、要約・物語状態・章 .md の
+  // 無効化（acceptedTextDerivations.ts の対応表）を全て素通りする。採用を外したい
+  // なら unaccept が正しい経路。
+  if (generation.status === 'accepted') {
+    throw new Error('Accepted generation cannot be rejected; unaccept it first');
+  }
 
   generation.status = 'rejected';
   await storage.appendGenerationStatusLog(projectId, generation.generationId, generation.status);
@@ -1647,27 +1637,6 @@ function sameSummaryInputs(
         generation.responseText === latest[index]?.responseText
     )
   );
-}
-
-// NOTE: generation本文はNGリライトで同じIDのまま変わる。すでに要約済みなら、そのIDだけ
-// 未要約へ戻しても既存要約から旧本文を差し引けないため、要約全体を破棄して現在の採用本文
-// から作り直す。この関数は呼び出し側が project write lock を保持して使う。
-export async function invalidateContextSummaryForGenerationUnlocked(
-  projectId: string,
-  generationId: string
-): Promise<boolean> {
-  const state = await storage.readState(projectId);
-  if (!state?.contextSummary?.summarizedGenerationIds.includes(generationId)) return false;
-
-  await storage.writeContextSummary(projectId, '');
-  await storage.writeState(projectId, {
-    ...state,
-    contextSummary: {
-      summarizedGenerationIds: [],
-      updatedAt: nowIso(),
-    },
-  });
-  return true;
 }
 
 // NOTE: 採用のたびに呼ぶ背景ジョブ。窓から落ちた場面が CONTEXT_SUMMARY_MIN_PENDING 件
