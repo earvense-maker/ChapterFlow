@@ -3,6 +3,7 @@ import * as projectService from '../../src/server/services/projectService';
 import * as refineAutomationService from '../../src/server/services/refineAutomationService';
 import * as postGenerationMaintenanceService from '../../src/server/services/postGenerationMaintenanceService';
 import * as storage from '../../src/server/services/storageService';
+import { withProjectWriteLock } from '../../src/server/services/projectLock';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
 import type { Character, RefineAutomationRun } from '../../src/server/types/index';
 
@@ -17,13 +18,28 @@ async function createTrackedProject() {
   return project;
 }
 
+// NOTE: 背景ジョブのファイル書き込みは safeWrite の「一時ファイル→rename」で行う。
+// Windows は rename 先を開いているハンドルがあると EPERM を返し、これは同一プロセス内の
+// 読み取りでも起きる（実測: 10ms 間隔で読み続けると rename の約1/4が EPERM。読み手が
+// いなければ0件）。プロダクションは state 書き込みの失敗を warn 止まりにして lease 失効で
+// 復旧する設計なので、素朴にポーリングすると待っている当の遷移をテスト自身が消してしまう。
+// 読み取りを書き込みと同じ project write lock に載せて競合をなくす。KeyedMutex は FIFO
+// なので、背景ジョブがポーリングに待たされ続けることはない。
+function readUnderProjectLock<T>(projectId: string, read: () => Promise<T>): Promise<T> {
+  return withProjectWriteLock(projectId, read);
+}
+
 // NOTE: 生成後メンテナンスのバックグラウンド遷移を待つポーリング。条件成立で即座に
 // 抜けるので、上限を延ばしても正常時の実行時間は変わらない。ワーカー並列時に
 // 3秒では足りず散発的に落ちていたため余裕を持たせる（速度の検証ではない）。
-async function waitForCondition(condition: () => Promise<boolean> | boolean, timeoutMs = 15_000): Promise<void> {
+async function waitForCondition(
+  projectId: string,
+  condition: () => Promise<boolean> | boolean,
+  timeoutMs = 15_000
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await condition()) return;
+    if (await readUnderProjectLock(projectId, async () => condition())) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('Timed out waiting for condition');
@@ -85,24 +101,32 @@ describe('post-generation maintenance', () => {
       mode: 'continue',
     });
 
-    await waitForCondition(async () => {
+    await waitForCondition(project.projectId, async () => {
       const state = await storage.readState(project.projectId);
       return state?.refineMaintenance?.phase === 'awaitingAcceptance';
     });
-    expect((await storage.readCharacters(project.projectId))[0].speechStyle).toBeUndefined();
+    expect(
+      (await readUnderProjectLock(project.projectId, () => storage.readCharacters(project.projectId)))[0]
+        .speechStyle
+    ).toBeUndefined();
 
     await generationService.acceptGeneration(project.projectId, record.generationId);
-    await waitForCondition(async () => (await storage.readCharacters(project.projectId))[0].speechStyle === '丁寧な古風の口調');
-    await waitForCondition(async () => {
+    await waitForCondition(
+      project.projectId,
+      async () => (await storage.readCharacters(project.projectId))[0].speechStyle === '丁寧な古風の口調'
+    );
+    await waitForCondition(project.projectId, async () => {
       const state = await storage.readState(project.projectId);
       return state?.refineMaintenance?.phase === 'complete';
     });
-    await waitForCondition(async () => {
+    await waitForCondition(project.projectId, async () => {
       const state = await storage.readState(project.projectId);
       return state?.storyStateRefresh?.status !== 'pending';
     });
 
-    const [run] = await refineAutomationService.listAutomationRuns(project.projectId);
+    const [run] = await readUnderProjectLock(project.projectId, () =>
+      refineAutomationService.listAutomationRuns(project.projectId)
+    );
     expect(run.generationId).toBe(record.generationId);
     expect(run.appliedPatchIds).toHaveLength(1);
   });
@@ -159,33 +183,39 @@ describe('post-generation maintenance', () => {
       wish: 'Continue the scene.',
       mode: 'continue',
     });
-    await waitForCondition(async () => {
+    await waitForCondition(project.projectId, async () => {
       const state = await storage.readState(project.projectId);
       return state?.refineMaintenance?.phase === 'awaitingAcceptance';
     });
 
-    expect((await storage.readCharacters(project.projectId))[0].speechStyle).toBeUndefined();
-    const sessionBeforeAcceptance = await storage.readRefineSession(project.projectId);
-    expect(sessionBeforeAcceptance?.patches.at(-1)).toMatchObject({
+    const beforeAcceptance = await readUnderProjectLock(project.projectId, async () => ({
+      characters: await storage.readCharacters(project.projectId),
+      session: await storage.readRefineSession(project.projectId),
+    }));
+    expect(beforeAcceptance.characters[0].speechStyle).toBeUndefined();
+    expect(beforeAcceptance.session?.patches.at(-1)).toMatchObject({
       evidenceScope: 'mixed',
       sourceGenerationId: record.generationId,
       status: 'pending',
     });
 
     await generationService.acceptGeneration(project.projectId, record.generationId);
-    await waitForCondition(async () => {
+    await waitForCondition(project.projectId, async () => {
       const state = await storage.readState(project.projectId);
       return state?.refineMaintenance?.phase === 'needsReview';
     });
     // NOTE: needsReview は設定レビュー側の終端だが、その直後に採用本文の
     // story-state 更新がバックグラウンドで続く。完了を待ってからテスト用
     // ディレクトリを削除し、Windows の ENOTEMPTY 競合を防ぐ。
-    await waitForCondition(async () => {
+    await waitForCondition(project.projectId, async () => {
       const state = await storage.readState(project.projectId);
       const status = state?.storyStateRefresh?.status;
       return status === 'fresh' || status === 'stale';
     });
-    expect((await storage.readCharacters(project.projectId))[0].speechStyle).toBeUndefined();
+    expect(
+      (await readUnderProjectLock(project.projectId, () => storage.readCharacters(project.projectId)))[0]
+        .speechStyle
+    ).toBeUndefined();
   });
 
   it('uses resultStaticHash to avoid scheduling a second when-needed scan for its own applied change', async () => {
@@ -240,7 +270,7 @@ describe('post-generation maintenance', () => {
       retryable: false,
     });
     const record = await generationService.generateScene(project.projectId, { wish: '続き', mode: 'continue' });
-    const state = await storage.readState(project.projectId);
+    const state = await readUnderProjectLock(project.projectId, () => storage.readState(project.projectId));
     expect(record.status).toBe('draft');
     expect(state?.refineMaintenance?.phase).not.toBe('scanning');
     expect(spy).toHaveBeenCalledTimes(1);
@@ -274,18 +304,28 @@ describe('post-generation maintenance', () => {
     });
 
     const record = await generationService.generateScene(project.projectId, { wish: 'continue', mode: 'continue' });
-    await waitForCondition(async () => (await storage.readState(project.projectId))?.refineMaintenance?.phase === 'scanning');
+    await waitForCondition(
+      project.projectId,
+      async () => (await storage.readState(project.projectId))?.refineMaintenance?.phase === 'scanning'
+    );
 
     await generationService.rejectGeneration(project.projectId, record.generationId);
-    expect((await storage.readState(project.projectId))?.refineMaintenance?.phase).toBe('stale');
+    expect(
+      (await readUnderProjectLock(project.projectId, () => storage.readState(project.projectId)))
+        ?.refineMaintenance?.phase
+    ).toBe('stale');
 
     releaseScan();
     await scanFinished;
-    await waitForCondition(async () => {
+    await waitForCondition(project.projectId, async () => {
       const state = await storage.readState(project.projectId);
       return state?.refineMaintenance?.phase === 'stale';
     });
-    expect(await refineAutomationService.listAutomationRuns(project.projectId)).toEqual([]);
+    expect(
+      await readUnderProjectLock(project.projectId, () =>
+        refineAutomationService.listAutomationRuns(project.projectId)
+      )
+    ).toEqual([]);
   });
 
   it('rejects a patch-bearing retry while another maintenance slot is active', async () => {
@@ -356,12 +396,14 @@ describe('post-generation maintenance', () => {
     });
 
     await generationService.generateScene(project.projectId, { wish: '続き', mode: 'continue' });
-    await waitForCondition(async () => {
+    await waitForCondition(project.projectId, async () => {
       const [run] = await refineAutomationService.listAutomationRuns(project.projectId);
       return run?.status === 'failed';
     });
 
-    const [run] = await refineAutomationService.listAutomationRuns(project.projectId);
+    const [run] = await readUnderProjectLock(project.projectId, () =>
+      refineAutomationService.listAutomationRuns(project.projectId)
+    );
     expect(run.errorMessage).toContain('自動設定レビュー');
     expect(run.errorMessage).toContain('空の応答');
     // 出力枠切れという原因と、アダプタが拾った診断が残る。
