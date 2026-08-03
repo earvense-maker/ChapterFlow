@@ -43,6 +43,9 @@ function dumpFiles(): string[] {
 beforeEach(() => {
   dumpDir = mkdtempSync(path.join(os.tmpdir(), 'chapterflow-prompt-dump-'));
   process.env[PROMPT_DUMP_DIR_ENV] = dumpDir;
+  // NOTE: tests/setup.ts がスイート全体でダンプを止めている。ここは既定挙動そのものを
+  // 検証するので、消してから各テストが必要な値を立て直す。
+  delete process.env[PROMPT_DUMP_ENV];
   resetPromptDumpStateForTest();
 });
 

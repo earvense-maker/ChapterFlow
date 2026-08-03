@@ -16,6 +16,11 @@ process.env.CHAPTERFLOW_DATA_DIR = path.join(os.tmpdir(), 'chapterflow-vitest', 
 // 有効時の挙動を見るテストは自分で立てて afterEach で戻す。
 delete process.env.CHAPTERFLOW_DEV_DIAGNOSTICS;
 
+// NOTE: 上を自分で立てるテスト（生成・ロールプレイの診断経路）があり、そのままだと
+// 指示文ダンプの既定出力先 <cwd>/logs/prompts へリポジトリ直下に書き散らす。
+// テストは既定で書かせない。ダンプ自体を検証するテストは自分で外して出力先を指定する。
+process.env.CHAPTERFLOW_DEV_PROMPT_DUMP = '0';
+
 import '@testing-library/jest-dom';
 
 // NOTE: Reader のスクロール復元を検証するテストで、jsdom 未実装の警告だけが
