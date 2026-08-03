@@ -1,5 +1,6 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import * as storage from './storageService.js';
 import { normalizeCharactersForStorage } from './projectService.js';
 import { normalizeCharacterTraits } from '../../shared/characterSchema.js';
@@ -105,7 +106,7 @@ const TURN_INTENTS: readonly RefineTurnIntent[] = [
   'prepare-patch',
 ];
 
-const sessionMutexes = new Map<string, Promise<void>>();
+const sessionMutex = new KeyedMutex();
 
 
 export class RefineChatError extends Error {
@@ -1797,18 +1798,5 @@ function buildChatParseFailureMessage(
 // の順序で自動 run を直列化するため）。export はそのためだけの最小限の変更で、
 // ロック自体の挙動は変えない。
 export async function withSessionLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
-  const previous = sessionMutexes.get(projectId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  sessionMutexes.set(projectId, next);
-  await previous.catch(() => undefined);
-  try {
-    return await task();
-  } finally {
-    release();
-    if (sessionMutexes.get(projectId) === next) sessionMutexes.delete(projectId);
-  }
+  return sessionMutex.runExclusive(projectId, task);
 }

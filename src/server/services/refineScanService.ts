@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
 import * as storage from './storageService.js';
 import { adapterMap } from '../adapters/index.js';
@@ -49,7 +50,7 @@ const EVIDENCE_QUOTE_LIMIT = 160;
 const KIND_SET = new Set<RefineFindingKind>(['contradiction', 'undefined', 'suggestion']);
 
 
-const refineScanMutexes = new Map<string, Promise<void>>();
+const refineScanMutex = new KeyedMutex();
 
 interface AcceptedSceneEvidence {
   generationId: GenerationId;
@@ -560,21 +561,7 @@ function hasContinuousAutomaticStateChain(
 }
 
 async function withRefineScanLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
-  const previous = refineScanMutexes.get(projectId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  refineScanMutexes.set(projectId, next);
-
-  await previous.catch(() => undefined);
-  try {
-    return await task();
-  } finally {
-    release();
-    if (refineScanMutexes.get(projectId) === next) refineScanMutexes.delete(projectId);
-  }
+  return refineScanMutex.runExclusive(projectId, task);
 }
 
 interface BuildScanPromptInput {

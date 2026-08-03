@@ -4,6 +4,7 @@ import { defaultModelForProvider, isSupportedProvider } from './modelInfoService
 import { reloadCredentials } from './credentialService.js';
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
 import {
@@ -83,7 +84,7 @@ const PREVIEW_TEMPERATURE = 0.8;
 const COMMIT_TEMPERATURE = 0.2;
 const TIMEOUT_MS = 120_000;
 
-const sessionMutexes = new Map<string, Promise<void>>();
+const sessionMutex = new KeyedMutex();
 
 type SetupLockReason = SetupLock['reason'];
 
@@ -1080,21 +1081,7 @@ function ensureActiveSession(session: SetupSession): SetupSession {
 }
 
 async function acquireSessionLock(sessionId: string): Promise<() => void> {
-  const previous = sessionMutexes.get(sessionId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  sessionMutexes.set(sessionId, next);
-
-  await previous.catch(() => undefined);
-  return () => {
-    release();
-    if (sessionMutexes.get(sessionId) === next) {
-      sessionMutexes.delete(sessionId);
-    }
-  };
+  return sessionMutex.acquire(sessionId);
 }
 
 async function withSessionLock<T>(

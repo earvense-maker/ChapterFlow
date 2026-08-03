@@ -13,6 +13,7 @@ import {
   getRecentContextGenerationIds,
 } from '../prompts/contextAssembler.js';
 import { trimTrailingTextToSentenceBoundary } from '../utils/textBoundary.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
 import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
@@ -129,7 +130,7 @@ const CONTEXT_SUMMARY_MIN_PENDING = 3;
 // 現状 compressProjectContext の呼び出し元は startContextSummaryAfterAcceptance だけで、
 // そちらも projectId 単位で1本に絞っているため二重防御。export された入口なので、
 // 呼び出し元が増えたときに壊れないようここで閉じておく。
-const contextSummaryMutexes = new Map<string, Promise<void>>();
+const contextSummaryMutex = new KeyedMutex();
 
 export interface GenerateOptions {
   wish: string;
@@ -1437,7 +1438,7 @@ export async function compressProjectContext(
   projectId: string,
   options: { minPending?: number } = {}
 ): Promise<ContextCompressionResult> {
-  return withContextSummaryLock(projectId, async () => {
+  return contextSummaryMutex.runExclusive(projectId, async () => {
     await reloadCredentials();
     // NOTE: 収集は読み取りだけなので project write lock を取らない。採用のたびに走る
     // 背景ジョブが「畳むものが無い」を確かめるためだけに生成・採用と競合するのを避ける。
@@ -1455,29 +1456,6 @@ export async function compressProjectContext(
     }
     throw new Error('Context summary retry loop exhausted');
   });
-}
-
-async function withContextSummaryLock<T>(
-  projectId: string,
-  task: () => Promise<T>
-): Promise<T> {
-  const previous = contextSummaryMutexes.get(projectId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  contextSummaryMutexes.set(projectId, next);
-
-  await previous.catch(() => undefined);
-  try {
-    return await task();
-  } finally {
-    release();
-    if (contextSummaryMutexes.get(projectId) === next) {
-      contextSummaryMutexes.delete(projectId);
-    }
-  }
 }
 
 class ContextSummaryStaleError extends GenerateError {

@@ -1,5 +1,6 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import {
   matchStoryCharacterStates,
   normalizeComparableText,
@@ -49,7 +50,7 @@ const MAX_EXPLICITLY_UNKNOWN = 12;
 const MAX_EVENT_KNOWN_BY = 12;
 const MAX_DIFF_RECORDS = 20;
 const MAX_DIFF_SNAPSHOTS = 3;
-const storyStateMutexes = new Map<string, Promise<void>>();
+const storyStateMutex = new KeyedMutex();
 
 export function createEmptyStoryState(updatedAt = nowIso()): StoryState {
   return {
@@ -1180,23 +1181,7 @@ export async function withStoryStateLock<T>(
   projectId: string,
   task: () => Promise<T>
 ): Promise<T> {
-  const previous = storyStateMutexes.get(projectId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  storyStateMutexes.set(projectId, next);
-
-  await previous.catch(() => undefined);
-  try {
-    return await task();
-  } finally {
-    release();
-    if (storyStateMutexes.get(projectId) === next) {
-      storyStateMutexes.delete(projectId);
-    }
-  }
+  return storyStateMutex.runExclusive(projectId, task);
 }
 
 export class StoryStateServiceError extends Error {

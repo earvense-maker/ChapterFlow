@@ -15,6 +15,7 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import { isDevDiagnosticsEnabled } from '../utils/devDiagnostics.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import { createHash } from 'node:crypto';
 import * as storage from './storageService.js';
 import * as expressionService from './expressionService.js';
@@ -118,7 +119,8 @@ function resolveOutputCaps(projectOutputChars: number | undefined): {
 }
 
 // NOTE: sessionId 単位の変更操作用 mutex。setupSessionService と同型。
-const sessionMutexes = new Map<string, Promise<void>>();
+// let なのはテストリセット（__resetInFlightForTesting）で作り直すため。
+let sessionMutex = new KeyedMutex();
 // NOTE: 応答生成の in-flight フラグ。同一セッションへの二重送信を早期弾き。
 // プロセス停止で消えるが、保存済み末尾から regenerate できるため復旧可能。
 const generationInFlight = new Set<string>();
@@ -141,21 +143,7 @@ export class RoleplayServiceError extends Error {
 // ===== ヘルパー: mutex =====
 
 async function acquireSessionLock(sessionId: string): Promise<() => void> {
-  const previous = sessionMutexes.get(sessionId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  sessionMutexes.set(sessionId, next);
-
-  await previous.catch(() => undefined);
-  return () => {
-    release();
-    if (sessionMutexes.get(sessionId) === next) {
-      sessionMutexes.delete(sessionId);
-    }
-  };
+  return sessionMutex.acquire(sessionId);
 }
 
 async function withSessionLock<T>(
@@ -2132,5 +2120,5 @@ async function runBackgroundSummary(projectId: string, sessionId: string): Promi
 export function __resetInFlightForTesting(): void {
   generationInFlight.clear();
   summaryInFlight.clear();
-  sessionMutexes.clear();
+  sessionMutex = new KeyedMutex();
 }

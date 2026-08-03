@@ -6,6 +6,7 @@ import {
 } from '../../shared/defaults.js';
 import { STYLE_PROFILE_SCHEMA_VERSION } from '../../shared/types/index.js';
 import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import type {
   GenerationRecord,
   GenerationStyleProfile,
@@ -181,11 +182,10 @@ export function queueAcceptedGenerationStyleAnalysis(
   const settings = normalizeStyleVariationSettings(project.styleVariation);
   if (!settings?.enabled || !settings.patternDecayEnabled || generation.status !== 'accepted') return;
 
-  const previous = analysisQueues.get(project.projectId) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(() => analyzeAcceptedGenerationStyle(project, generation))
-    .then(() => undefined)
+  void analysisMutex
+    .runExclusive(project.projectId, async () => {
+      await analyzeAcceptedGenerationStyle(project, generation);
+    })
     .catch((error) => {
       // analyzeAcceptedGenerationStyle 自体の防御を越えた例外でも、バックグラウンド
       // promiseを拒否状態のまま放置しない。
@@ -195,16 +195,10 @@ export function queueAcceptedGenerationStyleAnalysis(
         error,
       });
     });
-  analysisQueues.set(project.projectId, next);
-  void next.finally(() => {
-    if (analysisQueues.get(project.projectId) === next) {
-      analysisQueues.delete(project.projectId);
-    }
-  });
 }
 
 export async function waitForStyleAnalysis(projectId: string): Promise<void> {
-  await analysisQueues.get(projectId);
+  await analysisMutex.whenIdle(projectId);
 }
 
 export async function analyzeAcceptedGenerationStyle(
@@ -309,7 +303,9 @@ export async function analyzeAcceptedGenerationStyle(
   }
 }
 
-const analysisQueues = new Map<string, Promise<void>>();
+// NOTE: 文体解析はプロジェクト単位で FIFO 直列化する。排他というより順序保証が目的
+// （採用順に解析しないと減衰計算が前後する）が、実装は同じ KeyedMutex で足りる。
+const analysisMutex = new KeyedMutex();
 
 async function persistTraceAnalysis(
   projectId: string,

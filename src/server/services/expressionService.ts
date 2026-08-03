@@ -2,6 +2,7 @@ import path from 'node:path';
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import { readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
+import { KeyedMutex } from '../utils/keyedMutex.js';
 import { CONFIG_DIR } from '../config.js';
 import { withDataDirWrite } from './dataDirLock.js';
 import * as storage from './storageService.js';
@@ -24,7 +25,7 @@ const GLOBAL_EXPRESSIONS_PATH = path.resolve(CONFIG_DIR, 'global-expressions.jso
 
 // NOTE: キューは read → update → write をスコープ単位で直列化する。safeWriteJson
 // は破損を防ぐが lost update までは防げないため、同じ作品／global の更新だけを待たせる。
-const expressionMutationQueues = new Map<string, Promise<void>>();
+const expressionMutationMutex = new KeyedMutex();
 
 export class ExpressionValidationError extends Error {
   constructor(message: string) {
@@ -288,23 +289,7 @@ async function archiveExpressionInScope(
 }
 
 async function withExpressionMutationQueue<T>(scope: string, task: () => Promise<T>): Promise<T> {
-  const previous = expressionMutationQueues.get(scope) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => undefined).then(() => current);
-  expressionMutationQueues.set(scope, next);
-
-  await previous.catch(() => undefined);
-  try {
-    return await withDataDirWrite(task);
-  } finally {
-    release();
-    if (expressionMutationQueues.get(scope) === next) {
-      expressionMutationQueues.delete(scope);
-    }
-  }
+  return expressionMutationMutex.runExclusive(scope, () => withDataDirWrite(task));
 }
 
 async function readGlobalExpressionsFile(): Promise<ExpressionsFile> {
