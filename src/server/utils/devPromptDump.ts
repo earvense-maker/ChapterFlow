@@ -22,7 +22,13 @@ export const PROMPT_DUMP_DIR_ENV = 'CHAPTERFLOW_DEV_PROMPT_DUMP_DIR';
 
 const DISABLED_VALUES = new Set(['0', 'false', 'off', 'no']);
 const DEFAULT_DUMP_DIR = path.join('logs', 'prompts');
-const FILE_EXTENSION = '.prompt.txt';
+// NOTE: 出力先は環境変数で任意の場所へ向けられる。作品データの generations フォルダを
+// 指されても巻き添えで消さないよう、自分が作ったファイルだけを名前で判別する。
+// 特に <generationId>.prompt.txt（前文脈スナップショット）とは名前空間を分ける必要がある。
+// 定数プレフィックスは時刻より前に付ける。全ダンプで共通なので辞書順＝時刻順が保たれる。
+const FILE_PREFIX = 'cf-prompt-';
+const FILE_EXTENSION = '.txt';
+const DUMP_FILE_PATTERN = /^cf-prompt-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-\d{3}-.+\.txt$/;
 // NOTE: 1回の指示文は最大 80,000 字（NOVEL_TOTAL_PROMPT_MAX_CHARS）。200件で概ね
 // 16MB 上限。開発ループ中に古い分から自動で消える程度の余裕として決めた。
 const MAX_DUMP_FILES = 200;
@@ -62,7 +68,7 @@ export function buildPromptDumpFileName(input: {
   providerName: string;
 }): string {
   const seq = String(input.seq % 1000).padStart(3, '0');
-  return `${fileTimestamp(input.now)}-${seq}-${sanitizeLabel(input.label)}-${sanitizeLabel(input.providerName)}${FILE_EXTENSION}`;
+  return `${FILE_PREFIX}${fileTimestamp(input.now)}-${seq}-${sanitizeLabel(input.label)}-${sanitizeLabel(input.providerName)}${FILE_EXTENSION}`;
 }
 
 function metaLine(label: string, value: string | number | undefined): string {
@@ -99,10 +105,15 @@ export function buildPromptDumpText(input: {
   ].join('\n');
 }
 
-/** 上限を超えた古いダンプを消す。ファイル名の先頭が時刻なので辞書順＝古い順。 */
+/**
+ * 上限を超えた古いダンプを消す。プレフィックスの後ろが時刻なので辞書順＝古い順。
+ *
+ * 対象は DUMP_FILE_PATTERN に完全一致するものだけ。出力先に無関係なファイルが
+ * あっても触らない（拡張子だけで判定すると、作品データを指されたときに消してしまう）。
+ */
 function pruneOldDumps(dir: string): void {
   const names = readdirSync(dir)
-    .filter((name) => name.endsWith(FILE_EXTENSION))
+    .filter((name) => DUMP_FILE_PATTERN.test(name))
     .sort();
   for (const name of names.slice(0, Math.max(0, names.length - MAX_DUMP_FILES))) {
     try {

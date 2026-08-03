@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -98,7 +98,7 @@ describe('ダンプ内容', () => {
       label: 'refine/chat: 見直し',
       providerName: 'openai',
     });
-    expect(name).toBe('2026-08-03T04-05-06-789Z-007-refine-chat-openai.prompt.txt');
+    expect(name).toBe('cf-prompt-2026-08-03T04-05-06-789Z-007-refine-chat-openai.txt');
     expect(name).not.toMatch(/[:/\\]/);
   });
 
@@ -126,6 +126,30 @@ describe('ダンプ内容', () => {
     // 先頭5件（古い側）が消え、最後の1件は残っている。
     expect(files[0]).toContain('2026-08-03T00-00-05');
     expect(files[files.length - 1]).toContain('2026-08-03T00-03-24');
+  });
+
+  it('自分が作っていないファイルはローテーションで消さない', () => {
+    // NOTE: 出力先に作品データの generations フォルダを指された場合の保護。
+    // <generationId>.prompt.txt は前文脈スナップショットで、消えると復元できない。
+    const bystanders = [
+      'gen-20260803-120000-abc.prompt.txt',
+      'notes.txt',
+      'cf-prompt-手で作ったメモ.txt',
+    ];
+    for (const name of bystanders) {
+      writeFileSync(path.join(dumpDir, name), '消えてはいけない', 'utf-8');
+    }
+
+    for (let i = 0; i < 205; i += 1) {
+      dumpAdapterPrompt('gemini', baseRequest, new Date(Date.UTC(2026, 7, 3, 0, 0, i)));
+    }
+
+    const files = dumpFiles();
+    for (const name of bystanders) {
+      expect(files).toContain(name);
+      expect(readFileSync(path.join(dumpDir, name), 'utf-8')).toBe('消えてはいけない');
+    }
+    expect(files.filter((name) => name.startsWith('cf-prompt-2026'))).toHaveLength(200);
   });
 
   it('書き込みに失敗しても null を返すだけで例外にしない', () => {
