@@ -1180,6 +1180,18 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
   generation.status = 'draft';
   await storage.appendGenerationStatusLog(projectId, generation.generationId, generation.status);
 
+  // NOTE: 採用を外すとこの generation はどのシーンの採用本文でもなくなる。畳み済みのまま
+  // 残すと summarizedGenerationIds が現在位置prefix（getContextGenerationIdsThroughCurrentScene）
+  // に収まらなくなり、promptBuilder の summaryFitsCurrentPosition が二度と真にならない。
+  // 要約は背景で作られ続けるのにプロンプトへは一切入らない、という無言の停止になる。
+  // 旧本文を既存要約から差し引けないのは採用し直しと同じなので、扱いも揃えて全破棄する。
+  const invalidatesContextSummary = Boolean(
+    state.contextSummary?.summarizedGenerationIds.includes(acceptedId)
+  );
+  if (invalidatesContextSummary) {
+    await storage.writeContextSummary(projectId, '');
+  }
+
   scene.acceptedGenerationId = null;
   await storage.writeEpisodeRecord(projectId, episode);
 
@@ -1207,6 +1219,14 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
     selectedDraftGenerationId: generation.generationId,
     lastAcceptedGenerationId:
       state.lastAcceptedGenerationId === acceptedId ? null : state.lastAcceptedGenerationId,
+    ...(invalidatesContextSummary
+      ? {
+          contextSummary: {
+            summarizedGenerationIds: [],
+            updatedAt: nowIso(),
+          },
+        }
+      : {}),
     ...(nextMaintenance ? { refineMaintenance: nextMaintenance } : {}),
   };
   await storage.writeState(projectId, nextState);
@@ -1227,6 +1247,12 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
       projectId,
       buildStoryStateRefreshStatus('stale', generation.generationId, '採用取消に合わせて物語状態を戻しました。必要なら再抽出してください。')
     );
+  }
+
+  if (invalidatesContextSummary) {
+    // NOTE: 空にした要約を、採用が外れた後の本文から背景で作り直す。NGリライトの
+    // 無効化と同じ形で、ここでは待たない（要約の失敗が採用取消を巻き込まないため）。
+    startContextSummaryAfterAcceptance(projectId);
   }
 
   return generation;

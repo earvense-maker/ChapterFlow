@@ -1154,6 +1154,60 @@ describe('generationService state operations', () => {
     expect(episode?.scenes[0].acceptedGenerationId).toBe(secondGenerationId);
   });
 
+  // NOTE: 畳み済みIDを残したまま採用を外すと、そのIDはどのシーンの採用本文でもなくなる。
+  // promptBuilder は「畳み済みIDが現在位置prefixに収まるか」で要約の採否を決めるため、
+  // 残すと二度と収まらず、要約は作られ続けるのにプロンプトへ入らない状態で固定される。
+  it('invalidates the summary when a summarized scene is unaccepted', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '畳み済みの本文です。');
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+    await storage.writeContextSummary(project.projectId, '取り消される本文を含む要約');
+    await storage.writeState(project.projectId, {
+      ...state,
+      contextSummary: {
+        summarizedGenerationIds: ['gen-1'],
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    await expect(
+      generationService.unacceptCurrentScene(project.projectId)
+    ).resolves.toMatchObject({ generationId: 'gen-1', status: 'draft' });
+
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe('');
+    const latestState = await storage.readState(project.projectId);
+    expect(latestState?.contextSummary?.summarizedGenerationIds).toEqual([]);
+  });
+
+  it('keeps the summary when unaccepting a scene that was never summarized', async () => {
+    const project = await createTrackedProject();
+    await writeAcceptedScene(project.projectId, '畳んでいない本文です。');
+    const state = await storage.readState(project.projectId);
+    if (!state) throw new Error('state missing');
+    await storage.writeContextSummary(project.projectId, '別の場面だけを含む要約');
+    await storage.writeState(project.projectId, {
+      ...state,
+      contextSummary: {
+        summarizedGenerationIds: ['gen-older'],
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    });
+
+    await generationService.unacceptCurrentScene(project.projectId);
+
+    await expect(storage.readContextSummary(project.projectId)).resolves.toBe(
+      '別の場面だけを含む要約'
+    );
+    const latestState = await storage.readState(project.projectId);
+    expect(latestState?.contextSummary?.summarizedGenerationIds).toEqual(['gen-older']);
+  });
+
   it('does not mark the pending accepted generation as processed during legacy story-state initialization', async () => {
     const project = await createTrackedProject();
     const episode: EpisodeRecord = {
