@@ -207,6 +207,31 @@
   max-width: 520px;
 }
 
+/* NOTE: 会話がプロンプト予算に近づくと、まとめない限り古い相談が本当に失われる。
+   通常の選択肢と同じ見た目だと見落とされるので、この一つだけ強調する。 */
+.setup-suggestion--urgent {
+  border-color: rgba(184, 150, 89, 0.7);
+  background: rgba(184, 150, 89, 0.16);
+}
+
+.setup-writeup-banner {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(184, 150, 89, 0.55);
+  border-radius: var(--radius);
+  background: rgba(184, 150, 89, 0.13);
+  color: var(--text);
+  font-size: 0.84rem;
+}
+
+.setup-writeup-banner button {
+  margin-left: auto;
+  font-size: 0.84rem;
+}
+
 .setup-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

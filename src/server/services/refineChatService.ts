@@ -1,5 +1,6 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
+import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
 import { KeyedMutex } from '../utils/keyedMutex.js';
 import * as storage from './storageService.js';
 import { normalizeCharactersForStorage } from './projectService.js';
@@ -11,6 +12,7 @@ import {
   maintenanceBlocksGeneration,
 } from './refineAutomationGuard.js';
 import { adapterMap } from '../adapters/index.js';
+import { isDeepSeekV4Model } from '../adapters/deepseekAdapter.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import {
@@ -27,6 +29,8 @@ import {
   sanitizePromptLabel,
 } from '../prompts/promptData.js';
 import type {
+  AdapterGenerateRequest,
+  AdapterGenerateResult,
   Character,
   CharacterFieldPatch,
   CharacterRole,
@@ -369,9 +373,8 @@ async function sendRefineMessageUnlocked(
     evidenceContext,
   });
 
-  let adapterResult;
-  try {
-    adapterResult = await adapter.generateText({
+  const baseRequest = buildRefineChatAdapterRequest(
+    {
       debugLabel: `refine.chat.${responseMode}`,
       systemInstructions,
       userPrompt,
@@ -384,7 +387,14 @@ async function sendRefineMessageUnlocked(
       // NOTE: 応答は JSON 前提。Structured Output で前置き文混入や思考モードでの
       // 空応答を減らす。
       responseMimeType: 'application/json',
-    });
+    },
+    project.activeModelProvider,
+    project.activeModelName
+  );
+
+  let adapterResult;
+  try {
+    adapterResult = await adapter.generateText(baseRequest);
   } catch (err) {
     const errorSession = await writeSessionError(workingSession, err);
     if (err instanceof ModelAdapterError) {
@@ -410,7 +420,212 @@ async function sendRefineMessageUnlocked(
     );
   }
 
-  const parsed = parseChatResult(adapterResult.text);
+  // NOTE: reasoningMode: 'enabled' を送った呼び出し（DeepSeek V4 の AI 相談）だけが
+  // 再試行フローに入る。それ以外（Gemini / OpenAI / xAI / OpenRouter / MiMo / 非V4の
+  // DeepSeek）は request も適用処理も従来どおり。
+  if (baseRequest.reasoningMode !== 'enabled') {
+    return await applyChatResult({
+      projectId,
+      workingSession,
+      consultationState,
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+      characters,
+      responseMode,
+      target,
+      userMessage,
+      needsSummaryUpdate,
+      parsed: parseChatResult(adapterResult.text),
+      adapterResult,
+    });
+  }
+
+  const firstParsed = parseChatResult(adapterResult.text);
+  const retryReason = retryReasonForFirstAttempt(adapterResult, firstParsed);
+  if (retryReason === null) {
+    // NOTE: 初回で構造化契約が成立している。thinking 無効での再生成はしない。
+    return await applyChatResult({
+      projectId,
+      workingSession,
+      consultationState,
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+      characters,
+      responseMode,
+      target,
+      userMessage,
+      needsSummaryUpdate,
+      parsed: firstParsed,
+      adapterResult,
+    });
+  }
+
+  // NOTE: フォールバックは品質向上の再生成ではなく、構造化契約を回復する安全弁。
+  // 開始を一度だけ記録する。プロンプト・作品本文・reasoning_content はログに出さない。
+  console.warn('Refine chat retry fallback', {
+    projectId,
+    provider: project.activeModelProvider,
+    modelName: project.activeModelName,
+    responseMode,
+    reason: retryReason,
+    firstFinishReason: adapterResult.finishReason,
+    ...(adapterResult.debugInfo ? { debugInfo: adapterResult.debugInfo } : {}),
+  });
+
+  // NOTE: 初回と同一の入力で、reasoning の無効化だけを変える（設計書 5.6）。
+  const retryRequest: AdapterGenerateRequest = { ...baseRequest, reasoningMode: 'disabled' };
+  delete retryRequest.reasoningEffort;
+
+  let retryResult;
+  try {
+    retryResult = await adapter.generateText(retryRequest);
+  } catch (err) {
+    const adopted = selectAdoptedChatResult(
+      { result: adapterResult, parsed: firstParsed },
+      null
+    );
+    if (adopted) {
+      logDegradedAdoption(projectId, project.activeModelName, responseMode, adopted, null);
+      return await applyChatResult({
+        projectId,
+        workingSession,
+        consultationState,
+        provider: project.activeModelProvider,
+        modelName: project.activeModelName,
+        characters,
+        responseMode,
+        target,
+        userMessage,
+        needsSummaryUpdate,
+        parsed: adopted.attempt.parsed,
+        adapterResult: adopted.attempt.result,
+      });
+    }
+    const errorSession = await writeSessionError(workingSession, err);
+    if (err instanceof ModelAdapterError) {
+      throw new RefineChatError(
+        `モデル呼び出しに失敗しました: ${err.message}`,
+        err.code,
+        err.retryable,
+        503
+      );
+    }
+    void errorSession;
+    throw err;
+  }
+
+  if (retryResult.finishReason === 'error' || retryResult.finishReason === 'timeout') {
+    const adopted = selectAdoptedChatResult(
+      { result: adapterResult, parsed: firstParsed },
+      null
+    );
+    if (adopted) {
+      logDegradedAdoption(projectId, project.activeModelName, responseMode, adopted, retryResult);
+      return await applyChatResult({
+        projectId,
+        workingSession,
+        consultationState,
+        provider: project.activeModelProvider,
+        modelName: project.activeModelName,
+        characters,
+        responseMode,
+        target,
+        userMessage,
+        needsSummaryUpdate,
+        parsed: adopted.attempt.parsed,
+        adapterResult: adopted.attempt.result,
+      });
+    }
+    await writeSessionError(workingSession, new Error(retryResult.errorMessage || 'error'));
+    throw new RefineChatError(
+      retryResult.errorMessage || 'モデルからの応答が得られませんでした。',
+      retryResult.errorCode || 'model_error',
+      retryResult.retryable,
+      503
+    );
+  }
+
+  const retryParsed = parseChatResult(retryResult.text);
+  const adopted = selectAdoptedChatResult(
+    { result: adapterResult, parsed: firstParsed },
+    { result: retryResult, parsed: retryParsed }
+  );
+  if (adopted) {
+    logDegradedAdoption(projectId, project.activeModelName, responseMode, adopted, retryResult);
+    return await applyChatResult({
+      projectId,
+      workingSession,
+      consultationState,
+      provider: project.activeModelProvider,
+      modelName: project.activeModelName,
+      characters,
+      responseMode,
+      target,
+      userMessage,
+      needsSummaryUpdate,
+      parsed: adopted.attempt.parsed,
+      adapterResult: adopted.attempt.result,
+    });
+  }
+
+  // NOTE: どちらにも利用可能な返答が無い場合（設計書 5.7 #4）。再試行結果を既存の
+  // parse failure 処理へ渡し、lastError と診断を保存する。length で切れた freeText を
+  // 自然文として誤採用しないよう parsed は null で渡す。
+  return await applyChatResult({
+    projectId,
+    workingSession,
+    consultationState,
+    provider: project.activeModelProvider,
+    modelName: project.activeModelName,
+    characters,
+    responseMode,
+    target,
+    userMessage,
+    needsSummaryUpdate,
+    parsed: null,
+    adapterResult: retryResult,
+    hadRetry: true,
+  });
+}
+
+// ---------- 相談応答の適用 ----------
+
+interface ApplyChatResultParams {
+  projectId: string;
+  workingSession: RefineSession;
+  consultationState: RefineConsultationState;
+  provider: string;
+  modelName: string;
+  characters: Character[];
+  responseMode: RefineResponseMode;
+  target: RefineConsultationTarget | null;
+  userMessage: string;
+  needsSummaryUpdate: boolean;
+  parsed: ParsedChat | null;
+  adapterResult: AdapterGenerateResult;
+  // NOTE: thinking 無効の再試行を経たことを伝える。length 失敗時の文言が
+  // 「思考モードが原因」と断定しないための区別に使う（設計書 7.3）。
+  hadRetry?: boolean;
+}
+
+// NOTE: 初回と再試行のどちらを採用したかにかかわらず、session への反映はここで
+// 一度だけ行う。assistant message、相談メモ、要約、patch は採用結果だけを対象にする。
+async function applyChatResult(params: ApplyChatResultParams): Promise<RefineChatResponse> {
+  const {
+    projectId,
+    workingSession,
+    consultationState,
+    provider,
+    modelName,
+    characters,
+    responseMode,
+    target,
+    userMessage,
+    needsSummaryUpdate,
+    parsed,
+    adapterResult,
+    hadRetry,
+  } = params;
   const assistantMsg: RefineMessage = {
     messageId: generateTimestampId('msg'),
     role: 'assistant',
@@ -465,8 +680,8 @@ async function sendRefineMessageUnlocked(
   if (!parsed) {
     console.warn('Refine chat JSON parse failed', {
       projectId,
-      provider: project.activeModelProvider,
-      modelName: project.activeModelName,
+      provider,
+      modelName,
       finishReason: adapterResult.finishReason,
       debugInfo: adapterResult.debugInfo,
       textPreview: (adapterResult.text ?? '').slice(0, 400),
@@ -492,7 +707,8 @@ async function sendRefineMessageUnlocked(
       : buildChatParseFailureMessage(
           adapterResult.text,
           adapterResult.debugInfo,
-          adapterResult.finishReason
+          adapterResult.finishReason,
+          hadRetry
         ),
   };
   await storage.writeRefineSession(projectId, nextSession);
@@ -502,6 +718,126 @@ async function sendRefineMessageUnlocked(
     assistantMessage: assistantMsg,
     newPatches,
   };
+}
+
+// ---------- DeepSeek 再試行（設計書 5.3 / 5.5 / 5.7） ----------
+
+// NOTE: DeepSeek V4 の AI 相談だけ JSON 出力を維持したまま thinking を有効にする。
+// それ以外のプロバイダー・モデルへは reasoningMode を付けず、リクエストを変えない。
+function buildRefineChatAdapterRequest(
+  base: Omit<
+    AdapterGenerateRequest,
+    'reasoningMode' | 'reasoningEffort' | 'maxOutputTokens'
+  >,
+  provider: string,
+  modelName: string
+): AdapterGenerateRequest {
+  if (provider === 'deepseek' && isDeepSeekV4Model(modelName)) {
+    return {
+      ...base,
+      // NOTE: JSON のまま thinking を有効化し、本文 + 内部 JSON に加えて思考の余地を
+      // 確保する（設計書 5.3）。reasoning_effort は V4 では low/medium も high と
+      // 扱われるため high を明示する。
+      reasoningMode: 'enabled',
+      reasoningEffort: 'high',
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
+    };
+  }
+  return { ...base };
+}
+
+type RetryReason =
+  | 'length'
+  | 'empty'
+  | 'invalid-json'
+  | 'free-text'
+  | 'empty-visible-reply';
+
+// NOTE: 設計書 5.5 の「利用可能な構造化応答」。再試行条件と結果選択で共有し、
+// 別々の条件式を持たない。JSON 自体が解析できても visibleReply が空なら成功扱いにしない。
+function isUsableStructured(parsed: ParsedChat | null): boolean {
+  return parsed !== null && !parsed.freeText && parsed.visibleReply.trim() !== '';
+}
+
+// NOTE: 再試行理由を先頭の1つだけ返す。error / timeout / content_filter は
+// thinking を切っても回復すると断定できないため再試行の対象にしない（設計書 5.5）。
+function retryReasonForFirstAttempt(
+  result: AdapterGenerateResult,
+  parsed: ParsedChat | null
+): RetryReason | null {
+  if (
+    result.finishReason === 'error' ||
+    result.finishReason === 'timeout' ||
+    result.finishReason === 'content_filter'
+  ) {
+    return null;
+  }
+  if (result.finishReason === 'length') return 'length';
+  if (result.text.trim() === '') return 'empty';
+  if (parsed === null) return 'invalid-json';
+  if (parsed.freeText) return 'free-text';
+  if (parsed.visibleReply.trim() === '') return 'empty-visible-reply';
+  return null;
+}
+
+interface ChatGenerationAttempt {
+  result: AdapterGenerateResult;
+  parsed: ParsedChat | null;
+}
+
+interface AdoptedChatResult {
+  attempt: ChatGenerationAttempt;
+  // NOTE: length で切れた結果の縮退採用。診断ログの目的で真になる。
+  degradedLength: boolean;
+}
+
+// NOTE: 設計書 5.7 の採用優先順位。
+// #1 構造化応答かつ length 以外（再試行があれば再試行を優先）
+// #2 length の構造化応答を縮退採用（両方該当なら再試行を優先、無ければ初回）
+// #3 freeText の自然文（length 以外。初回の thinking あり自然文を優先）
+// #4 どちらも利用不能 → null（呼び出し側で parse failure 処理へ流す）
+function selectAdoptedChatResult(
+  first: ChatGenerationAttempt,
+  retry: ChatGenerationAttempt | null
+): AdoptedChatResult | null {
+  if (retry && retry.result.finishReason !== 'length' && isUsableStructured(retry.parsed)) {
+    return { attempt: retry, degradedLength: false };
+  }
+  if (first.result.finishReason !== 'length' && isUsableStructured(first.parsed)) {
+    return { attempt: first, degradedLength: false };
+  }
+  if (retry && retry.result.finishReason === 'length' && isUsableStructured(retry.parsed)) {
+    return { attempt: retry, degradedLength: true };
+  }
+  if (first.result.finishReason === 'length' && isUsableStructured(first.parsed)) {
+    return { attempt: first, degradedLength: true };
+  }
+  const freeTextAttempt =
+    first.result.finishReason !== 'length' && first.parsed?.freeText
+      ? first
+      : retry && retry.result.finishReason !== 'length' && retry.parsed?.freeText
+        ? retry
+        : null;
+  if (freeTextAttempt) {
+    return { attempt: freeTextAttempt, degradedLength: false };
+  }
+  return null;
+}
+
+function logDegradedAdoption(
+  projectId: string,
+  modelName: string,
+  responseMode: RefineResponseMode,
+  adopted: AdoptedChatResult,
+  retryResult: AdapterGenerateResult | null
+): void {
+  if (!adopted.degradedLength) return;
+  console.warn('Refine chat degraded adoption (length)', {
+    projectId,
+    modelName,
+    responseMode,
+    adoptedFrom: adopted.attempt.result === retryResult ? 'retry' : 'first',
+  });
 }
 
 // NOTE: パッチ可否の一次境界はクライアントが送る responseMode、二次境界がモデルの
@@ -1772,13 +2108,20 @@ function truncate(value: string, maxChars: number): string {
 function buildChatParseFailureMessage(
   rawText: string,
   debugInfo: string | undefined,
-  finishReason: string
+  finishReason: string,
+  hadRetry = false
 ): string {
   const trimmed = (rawText ?? '').trim();
   if (!trimmed) {
     const parts = ['AI が空の応答を返しました。'];
     if (finishReason === 'length') {
-      parts.push('思考モードで出力枠を使い切った可能性があります。技術設定タブで出力字数を大きくするか、DeepSeek に切り替えると安定します。');
+      // NOTE: DeepSeek の AI 相談では thinking 無効の再試行まで実施済みなので、
+      // 「思考モードだけが原因」とは断定しない（設計書 7.3）。
+      parts.push(
+        hadRetry
+          ? '出力上限に達し、思考なしの再試行でも完全な構造化応答を得られませんでした。出力字数を大きくしてからもう一度お試しください。'
+          : '思考モードで出力枠を使い切った可能性があります。技術設定タブで出力字数を大きくするか、DeepSeek に切り替えると安定します。'
+      );
     } else if (finishReason === 'content_filter') {
       parts.push('安全フィルタでブロックされた可能性があります。DeepSeek への切り替えを試してください。');
     } else {
@@ -1787,10 +2130,14 @@ function buildChatParseFailureMessage(
     if (debugInfo) parts.push(`診断: ${debugInfo}`);
     return parts.join('\n');
   }
-  return [
-    'AI 応答を JSON として解釈できませんでした。',
-    `応答の一部: ${truncate(trimmed, 200)}`,
-  ].join('\n');
+  const parts = ['AI 応答を JSON として解釈できませんでした。'];
+  // NOTE: 再試行まで length で終わった場合、切れた JSON 断片でも「思考なし再試行でも
+  // 出力上限に達した」と診断する（設計書 7.3）。空応答分岐と同じ文言に揃える。
+  if (finishReason === 'length' && hadRetry) {
+    parts.push('出力上限に達し、思考なしの再試行でも完全な構造化応答を得られませんでした。');
+  }
+  parts.push(`応答の一部: ${truncate(trimmed, 200)}`);
+  return parts.join('\n');
 }
 
 // ---------- ロック ----------

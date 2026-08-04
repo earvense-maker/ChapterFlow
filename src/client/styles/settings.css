@@ -1167,7 +1167,7 @@
   align-self: end;
 }
 
-/* NOTE: 種メモ欄はPC画面でも右カラムとして狭いため、人物の軸は縦に並べる。 */
+/* NOTE: 設定草案欄はPC画面でも右カラムとして狭いため、人物の軸は縦に並べる。 */
 .setup-draft-panel .character-trait-row {
   grid-template-columns: minmax(0, 1fr);
 }

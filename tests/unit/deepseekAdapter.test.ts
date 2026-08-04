@@ -61,6 +61,112 @@ describe('DeepSeekAdapter', () => {
     expect(body.max_tokens).toBe(100_000);
   });
 
+  it('lets the caller lower the reasoning effort for interactive turns', async () => {
+    // NOTE: 送信値は従来どおり低く渡せる。ただし公式仕様では V4 側が low / medium を
+    // high として扱うため、実効値は high になる。AI 相談の期待値として low を使わない。
+    const fetchMock = mockJsonResponse({ content: '返答。' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      reasoningEffort: 'low',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('low');
+  });
+
+  it('enables thinking for JSON requests when reasoningMode is enabled on V4 Flash', async () => {
+    const fetchMock = mockJsonResponse({ content: '{"ok":true}' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      responseMimeType: 'application/json',
+      reasoningMode: 'enabled',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('high');
+    expect(body.response_format).toEqual({ type: 'json_object' });
+  });
+
+  it('enables thinking for JSON requests on V4 Pro too', async () => {
+    const fetchMock = mockJsonResponse({ content: '{"ok":true}' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      modelName: 'deepseek-v4-pro',
+      responseMimeType: 'application/json',
+      reasoningMode: 'enabled',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('high');
+  });
+
+  it('normalizes low/medium reasoningEffort to high on the explicit enabled path', async () => {
+    // NOTE: V4 は low / medium を high として扱うため、明示 enabled 経路では送信値を
+    // high に正規化してリクエストと実効値を一致させる（設計書 5.2）。
+    const fetchMock = mockJsonResponse({ content: '{"ok":true}' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      responseMimeType: 'application/json',
+      reasoningMode: 'enabled',
+      reasoningEffort: 'low',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.thinking).toEqual({ type: 'enabled' });
+    expect(body.reasoning_effort).toBe('high');
+  });
+
+  it('turns thinking off when reasoningMode is disabled even for JSON', async () => {
+    const fetchMock = mockJsonResponse({ content: '{"ok":true}' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      responseMimeType: 'application/json',
+      reasoningMode: 'disabled',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('keeps JSON requests thinking-disabled for non-V4 models even with reasoningMode enabled', async () => {
+    // NOTE: 未知・旧モデルへ未確認パラメータを強制しない（設計書 5.2 case 3）。
+    const fetchMock = mockJsonResponse({ content: '{"ok":true}' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      modelName: 'deepseek-chat',
+      responseMimeType: 'application/json',
+      reasoningMode: 'enabled',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('does not force thinking fields onto non-V4 models in non-JSON requests', async () => {
+    const fetchMock = mockJsonResponse({ content: '本文。' });
+
+    await new DeepSeekAdapter().generateText({
+      ...baseRequest,
+      modelName: 'deepseek-chat',
+      reasoningMode: 'enabled',
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body).not.toHaveProperty('thinking');
+    expect(body).not.toHaveProperty('reasoning_effort');
+  });
+
   it('does not force V4 Flash thinking fields onto other DeepSeek models', async () => {
     const fetchMock = mockJsonResponse({ content: '本文。' });
 

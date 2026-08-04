@@ -28,7 +28,11 @@ import {
 } from './setupWorkspace/draftEditors';
 import SetupCommitDialog from './setupWorkspace/SetupCommitDialog';
 import { DEFAULT_STREAMING_ENABLED } from '@shared/defaults';
-import { hasMeaningfulSetupContent } from '@shared/setupContent';
+import {
+  hasMeaningfulSetupContent,
+  hasSetupDraftContent,
+  shouldSuggestDraftWriteUp,
+} from '@shared/setupContent';
 import { normalizeActivePresetIds } from '@shared/presetMigration';
 import type {
   ActivePresets,
@@ -74,8 +78,8 @@ interface SetupPurposeCopy {
   coldStartActions: SetupSuggestedAction[];
   draftPanelTitle: string;
   commitLabel: string;
-  // NOTE: モデルが intent 付き選択肢を返さなかったターンで補うフォールバック用。
-  // ラベルは相談プロンプト側の語彙（setupPromptBuilder）と合わせる。
+  // NOTE: 相談が進んだあと常時出す固定の次の一歩。モデルには選ばせない。
+  draftAction: SetupSuggestedAction;
   previewAction: SetupSuggestedAction;
   commitAction: SetupSuggestedAction;
 }
@@ -83,7 +87,7 @@ interface SetupPurposeCopy {
 const SETUP_COPY: Record<'novel' | 'roleplay', SetupPurposeCopy> = {
   novel: {
     welcome: 'どんな物語を読みたいですか？ 好きな雰囲気や関係性だけでも大丈夫です。一緒に見つけましょう。',
-    emptyChat: 'メモをもとに、読みたい物語の続きを相談できます。',
+    emptyChat: '設定草案をもとに、読みたい物語の続きを相談できます。',
     inputPlaceholder: '読みたい物語の雰囲気、好きな関係性、避けたい展開など',
     previewLabel: '試し書き',
     previewStyleHints: ['もっと軽く', 'しっとり', '会話多め'],
@@ -102,8 +106,13 @@ const SETUP_COPY: Record<'novel' | 'roleplay', SetupPurposeCopy> = {
         message: 'おまかせで候補を出して。読みたくなる物語の方向を3つくらい提案してください。',
       },
     ],
-    draftPanelTitle: '作品の種メモ',
+    draftPanelTitle: '作品設定草案',
     commitLabel: 'この内容で作品を作る',
+    draftAction: {
+      label: '今の相談を草案にまとめる',
+      message: '',
+      intent: 'draft',
+    },
     previewAction: {
       label: '試し書きで温度を見る',
       message: '現在の内容で試し書きを作ってください。',
@@ -118,7 +127,7 @@ const SETUP_COPY: Record<'novel' | 'roleplay', SetupPurposeCopy> = {
   roleplay: {
     welcome:
       'どんなキャラクターと話したいですか？ 好きな口調や関係性だけでも大丈夫です。一緒に見つけましょう。',
-    emptyChat: 'メモをもとに、話したいキャラクター像の続きを相談できます。',
+    emptyChat: '設定草案をもとに、話したいキャラクター像の続きを相談できます。',
     inputPlaceholder: '話したいキャラクターの雰囲気、口調、あなたとの関係、避けたい話題など',
     previewLabel: '試し会話',
     previewStyleHints: ['もっと砕けた口調で', 'もっと落ち着いた口調で', '距離感を近く'],
@@ -137,8 +146,13 @@ const SETUP_COPY: Record<'novel' | 'roleplay', SetupPurposeCopy> = {
         message: 'おまかせで候補を出して。話してみたくなるキャラクターを3つくらい提案してください。',
       },
     ],
-    draftPanelTitle: 'キャラの種メモ',
+    draftPanelTitle: 'キャラ設定草案',
     commitLabel: 'このキャラと話し始める',
+    draftAction: {
+      label: '今の相談を草案にまとめる',
+      message: '',
+      intent: 'draft',
+    },
     previewAction: {
       label: '試しに少し話してみる',
       message: '現在の内容で試しに少し話してみてください。',
@@ -152,8 +166,7 @@ const SETUP_COPY: Record<'novel' | 'roleplay', SetupPurposeCopy> = {
   },
 };
 
-// NOTE: roleplay は3〜5往復で会話開始まで到達させたいので、モデルが intent 付きの
-// 選択肢を返さなかったターンでも、2往復目以降は自前で次の一歩を出す。
+// NOTE: 次の一歩は2往復目以降に出す。1往復目で作品化や草案まとめを勧めても材料が無い。
 const FALLBACK_ACTION_MIN_MESSAGES = 4;
 
 export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel, onOpenSettings }: Props) {
@@ -165,7 +178,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   );
   const [session, setSession] = useState<SetupSession | null>(null);
   const [message, setMessage] = useState('');
-  const [suggestedActions, setSuggestedActions] = useState<SetupSuggestedAction[]>([]);
   const [previewText, setPreviewText] = useState('');
   const [previewStyleHint, setPreviewStyleHint] = useState('');
   const [draftChangeSummary, setDraftChangeSummary] = useState<DraftChangeSummary[]>([]);
@@ -173,6 +185,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   const [sending, setSending] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [generatingDraft, setGeneratingDraft] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [commitStage, setCommitStage] = useState<'planning' | 'saving' | null>(null);
   const [commitPlan, setCommitPlan] = useState<SetupCommitPlan | null>(null);
@@ -310,7 +323,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
           setDirtyDraftEditKeys(new Set());
           clearDraftChanges();
           rememberSetupSession(synced.session.sessionId, purpose);
-          setSuggestedActions([]);
           if (synced.error) setError(synced.error);
           return;
         }
@@ -321,7 +333,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         setDirtyDraftEditKeys(new Set());
         clearDraftChanges();
         rememberSetupSession(result.sessionId, purpose);
-        setSuggestedActions(result.suggestedActions);
       } catch (err) {
         if (!ignore) setError(err instanceof Error ? err.message : '相談セッションの作成に失敗しました');
       } finally {
@@ -418,12 +429,26 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     () => (session ? hasMeaningfulSetupContent(session) : false),
     [session]
   );
+  // NOTE: 作品化の条件は「相談したか」ではなく「草案に中身があるか」。相談ターンが
+  // 草案を書かなくなったので、前者だと草案が空のまま作品ができてしまう。
+  const hasDraftContent = useMemo(
+    () => (session ? hasSetupDraftContent(session) : false),
+    [session]
+  );
+  // NOTE: 会話が予算を超えると古い側が本当に落ちる。溢れる前に一度まとめてもらう。
+  const shouldWriteUpDraft = useMemo(
+    () => (session ? shouldSuggestDraftWriteUp(session) : false),
+    [session]
+  );
   const modelAvailabilityPending = Boolean(session) && !providersLoaded;
   const currentProviderUnavailable = Boolean(session) && providersLoaded && !currentProvider;
   const modelUnavailable = modelAvailabilityPending || currentProviderUnavailable || currentProviderMissingKey;
-  const busy = sending || savingDraft || previewing || committing || creatingNew || Boolean(commitPlan);
+  const busy =
+    sending || savingDraft || previewing || generatingDraft || committing || creatingNew || Boolean(commitPlan);
   const hasUnsavedDraftEdits = dirtyDraftEditKeys.size > 0;
   const isColdStart = Boolean(session && session.messages.length === 0 && !hasMeaningfulContent);
+  // NOTE: 選択肢はモデルに毎ターン考えさせず固定にした。相談の返答が平文だけになり、
+  // 選択肢を運ぶ経路が無くなっている。出す条件だけをこちらで判断する。
   const visibleSuggestedActions = useMemo<SetupSuggestedAction[]>(() => {
     if (isColdStart) return copy.coldStartActions;
     if (
@@ -431,17 +456,10 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       !hasMeaningfulContent ||
       session.messages.length < FALLBACK_ACTION_MIN_MESSAGES
     ) {
-      return suggestedActions;
+      return [];
     }
-    // NOTE: モデルが同じ intent を返しているときは重複させない（ラベル違いでも1つに保つ）。
-    const fallbacks = [copy.previewAction, copy.commitAction].filter(
-      (fallback) =>
-        !suggestedActions.some(
-          (action) => action.intent === fallback.intent || action.label === fallback.label
-        )
-    );
-    return fallbacks.length > 0 ? [...suggestedActions, ...fallbacks] : suggestedActions;
-  }, [isColdStart, copy, session, hasMeaningfulContent, suggestedActions]);
+    return [copy.draftAction, copy.previewAction, copy.commitAction];
+  }, [isColdStart, copy, session, hasMeaningfulContent]);
   const sectionLabels = useMemo(() => draftSectionLabels(purpose), [purpose]);
   const draftChanges = useMemo<DraftChanges>(
     () => Object.fromEntries(draftChangeSummary.map(({ key, kind }) => [key, kind])),
@@ -514,7 +532,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       });
       setSelectedCandidateIds(new Set());
       rememberSetupSession(result.sessionId, purpose);
-      setSuggestedActions(result.suggestedActions);
       setMessage('');
     } catch (err) {
       setError(err instanceof Error ? err.message : '新しい相談を作れませんでした');
@@ -526,7 +543,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   async function send(text: string) {
     if (!session || sending || committing || sendAbortController.current) return;
     if (hasUnsavedDraftEdits) {
-      setError('メモに未保存の変更があります。保存してから相談を続けてください。');
+      setError('設定草案に未保存の変更があります。保存してから相談を続けてください。');
       return;
     }
     const trimmed = text.trim();
@@ -579,7 +596,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             applySessionWithDraftChanges(session, response.session);
             setDirtyDraftEditKeys(new Set());
             rememberSetupSession(response.session.sessionId, purpose);
-            setSuggestedActions(response.suggestedActions);
             setMessage('');
             setStreamingMessage('');
             setShowRetry(false);
@@ -626,7 +642,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         applySessionWithDraftChanges(session, result.session);
         setDirtyDraftEditKeys(new Set());
         rememberSetupSession(result.session.sessionId, purpose);
-        setSuggestedActions(result.suggestedActions);
         setMessage('');
         setShowRetry(false);
         setStreamingMessage('');
@@ -669,7 +684,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   async function retry() {
     if (!session || sending || committing) return;
     if (hasUnsavedDraftEdits) {
-      setError('メモに未保存の変更があります。保存してから再試行してください。');
+      setError('設定草案に未保存の変更があります。保存してから再試行してください。');
       return;
     }
     try {
@@ -689,7 +704,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       applySessionWithDraftChanges(session, result.session);
       setDirtyDraftEditKeys(new Set());
       rememberSetupSession(result.session.sessionId, purpose);
-      setSuggestedActions(result.suggestedActions);
       setShowRetry(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '再試行に失敗しました');
@@ -713,7 +727,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   async function handlePreview(styleHint = '') {
     if (!session || previewing || modelUnavailable) return;
     if (hasUnsavedDraftEdits) {
-      setError(`メモに未保存の変更があります。保存してから${copy.previewLabel}してください。`);
+      setError(`設定草案に未保存の変更があります。保存してから${copy.previewLabel}してください。`);
       return;
     }
     try {
@@ -733,11 +747,13 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
   async function handleCommit() {
     if (!session || committing) return;
     if (hasUnsavedDraftEdits) {
-      setError('メモに未保存の変更があります。保存してから作品化してください。');
+      setError('設定草案に未保存の変更があります。保存してから作品化してください。');
       return;
     }
-    if (!hasMeaningfulContent) {
-      setError(`作品の種がまだありません。相談するか、${copy.draftPanelTitle}を入力してください。`);
+    if (!hasDraftContent) {
+      setError(
+        `${copy.draftPanelTitle}がまだ空です。「${copy.draftAction.label}」を実行してから作品にしてください。`
+      );
       return;
     }
     try {
@@ -757,7 +773,32 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
     }
   }
 
+  // NOTE: 相談ターンは設定草案に触れないので、書き起こしはここから明示的に走らせる。
+  // 会話ログが正本なので、何度押しても増分だけが足され、手編集と lock は保たれる。
+  async function handleGenerateDraft() {
+    if (!session || generatingDraft) return;
+    if (hasUnsavedDraftEdits) {
+      setError('設定草案に未保存の変更があります。保存してからまとめ直してください。');
+      return;
+    }
+    try {
+      setGeneratingDraft(true);
+      setError(null);
+      const result = await api.generateSetupDraft(session.sessionId, session.revision);
+      applySessionWithDraftChanges(session, result.session);
+      setDirtyDraftEditKeys(new Set());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '設定草案への書き出しに失敗しました');
+    } finally {
+      setGeneratingDraft(false);
+    }
+  }
+
   async function runSuggestedAction(action: SetupSuggestedAction) {
+    if (action.intent === 'draft') {
+      await handleGenerateDraft();
+      return;
+    }
     if (action.intent === 'preview') {
       await handlePreview();
       return;
@@ -774,8 +815,20 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       busy ||
       hasUnsavedDraftEdits ||
       modelUnavailable ||
-      (action.intent === 'commit' && !hasMeaningfulContent)
+      (action.intent === 'commit' && !hasDraftContent)
     );
+  }
+
+  // NOTE: 押せない理由をボタン自身に持たせる。作品化が押せないとき、原因は
+  // 「草案が空」なのに画面のどこを直せばいいか分からない、が一番起きやすい。
+  function suggestedActionHint(action: SetupSuggestedAction): string | undefined {
+    if (action.intent === 'commit' && !hasDraftContent) {
+      return `${copy.draftPanelTitle}がまだ空です。先に「${copy.draftAction.label}」を実行してください。`;
+    }
+    if (action.intent === 'draft' && shouldWriteUpDraft) {
+      return `相談が長くなっています。ここでまとめておかないと、古い会話が${copy.draftPanelTitle}に残らないまま失われます。`;
+    }
+    return undefined;
   }
 
   async function confirmCommit() {
@@ -908,10 +961,9 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       setSession(result.session);
       clearDraftChanges();
       rememberSetupSession(result.session.sessionId, purpose);
-      setSuggestedActions([]);
       return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'メモの保存に失敗しました');
+      setError(err instanceof Error ? err.message : '設定草案の保存に失敗しました');
       await reloadLatestSession(session.sessionId, true);
       return false;
     } finally {
@@ -994,8 +1046,12 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             ref={createProjectButtonRef}
             className="primary"
             onClick={handleCommit}
-            disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable || !hasMeaningfulContent}
-            title={!hasMeaningfulContent ? `相談するか、${copy.draftPanelTitle}を入力してください` : undefined}
+            disabled={!session || busy || hasUnsavedDraftEdits || modelUnavailable || !hasDraftContent}
+            title={
+              !hasDraftContent
+                ? `${copy.draftPanelTitle}がまだ空です。先に「${copy.draftAction.label}」を実行してください`
+                : undefined
+            }
           >
             {committing ? (
               <GeneratingLabel text={commitStage === 'saving' ? '作品を保存中...' : '設定を整理中...'} />
@@ -1137,10 +1193,32 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                   type="button"
                   onClick={() => void runSuggestedAction(action)}
                   disabled={suggestedActionDisabled(action)}
+                  title={suggestedActionHint(action)}
+                  className={
+                    action.intent === 'draft' && shouldWriteUpDraft
+                      ? 'setup-suggestion--urgent'
+                      : undefined
+                  }
                 >
                   {action.label}
                 </button>
               ))}
+            </div>
+          )}
+
+          {shouldWriteUpDraft && (
+            <div className="setup-writeup-banner" role="status">
+              <span>
+                相談が長くなっています。「{copy.draftAction.label}」を実行しておくと、
+                古い会話が{copy.draftPanelTitle}に残ります。
+              </span>
+              <button
+                type="button"
+                onClick={() => void handleGenerateDraft()}
+                disabled={busy || hasUnsavedDraftEdits || modelUnavailable}
+              >
+                {copy.draftAction.label}
+              </button>
             </div>
           )}
 
@@ -1200,19 +1278,19 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
           <h2>{copy.draftPanelTitle}</h2>
           {hasUnsavedDraftEdits && (
             <div className="setup-draft-unsaved">
-              メモに未保存の変更があります。保存してから相談・{copy.previewLabel}・作品化できます。
+              設定草案に未保存の変更があります。保存してから相談・{copy.previewLabel}・作品化できます。
             </div>
           )}
           {hasDraftChanges && (
             <div className="setup-draft-updates" role="status">
-              <strong>このターンのメモ更新</strong>
+              <strong>この書き出しでの更新</strong>
               <ul>
                 {draftChangeSummary.slice(0, 6).map((change) => (
                   <li key={change.key}>{change.text}</li>
                 ))}
               </ul>
               {draftChangeSummary.length > 6 && <p>ほか{draftChangeSummary.length - 6}件</p>}
-              <p>追加・更新された項目はメモ内でも強調表示しています。</p>
+              <p>追加・更新された項目は草案内でも強調表示しています。</p>
             </div>
           )}
           {draft ? (
@@ -1608,7 +1686,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
               )}
             </>
           ) : (
-            <p className="placeholder">まだメモはありません。</p>
+            <p className="placeholder">まだ草案はありません。</p>
           )}
           {previewText && (
             <section className="setup-preview">

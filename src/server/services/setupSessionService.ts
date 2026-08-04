@@ -16,6 +16,7 @@ import {
 import {
   buildSetupChatPrompt,
   buildSetupCommitPrompt,
+  buildSetupDraftExtractionPrompt,
   buildSetupPreviewPrompt,
 } from './setupPromptBuilder.js';
 import {
@@ -24,9 +25,13 @@ import {
   readPresetIdsByCategory,
 } from './setupCommitService.js';
 import { normalizeSetupPurpose } from '../types/index.js';
+import {
+  INTERACTIVE_TASK_MAX_OUTPUT_TOKENS,
+  JSON_TASK_MAX_OUTPUT_TOKENS,
+} from '../utils/outputLength.js';
 import { DEFAULT_STREAMING_ENABLED } from '../../shared/defaults.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
-import { hasMeaningfulSetupContent } from '../../shared/setupContent.js';
+import { hasSetupDraftContent } from '../../shared/setupContent.js';
 import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
@@ -60,12 +65,13 @@ import {
   toSetupServiceError,
 } from './setupSessionErrors.js';
 export { SetupServiceError } from './setupSessionErrors.js';
-export { parseChatResult } from './setupSessionParsing.js';
+export { normalizeChatReply } from './setupSessionParsing.js';
 import {
   DRAFT_PATCH_MARKER,
   MAX_CONVERSATION_SUMMARY_CHARS,
   isRecord,
-  parseChatResult,
+  normalizeChatReply,
+  parseDraftExtraction,
   parseJsonObject,
 } from './setupSessionParsing.js';
 import {
@@ -83,6 +89,25 @@ const CHAT_TEMPERATURE = 0.7;
 const PREVIEW_TEMPERATURE = 0.8;
 const COMMIT_TEMPERATURE = 0.2;
 const TIMEOUT_MS = 120_000;
+
+// NOTE: 相談は一問一答のやり取りで、待たされること自体が体験を壊す。思考モデルの
+// 既定（本文向けの最大熟考）をそのまま使うと、短い返答のために延々と考え込み、
+// max_tokens を思考で使い切って本文0字で返る事故が起きた。相談経路は熟考量を落とす。
+const CHAT_REASONING_EFFORT = 'low' as const;
+const PREVIEW_REASONING_EFFORT = 'low' as const;
+// NOTE: 最終変換だけは設定一式を JSON へ組み替える重い変換なので中程度を残す。
+// 出力も長いため枠は JSON タスク用の広い方を使う。
+const COMMIT_REASONING_EFFORT = 'medium' as const;
+
+// NOTE: 設定草案への書き起こしは responseMimeType=json を指定するので、DeepSeek 側で
+// 思考が切れる。reasoningEffort は渡さない（渡しても json 分岐が優先される）。
+const DRAFT_EXTRACT_OUTPUT_LENGTH = 3000;
+const DRAFT_EXTRACT_TEMPERATURE = 0.2;
+
+// NOTE: 文言はクライアントのボタン名（「今の相談を草案にまとめる」）と揃える。
+// ずれると、画面のどれを押せばいいのか分からないエラーになる。
+const SETUP_DRAFT_REQUIRED_MESSAGE =
+  '設定草案がまだ空です。「今の相談を草案にまとめる」を実行してから作品にしてください。';
 
 const sessionMutex = new KeyedMutex();
 
@@ -152,7 +177,7 @@ export async function createSetupSession(
 
   const initialMessage = body.initialMessage?.trim();
   if (!initialMessage) {
-    return { sessionId: session.sessionId, session, suggestedActions: [] };
+    return { sessionId: session.sessionId, session };
   }
 
   try {
@@ -164,14 +189,12 @@ export async function createSetupSession(
       sessionId: session.sessionId,
       session: response.session,
       assistantMessage: response.assistantMessage,
-      suggestedActions: response.suggestedActions,
     };
   } catch (err) {
     if (err instanceof SetupServiceError && err.session) {
       return {
         sessionId: session.sessionId,
         session: err.session,
-        suggestedActions: [],
       };
     }
     throw err;
@@ -319,6 +342,8 @@ async function runChatTurn(workingSession: SetupSession): Promise<SetupMessageRe
     userPrompt,
     outputLength: CHAT_OUTPUT_LENGTH,
     temperature: CHAT_TEMPERATURE,
+    maxOutputTokens: INTERACTIVE_TASK_MAX_OUTPUT_TOKENS,
+    reasoningEffort: CHAT_REASONING_EFFORT,
   }).catch(async (err) => {
     const nextSession = await writeSessionError(workingSession, err);
     throw toSetupServiceError(err, nextSession);
@@ -330,36 +355,68 @@ async function runChatTurn(workingSession: SetupSession): Promise<SetupMessageRe
     throw toSetupServiceError(error, nextSession);
   }
 
-  return finalizeChatTurn(workingSession, result.text);
+  // NOTE: 空応答ガード。これが無いと空文字が assistant メッセージとして lastError=null の
+  // まま履歴に保存され、利用者には会話が進まない理由が見えず再試行ボタンも出ない。
+  // finishReason は length（枠切れ）でも error ではないため、上の分岐では捕まらない。
+  //
+  // 判定は正規化後の文字列で行う。素の text を見ると、応答が ===DRAFT_PATCH=== で
+  // 始まったとき（マーカー除去を保険として残している、まさにその状況）にガードを
+  // すり抜けて空メッセージが保存される。
+  const reply = normalizeChatReply(result.text);
+  if (!reply) {
+    const error = emptyChatResponseError(workingSession, result.debugInfo, 'setup.chat');
+    const nextSession = await writeSessionError(workingSession, error);
+    throw toSetupServiceError(error, nextSession);
+  }
+
+  return finalizeChatTurn(workingSession, reply);
 }
 
+/**
+ * 本文0字で返ってきたときの共通エラー。ストリーミングと非ストリーミングで文言と
+ * 診断の出方を揃える。思考モデルが枠を思考で使い切ったケースがここに集まるので、
+ * 切り分けに要る診断はサーバーログにも必ず残す。
+ */
+function emptyChatResponseError(
+  session: SetupSession,
+  debugInfo: string | undefined,
+  label: string
+): SetupServiceError {
+  console.warn('Setup model returned no text', {
+    label,
+    sessionId: session.sessionId,
+    provider: session.model.provider,
+    modelName: session.model.modelName,
+    debugInfo: debugInfo ?? 'none',
+  });
+  return new SetupServiceError(
+    mapErrorMessage('empty_response', debugInfo),
+    'empty_response',
+    true,
+    503,
+    session
+  );
+}
+
+// NOTE: 相談ターンは会話だけを進め、設定草案には触れない。メモへの反映は
+// generateSetupDraft（利用者が「今の相談を草案にまとめる」を実行）に一本化した。
+// NOTE: visibleReply は呼び出し側で normalizeChatReply 済みのものを受け取る。
+// ここで正規化すると「ガードは素のテキスト、保存は正規化後」というずれが生まれ、
+// 空メッセージがガードをすり抜ける。正規化と検査は必ず同じ文字列に対して行う。
 async function finalizeChatTurn(
   workingSession: SetupSession,
-  generatedText: string
+  visibleReply: string
 ): Promise<SetupMessageResponse> {
-  const parsed = parseChatResult(generatedText);
-  const draft = parsed.draftPatch
-    ? applySetupDraftPatch({
-        draft: workingSession.draft,
-        patch: parsed.draftPatch,
-        locks: workingSession.locks,
-        source: 'llm',
-      })
-    : workingSession.draft;
   const assistantMessage: SetupMessage = {
     messageId: generateTimestampId('msg'),
     role: 'assistant',
-    content: parsed.visibleReply || '相談メモを更新しました。',
+    content: visibleReply,
     createdAt: nowIso(),
   };
 
   const nextSession: SetupSession = {
     ...workingSession,
     messages: [...workingSession.messages, assistantMessage],
-    draft,
-    conversationSummary: parsed.conversationSummary
-      ? parsed.conversationSummary.slice(0, MAX_CONVERSATION_SUMMARY_CHARS)
-      : workingSession.conversationSummary,
     revision: workingSession.revision + 1,
     lastError: null,
     updatedAt: nowIso(),
@@ -370,7 +427,6 @@ async function finalizeChatTurn(
     session: nextSession,
     assistantMessage,
     draft: nextSession.draft,
-    suggestedActions: parsed.suggestedActions,
     revision: nextSession.revision,
   };
 }
@@ -477,6 +533,8 @@ async function* runChatTurnStream(
     userPrompt,
     outputLength: CHAT_OUTPUT_LENGTH,
     temperature: CHAT_TEMPERATURE,
+    maxOutputTokens: INTERACTIVE_TASK_MAX_OUTPUT_TOKENS,
+    reasoningEffort: CHAT_REASONING_EFFORT,
     timeoutMs: TIMEOUT_MS,
     modelName: workingSession.model.modelName,
     abortSignal,
@@ -498,7 +556,15 @@ async function* runChatTurnStream(
       throw toSetupServiceError(error, nextSession);
     }
 
-    const response = await finalizeChatTurn(workingSession, result.text);
+    // NOTE: ストリーミング非対応アダプタ用の分岐。相談チャットの空応答経路は3つある。
+    const reply = normalizeChatReply(result.text);
+    if (!reply) {
+      const error = emptyChatResponseError(workingSession, result.debugInfo, 'setup.chat.stream');
+      const nextSession = await writeSessionError(workingSession, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const response = await finalizeChatTurn(workingSession, reply);
     if (response.assistantMessage?.content) {
       yield { type: 'delta', text: response.assistantMessage.content };
     }
@@ -569,15 +635,9 @@ async function* runChatTurnStream(
     throw toSetupServiceError(error, nextSession);
   }
 
-  const streamedText = generatedText.trim();
-  if (!streamedText) {
-    const emptyError = new SetupServiceError(
-      mapErrorMessage('empty_response', debugInfo),
-      'empty_response',
-      true,
-      503,
-      workingSession
-    );
+  const streamedReply = normalizeChatReply(generatedText);
+  if (!streamedReply) {
+    const emptyError = emptyChatResponseError(workingSession, debugInfo, 'setup.chat.stream');
     const nextSession = await writeSessionError(workingSession, emptyError);
     throw toSetupServiceError(emptyError, nextSession);
   }
@@ -595,7 +655,7 @@ async function* runChatTurnStream(
     }
   }
 
-  const response = await finalizeChatTurn(workingSession, generatedText);
+  const response = await finalizeChatTurn(workingSession, streamedReply);
   yield { type: 'result', response };
 }
 
@@ -627,6 +687,103 @@ export async function updateSetupDraft(
     draft: nextSession.draft,
     revision: nextSession.revision,
   };
+  });
+}
+
+/**
+ * 会話ログから設定草案へ一括で書き起こす。相談中は毎ターン走らせず、利用者が
+ * 「今の相談を草案にまとめる」を押したときと、作品化の前だけ実行する。
+ *
+ * JSON 出力なので responseMimeType を指定する。DeepSeek はこれで思考モードが切れ、
+ * 抽出が本来の速さで終わる（相談チャットに構造化出力を混ぜていた頃の遅さと
+ * 空応答は、この組み合わせが取れなかったことが原因だった）。
+ */
+export async function generateSetupDraft(
+  sessionId: string,
+  body: { revision?: number } = {}
+): Promise<SetupDraftResponse> {
+  return withSessionLock(sessionId, async () => {
+    const session = await requireActiveSession(sessionId);
+    if (body.revision !== undefined) {
+      assertValidRevision(body.revision);
+      assertRevision(session, body.revision);
+    }
+    if (!session.messages.some((message) => message.role === 'user' && message.content.trim())) {
+      throw new SetupServiceError(
+        'まだ相談の内容がありません。先に相談してください。',
+        'setup_content_empty',
+        false,
+        400,
+        session
+      );
+    }
+
+    const { systemInstructions, userPrompt } = buildSetupDraftExtractionPrompt({ session });
+    const result = await generateWithSessionModel(session, {
+      debugLabel: 'setup.draftExtract',
+      systemInstructions,
+      userPrompt,
+      outputLength: DRAFT_EXTRACT_OUTPUT_LENGTH,
+      temperature: DRAFT_EXTRACT_TEMPERATURE,
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
+      responseMimeType: 'application/json',
+    }).catch(async (err) => {
+      const nextSession = await writeSessionError(session, err);
+      throw toSetupServiceError(err, nextSession);
+    });
+
+    if (result.finishReason === 'error' || result.finishReason === 'timeout') {
+      const error = adapterResultToError(result);
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    if (!result.text.trim()) {
+      const error = emptyChatResponseError(session, result.debugInfo, 'setup.draftExtract');
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const parsed = parseDraftExtraction(result.text);
+    if (!parsed) {
+      const error = new SetupServiceError(
+        'メモへの書き起こしを読み取れませんでした。もう一度試してください。',
+        'invalid_draft_json',
+        true,
+        503,
+        session
+      );
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const draft = parsed.draftPatch
+      ? applySetupDraftPatch({
+          draft: session.draft,
+          patch: parsed.draftPatch,
+          locks: session.locks,
+          source: 'llm',
+        })
+      : session.draft;
+
+    const nextSession: SetupSession = {
+      ...session,
+      draft,
+      conversationSummary: parsed.conversationSummary
+        ? parsed.conversationSummary.slice(0, MAX_CONVERSATION_SUMMARY_CHARS)
+        : session.conversationSummary,
+      draftWrittenUpMessageCount: session.messages.length,
+      revision: session.revision + 1,
+      lastError: null,
+      updatedAt: nowIso(),
+    };
+    await storage.writeSetupSession(nextSession);
+
+    return {
+      session: nextSession,
+      draft: nextSession.draft,
+      revision: nextSession.revision,
+    };
   });
 }
 
@@ -800,6 +957,15 @@ export async function generateSetupPreview(
     throw toSetupServiceError(error, nextSession);
   }
 
+  // NOTE: 試し書きは相談経路の中で最も出力枠が小さく、散文を書かせるので思考も長い。
+  // ガードが無いと空文字がそのまま試し書き履歴に積まれ、画面には何も出ないのに
+  // 成功扱いになる。相談チャットと同じく length では error にならない点に注意。
+  if (!result.text.trim()) {
+    const error = emptyChatResponseError(session, result.debugInfo, 'setup.preview');
+    const nextSession = await writeSessionError(session, error);
+    throw toSetupServiceError(error, nextSession);
+  }
+
   const previewText = result.text.trim();
   const now = nowIso();
   const draft = instruction ? addToneHint(session.draft, instruction) : session.draft;
@@ -835,6 +1001,8 @@ async function generateSetupPreviewText(session: SetupSession, instruction = '')
     userPrompt,
     outputLength: PREVIEW_OUTPUT_LENGTH,
     temperature: PREVIEW_TEMPERATURE,
+    maxOutputTokens: INTERACTIVE_TASK_MAX_OUTPUT_TOKENS,
+    reasoningEffort: PREVIEW_REASONING_EFFORT,
   });
 }
 
@@ -844,10 +1012,13 @@ export async function createSetupCommitPlan(
 ): Promise<SetupCommitPlanResponse> {
   return withSessionLock(sessionId, async () => {
     const session = await requireActiveSession(sessionId);
-    if (!hasMeaningfulSetupContent(session)) {
+    // NOTE: 相談ターンが草案を書かなくなったので、会話しただけでは作品化させない。
+    // 会話ログから直接変換はできてしまうが、それでは利用者が中身を確認・修正する
+    // 機会が無いまま作品ができる。草案の実体を通過条件にする。
+    if (!hasSetupDraftContent(session)) {
       throw new SetupServiceError(
-        '作品の種がまだありません。相談するか、作品の種メモを入力してください。',
-        'setup_content_empty',
+        SETUP_DRAFT_REQUIRED_MESSAGE,
+        'setup_draft_empty',
         false,
         400,
         session
@@ -866,6 +1037,8 @@ export async function createSetupCommitPlan(
       userPrompt,
       outputLength: COMMIT_OUTPUT_LENGTH,
       temperature: COMMIT_TEMPERATURE,
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
+      reasoningEffort: COMMIT_REASONING_EFFORT,
     }).catch(async (err) => {
       const nextSession = await writeSessionError(session, err);
       throw toSetupServiceError(err, nextSession);
@@ -932,10 +1105,13 @@ export async function commitSetupSession(
       return { projectId: existingSession.committedProjectId, session: existingSession };
     }
     const session = ensureActiveSession(existingSession);
-    if (!hasMeaningfulSetupContent(session)) {
+    // NOTE: 相談ターンが草案を書かなくなったので、会話しただけでは作品化させない。
+    // 会話ログから直接変換はできてしまうが、それでは利用者が中身を確認・修正する
+    // 機会が無いまま作品ができる。草案の実体を通過条件にする。
+    if (!hasSetupDraftContent(session)) {
       throw new SetupServiceError(
-        '作品の種がまだありません。相談するか、作品の種メモを入力してください。',
-        'setup_content_empty',
+        SETUP_DRAFT_REQUIRED_MESSAGE,
+        'setup_draft_empty',
         false,
         400,
         session
@@ -1110,6 +1286,11 @@ async function generateWithSessionModel(
     userPrompt: string;
     outputLength: number;
     temperature: number;
+    // NOTE: 思考モデルは max_tokens を思考と本文で共有する。outputLength からの推定は
+    // 思考ゼロ前提の値なので、相談経路はここで明示的に枠と熟考量を指定する。
+    maxOutputTokens?: number;
+    reasoningEffort?: 'low' | 'medium' | 'high';
+    responseMimeType?: 'application/json';
     abortSignal?: AbortSignal;
   }
 ) {

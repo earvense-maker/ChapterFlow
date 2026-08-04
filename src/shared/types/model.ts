@@ -44,6 +44,19 @@ export interface AdapterGenerateRequest {
   // 推定（+ Gemini thinking 分の 2048）だとキャップに張り付いて再試行の headroom
   // が消える」用途で使う。単位はトークン。指定しなければ従来通り。
   maxOutputTokens?: number;
+  // NOTE: 思考モデルにどれだけ熟考させるか。省略時は各アダプタの既定（小説本文向けに
+  // 最大熟考）で、従来の呼び出しは影響を受けない。
+  //
+  // 熟考量は max_tokens を本文と食い合う。相談チャットのように「出力は1,800字でも
+  // 熟考は青天井」という組み合わせでは、本文へ移る前に枠が尽きて content 0 字で
+  // 正常終了する（deepseek-v4-flash で2ターン連続発生）。枠を広げても熟考は止まらず
+  // 待ち時間が伸びるだけなので、対話用途では熟考量そのものを落とす必要がある。
+  reasoningEffort?: 'low' | 'medium' | 'high';
+  // NOTE: 思考の有効・無効を呼び出し側が明示する（reasoningEffort は熟考量の大きさで、
+  // こちらは on/off。混同しない）。省略時は後方互換として各アダプタの現在の既定動作を
+  // 維持する。JSON 出力タスクは省略すれば従来どおり thinking 無効になり、
+  // AI 相談のように JSON のまま思考させたい呼び出しだけ 'enabled' を渡す。
+  reasoningMode?: 'enabled' | 'disabled';
   // NOTE: 開発版限定のプロンプトダンプで「どの機能の呼び出しか」を示すラベル。
   // アダプタは読まず、HTTP ボディにも載らない。生成の挙動には一切影響しない。
   // 全アダプタ呼び出しが1つの入口（adapters/index.ts のラッパ）を通るので、

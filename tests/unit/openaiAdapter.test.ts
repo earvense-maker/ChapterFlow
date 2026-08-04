@@ -242,6 +242,60 @@ describe('OpenAIAdapter', () => {
     }
   });
 
+  it('reports a stream that spent its whole budget on reasoning and returned no content', async () => {
+    // NOTE: 診断が非ストリーミング側にしか無く、相談チャットの空応答は「空だった」以外
+    // 何も分からなかった。思考で枠を使い切ったのか本文欄に入らなかったのかを、この
+    // debugInfo だけで切り分けられるようにする。
+    const blocks = [
+      sseReasoningBlock('延々と考える'),
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`,
+      'data: [DONE]\n\n',
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+        Promise.resolve(sseResponse(blocks, 0, init.signal ?? undefined))
+      )
+    );
+
+    const events = [];
+    for await (const event of new OpenAIAdapter().generateTextStream(baseRequest)) {
+      events.push(event);
+    }
+    const done = events.find((event) => event.type === 'done');
+
+    expect(done).toMatchObject({ finishReason: 'length' });
+    expect(done).toHaveProperty('debugInfo');
+    const debugInfo = (done as { debugInfo?: string }).debugInfo ?? '';
+    expect(debugInfo).toContain('content=empty');
+    expect(debugInfo).toContain('reasoning_content=6chars');
+    expect(debugInfo).toContain('finish=length');
+    // 思考本文そのものは診断にも載せない（既存の扱いを崩さない）。
+    expect(JSON.stringify(events)).not.toContain('延々と考える');
+  });
+
+  it('does not add stream diagnostics when content arrived', async () => {
+    const blocks = [
+      sseReasoningBlock('考えた'),
+      sseChunkBlock('本文'),
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
+      'data: [DONE]\n\n',
+    ];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init: RequestInit) =>
+        Promise.resolve(sseResponse(blocks, 0, init.signal ?? undefined))
+      )
+    );
+
+    const events = [];
+    for await (const event of new OpenAIAdapter().generateTextStream(baseRequest)) {
+      events.push(event);
+    }
+
+    expect(events.find((event) => event.type === 'done')).not.toHaveProperty('debugInfo');
+  });
+
   it('times out when no stream events arrive within timeoutMs', async () => {
     const blocks = [sseChunkBlock('遅すぎる')];
     const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) =>

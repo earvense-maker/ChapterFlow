@@ -151,6 +151,18 @@ router.post('/setup-sessions/:id/messages/retry', async (req, res, next) => {
   }
 });
 
+// NOTE: 「今の相談を草案にまとめる」。相談ターンから設定草案の更新を切り離したので、
+// 書き起こしは利用者が明示的に実行したときだけ走る。
+router.post('/setup-sessions/:id/draft/generate', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as { revision?: number };
+    const result = await setupSessionService.generateSetupDraft(req.params.id, body);
+    res.json(result);
+  } catch (err) {
+    handleSetupError(err, res, next);
+  }
+});
+
 router.put('/setup-sessions/:id/draft', async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as UpdateSetupDraftBody;

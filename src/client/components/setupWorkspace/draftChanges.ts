@@ -34,7 +34,7 @@ export interface DraftSectionLabels {
   strings: Record<StringDraftSection, string>;
 }
 
-// NOTE: 種メモの見出しと「このターンのメモ更新」の文言は同じ語彙でないと、どの欄が
+// NOTE: 設定草案の見出しと「この書き出しでの更新」の文言は同じ語彙でないと、どの欄が
 // 変わったのか追えなくなる。両者をこの1テーブルから引く（用途別UIは設計書 1.5）。
 const DRAFT_SECTION_LABELS: Record<SetupPurpose, DraftSectionLabels> = {
   novel: {

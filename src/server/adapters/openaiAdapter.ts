@@ -118,6 +118,9 @@ export class OpenAIAdapter implements ModelAdapter {
       }
 
       let finishReason: FinishReason = 'stop';
+      // NOTE: 診断はプロバイダーが返した生の値で出す。mapFinishReason は 'length' 以外を
+      // 'error' に畳んでしまい、空応答の原因（枠切れか異常終了か）が消える。
+      let rawFinishReason: string | undefined;
       let rawUsage: AdapterGenerateResult['rawUsage'] | undefined;
       let resolvedModelName: string | undefined;
       let sawTerminalMarker = false;
@@ -163,6 +166,7 @@ export class OpenAIAdapter implements ModelAdapter {
         }
         if (choice?.finish_reason) {
           finishReason = mapFinishReason(choice.finish_reason);
+          rawFinishReason = choice.finish_reason;
           sawTerminalMarker = true;
         }
         if (data.usage) {
@@ -178,10 +182,20 @@ export class OpenAIAdapter implements ModelAdapter {
         );
       }
 
+      // NOTE: 非ストリーミング側と同じ診断をストリーミングにも載せる。thinking 系モデルが
+      // 枠を思考で使い切ると content 0 字のまま finish_reason=length で正常終了するため、
+      // これが無いと呼び出し側は「空だった」以上のことを言えない。実際、相談チャットの
+      // empty_response には診断が一切付かず、原因の切り分けにダンプの突き合わせが要った。
+      const debugInfo =
+        contentChars === 0 && reasoningChars > 0
+          ? `content=empty reasoning_content=${reasoningChars}chars finish=${rawFinishReason ?? 'none'}`
+          : undefined;
+
       yield {
         type: 'done',
         finishReason,
         rawUsage,
+        ...(debugInfo ? { debugInfo } : {}),
         // reasoning を返さない通常モデルでは既存 done event の形を変えない。本文側の
         // first-content は generationService が全プロバイダー共通で計測する。
         ...(reasoningChunks > 0

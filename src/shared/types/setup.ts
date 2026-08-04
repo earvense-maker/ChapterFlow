@@ -145,6 +145,11 @@ export interface SetupSession {
   lastError: SetupSessionError | null;
   previews?: SetupPreviewRecord[];
   conversationSummary?: string;
+  // NOTE: 最後に設定草案へまとめた時点のメッセージ数。「まとめてから会話が進んだか」の
+  // 判定だけに使う。時刻ではなく件数なのは、草案の各項目が個別の updatedAt を持ち、
+  // 文字列配列の項目には時刻が無いため、草案側からは横断的に比較できないから。
+  // 未設定（旧セッション）は0扱いで、初回は必ず促される。
+  draftWrittenUpMessageCount?: number;
   commitPlan?: { plan: SetupCommitPlan; createdAt: string } | null;
   createdAt: string;
   updatedAt: string;
@@ -163,7 +168,9 @@ export interface SetupSessionSummary {
   purpose: SetupPurpose;
 }
 
-export type SetupSuggestedActionIntent = 'preview' | 'commit';
+// NOTE: 'draft' は「今の相談を草案にまとめる」。相談ターンが設定草案を更新しなくなったので、
+// 書き起こしを利用者が任意のタイミングで実行するための操作。
+export type SetupSuggestedActionIntent = 'preview' | 'commit' | 'draft';
 
 export interface SetupSuggestedAction {
   label: string;
@@ -255,18 +262,18 @@ export interface PatchSetupSettingsResponse {
   revision: number;
 }
 
+// NOTE: 次の一歩の選択肢はモデルに毎ターン考えさせず、クライアント側の固定ボタンに
+// した。相談の返答が平文だけになったので、選択肢を運ぶ経路自体が無くなっている。
 export interface SetupSessionResponse {
   sessionId: SetupSessionId;
   session: SetupSession;
   assistantMessage?: SetupMessage;
-  suggestedActions: SetupSuggestedAction[];
 }
 
 export interface SetupMessageResponse {
   session: SetupSession;
   assistantMessage?: SetupMessage;
   draft: SetupDraft;
-  suggestedActions: SetupSuggestedAction[];
   revision: number;
 }
 

@@ -102,6 +102,34 @@ describe('GeminiAdapter', () => {
   });
 
   it.each([
+    ['low', 'low'],
+    // NOTE: medium を low へ寄せると、'medium' を「ある程度は考えさせる」意図で渡す
+    // 作品化の最終変換が、Gemini 3.x でだけ最大から最小へ落ちる。3.x は low/high の
+    // 2段しかないので、low だけを low に丸める。
+    ['medium', 'high'],
+    ['high', 'high'],
+  ])('maps reasoningEffort %s to thinkingLevel %s on Gemini 3.x', async (effort, level) => {
+    // NOTE: thinkingLevel も maxOutputTokens を本文と食い合う。相談のような対話経路が
+    // 熟考を落とせないと、DeepSeek で起きた「思考で枠を使い切って本文0字」を Gemini でも踏む。
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        candidates: [{ content: { parts: [{ text: '本文' }] }, finishReason: 'STOP' }],
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new GeminiAdapter().generateText({
+      ...baseRequest,
+      modelName: 'gemini-3.6-flash',
+      reasoningEffort: effort as 'low' | 'medium' | 'high',
+    });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+
+    expect(body.generationConfig.thinkingConfig.thinkingLevel).toBe(level);
+  });
+
+  it.each([
     'gemini-3.5-flash-lite',
     'gemini-3.6-flash',
     'gemini-4-flash',

@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
 import { resolveSystemPrompt } from '../../src/server/prompts/systemPrompt';
+import * as setupSessionParsing from '../../src/server/services/setupSessionParsing';
 import * as setupSessionService from '../../src/server/services/setupSessionService';
 import * as storage from '../../src/server/services/storageService';
 import type { MemoryImportance, SetupCommitPlan, SetupDraft } from '../../src/server/types/index';
@@ -278,132 +279,259 @@ describe('setupSessionService', () => {
     });
   });
 
-  it('does not expose raw model output when setup chat JSON cannot be parsed', () => {
-    const rawOutput = '{"visibleReply":"読めてはいけない", "draftPatch":';
-    const parsed = setupSessionService.parseChatResult(rawOutput);
-
-    expect(parsed.visibleReply).not.toContain(rawOutput);
-    expect(parsed.visibleReply).not.toContain('読めてはいけない');
-    expect(parsed.draftPatch).toBeNull();
-    expect(parsed.suggestedActions).toEqual([
-      {
-        label: 'もう一度整理',
-        message: '直前の相談内容をもう一度整理してください。',
-      },
-    ]);
+  it('shows a plain reply as-is', () => {
+    expect(setupSessionService.normalizeChatReply('それは興味深い方向ですね。')).toBe(
+      'それは興味深い方向ですね。'
+    );
   });
 
-  it('treats plain text replies as visible replies without draft changes', () => {
-    const parsed = setupSessionService.parseChatResult('それは興味深い方向ですね。');
-
-    expect(parsed.visibleReply).toBe('それは興味深い方向ですね。');
-    expect(parsed.draftPatch).toBeNull();
-    expect(parsed.suggestedActions).toEqual([]);
+  it('unwraps a reply the model wrapped in a code fence', () => {
+    expect(setupSessionService.normalizeChatReply('```\n fenced plain text \n```')).toBe(
+      'fenced plain text'
+    );
   });
 
-  it('treats fenced plain text as a visible reply', () => {
-    const parsed = setupSessionService.parseChatResult('```\n fenced plain text \n```');
+  it('hides a draft-patch tail the model added on its own', () => {
+    // NOTE: 指示文はもう2部構成を求めていないが、学習の癖でJSONを付けてくることがある。
+    // 帳簿がユーザーの画面に出るのは避ける。
+    const raw = 'これは表示されます。\n\n===DRAFT_PATCH===\n{"draftPatch": {"coreConcept":"内部"}}';
 
-    expect(parsed.visibleReply).toBe('fenced plain text');
+    const reply = setupSessionService.normalizeChatReply(raw);
+
+    expect(reply).toBe('これは表示されます。');
+    expect(reply).not.toContain('coreConcept');
   });
 
-  it('falls back to a safe message on empty replies', () => {
-    const parsed = setupSessionService.parseChatResult('   ```json   ');
-
-    expect(parsed.visibleReply).toContain('読み取れません');
-    expect(parsed.draftPatch).toBeNull();
-  });
-
-  it('parses marker format with visible reply, patch, summary and suggested actions', () => {
-    const raw = `これは表示される返答です。
-
-===DRAFT_PATCH===
-{
-  "draftPatch": { "coreConcept": "テスト" },
-  "suggestedActions": [{ "label": "次へ", "message": "次の候補を見せて" }],
-  "conversationSummary": "会話の要約"
-}`;
-    const parsed = setupSessionService.parseChatResult(raw);
-
-    expect(parsed.visibleReply).toBe('これは表示される返答です。');
-    expect(parsed.draftPatch).toEqual({ coreConcept: 'テスト' });
-    expect(parsed.suggestedActions).toEqual([{ label: '次へ', message: '次の候補を見せて' }]);
-    expect(parsed.conversationSummary).toBe('会話の要約');
-  });
-
-  it('keeps only supported suggested-action intents', () => {
-    const parsed = setupSessionService.parseChatResult(
+  it('extracts a draft patch and summary from the memo write-up call', () => {
+    const parsed = setupSessionParsing.parseDraftExtraction(
       JSON.stringify({
-        visibleReply: '次の一歩を選べます。',
-        suggestedActions: [
-          { label: '試し書き', message: '試し書きを作ってください。', intent: 'preview' },
-          { label: '作品にする', message: '作品にしてください。', intent: 'commit' },
-          { label: '相談を続ける', message: '候補を増やしてください。', intent: 'unexpected' },
-        ],
+        draftPatch: { coreConcept: 'テスト', confirmedAdd: [{ text: '確定', source: 'user' }] },
+        conversationSummary: '会話の要約',
       })
     );
 
-    expect(parsed.suggestedActions).toEqual([
-      { label: '試し書き', message: '試し書きを作ってください。', intent: 'preview' },
-      { label: '作品にする', message: '作品にしてください。', intent: 'commit' },
-      { label: '相談を続ける', message: '候補を増やしてください。' },
-    ]);
-  });
-
-  it('keeps visible reply and drops patch when JSON after marker is broken', () => {
-    const raw = 'これは表示されます。\n\n===DRAFT_PATCH===\n{"draftPatch": ';
-    const parsed = setupSessionService.parseChatResult(raw);
-
-    expect(parsed.visibleReply).toBe('これは表示されます。');
-    expect(parsed.draftPatch).toBeNull();
-    expect(parsed.suggestedActions).toEqual([]);
-    expect(parsed.conversationSummary).toBeNull();
-  });
-
-  it('still parses old JSON-only format without marker', () => {
-    const raw = JSON.stringify({
-      visibleReply: '旧形式の返答',
-      draftPatch: { coreConcept: '旧' },
-      suggestedActions: [{ label: 'OK', message: 'OK' }],
-      conversationSummary: '旧要約',
+    expect(parsed?.draftPatch).toEqual({
+      coreConcept: 'テスト',
+      confirmedAdd: [{ text: '確定', source: 'user' }],
     });
-    const parsed = setupSessionService.parseChatResult(raw);
-
-    expect(parsed.visibleReply).toBe('旧形式の返答');
-    expect(parsed.draftPatch).toEqual({ coreConcept: '旧' });
-    expect(parsed.suggestedActions).toEqual([{ label: 'OK', message: 'OK' }]);
-    expect(parsed.conversationSummary).toBe('旧要約');
+    expect(parsed?.conversationSummary).toBe('会話の要約');
   });
 
-  it('treats plain text without marker as a visible reply', () => {
-    const parsed = setupSessionService.parseChatResult('素の日本語返答です。');
+  it('accepts a memo write-up that omits the draftPatch wrapper', () => {
+    // NOTE: ラッパーを外して patch 本体を直接返すモデルがある。中身は同じなので拾う。
+    const parsed = setupSessionParsing.parseDraftExtraction(
+      '```json\n{ "coreConcept": "直接形式", "worldAdd": ["近未来"] }\n```'
+    );
 
-    expect(parsed.visibleReply).toBe('素の日本語返答です。');
-    expect(parsed.draftPatch).toBeNull();
-    expect(parsed.conversationSummary).toBeNull();
+    expect(parsed?.draftPatch).toEqual({ coreConcept: '直接形式', worldAdd: ['近未来'] });
   });
 
-  it('saves a returned conversation summary truncated to 2000 chars', async () => {
+  it('reports unparseable memo write-ups instead of guessing', () => {
+    expect(setupSessionParsing.parseDraftExtraction('{"draftPatch":')).toBeNull();
+    expect(setupSessionParsing.parseDraftExtraction('ただの文章です')).toBeNull();
+  });
+
+  it('saves a conversation summary from the memo write-up truncated to 2000 chars', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);
 
     const longSummary = 'a'.repeat(2500);
-    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
-      text: `返答です。
+    const chatSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '返答です。',
+      finishReason: 'stop',
+      retryable: false,
+    });
+    let sessionId = result.sessionId;
+    try {
+      const sent = await setupSessionService.sendSetupMessage(sessionId, {
+        message: 'hello',
+        revision: result.session.revision,
+      });
+      chatSpy.mockResolvedValue({
+        text: JSON.stringify({
+          draftPatch: { coreConcept: '核' },
+          conversationSummary: longSummary,
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      });
 
-===DRAFT_PATCH===
-{ "conversationSummary": "${longSummary}" }`,
+      const generated = await setupSessionService.generateSetupDraft(sessionId, {
+        revision: sent.revision,
+      });
+
+      expect(generated.session.conversationSummary).toBe(longSummary.slice(0, 2000));
+      expect(generated.draft.coreConcept).toBe('核');
+    } finally {
+      chatSpy.mockRestore();
+      void sessionId;
+    }
+  });
+
+  it('leaves the draft untouched during an ordinary consultation turn', async () => {
+    // NOTE: 相談ターンから設定草案の更新を切り離した本体。会話が進んでもメモは動かない。
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '面白い方向ですね。まずは主人公から決めましょう。',
       finishReason: 'stop',
       retryable: false,
     });
 
     try {
       const response = await setupSessionService.sendSetupMessage(result.sessionId, {
+        message: '近未来SFがいいです',
+        revision: result.session.revision,
+      });
+
+      expect(response.assistantMessage?.content).toBe(
+        '面白い方向ですね。まずは主人公から決めましょう。'
+      );
+      expect(response.draft).toEqual(result.session.draft);
+      expect(response.session.conversationSummary).toBeFalsy();
+    } finally {
+      generateSpy.mockRestore();
+    }
+  });
+
+  it('refuses to write up a memo before the user has said anything', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    await expect(setupSessionService.generateSetupDraft(result.sessionId, {})).rejects.toMatchObject(
+      { code: 'setup_content_empty' }
+    );
+  });
+
+  it('fails the turn instead of saving the unreadable-reply fallback when the model returns no text', async () => {
+    // NOTE: 実際に起きた事故の再現。deepseek-v4-flash が思考で出力枠を使い切って本文0字で
+    // 返し、非ストリーミング経路には空チェックが無かったため、parseChatResult の
+    // 「読み取れませんでした」が lastError=null の正常な返答として履歴に積まれた。
+    // 利用者からは会話が進まないだけに見え、再試行ボタンも出なかった。
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '',
+      finishReason: 'length',
+      debugInfo: 'content=empty reasoning_content=9000chars finish=length',
+      retryable: false,
+    });
+
+    try {
+      await expect(
+        setupSessionService.sendSetupMessage(result.sessionId, {
+          message: 'hello',
+          revision: result.session.revision,
+        })
+      ).rejects.toMatchObject({ code: 'empty_response', retryable: true });
+
+      const stored = await storage.readSetupSession(result.sessionId);
+      expect(stored.messages.filter((message) => message.role === 'assistant')).toEqual([]);
+      expect(stored.lastError?.code).toBe('empty_response');
+      // 最後がユーザー発言のままなので再試行が成立する。
+      expect(stored.messages[stored.messages.length - 1]?.role).toBe('user');
+    } finally {
+      generateSpy.mockRestore();
+    }
+  });
+
+  it('fails the turn when the whole reply was a draft-patch tail with no visible text', async () => {
+    // NOTE: ガードを素の text で行うと、応答が ===DRAFT_PATCH=== で始まったときに
+    // 「text は空でないがマーカー除去後は空」ですり抜け、content 空の assistant
+    // メッセージが lastError=null の正常な返答として保存される。判定と保存は
+    // 必ず同じ文字列（正規化後）に対して行う。
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '===DRAFT_PATCH===\n{"draftPatch":{"coreConcept":"内部だけ"}}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    try {
+      await expect(
+        setupSessionService.sendSetupMessage(result.sessionId, {
+          message: 'hello',
+          revision: result.session.revision,
+        })
+      ).rejects.toMatchObject({ code: 'empty_response' });
+
+      const stored = await storage.readSetupSession(result.sessionId);
+      expect(stored.messages.filter((message) => message.role === 'assistant')).toEqual([]);
+    } finally {
+      generateSpy.mockRestore();
+    }
+  });
+
+  it('surfaces the empty-response diagnostic instead of the generic failure text', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '',
+      finishReason: 'length',
+      debugInfo: 'content=empty reasoning_content=9000chars finish=length',
+      retryable: false,
+    });
+
+    try {
+      await expect(
+        setupSessionService.sendSetupMessage(result.sessionId, {
+          message: 'hello',
+          revision: result.session.revision,
+        })
+      ).rejects.toThrow(/出力上限を使い切った[\s\S]*reasoning_content=9000chars/);
+    } finally {
+      generateSpy.mockRestore();
+    }
+  });
+
+  it('asks for a short reasoning budget and an explicit output ceiling on consultation turns', async () => {
+    // NOTE: 出力枠は outputLength(1800字) からの推定だと 8,498 トークンで、思考モデルが
+    // 本文へ届く前に使い切った。枠を広げるだけでは思考は止まらないので熟考量も落とす。
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '返答です。',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    try {
+      await setupSessionService.sendSetupMessage(result.sessionId, {
         message: 'hello',
         revision: result.session.revision,
       });
 
-      expect(response.session.conversationSummary).toBe(longSummary.slice(0, 2000));
+      expect(generateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ reasoningEffort: 'low', maxOutputTokens: 16_000 })
+      );
+    } finally {
+      generateSpy.mockRestore();
+    }
+  });
+
+  it('fails the preview instead of storing an empty trial passage', async () => {
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '',
+      finishReason: 'length',
+      retryable: false,
+    });
+
+    try {
+      await expect(
+        setupSessionService.generateSetupPreview(result.sessionId, {})
+      ).rejects.toMatchObject({ code: 'empty_response' });
+
+      const stored = await storage.readSetupSession(result.sessionId);
+      expect(stored.previews ?? []).toEqual([]);
     } finally {
       generateSpy.mockRestore();
     }
@@ -595,7 +723,32 @@ describe('setupSessionService', () => {
 
     await expect(
       setupSessionService.createSetupCommitPlan(result.sessionId)
-    ).rejects.toMatchObject({ code: 'setup_content_empty', status: 400 });
+    ).rejects.toMatchObject({ code: 'setup_draft_empty', status: 400 });
+  });
+
+  it('rejects commit plan generation after consulting but before writing up the draft', async () => {
+    // NOTE: 相談ターンが草案を書かなくなったので、ここを通すと草案が空のまま
+    // 会話ログだけから作品ができる。利用者が中身を確認・修正する機会が無くなる。
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+    const generateSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: 'いい方向ですね。',
+      finishReason: 'stop',
+      retryable: false,
+    });
+
+    try {
+      await setupSessionService.sendSetupMessage(result.sessionId, {
+        message: '近未来SFがいいです',
+        revision: result.session.revision,
+      });
+
+      await expect(
+        setupSessionService.createSetupCommitPlan(result.sessionId)
+      ).rejects.toMatchObject({ code: 'setup_draft_empty', status: 400 });
+    } finally {
+      generateSpy.mockRestore();
+    }
   });
 
   it('rejects direct commit before a story seed and reviewed plan exist', async () => {
@@ -608,7 +761,7 @@ describe('setupSessionService', () => {
         plan: emptyPlan,
         revision: result.session.revision,
       })
-    ).rejects.toMatchObject({ code: 'setup_content_empty', status: 400 });
+    ).rejects.toMatchObject({ code: 'setup_draft_empty', status: 400 });
 
     const seeded = {
       ...result.session,

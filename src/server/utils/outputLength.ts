@@ -36,6 +36,17 @@ export function getApproximateOutputRange(outputLength: number): ApproximateOutp
 // キャップの小さい OpenAI 系（16,384）へ渡しても不正な値にはならない。
 export const JSON_TASK_MAX_OUTPUT_TOKENS = 40_000;
 
+// NOTE: 相談チャット・試し書きのような対話用の枠。JSON タスク用と分けているのは、
+// こちらは待ち時間がそのまま体験に効くため、上限を抑えて「延々と考え続ける」より
+// 早めに打ち切らせたいから。1,800字の返答なら本文は数千トークンで足り、残りは
+// 思考の余裕になる。
+//
+// この枠だけでは事故は防げない。実測では outputLength 由来の 8,498 枠を
+// deepseek-v4-flash が reasoning_effort=high で使い切り、本文0字のまま2ターン
+// 連続で停止した。枠を広げても思考は止まらず待ち時間が伸びるだけなので、
+// 対話経路は reasoningEffort を併せて落とすこと。ここは取りこぼしの保険。
+export const INTERACTIVE_TASK_MAX_OUTPUT_TOKENS = 16_000;
+
 export function estimateMaxOutputTokens(outputLength: number, maxTokens: number): number {
   // NOTE: 日本語は1文字≒1.5〜2.5トークン、加えて Gemini 2.5系 は thinking で
   // 出力枠を消費するため、指定字数×3 + 2048 の余裕を持たせないと本文が途中

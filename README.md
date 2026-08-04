@@ -3,7 +3,7 @@
 **API-Powered Narrative Studio**
 
 自分専用の連載小説を、その場の気分で進めるWindows向けローカルアプリです。
-作品設定、これまでの流れ、種メモをもとに、Gemini / DeepSeek / OpenAI / xAI / OpenRouterのAPIで続きを生成できます。
+作品設定、これまでの流れ、設定草案をもとに、Gemini / DeepSeek / OpenAI / xAI / OpenRouterのAPIで続きを生成できます。
 初回ベータではGemini / DeepSeek / xAIを実機確認済み、OpenAI / OpenRouterは実装・自動テスト済みですが実APIでは未検証です。
 
 > 現在は初回公開に向けたベータ段階です。大切な作品データは定期的にバックアップしてください。

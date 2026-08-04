@@ -42,6 +42,13 @@ export function mapErrorMessage(code: string, detail?: string): string {
     case 'service_unavailable':
       base = 'モデルサービスを現在利用できません。少し待って再試行してください。';
       break;
+    // NOTE: 分岐が無く既定の汎用文言に落ちていた。思考モデルが出力枠を思考で使い切ると
+    // ここに来るが、「設定を確認して再試行」では利用者もサポートも次の手が打てない。
+    // detail には adapter の診断（content=empty reasoning_content=...）が入る。
+    case 'empty_response':
+      base =
+        '相談相手からの返答が空でした。モデルの思考が出力上限を使い切った可能性があります。再試行するか、設定画面で別のモデルを試してください。';
+      break;
     default:
       base = '相談処理に失敗しました。設定を確認して再試行してください。';
   }

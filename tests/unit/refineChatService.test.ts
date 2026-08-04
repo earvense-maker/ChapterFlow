@@ -3,6 +3,9 @@ import * as refineChatService from '../../src/server/services/refineChatService'
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
+import { DeepSeekAdapter } from '../../src/server/adapters/deepseekAdapter';
+import { OpenAIAdapter } from '../../src/server/adapters/openaiAdapter';
+import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../../src/server/utils/outputLength';
 import type { Character, RefineSession } from '../../src/server/types/index';
 
 const createdProjectIds: string[] = [];
@@ -196,6 +199,18 @@ describe('refineChatService sendRefineMessage', () => {
     expect(result.assistantMessage.suggestedActions).toBeUndefined();
     expect(result.session.consultationState?.notes).toEqual([]);
     expect(result.session.lastError).toBeNull();
+  });
+
+  it('persists the plain-text fallback reply to the session', async () => {
+    const projectId = await createTrackedProject();
+    mockAssistantResponse(null, '自然文で返った応答。');
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    const stored = await storage.readRefineSession(projectId);
+    expect(stored?.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(stored?.messages[1].content).toBe('自然文で返った応答。');
+    expect(stored?.revision).toBe(result.session.revision);
   });
 
   it('reports a parse failure when the reply looks like broken JSON', async () => {
@@ -799,3 +814,366 @@ function mockAssistantResponse(payload: AssistantPayload | null, rawText?: strin
     retryable: false,
   });
 }
+
+// ---------- DeepSeek V4 の thinking 有効化と再試行（設計書 5.3 / 5.5 / 5.7） ----------
+
+interface MockDeepSeekTurn {
+  text: string;
+  finishReason?: 'stop' | 'length' | 'timeout' | 'error' | 'content_filter';
+  debugInfo?: string;
+  errorMessage?: string;
+  retryable?: boolean;
+}
+
+function mockDeepSeekTurns(sequence: MockDeepSeekTurn[]) {
+  const spy = vi.spyOn(DeepSeekAdapter.prototype, 'generateText');
+  for (const turn of sequence) {
+    spy.mockResolvedValueOnce({
+      text: turn.text,
+      finishReason: turn.finishReason ?? 'stop',
+      retryable: turn.retryable ?? false,
+      ...(turn.debugInfo !== undefined ? { debugInfo: turn.debugInfo } : {}),
+      ...(turn.errorMessage !== undefined ? { errorMessage: turn.errorMessage } : {}),
+    });
+  }
+  return spy;
+}
+
+function structuredReply(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({ visibleReply: '返答', patches: [], ...overrides });
+}
+
+async function useDeepSeekProject(projectId: string, modelName = 'deepseek-v4-flash') {
+  await projectService.updateProject(projectId, {
+    activeModelProvider: 'deepseek',
+    activeModelName: modelName,
+  });
+}
+
+describe('refineChatService DeepSeek reasoning retry flow', () => {
+  it('sends thinking enabled / high / 40k tokens / JSON on the first consult turn', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([{ text: structuredReply() }]);
+
+    await refineChatService.sendRefineMessage(projectId, {
+      content: '相談',
+      responseMode: 'consult',
+    });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const request = spy.mock.calls[0][0];
+    expect(request.reasoningMode).toBe('enabled');
+    expect(request.reasoningEffort).toBe('high');
+    expect(request.maxOutputTokens).toBe(JSON_TASK_MAX_OUTPUT_TOKENS);
+    expect(request.responseMimeType).toBe('application/json');
+  });
+
+  it('applies the same first-request policy to auto and prepare-patch', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: structuredReply({ turnIntent: 'explore' }) },
+      { text: structuredReply({ turnIntent: 'prepare-patch' }) },
+    ]);
+
+    await refineChatService.sendRefineMessage(projectId, { content: '自由入力' });
+    await refineChatService.sendRefineMessage(projectId, {
+      content: '候補を作って',
+      responseMode: 'prepare-patch',
+    });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    for (const call of spy.mock.calls) {
+      expect(call[0].reasoningMode).toBe('enabled');
+      expect(call[0].reasoningEffort).toBe('high');
+      expect(call[0].maxOutputTokens).toBe(JSON_TASK_MAX_OUTPUT_TOKENS);
+      expect(call[0].responseMimeType).toBe('application/json');
+    }
+  });
+
+  it('does not retry when the first turn is a usable structured reply', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([{ text: structuredReply() }]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.assistantMessage.content).toBe('返答');
+    expect(result.session.lastError).toBeNull();
+  });
+
+  it('retries with thinking disabled when the first turn is empty', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: '', finishReason: 'stop', debugInfo: 'content=empty reasoning_content=100chars' },
+      { text: structuredReply() },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    const retry = spy.mock.calls[1][0];
+    expect(retry.reasoningMode).toBe('disabled');
+    expect(retry.reasoningEffort).toBeUndefined();
+    expect(retry.maxOutputTokens).toBe(JSON_TASK_MAX_OUTPUT_TOKENS);
+    expect(result.assistantMessage.content).toBe('返答');
+    expect(result.session.lastError).toBeNull();
+  });
+
+  it('retries on finishReason length even when the JSON is parseable', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: structuredReply({ conversationSummary: '切れかけの要約' }), finishReason: 'length' },
+      { text: structuredReply() },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.assistantMessage.content).toBe('返答');
+  });
+
+  it('retries when the structured JSON has an empty visibleReply', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: structuredReply({ visibleReply: '' }) },
+      { text: structuredReply() },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.assistantMessage.content).toBe('返答');
+    expect(result.session.lastError).toBeNull();
+  });
+
+  it('retries when the first turn is broken JSON', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: '{"visibleReply": "途中で切れ' },
+      { text: structuredReply() },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.assistantMessage.content).toBe('返答');
+  });
+
+  it('adopts the retry structured reply over the first plain-text turn', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: 'これはJSONではありません。' },
+      { text: structuredReply() },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.assistantMessage.content).toBe('返答');
+    expect(result.session.consultationState?.notes).toEqual([]);
+  });
+
+  it('keeps the first plain-text reply when the retry also fails structurally', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: '考えた自然文の返答。' },
+      { text: '二回目も自然文。' },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    // NOTE: 初回の thinking あり自然文を優先する（設計書 5.7 #3）。
+    expect(result.assistantMessage.content).toBe('考えた自然文の返答。');
+    expect(result.assistantMessage.suggestedActions).toBeUndefined();
+    expect(result.session.consultationState?.notes).toEqual([]);
+    expect(result.newPatches).toEqual([]);
+    expect(result.session.lastError).toBeNull();
+  });
+
+  it('degrades to the first length result when the retry is unusable', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: structuredReply({ visibleReply: 'length でも読めた返答' }), finishReason: 'length' },
+      { text: '{"visibleReply": "壊れた' },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.assistantMessage.content).toBe('length でも読めた返答');
+    expect(result.session.lastError).toBeNull();
+  });
+
+  it('prefers the retry when both turns are length but structurally usable', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: structuredReply({ visibleReply: '初回の切れかけ' }), finishReason: 'length' },
+      { text: structuredReply({ visibleReply: '再試行の切れかけ' }), finishReason: 'length' },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.assistantMessage.content).toBe('再試行の切れかけ');
+  });
+
+  it('does not adopt an empty-visibleReply result when both turns are unusable', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: structuredReply({ visibleReply: '' }) },
+      { text: structuredReply({ visibleReply: '' }) },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.assistantMessage.content).toBe('（応答を解釈できませんでした。もう一度お伝えください）');
+    expect(result.session.lastError).not.toBeNull();
+  });
+
+  it('stores lastError when both turns are empty or broken', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([{ text: '' }, { text: '{"visibleReply": "途中' }]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.session.lastError).toContain('解釈できません');
+  });
+
+  it('reports the length limit hint when the retry ends with truncated JSON', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: '{"visibleReply": "壊れた' },
+      { text: '{"visibleReply": "途中で切れたJSON断片', finishReason: 'length' },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.session.lastError).toContain('解釈できません');
+    expect(result.session.lastError).toContain('出力上限に達し、思考なしの再試行でも');
+  });
+
+  it('does not fall back on timeout or error results', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: '', finishReason: 'timeout', errorMessage: 'model timed out', retryable: true },
+    ]);
+
+    await expect(
+      refineChatService.sendRefineMessage(projectId, { content: '相談' })
+    ).rejects.toMatchObject({ code: 'model_error', status: 503 });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes content_filter to the existing parse failure path without retry', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([{ text: '', finishReason: 'content_filter' }]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.session.lastError).toContain('安全フィルタ');
+  });
+
+  it('keeps Gemini and OpenAI requests and call counts unchanged', async () => {
+    const geminiProjectId = await createTrackedProject();
+    const geminiSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{"visibleReply":"gemini","patches":[]}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+    await refineChatService.sendRefineMessage(geminiProjectId, { content: '相談' });
+    expect(geminiSpy).toHaveBeenCalledTimes(1);
+    expect(geminiSpy.mock.calls[0][0].reasoningMode).toBeUndefined();
+    expect(geminiSpy.mock.calls[0][0].maxOutputTokens).toBeUndefined();
+
+    const openaiProjectId = await createTrackedProject();
+    await projectService.updateProject(openaiProjectId, {
+      activeModelProvider: 'openai',
+      activeModelName: 'gpt-4o-mini',
+    });
+    const openaiSpy = vi.spyOn(OpenAIAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{"visibleReply":"openai","patches":[]}',
+      finishReason: 'stop',
+      retryable: false,
+    });
+    await refineChatService.sendRefineMessage(openaiProjectId, { content: '相談' });
+    expect(openaiSpy).toHaveBeenCalledTimes(1);
+    expect(openaiSpy.mock.calls[0][0].reasoningMode).toBeUndefined();
+    expect(openaiSpy.mock.calls[0][0].maxOutputTokens).toBeUndefined();
+  });
+
+  it('does not duplicate messages, notes, or patches across the retry', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId);
+    const spy = mockDeepSeekTurns([
+      { text: '{"visibleReply": "壊れた' },
+      {
+        text: structuredReply({
+          visibleReply: '候補を作りました',
+          turnIntent: 'direct-edit',
+          consultationStatePatch: {
+            add: [{ kind: 'confirmed', text: '主人公の年齢を30歳に' }],
+          },
+          patches: [
+            {
+              summary: '更新',
+              operations: [
+                {
+                  kind: 'character-update',
+                  characterId: 'char-dup',
+                  fields: { description: '30歳' },
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    ]);
+    await storage.writeCharacters(projectId, [
+      { characterId: 'char-dup', name: 'D', role: 'protagonist', description: '27歳' },
+    ]);
+
+    const result = await refineChatService.sendRefineMessage(projectId, { content: '年齢を変えて' });
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.session.messages).toHaveLength(2);
+    expect(result.session.messages.filter((m) => m.role === 'assistant')).toHaveLength(1);
+    expect(result.session.consultationState?.notes).toHaveLength(1);
+    expect(result.newPatches).toHaveLength(1);
+    expect(result.session.patches).toHaveLength(1);
+  });
+
+  it('sends no reasoning fields on non-V4 DeepSeek models', async () => {
+    const projectId = await createTrackedProject();
+    await useDeepSeekProject(projectId, 'deepseek-chat');
+    const spy = mockDeepSeekTurns([{ text: structuredReply() }]);
+
+    await refineChatService.sendRefineMessage(projectId, { content: '相談' });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const request = spy.mock.calls[0][0];
+    expect(request.reasoningMode).toBeUndefined();
+    expect(request.reasoningEffort).toBeUndefined();
+    expect(request.maxOutputTokens).toBeUndefined();
+  });
+});

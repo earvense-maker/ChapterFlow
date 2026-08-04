@@ -258,7 +258,7 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
     generationConfig: {
       temperature?: number;
       maxOutputTokens: number;
-      thinkingConfig?: { thinkingLevel: 'high'; includeThoughts?: boolean };
+      thinkingConfig?: { thinkingLevel: 'low' | 'high'; includeThoughts?: boolean };
       responseMimeType?: string;
     };
   } = {
@@ -278,9 +278,18 @@ function buildRequestBody(request: AdapterGenerateRequest): unknown {
 
   // NOTE: Gemini 3.xでは数値のthinkingBudgetではなくthinkingLevelを使う。
   // 2.5系はthinkingLevel非対応なので設定を省略し、モデル既定のthinkingに任せる。
+  //
+  // NOTE: thinkingLevel も maxOutputTokens を本文と食い合うため、DeepSeek と同じく
+  // 呼び出し側の reasoningEffort で落とせるようにする。Gemini 3.x の受け付ける値は
+  // low / high の2段しかないので、3段を2段へ丸める必要がある。
+  //
+  // 丸め方は「low だけ low、それ以外は high」。medium を low 側へ寄せると、
+  // reasoningEffort='medium' を「ある程度は考えさせる」意図で渡している呼び出し
+  // （作品化の最終変換）が、Gemini 3.x でだけ最大から最小へ落ちる。呼び出し側の
+  // 語彙と全アダプタで一致させる方を優先する。
   if (/^gemini-3(?:[.-]|$)/i.test(modelName)) {
     body.generationConfig.thinkingConfig = {
-      thinkingLevel: 'high',
+      thinkingLevel: request.reasoningEffort === 'low' ? 'low' : 'high',
       includeThoughts: false,
     };
   }

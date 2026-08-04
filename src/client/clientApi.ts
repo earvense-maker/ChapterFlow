@@ -178,6 +178,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  generateSetupDraft: (id: string, revision?: number) =>
+    request<SetupDraftResponse>(`/setup-sessions/${id}/draft/generate`, {
+      method: 'POST',
+      body: JSON.stringify({ revision }),
+    }),
   updateSetupDraft: (id: string, body: UpdateSetupDraftBody) =>
     request<SetupDraftResponse>(`/setup-sessions/${id}/draft`, {
       method: 'PUT',

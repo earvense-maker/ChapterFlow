@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test('相談内容が空なら作品化できず、種メモ保存後は確認画面を表示する', async ({ page }) => {
+test('設定草案が空なら作品化できず、草案保存後は確認画面を表示する', async ({ page }) => {
   let session = createSession();
   const inertWarnings: string[] = [];
   const pageErrors: string[] = [];
@@ -383,7 +383,7 @@ test('初回の案内から候補を出し、試し書きをその場で調整�
   await expect
     .poll(() =>
       page
-        .getByLabel('作品の種メモ')
+        .getByLabel('作品設定草案')
         .evaluate((panel) => panel.scrollWidth <= panel.clientWidth)
     )
     .toBe(true);
@@ -609,7 +609,7 @@ test('ロールプレイ入口はキャラ向けの案内で始まり、初回�
     page.getByText('どんなキャラクターと話したいですか？ 好きな口調や関係性だけでも大丈夫です。一緒に見つけましょう。')
   ).toBeVisible();
   expect(createdPurpose).toBe('roleplay');
-  await expect(page.getByLabel('キャラの種メモ')).toBeVisible();
+  await expect(page.getByLabel('キャラ設定草案')).toBeVisible();
   await expect(page.getByRole('button', { name: 'このキャラと話し始める', exact: true })).toBeDisabled();
   await expect(page.getByPlaceholder('話したいキャラクターの雰囲気、口調、あなたとの関係、避けたい話題など')).toBeVisible();
 

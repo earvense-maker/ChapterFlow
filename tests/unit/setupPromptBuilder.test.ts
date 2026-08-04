@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildSetupChatPrompt, buildSetupCommitPrompt } from '../../src/server/services/setupPromptBuilder';
+import {
+  buildSetupChatPrompt,
+  buildSetupCommitPrompt,
+  buildSetupDraftExtractionPrompt,
+} from '../../src/server/services/setupPromptBuilder';
 import { createEmptySetupDraft } from '../../src/server/services/setupDraftPatchService';
 import type { SetupSession } from '../../src/server/types/index';
 
@@ -76,15 +80,16 @@ describe('setupPromptBuilder', () => {
     expect(userPrompt).not.toContain('削除済み設定');
   });
 
-  it('limits commit prompt conversation history and message length', () => {
-    const longText = '長い相談'.repeat(300);
+  it('keeps the whole conversation in the commit prompt', () => {
+    // NOTE: 設定草案は「今の相談を草案にまとめる」を押すまで空になり得るので、最終変換の正本は会話ログ。
+    // 直近24件・各800字打ち切りのままだと、長い相談の序盤が作品に届かない。
     const session: SetupSession = {
       ...baseSession(),
       sessionId: 'setup-prompt-long-chat',
       messages: Array.from({ length: 30 }, (_, index) => ({
         messageId: `msg-${index}`,
         role: index % 2 === 0 ? 'user' : 'assistant',
-        content: index === 0 ? '古すぎる相談' : index === 29 ? longText : `相談${index}`,
+        content: index === 0 ? '最初に決めたこと' : `相談${index}`,
         createdAt: now,
       })),
     };
@@ -94,10 +99,30 @@ describe('setupPromptBuilder', () => {
       presetIdsByCategory,
     });
 
-    expect(userPrompt).toContain('【直近の会話ログ】');
-    expect(userPrompt).not.toContain('古すぎる相談');
-    expect(userPrompt).toContain(`${longText.slice(0, 800)}...`);
-    expect(userPrompt).not.toContain(longText);
+    expect(userPrompt).toContain('【相談ログ】');
+    expect(userPrompt).toContain('最初に決めたこと');
+    expect(userPrompt).toContain('相談29');
+  });
+
+  it('drops the oldest messages only when the conversation exceeds the prompt budget', () => {
+    const session: SetupSession = {
+      ...baseSession(),
+      messages: [
+        { messageId: 'msg-oldest', role: 'user', content: '最初の一言', createdAt: now },
+        ...Array.from({ length: 40 }, (_, index) => ({
+          messageId: `msg-${index}`,
+          role: 'assistant' as const,
+          content: `${index}:${'長い返答'.repeat(200)}`,
+          createdAt: now,
+        })),
+      ],
+    };
+
+    const { userPrompt } = buildSetupChatPrompt({ session, userMessage: 'つづき' });
+
+    expect(userPrompt).not.toContain('最初の一言');
+    expect(userPrompt).toContain('長さの都合で省略されています');
+    expect(userPrompt).toContain('39:');
   });
 
   it('includes latest preview in chat prompt truncated to 800 chars', () => {
@@ -164,13 +189,84 @@ describe('setupPromptBuilder', () => {
     expect(commit.userPrompt).not.toContain('【これまでの相談の要約】');
   });
 
-  it('uses the marker-based two-part output format in chat prompt', () => {
+  it('keeps the chat prompt free of the draft bookkeeping', () => {
+    // NOTE: 相談ターンから構造化出力を外した本体。以前は毎ターン
+    // 「平文 + ===DRAFT_PATCH=== + 12フィールドのJSON」を要求しており、
+    // 会話の隣に書記の仕事を貼り付けていたのが遅さと空応答の原因だった。
     const session = baseSession();
     const chat = buildSetupChatPrompt({ session, userMessage: 'hello' });
 
-    expect(chat.systemInstructions).toContain('===DRAFT_PATCH===');
-    expect(chat.userPrompt).toContain('===DRAFT_PATCH===');
-    expect(chat.userPrompt).toContain('"conversationSummary"');
+    for (const text of [chat.systemInstructions, chat.userPrompt]) {
+      expect(text).not.toContain('===DRAFT_PATCH===');
+      expect(text).not.toContain('draftPatch');
+      expect(text).not.toContain('confirmedAdd');
+      expect(text).not.toContain('suggestedActions');
+      expect(text).not.toContain('conversationSummary');
+    }
+    expect(chat.systemInstructions).toContain('JSONや内部形式を出力しないでください');
+  });
+
+  it('keeps item ids so the write-up can update and archive, not only add', () => {
+    // NOTE: id を落とすとモデルは charactersUpdate / archiveIds に入れる値を知る術がなく、
+    // applySetupDraftPatch 側で id 無しの update は無言で捨てられ、charactersAdd は
+    // role+label の重複で弾かれる。結果、一度入った人物は二度と更新されず、却下した
+    // 候補も残り続ける。「まとめる」を繰り返す設計なので、繰り返すほど効く欠陥になる。
+    const session: SetupSession = {
+      ...baseSession(),
+      draft: {
+        ...createEmptySetupDraft(),
+        candidates: [
+          {
+            id: 'cand-1',
+            title: '密輸船の少年',
+            summary: '港で拾われた',
+            source: 'llm',
+            status: 'active',
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        characters: [
+          {
+            id: 'chr-1',
+            role: 'protagonist',
+            name: '灯里',
+            label: '',
+            description: '島に戻る主人公',
+            speechStyle: '',
+            relationshipNotes: '',
+            traits: [],
+            secrets: '',
+            source: 'llm',
+            status: 'active',
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      },
+    };
+
+    const { userPrompt } = buildSetupDraftExtractionPrompt({ session });
+
+    expect(userPrompt).toContain('[cand-1]');
+    expect(userPrompt).toContain('[chr-1]');
+    expect(userPrompt).toContain('charactersUpdate にその id を入れる');
+    // NOTE: updateCharacters は送られたフィールドを全置換する。実機で試したところ
+    // モデルは description に「性別を男性に更新。」という差分メモを返し、元の説明が
+    // 丸ごと消えた。ID を渡せるようにして初めて到達する経路なので、全文である
+    // ことを明示しないと「更新できるが情報が失われる」状態になる。
+    expect(userPrompt).toContain('差し替え後の説明文の全文');
+    expect(userPrompt).toContain('差分メモを入れると、元の記述が消える');
+  });
+
+  it('moves the bookkeeping into the memo write-up prompt', () => {
+    const session = baseSession();
+    const extraction = buildSetupDraftExtractionPrompt({ session });
+
+    expect(extraction.userPrompt).toContain('confirmedAdd');
+    expect(extraction.userPrompt).toContain('"conversationSummary"');
+    expect(extraction.userPrompt).toContain('【現在の設定草案】');
+    expect(extraction.systemInstructions).toContain('JSON以外の文章');
   });
 
   it('guides the consultation while omitting internal session identifiers from the prompt', () => {
@@ -179,14 +275,32 @@ describe('setupPromptBuilder', () => {
 
     expect(chat.systemInstructions).toContain('A/B/C');
     expect(chat.systemInstructions).toContain('気に入った要素は混ぜても大丈夫');
-    expect(chat.systemInstructions).toContain('traits');
-    expect(chat.systemInstructions).toContain('決まった枠に縛られない');
     expect(chat.systemInstructions).toContain('物語を動かす火種');
-    expect(chat.systemInstructions).toContain('suggestedActions');
-    expect(chat.systemInstructions).toContain('intent:"preview"');
-    expect(chat.userPrompt).toContain('"intent": "preview"');
+    // NOTE: 「全部任せる」への指示が無かったため、モデルが「候補を出す」と
+    // 「勝手に決めない」の板挟みになり、長考の末に空応答で会話が止まった。
+    expect(chat.systemInstructions).toContain('おまかせ');
     expect(chat.userPrompt).not.toContain(session.sessionId);
     expect(chat.userPrompt).not.toContain('"revision": 1');
+    expect(chat.userPrompt).not.toContain('messageId');
+  });
+
+  it('sends the whole conversation to the chat prompt instead of the last 12 messages', () => {
+    // NOTE: 序盤の決定（「全10場面で完結」等）は終盤まで効く。直近12件で切っていた頃は
+    // draft が実質の圧縮役を兼ねており、その draft を外すと序盤が黙って落ちていた。
+    const session: SetupSession = {
+      ...baseSession(),
+      messages: Array.from({ length: 30 }, (_, index) => ({
+        messageId: `msg-${index}`,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: index === 0 ? '最初に決めたこと' : `相談${index}`,
+        createdAt: now,
+      })),
+    };
+
+    const { userPrompt } = buildSetupChatPrompt({ session, userMessage: 'つづき' });
+
+    expect(userPrompt).toContain('最初に決めたこと');
+    expect(userPrompt).toContain('相談29');
   });
 
   it('uses free-form traits and a separate secrets key in both commit prompt variants', () => {
@@ -215,15 +329,21 @@ describe('setupPromptBuilder', () => {
       userMessage: 'このキャラと話したい',
     });
     expect(roleplayChat.systemInstructions).toContain('ユーザー自身が「誰として」');
-    expect(roleplayChat.userPrompt).toContain('userPersonaUpdate');
-    expect(roleplayChat.userPrompt).toContain('勝手に名前や年齢を決めない');
+    // NOTE: フィールド名は相談から消え、書き起こしプロンプト側の担当になった。
+    const roleplayExtraction = buildSetupDraftExtractionPrompt({
+      session: { ...baseSession(), purpose: 'roleplay' },
+    });
+    expect(roleplayExtraction.userPrompt).toContain('userPersonaUpdate');
+    expect(roleplayExtraction.userPrompt).toContain('勝手に名前や年齢を決めない');
 
     const novelChat = buildSetupChatPrompt({
       session: baseSession(),
       userMessage: 'こんな話が読みたい',
     });
-    expect(novelChat.systemInstructions).not.toContain('userPersonaUpdate');
-    expect(novelChat.userPrompt).not.toContain('userPersonaUpdate');
+    expect(novelChat.systemInstructions).not.toContain('ユーザー自身が「誰として」');
+    expect(
+      buildSetupDraftExtractionPrompt({ session: baseSession() }).userPrompt
+    ).not.toContain('userPersonaUpdate');
 
     const roleplayCommit = buildSetupCommitPrompt({
       session: { ...baseSession(), purpose: 'roleplay' },

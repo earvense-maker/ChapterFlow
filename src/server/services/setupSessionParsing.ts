@@ -1,72 +1,71 @@
-import type { SetupSuggestedAction } from '../types/index.js';
-
-// NOTE: setupSessionService から切り出した「LLM 応答の解釈」ヘルパー群。相談チャットの
-// 返答（可視テキスト＋DRAFT_PATCH＝ドラフト差分＋提案アクション＋会話要約）を解析し、
-// 読み取れない応答は安全なフォールバックへ縮退させる。外部サービスに依存しない葉ノード。
+// NOTE: setupSessionService から切り出した「LLM 応答の解釈」ヘルパー群。外部サービスに
+// 依存しない葉ノード。
+//
+// 相談チャットの応答は平文だけになった。以前は「平文 + ===DRAFT_PATCH=== + JSON」の
+// 2部構成を毎ターン要求しており、解釈の失敗（マーカー無し・JSON壊れ）がそのまま
+// 「返答が読み取れませんでした」という会話の停止として利用者に届いていた。
+// 設定草案への反映は parseDraftExtraction を使う別経路（利用者が明示的に実行）へ移した。
 
 export const DRAFT_PATCH_MARKER = '===DRAFT_PATCH===';
 export const MAX_CONVERSATION_SUMMARY_CHARS = 2000;
 
-const UNREADABLE_CHAT_REPLY =
-  '相談相手の返答をうまく読み取れませんでした。あなたの入力は保存されています。もう一度、今の内容を整理してみます。';
-const UNREADABLE_CHAT_ACTIONS: SetupSuggestedAction[] = [
-  {
-    label: 'もう一度整理',
-    message: '直前の相談内容をもう一度整理してください。',
-  },
+/**
+ * 相談チャットの平文返答を画面表示用に整える。
+ *
+ * マーカー以降を切り落とすのは保険。指示文はもう2部構成を要求していないが、
+ * 学習の癖でモデルが JSON を付けてくることがあり、それを利用者に見せたくない。
+ */
+export function normalizeChatReply(text: string): string {
+  const markerIndex = text.indexOf(DRAFT_PATCH_MARKER);
+  const visible = markerIndex >= 0 ? text.slice(0, markerIndex) : text;
+  return stripCodeFence(visible).trim();
+}
+
+export interface DraftExtractionResult {
+  draftPatch: unknown | null;
+  conversationSummary: string | null;
+}
+
+/**
+ * 「今の相談を草案にまとめる」で使う抽出結果の解釈。純 JSON 前提だが、モデルが
+ * コードフェンスや前置きを付けてくる場合に備えて parseJsonObject の緩い探索を通す。
+ */
+export function parseDraftExtraction(text: string): DraftExtractionResult | null {
+  const parsed = parseJsonObject(text);
+  if (!parsed) return null;
+
+  // NOTE: draftPatch でラップせず patch 本体を直接返すモデルがあるため、
+  // 既知のフィールドが直に来ていたらそれを patch とみなす。
+  const patch = isRecord(parsed.draftPatch)
+    ? parsed.draftPatch
+    : looksLikeDraftPatch(parsed)
+      ? parsed
+      : null;
+  const summary = asString(parsed.conversationSummary);
+
+  if (!patch && !summary) return null;
+  return { draftPatch: patch, conversationSummary: summary || null };
+}
+
+const DRAFT_PATCH_KEYS = [
+  'coreConcept',
+  'confirmedAdd',
+  'candidatesAdd',
+  'undecidedAdd',
+  'charactersAdd',
+  'charactersUpdate',
+  'relationshipSeedsAdd',
+  'worldAdd',
+  'toneAdd',
+  'ngAdd',
+  'openingSeedsAdd',
+  'scenarioSeedsAdd',
+  'userPersonaUpdate',
+  'archiveIds',
 ];
 
-export function parseChatResult(text: string): {
-  visibleReply: string;
-  draftPatch: unknown | null;
-  suggestedActions: SetupSuggestedAction[];
-  conversationSummary: string | null;
-} {
-  const markerIndex = text.indexOf(DRAFT_PATCH_MARKER);
-  if (markerIndex >= 0) {
-    const visibleReply = text.slice(0, markerIndex).trim();
-    const jsonPart = text.slice(markerIndex + DRAFT_PATCH_MARKER.length);
-    const parsed = parseJsonObject(jsonPart);
-    if (parsed) {
-      return {
-        visibleReply,
-        draftPatch: parsed.draftPatch ?? null,
-        suggestedActions: normalizeSuggestedActions(parsed.suggestedActions),
-        conversationSummary: asString(parsed.conversationSummary) || null,
-      };
-    }
-    return {
-      visibleReply,
-      draftPatch: null,
-      suggestedActions: [],
-      conversationSummary: null,
-    };
-  }
-
-  const parsed = parseJsonObject(text);
-  if (parsed) {
-    return {
-      visibleReply: asString(parsed.visibleReply),
-      draftPatch: parsed.draftPatch ?? null,
-      suggestedActions: normalizeSuggestedActions(parsed.suggestedActions),
-      conversationSummary: asString(parsed.conversationSummary) || null,
-    };
-  }
-
-  const plain = stripCodeFence(text).trim();
-  if (!plain) {
-    return unreadableChatFallback();
-  }
-  if (plain.includes('draftPatch') || plain.includes('visibleReply')) {
-    return unreadableChatFallback();
-  }
-
-  return {
-    visibleReply: plain,
-    draftPatch: null,
-    suggestedActions: [],
-    conversationSummary: null,
-  };
+function looksLikeDraftPatch(value: Record<string, unknown>): boolean {
+  return DRAFT_PATCH_KEYS.some((key) => key in value);
 }
 
 function stripCodeFence(text: string): string {
@@ -75,38 +74,6 @@ function stripCodeFence(text: string): string {
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
-}
-
-function unreadableChatFallback(): {
-  visibleReply: string;
-  draftPatch: null;
-  suggestedActions: SetupSuggestedAction[];
-  conversationSummary: null;
-} {
-  return {
-    visibleReply: UNREADABLE_CHAT_REPLY,
-    draftPatch: null,
-    suggestedActions: UNREADABLE_CHAT_ACTIONS.map((action) => ({ ...action })),
-    conversationSummary: null,
-  };
-}
-
-function normalizeSuggestedActions(value: unknown): SetupSuggestedAction[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      if (!isRecord(item)) return null;
-      const label = asString(item.label);
-      const message = asString(item.message);
-      const intent = normalizeSuggestedActionIntent(item.intent);
-      return label && message ? { label, message, ...(intent ? { intent } : {}) } : null;
-    })
-    .filter((item): item is SetupSuggestedAction => item !== null)
-    .slice(0, 4);
-}
-
-function normalizeSuggestedActionIntent(value: unknown): SetupSuggestedAction['intent'] {
-  return value === 'preview' || value === 'commit' ? value : undefined;
 }
 
 export function parseJsonObject(text: string): Record<string, unknown> | null {
