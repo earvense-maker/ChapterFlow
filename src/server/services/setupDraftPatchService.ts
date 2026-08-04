@@ -164,12 +164,21 @@ export function applySetupDraftPatch(input: {
   addUndecided(next.undecided, patch.undecidedAdd, source, now);
   addCharacters(next.characters, patch.charactersAdd, source, now);
   updateCharacters(next.characters, patch.charactersUpdate, input.locks, now);
+  updateTextItems(next.confirmed, patch.confirmedUpdate, input.locks, now);
+  updateCandidates(next.candidates, patch.candidatesUpdate, input.locks, now);
+  updateTextItems(next.undecided, patch.undecidedUpdate, input.locks, now);
   addStringItems(next.relationshipSeeds, patch.relationshipSeedsAdd, LIMITS.relationshipSeeds, input.locks, 'draft.relationshipSeeds');
   addStringItems(next.world, patch.worldAdd, LIMITS.world, input.locks, 'draft.world');
   addStringItems(next.tone, patch.toneAdd, LIMITS.tone, input.locks, 'draft.tone');
   addStringItems(next.ng, patch.ngAdd, LIMITS.ng, input.locks, 'draft.ng');
   addStringItems(next.openingSeeds, patch.openingSeedsAdd, LIMITS.openingSeeds, input.locks, 'draft.openingSeeds');
   addStringItems(next.scenarioSeeds, patch.scenarioSeedsAdd, LIMITS.scenarioSeeds, input.locks, 'draft.scenarioSeeds');
+  replaceStringItems(next.relationshipSeeds, patch.relationshipSeedsReplace, input.locks, 'draft.relationshipSeeds');
+  replaceStringItems(next.world, patch.worldReplace, input.locks, 'draft.world');
+  replaceStringItems(next.tone, patch.toneReplace, input.locks, 'draft.tone');
+  replaceStringItems(next.ng, patch.ngReplace, input.locks, 'draft.ng');
+  replaceStringItems(next.openingSeeds, patch.openingSeedsReplace, input.locks, 'draft.openingSeeds');
+  replaceStringItems(next.scenarioSeeds, patch.scenarioSeedsReplace, input.locks, 'draft.scenarioSeeds');
   applyUserPersonaUpdate(next, patch.userPersonaUpdate, input.locks);
   archiveIds(next, patch.archiveIds, input.locks, now);
 
@@ -387,6 +396,123 @@ function updateCharacters(
     }
     if (changed) {
       current.updatedAt = now;
+    }
+  }
+}
+
+// NOTE: 確定・未確定のようなテキスト項目の id 参照更新。charactersUpdate と同じく
+// 「送ったフィールドだけを全文で差し替える」。text に空文字は渡さない（削除は
+// archiveIds の役目）。ユーザーが草案へ書いた内容を後から変更したときの上書き経路。
+function updateTextItems(
+  items: SetupDraftTextItem[],
+  updates: unknown,
+  locks: SetupLock[],
+  now: string
+): void {
+  for (const update of asArray(updates)) {
+    if (!isRecord(update)) continue;
+    const id = asString(update.id);
+    if (!id) continue;
+    const current = items.find((item) => item.id === id);
+    if (!current || current.locked || isPathLocked(locks, id)) continue;
+
+    let changed = false;
+    const text = asString(update.text);
+    if (text && current.text !== text) {
+      // NOTE: 更新後の文言が既存の active 項目と重複する場合、追加時と同じ重複防止を
+      // かけて兄弟側を畳む。衝突相手が locked なら重複を作らず、更新自体を諦める。
+      const conflict = items.find(
+        (item) =>
+          item !== current &&
+          item.status === 'active' &&
+          sameText(item.text, text)
+      );
+      if (conflict) {
+        if (conflict.locked || isPathLocked(locks, conflict.id)) continue;
+        const conflictIndex = items.indexOf(conflict);
+        if (conflictIndex >= 0) items.splice(conflictIndex, 1);
+      }
+      current.text = text;
+      changed = true;
+    }
+    if (Object.hasOwn(update, 'reason')) {
+      const reason = asString(update.reason) || undefined;
+      if (current.reason !== reason) {
+        current.reason = reason;
+        changed = true;
+      }
+    }
+    if (changed) {
+      current.updatedAt = now;
+    }
+  }
+}
+
+function updateCandidates(
+  candidates: SetupDraftCandidate[],
+  updates: unknown,
+  locks: SetupLock[],
+  now: string
+): void {
+  for (const update of asArray(updates)) {
+    if (!isRecord(update)) continue;
+    const id = asString(update.id);
+    if (!id) continue;
+    const current = candidates.find((candidate) => candidate.id === id);
+    if (!current || current.locked || isPathLocked(locks, id)) continue;
+
+    const nextTitle = asString(update.title) || current.title;
+    const nextSummary = asString(update.summary) || current.summary;
+    if (nextTitle === current.title && nextSummary === current.summary) continue;
+
+    // NOTE: 更新後の候補が既存の active 項目と重複する場合、追加時と同じ判定
+    // （title 一致 or 空でない summary 一致）で兄弟側を畳む。衝突相手が locked なら
+    // 重複を作らず、更新自体を諦める。
+    const conflict = candidates.find(
+      (candidate) =>
+        candidate !== current &&
+        candidate.status === 'active' &&
+        (sameText(candidate.title, nextTitle) ||
+          sameNonEmptyText(candidate.summary, nextSummary))
+    );
+    if (conflict) {
+      if (conflict.locked || isPathLocked(locks, conflict.id)) continue;
+      const conflictIndex = candidates.indexOf(conflict);
+      if (conflictIndex >= 0) candidates.splice(conflictIndex, 1);
+    }
+    current.title = nextTitle;
+    current.summary = nextSummary;
+    current.updatedAt = now;
+  }
+}
+
+// NOTE: 文字列リスト（世界観・文体など）は id を持たないため、草案上の文言と完全一致
+// する from を丸ごと差し替える。to が空文字の Replace は削除を意味する（文字列リスト
+// は archiveIds の対象にならないため、これが唯一の撤回手段）。一致しない from は
+// 無視する（誤爆を避けるため）。差し替え後に重複が残る場合は片側に畳む。
+function replaceStringItems(
+  items: string[],
+  replaces: unknown,
+  locks: SetupLock[],
+  path: string
+): void {
+  if (isPathLocked(locks, path)) return;
+  for (const replace of asArray(replaces)) {
+    if (!isRecord(replace)) continue;
+    const from = asString(replace.from);
+    if (!from || !Object.hasOwn(replace, 'to')) continue;
+    const index = items.findIndex((item) => sameText(item, from));
+    if (index < 0) continue;
+    const to = asString(replace.to);
+    if (!to) {
+      items.splice(index, 1);
+      continue;
+    }
+    items[index] = to;
+    // NOTE: to が既に別項目として存在する場合は重複を畳む。from 自体が to と同じ
+    // 文言なら差し替え前から重複していたので畳み込みは走る。
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      if (i !== index && sameText(items[i], to)) items.splice(i, 1);
     }
   }
 }

@@ -145,11 +145,23 @@ export function buildSetupDraftExtractionPrompt(input: {
           charactersUpdate: [
             { id: '【現在の設定草案】の [id] をそのまま', description: '差し替え後の説明文の全文' },
           ],
+          confirmedUpdate: [{ id: '【現在の設定草案】の [id] をそのまま', text: '差し替え後の全文' }],
+          candidatesUpdate: [
+            { id: '【現在の設定草案】の [id] をそのまま', title: '新しい候補名', summary: '新しい説明' },
+          ],
+          undecidedUpdate: [
+            { id: '【現在の設定草案】の [id] をそのまま', text: '差し替え後の全文', reason: '未確定の理由' },
+          ],
           relationshipSeedsAdd: ['ユーザーとの関係の記録'],
           worldAdd: ['世界観や時代感'],
           toneAdd: ['口調・雰囲気の希望'],
           ngAdd: ['避けたいこと'],
           scenarioSeedsAdd: ['会話の舞台候補（例：放課後の教室で二人きり）'],
+          relationshipSeedsReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          worldReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          toneReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          ngReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          scenarioSeedsReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
           userPersonaUpdate: {
             name: 'ユーザーが名乗る名前（決まっていなければ省略）',
             relationship: 'ユーザーから見たキャラとの関係',
@@ -181,11 +193,23 @@ export function buildSetupDraftExtractionPrompt(input: {
           charactersUpdate: [
             { id: '【現在の設定草案】の [id] をそのまま', description: '差し替え後の説明文の全文' },
           ],
+          confirmedUpdate: [{ id: '【現在の設定草案】の [id] をそのまま', text: '差し替え後の全文' }],
+          candidatesUpdate: [
+            { id: '【現在の設定草案】の [id] をそのまま', title: '新しい候補名', summary: '新しい説明' },
+          ],
+          undecidedUpdate: [
+            { id: '【現在の設定草案】の [id] をそのまま', text: '差し替え後の全文', reason: '未確定の理由' },
+          ],
           relationshipSeedsAdd: ['関係性の火種'],
           worldAdd: ['世界観や時代感'],
           toneAdd: ['好みや文体傾向'],
           ngAdd: ['避けたいこと'],
           openingSeedsAdd: ['冒頭候補'],
+          relationshipSeedsReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          worldReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          toneReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          ngReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
+          openingSeedsReplace: [{ from: '草案に書かれた文言そのまま', to: '新しい文言（消す場合は空文字）' }],
           archiveIds: ['不要になった候補ID'],
         };
 
@@ -203,13 +227,22 @@ export function buildSetupDraftExtractionPrompt(input: {
     '- userPersonaUpdate はユーザー本人の設定だけを入れる。キャラ側の情報を混ぜない。',
     '- userPersonaUpdate に入れられるのは、ユーザーが選んだ・答えた内容だけである。勝手に名前や年齢を決めない。',
     '- ユーザーが「決めない」と言った項目は userPersonaUpdate から省く（空文字で送ると消える）。',
-    '- 既に【現在の設定草案】にある内容は繰り返さない。会話に出たのにメモへ入っていない分だけを返す。',
-    '- 【現在の設定草案】の各項目の先頭にある [id] が、その項目のIDである。'
-      + '既存の人物を書き足すときは charactersAdd ではなく charactersUpdate にその id を入れる。'
-      + '却下・不要になった項目は archiveIds にその id を入れる。IDを作り出さない。',
-    '- charactersUpdate の各フィールドには差し替え後の全文を入れる。'
+    '- 同じ内容は再送しない。会話に出たのに草案へ入っていない分だけを返す。',
+    '- ユーザーが草案へ書いた内容を変更・撤回した場合は、新情報で上書きする。'
+      + '確認・候補・未確定・人物は、該当項目の [id] を使う Update 系'
+      + '（confirmedUpdate / candidatesUpdate / undecidedUpdate / charactersUpdate）で全文を差し替える。'
+      + 'confirmedUpdate に入れられるのは、ユーザーが今回の会話で明示的に修正・採用した内容だけである。'
+      + 'あなたの推測や提案で確定項目を上書きしない。'
+      + '完全に不要になった確認・候補・未確定・人物は archiveIds に入れる。',
+    '- 文字列リスト（関係の火種・世界観・文体・避けたいこと・会話の舞台候補）は Replace 系で'
+      + '既存の文言を丸ごと差し替える。不要になった文言は to を空文字（""）にした Replace で消す。',
+    '- 【現在の設定草案】の各項目の先頭にある [id] が、その項目のIDである。IDを作り出さない。',
+    '- 既存の人物を書き足すときは charactersAdd ではなく charactersUpdate にその id を入れる。',
+    '- Update 系の各テキスト欄には差し替え後の全文を入れる。'
       + '「〜に変更」「性別を男性に更新」のような差分メモを入れると、元の記述が消える。'
       + '変更しないフィールドは省く（送ったフィールドだけが上書きされる）。',
+    '- Replace 系の from は【現在の設定草案】に書かれた文言そのままを入れる。'
+      + '一致しない from は無視される。',
     '- conversationSummary には、これまでの流れ（採用・却下したキャラ像・関係性、ユーザーの好みの傾向）を800字以内でまとめる。',
   ].join('\n');
 
@@ -221,13 +254,22 @@ export function buildSetupDraftExtractionPrompt(input: {
     '- 主要人物には traits を2〜4個入れる。ラベルは物語の毛色に合わせて自由に決める（「望み」「恐れ」「こだわり」「意地の張り方」など）。ユーザーが明言していない場合は候補として提案してよい。',
     '- 軽い役（supporting / other）には traits を無理に詰めない。0〜2個で足りることが多い。',
     '- secrets は、その人物や物語にとって必要な場合だけ入れる。全員に付ける必要はない。',
-    '- 既に【現在の設定草案】にある内容は繰り返さない。会話に出たのにメモへ入っていない分だけを返す。',
-    '- 【現在の設定草案】の各項目の先頭にある [id] が、その項目のIDである。'
-      + '既存の人物を書き足すときは charactersAdd ではなく charactersUpdate にその id を入れる。'
-      + '却下・不要になった項目は archiveIds にその id を入れる。IDを作り出さない。',
-    '- charactersUpdate の各フィールドには差し替え後の全文を入れる。'
+    '- 同じ内容は再送しない。会話に出たのに草案へ入っていない分だけを返す。',
+    '- ユーザーが草案へ書いた内容を変更・撤回した場合は、新情報で上書きする。'
+      + '確認・候補・未確定・人物は、該当項目の [id] を使う Update 系'
+      + '（confirmedUpdate / candidatesUpdate / undecidedUpdate / charactersUpdate）で全文を差し替える。'
+      + 'confirmedUpdate に入れられるのは、ユーザーが今回の会話で明示的に修正・採用した内容だけである。'
+      + 'あなたの推測や提案で確定項目を上書きしない。'
+      + '完全に不要になった確認・候補・未確定・人物は archiveIds に入れる。',
+    '- 文字列リスト（関係の火種・世界観・文体・避けたいこと・冒頭候補）は Replace 系で'
+      + '既存の文言を丸ごと差し替える。不要になった文言は to を空文字（""）にした Replace で消す。',
+    '- 【現在の設定草案】の各項目の先頭にある [id] が、その項目のIDである。IDを作り出さない。',
+    '- 既存の人物を書き足すときは charactersAdd ではなく charactersUpdate にその id を入れる。',
+    '- Update 系の各テキスト欄には差し替え後の全文を入れる。'
       + '「〜に変更」「性別を男性に更新」のような差分メモを入れると、元の記述が消える。'
       + '変更しないフィールドは省く（送ったフィールドだけが上書きされる）。',
+    '- Replace 系の from は【現在の設定草案】に書かれた文言そのままを入れる。'
+      + '一致しない from は無視される。',
     '- conversationSummary には、これまでの相談の流れ（採用・却下した方向と理由、ユーザーの好みの傾向）を800字以内でまとめる。',
   ].join('\n');
 

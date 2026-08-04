@@ -269,6 +269,45 @@ describe('setupPromptBuilder', () => {
     expect(extraction.systemInstructions).toContain('JSON以外の文章');
   });
 
+  it('offers overwrite paths for content the user revises after a previous write-up', () => {
+    // NOTE: 草案を何度かに分けてまとめる設計では、変更された内容を add 専用のままに
+    // すると新旧が並んで衝突が残る。Update 系（id 参照の全文差し替え）と Replace 系
+    // （文字列リストの完全一致差し替え）を出力形式に含める。
+    const extraction = buildSetupDraftExtractionPrompt({ session: baseSession() });
+
+    expect(extraction.userPrompt).toContain('confirmedUpdate');
+    expect(extraction.userPrompt).toContain('candidatesUpdate');
+    expect(extraction.userPrompt).toContain('undecidedUpdate');
+    expect(extraction.userPrompt).toContain('worldReplace');
+    expect(extraction.userPrompt).toContain('ngReplace');
+    expect(extraction.userPrompt).toContain('同じ内容は再送しない');
+    expect(extraction.userPrompt).toContain('新情報で上書きする');
+    expect(extraction.userPrompt).toContain('一致しない from は無視される');
+    expect(extraction.userPrompt).not.toContain('繰り返さない');
+  });
+
+  it('restricts confirmedUpdate to explicit user revisions and enables string-list removal', () => {
+    // NOTE: confirmedUpdate が推測・提案を確定項目へ上書きできると、source: "user" の
+    // まま誤った確定が残る。文字列リストには id が無く archiveIds の対象にならないため、
+    // to を空文字にした Replace が撤回手段であることを明示する。
+    const extraction = buildSetupDraftExtractionPrompt({ session: baseSession() });
+
+    expect(extraction.userPrompt).toContain('明示的に修正・採用した内容だけ');
+    expect(extraction.userPrompt).toContain('あなたの推測や提案で確定項目を上書きしない');
+    expect(extraction.userPrompt).toContain('to を空文字（""）にした Replace で消す');
+  });
+
+  it('keeps the overwrite guidance in the roleplay write-up variant too', () => {
+    const roleplayExtraction = buildSetupDraftExtractionPrompt({
+      session: { ...baseSession(), purpose: 'roleplay' },
+    });
+
+    expect(roleplayExtraction.userPrompt).toContain('confirmedUpdate');
+    expect(roleplayExtraction.userPrompt).toContain('scenarioSeedsReplace');
+    expect(roleplayExtraction.userPrompt).toContain('relationshipSeedsReplace');
+    expect(roleplayExtraction.userPrompt).toContain('新情報で上書きする');
+  });
+
   it('guides the consultation while omitting internal session identifiers from the prompt', () => {
     const session = baseSession();
     const chat = buildSetupChatPrompt({ session, userMessage: '相談を始めたい' });

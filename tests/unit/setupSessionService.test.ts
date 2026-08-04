@@ -368,6 +368,64 @@ describe('setupSessionService', () => {
     }
   });
 
+  it('overwrites a previously written-up draft item when the user revises it later', async () => {
+    // NOTE: 草案を何度かに分けてまとめるとき、後から変わった内容は古い項目を id 参照で
+    // 上書きする（confirmedUpdate）。add 専用のままでは新旧の設定が並んで衝突する。
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+
+    const chatSpy = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: 'では主人公の年齢から決めましょう。',
+      finishReason: 'stop',
+      retryable: false,
+    });
+    try {
+      const firstTurn = await setupSessionService.sendSetupMessage(result.sessionId, {
+        message: '主人公は28歳で',
+        revision: result.session.revision,
+      });
+      chatSpy.mockResolvedValue({
+        text: JSON.stringify({
+          draftPatch: {
+            confirmedAdd: [{ text: '主人公は28歳', source: 'user' }],
+          },
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      });
+      const firstDraft = await setupSessionService.generateSetupDraft(result.sessionId, {
+        revision: firstTurn.revision,
+      });
+      expect(firstDraft.draft.confirmed).toHaveLength(1);
+      const factId = firstDraft.draft.confirmed[0].id;
+
+      const secondTurn = await setupSessionService.sendSetupMessage(result.sessionId, {
+        message: 'やっぱり25歳にしよう',
+        revision: firstDraft.revision,
+      });
+      chatSpy.mockResolvedValue({
+        text: JSON.stringify({
+          draftPatch: {
+            confirmedUpdate: [{ id: factId, text: '主人公は25歳' }],
+          },
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      });
+      const secondDraft = await setupSessionService.generateSetupDraft(result.sessionId, {
+        revision: secondTurn.revision,
+      });
+
+      expect(secondDraft.draft.confirmed).toHaveLength(1);
+      expect(secondDraft.draft.confirmed[0]).toMatchObject({
+        id: factId,
+        text: '主人公は25歳',
+      });
+    } finally {
+      chatSpy.mockRestore();
+    }
+  });
+
   it('leaves the draft untouched during an ordinary consultation turn', async () => {
     // NOTE: 相談ターンから設定草案の更新を切り離した本体。会話が進んでもメモは動かない。
     const result = await setupSessionService.createSetupSession({});

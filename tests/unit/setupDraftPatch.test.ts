@@ -418,4 +418,305 @@ describe('setupDraftPatchService', () => {
     });
     expect(updated.userPersona).toEqual({ name: '結衣' });
   });
+
+  it('overwrites a confirmed item by id with the full replacement text', () => {
+    const draft: SetupDraft = {
+      ...createEmptySetupDraft(),
+      confirmed: [
+        {
+          id: 'fact-age',
+          text: '主人公は28歳',
+          source: 'user',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: { confirmedUpdate: [{ id: 'fact-age', text: '主人公は25歳' }] },
+    });
+
+    expect(updated.confirmed).toHaveLength(1);
+    expect(updated.confirmed[0]).toMatchObject({
+      id: 'fact-age',
+      text: '主人公は25歳',
+      source: 'user',
+      status: 'active',
+    });
+    expect(updated.confirmed[0].updatedAt).toBe(now);
+  });
+
+  it('does not overwrite confirmed items that are locked or unknown', () => {
+    const draft: SetupDraft = {
+      ...createEmptySetupDraft(),
+      confirmed: [
+        {
+          id: 'fact-locked',
+          text: '変更禁止の項目',
+          source: 'user',
+          status: 'active',
+          locked: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    const locks: SetupLock[] = [
+      {
+        lockId: 'lock-fact',
+        path: 'fact-other',
+        reason: 'manual_edit',
+        createdAt: now,
+      },
+    ];
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks,
+      now,
+      patch: {
+        confirmedUpdate: [
+          { id: 'fact-locked', text: 'lockedは変更されない' },
+          { id: 'fact-missing', text: '存在しないIDは無視' },
+          { id: 'fact-other', text: 'セッションロック中のIDも無視' },
+        ],
+      },
+    });
+
+    expect(updated.confirmed[0].text).toBe('変更禁止の項目');
+  });
+
+  it('updates candidate and undecided items by id using only provided fields', () => {
+    const draft: SetupDraft = {
+      ...createEmptySetupDraft(),
+      candidates: [
+        {
+          id: 'cand-1',
+          title: '古い候補名',
+          summary: '古い説明',
+          source: 'llm',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      undecided: [
+        {
+          id: 'und-1',
+          text: 'まだ決めていない',
+          reason: '理由A',
+          source: 'llm',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: {
+        candidatesUpdate: [{ id: 'cand-1', summary: '新しい説明' }],
+        undecidedUpdate: [{ id: 'und-1', text: '決め直した内容', reason: '理由B' }],
+      },
+    });
+
+    // NOTE: title は送らなかったので維持される。
+    expect(updated.candidates[0]).toMatchObject({ title: '古い候補名', summary: '新しい説明' });
+    expect(updated.undecided[0]).toMatchObject({ text: '決め直した内容', reason: '理由B' });
+  });
+
+  it('replaces a world list item when the draft text matches exactly', () => {
+    const updated = applySetupDraftPatch({
+      draft: {
+        ...createEmptySetupDraft(),
+        world: ['江戸時代風の町', '長崎の港町'],
+        tone: ['静かな語り'],
+      },
+      locks: [],
+      now,
+      patch: {
+        worldReplace: [{ from: '江戸時代風の町', to: '近未来の東京' }],
+        toneReplace: [{ from: '静かな語り', to: 'テンポの速い語り' }],
+      },
+    });
+
+    expect(updated.world).toEqual(['近未来の東京', '長崎の港町']);
+    expect(updated.tone).toEqual(['テンポの速い語り']);
+  });
+
+  it('ignores replaces whose from does not match and dedups the replacement', () => {
+    const updated = applySetupDraftPatch({
+      draft: {
+        ...createEmptySetupDraft(),
+        world: ['江戸', '長崎'],
+      },
+      locks: [],
+      now,
+      patch: {
+        worldReplace: [
+          { from: '存在しない文言', to: '無視される' },
+          { from: '長崎', to: '江戸' },
+        ],
+      },
+    });
+
+    expect(updated.world).toEqual(['江戸']);
+  });
+
+  it('does not replace strings in a locked draft section', () => {
+    const updated = applySetupDraftPatch({
+      draft: {
+        ...createEmptySetupDraft(),
+        world: ['手動の世界観'],
+      },
+      locks: [
+        {
+          lockId: 'lock-world',
+          path: 'draft.world',
+          reason: 'manual_edit',
+          createdAt: now,
+        },
+      ],
+      now,
+      patch: {
+        worldReplace: [{ from: '手動の世界観', to: 'LLMが差し替えようとした世界観' }],
+      },
+    });
+
+    expect(updated.world).toEqual(['手動の世界観']);
+  });
+
+  it('removes a string list item when the replacement to is empty', () => {
+    const updated = applySetupDraftPatch({
+      draft: {
+        ...createEmptySetupDraft(),
+        world: ['江戸時代風の町', '長崎の港町'],
+        ng: ['残酷な描写'],
+      },
+      locks: [],
+      now,
+      patch: {
+        worldReplace: [{ from: '江戸時代風の町', to: '' }],
+        ngReplace: [{ from: '残酷な描写', to: '' }],
+      },
+    });
+
+    expect(updated.world).toEqual(['長崎の港町']);
+    expect(updated.ng).toEqual([]);
+  });
+
+  it('merges an updated confirmed item into an existing active sibling', () => {
+    const draft: SetupDraft = {
+      ...createEmptySetupDraft(),
+      confirmed: [
+        {
+          id: 'fact-younger',
+          text: '主人公は25歳',
+          source: 'user',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: 'fact-older',
+          text: '主人公は28歳',
+          source: 'user',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: { confirmedUpdate: [{ id: 'fact-older', text: '主人公は25歳' }] },
+    });
+
+    // NOTE: 更新対象（fact-older）を残し、同文言の兄弟（fact-younger）を畳む。
+    expect(updated.confirmed).toHaveLength(1);
+    expect(updated.confirmed[0]).toMatchObject({ id: 'fact-older', text: '主人公は25歳' });
+  });
+
+  it('refuses to update a confirmed item whose target text collides with a locked sibling', () => {
+    const draft: SetupDraft = {
+      ...createEmptySetupDraft(),
+      confirmed: [
+        {
+          id: 'fact-locked-sibling',
+          text: '主人公は25歳',
+          source: 'user',
+          status: 'active',
+          locked: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: 'fact-older',
+          text: '主人公は28歳',
+          source: 'user',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: { confirmedUpdate: [{ id: 'fact-older', text: '主人公は25歳' }] },
+    });
+
+    // NOTE: locked の兄弟を消せないため、重複を作らずに更新を諦める。
+    expect(updated.confirmed).toHaveLength(2);
+    expect(updated.confirmed.find((item) => item.id === 'fact-older')?.text).toBe('主人公は28歳');
+  });
+
+  it('merges an updated candidate into an existing active sibling on title match', () => {
+    const draft: SetupDraft = {
+      ...createEmptySetupDraft(),
+      candidates: [
+        {
+          id: 'cand-a',
+          title: 'A案',
+          summary: '説明A',
+          source: 'llm',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: 'cand-b',
+          title: 'B案',
+          summary: '説明B',
+          source: 'llm',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+
+    const updated = applySetupDraftPatch({
+      draft,
+      locks: [],
+      now,
+      patch: { candidatesUpdate: [{ id: 'cand-b', title: 'A案' }] },
+    });
+
+    expect(updated.candidates).toHaveLength(1);
+    expect(updated.candidates[0]).toMatchObject({ id: 'cand-b', title: 'A案', summary: '説明B' });
+  });
 });

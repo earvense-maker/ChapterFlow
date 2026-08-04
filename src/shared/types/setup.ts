@@ -186,6 +186,12 @@ export interface SetupDraftPatch {
   undecidedAdd?: Array<Partial<SetupDraftUndecided> & { text?: string; reason?: string }>;
   charactersAdd?: Array<Partial<SetupDraftCharacter>>;
   charactersUpdate?: Array<Partial<SetupDraftCharacter> & { id: string }>;
+  // NOTE: 草案に書いた内容をユーザーが変更したときの上書き手段。charactersUpdate と
+  // 同じく id 参照で、送ったフィールドだけを全文で差し替える。草案を何度かに分けて
+  // まとめる設計では、新情報が旧情報の横に並ぶだけだと衝突が残るため必須。
+  confirmedUpdate?: Array<{ id: string; text?: string; reason?: string }>;
+  candidatesUpdate?: Array<{ id: string; title?: string; summary?: string }>;
+  undecidedUpdate?: Array<{ id: string; text?: string; reason?: string }>;
   relationshipSeedsAdd?: string[];
   worldAdd?: string[];
   toneAdd?: string[];
@@ -193,6 +199,14 @@ export interface SetupDraftPatch {
   openingSeedsAdd?: string[];
   // NOTE: ロールプレイ用途。会話の舞台候補を追加する。
   scenarioSeedsAdd?: string[];
+  // NOTE: 文字列リストは id を持たないので、既存の文言を丸ごと差し替える Replace 系で
+  // 上書きする。from は草案上の表記と完全一致する必要がある（一致しないものは無視）。
+  relationshipSeedsReplace?: Array<{ from: string; to: string }>;
+  worldReplace?: Array<{ from: string; to: string }>;
+  toneReplace?: Array<{ from: string; to: string }>;
+  ngReplace?: Array<{ from: string; to: string }>;
+  openingSeedsReplace?: Array<{ from: string; to: string }>;
+  scenarioSeedsReplace?: Array<{ from: string; to: string }>;
   // NOTE: ロールプレイ用途。ユーザー側の立ち位置は1件だけなので add ではなく差分更新。
   // 指定したフィールドだけ上書きし、空文字を渡したフィールドは消す。
   userPersonaUpdate?: SetupDraftUserPersona;
