@@ -55,7 +55,7 @@
     "uuid": "^14.0.1"
   },
   "devDependencies": {
-    "@electron/asar": "^3.4.1",
+    "@electron/asar": "^4.2.1",
     "@playwright/test": "^1.45.1",
     "@testing-library/jest-dom": "^6.4.6",
     "@testing-library/react": "^16.0.0",
