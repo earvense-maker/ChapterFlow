@@ -1378,4 +1378,236 @@ describe('buildPrompt', () => {
     // 否定制約の強化ワード
     expect(userPrompt).toContain('その人物が同席しない場面での噂話・比喩・伏線としても、既知であるかのように扱わない。');
   });
+
+  // NOTE: AC2（設計書 11-2）。参考資料の採用結果は件数で report に残り、
+  // report には本文・秘密・プロンプト原文を含めない（設計書 3.2）。
+  it('records selected knowledge chunk counts in the budget report without raw text', async () => {
+    const { userPrompt, budgetReport } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: 'WORLD_RULES',
+      knowledgeTexts: [
+        {
+          title: '資料A',
+          content: Array.from({ length: 12 }, (_, i) => `資料Aの${i}番目の段落。${'あ'.repeat(1_800)}`).join('\n\n'),
+        },
+        {
+          title: '資料B',
+          content: Array.from({ length: 12 }, (_, i) => `資料Bの${i}番目の段落。${'い'.repeat(1_800)}`).join('\n\n'),
+        },
+      ],
+    });
+
+    expect(userPrompt).toContain('【参考資料】');
+    const chunkEntries = budgetReport.entries.filter(
+      (entry) => entry.sectionId === 'user.knowledgeChunks'
+    );
+    expect(chunkEntries).toHaveLength(1);
+    const chunkEntry = chunkEntries[0];
+    // 採用されたチャンク数と全チャンク数だけを記録する（件数で確認できる）。
+    expect(chunkEntry.action).toBe('selected');
+    expect(chunkEntry.includedChars).toBeGreaterThan(0);
+    expect(chunkEntry.originalChars).toBeGreaterThan(chunkEntry.includedChars);
+    // report の各 entry は DTO の数値フィールドだけを持ち、本文を持たない。
+    for (const entry of budgetReport.entries) {
+      expect(Object.keys(entry).sort()).toEqual(['action', 'includedChars', 'originalChars', 'sectionId']);
+    }
+  });
+
+  // NOTE: AC7（設計書 11-7）の一部。希望が空の場合は既定の最終行で置き換える。
+  it('uses the default continuation line as the final line when the wish is empty', async () => {
+    const { userPrompt } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '',
+      memories: [],
+      characters: [],
+      worldText: '',
+    });
+
+    expect(userPrompt.trimEnd().endsWith('今の場面と雰囲気を引き継いで続きを書く。')).toBe(true);
+  });
+
+  // NOTE: Track 2A の並び順（設計書「受け入れ条件」）。unknown 側も known 側と同じ
+  // importance 降順 → updatedAt 降順になる。
+  it('orders unknown events by importance desc then updatedAt desc (Track 2A)', async () => {
+    const project = makeProject(promptStateProjectId);
+    const characters: Character[] = [
+      { characterId: 'char-other', name: 'アザー', role: 'supporting', description: '' },
+    ];
+    const events: StoryState['importantEvents'] = [
+      {
+        eventId: 'evt-h-latest',
+        sceneId: null,
+        summary: '高重要度-最新',
+        characters: [],
+        visibility: '',
+        knownBy: [],
+        explicitlyUnknownBy: ['char-other'],
+        importance: 'high',
+        status: 'active',
+        updatedAt: '2026-07-21T00:00:02Z',
+      },
+      {
+        eventId: 'evt-h-old',
+        sceneId: null,
+        summary: '高重要度-古い',
+        characters: [],
+        visibility: '',
+        knownBy: [],
+        explicitlyUnknownBy: ['char-other'],
+        importance: 'high',
+        status: 'active',
+        updatedAt: '2026-07-21T00:00:01Z',
+      },
+      {
+        eventId: 'evt-m',
+        sceneId: null,
+        summary: '中重要度',
+        characters: [],
+        visibility: '',
+        knownBy: [],
+        explicitlyUnknownBy: ['char-other'],
+        importance: 'medium',
+        status: 'active',
+        updatedAt: '2026-07-21T00:00:03Z',
+      },
+      {
+        eventId: 'evt-l',
+        sceneId: null,
+        summary: '低重要度',
+        characters: [],
+        visibility: '',
+        knownBy: [],
+        explicitlyUnknownBy: ['char-other'],
+        importance: 'low',
+        status: 'active',
+        updatedAt: '2026-07-21T00:00:04Z',
+      },
+    ];
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: events,
+      openThreads: [],
+      updatedAt: '2026-07-21T00:00:00Z',
+    };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters,
+      worldText: '',
+    });
+
+    const otherBlock = userPrompt.split('- アザー\n')[1] ?? '';
+    const unknownLine = otherBlock.split('\n').find((line) => line.includes('まだ知らない:')) ?? '';
+    const order = ['高重要度-最新', '高重要度-古い', '中重要度', '低重要度'];
+    const positions = order.map((summary) => unknownLine.indexOf(summary));
+    expect(positions.every((pos) => pos >= 0)).toBe(true);
+    for (let index = 1; index < positions.length; index += 1) {
+      expect(positions[index - 1]).toBeLessThan(positions[index]);
+    }
+  });
+
+  // NOTE: Track 2A の視点未確定分岐（設計書「受け入れ条件」）。視点人物が決まっていない
+  // ときは全人物を 6 件で頭打ちにする。
+  it('caps unknown events to 6 for every character when no viewpoint is specified (Track 2A)', async () => {
+    const project = makeProject(promptStateProjectId);
+    const characters: Character[] = [
+      { characterId: 'char-a', name: 'アルファ', role: 'protagonist', description: '' },
+      { characterId: 'char-b', name: 'ベータ', role: 'supporting', description: '' },
+    ];
+    const events: StoryState['importantEvents'] = Array.from({ length: 9 }, (_, i) => ({
+      eventId: `evt-${i}`,
+      sceneId: null,
+      summary: `未知の出来事${i}`,
+      characters: [],
+      visibility: '',
+      knownBy: [],
+      explicitlyUnknownBy: ['char-a', 'char-b'],
+      importance: 'medium' as const,
+      status: 'active' as const,
+      updatedAt: `2026-07-21T00:00:${String(i).padStart(2, '0')}Z`,
+    }));
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: events,
+      openThreads: [],
+      updatedAt: '2026-07-21T00:00:00Z',
+    };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+
+    // viewpointCharacterId 未指定（自動）。
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters,
+      worldText: '',
+    });
+
+    for (const character of characters) {
+      const block = userPrompt.split(`- ${character.name}\n`)[1] ?? '';
+      const unknownLine = block.split('\n').find((line) => line.includes('まだ知らない:')) ?? '';
+      const count = unknownLine.split('/').filter((s) => s.trim()).length;
+      expect(count).toBe(6);
+    }
+  });
+
+  // NOTE: Track 1A のフォールバック。人物一覧に無い actor（削除済み）は ID をそのまま出す。
+  it('falls back to the raw characterId when the actor was deleted (Track 1A)', async () => {
+    const project = makeProject(promptStateProjectId);
+    const storyState: StoryState = {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: [
+        {
+          eventId: 'evt-deleted',
+          sceneId: null,
+          summary: '削除された人物が告白した',
+          characters: ['アキ'],
+          visibility: '',
+          knownBy: [],
+          actor: 'char-deleted',
+          recipient: null,
+          importance: 'high',
+          status: 'active',
+          updatedAt: '2026-07-21T00:00:00Z',
+        },
+      ],
+      openThreads: [],
+      updatedAt: '2026-07-21T00:00:00Z',
+    };
+    await storage.deleteProjectDir(promptStateProjectId);
+    await storage.createProjectDir(promptStateProjectId);
+    await storage.writeStoryState(promptStateProjectId, storyState);
+
+    const { userPrompt } = await buildPrompt({
+      project,
+      state: makeState(),
+      wish: '続き',
+      memories: [],
+      characters: [],
+      worldText: '',
+    });
+
+    const line = userPrompt.split('\n').find((item) => item.includes('削除された人物が告白した')) ?? '';
+    expect(line).toContain('主体: char-deleted');
+  });
 });

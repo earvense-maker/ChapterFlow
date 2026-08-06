@@ -99,6 +99,7 @@ describe('appSettingsService', () => {
         settingsUpdated: false,
         reviewRequired: true,
         ngRewrite: true,
+        budgetTruncated: true,
       },
     });
     expect((await readAppSettings()).generationNotifications).toEqual(saved.generationNotifications);
@@ -121,6 +122,7 @@ describe('appSettingsService', () => {
         settingsUpdated: true,
         reviewRequired: true,
         ngRewrite: true,
+        budgetTruncated: true,
       },
     });
   });

@@ -14,7 +14,6 @@
 
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
-import { isDevDiagnosticsEnabled } from '../utils/devDiagnostics.js';
 import { KeyedMutex } from '../utils/keyedMutex.js';
 import { createHash } from 'node:crypto';
 import * as storage from './storageService.js';
@@ -44,6 +43,10 @@ import {
 import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
 import { estimateMaxOutputTokens } from '../utils/outputLength.js';
 import { findNgMatches } from '../../shared/ngDetection.js';
+import {
+  collectAdjustedBudgetEntries,
+  ROLEPLAY_TURN_SECTION_IDS,
+} from '../../shared/promptBudgetNotice.js';
 import {
   DEFAULT_ROLEPLAY_USER_ACTION_POLICY,
   isRoleplayUserActionPolicy,
@@ -383,19 +386,16 @@ async function buildContextSnapshot(input: {
   // NOTE: セッション作成時点の system prompt 縮小結果を設定詳細から確認できるようにする
   // （設計書 6.1 / 6.3）。ここで組み立てを1度だけ余分に行うが、以後の各turnは
   // この snapshot から同じ結果を再現するので、保存しておく価値がある。
-  // NOTE: 開発診断が無効なら、この余分な組み立てごと省く。UI にはまだ出しておらず
-  // 保存しても読み手がいないため、リリース版でコストを払う理由がない。
-  if (isDevDiagnosticsEnabled()) {
-    const systemReport = buildRoleplaySystemInstructionsWithReport({ snapshot });
-    snapshot.appliedSettings = {
-      ...appliedSettings,
-      promptBudgetReport: {
-        maxChars: ROLEPLAY_SYSTEM_MAX_CHARS,
-        assembledChars: systemReport.systemInstructions.length,
-        entries: systemReport.entries,
-      },
-    };
-  }
+  // 原文を含まないため、開発診断に依らず常に記録する（AC13）。
+  const systemReport = buildRoleplaySystemInstructionsWithReport({ snapshot });
+  snapshot.appliedSettings = {
+    ...appliedSettings,
+    promptBudgetReport: {
+      maxChars: ROLEPLAY_SYSTEM_MAX_CHARS,
+      assembledChars: systemReport.systemInstructions.length,
+      entries: systemReport.entries,
+    },
+  };
   return snapshot;
 }
 
@@ -591,6 +591,24 @@ export async function createRoleplaySession(
     };
 
     await storage.writeRoleplaySession(session);
+    // NOTE: AC13 の「ログから確認できる」。system 側の縮小はセッション作成時に一度だけ
+    // ログへ出す。各ターンの結合 report にも system エントリが含まれるため、ターン側の
+    // ログはターン固有セクションだけに絞って二重ログを避ける（commitTurn 参照）。
+    const systemReport = snapshot.appliedSettings?.promptBudgetReport;
+    const systemAdjusted = collectAdjustedBudgetEntries(systemReport);
+    if (systemAdjusted.length > 0) {
+      console.info('Roleplay session prompt budget adjusted', {
+        projectId: input.projectId,
+        sessionId,
+        assembledChars: systemReport?.assembledChars,
+        adjusted: systemAdjusted.map((entry) => ({
+          sectionId: entry.sectionId,
+          action: entry.action,
+          originalChars: entry.originalChars,
+          includedChars: entry.includedChars,
+        })),
+      });
+    }
     return toRoleplaySessionView(session, snapshot.settingsFingerprint);
   });
 }
@@ -1323,12 +1341,9 @@ async function commitTurn(input: {
       ...(input.warnings && input.warnings.length > 0
         ? { generationWarnings: input.warnings }
         : {}),
-      // NOTE: 予算レポートは開発診断限定。ターン数だけ session JSON に積み上がる一方で
-      // 読む導線が無いため、リリース版では保存しない。予算そのものの判定は
-      // buildTurnPrompt が常に行っており、この保存有無には影響しない。
-      ...(input.budgetReport && isDevDiagnosticsEnabled()
-        ? { promptBudgetReport: input.budgetReport }
-        : {}),
+      // NOTE: 予算レポートは原文を含まないため、開発診断に依らず常に記録する（AC13）。
+      // 旧セッション・旧メッセージには無いので読み側は optional 扱いにする。
+      ...(input.budgetReport ? { promptBudgetReport: input.budgetReport } : {}),
     };
     let nextMessages: RoleplayMessage[];
     if (input.kind === 'regenerate' && input.previousCharacterMessageId) {
@@ -1345,6 +1360,25 @@ async function commitTurn(input: {
       updatedAt: now,
     };
     await withDataDirWrite(() => storage.writeRoleplaySession(nextSession));
+    // NOTE: AC13 の「ログから確認できる」。ターンの結合 report には system 側のエントリも
+    // 含まれるが、system 調整はセッション作成時に一度だけログ済み。ここではターン固有
+    // セクション（variablePrompt / recentMessages）の調整だけをログして二重ログを避ける。
+    if (input.budgetReport) {
+      const adjusted = collectAdjustedBudgetEntries(input.budgetReport, ROLEPLAY_TURN_SECTION_IDS);
+      if (adjusted.length > 0) {
+        console.info('Roleplay prompt budget adjusted', {
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          messageId: characterMessage.messageId,
+          adjusted: adjusted.map((entry) => ({
+            sectionId: entry.sectionId,
+            action: entry.action,
+            originalChars: entry.originalChars,
+            includedChars: entry.includedChars,
+          })),
+        });
+      }
+    }
     return nextSession;
   });
 }

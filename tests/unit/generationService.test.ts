@@ -446,7 +446,7 @@ describe('generationService generation', () => {
     });
   });
 
-  it('omits generation diagnostics from release builds', async () => {
+  it('omits generation diagnostics from release builds but keeps the prompt budget report', async () => {
     const project = await createTrackedProject();
     let receivedReasoningCallback = true;
     vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
@@ -468,15 +468,61 @@ describe('generationService generation', () => {
     expect(receivedReasoningCallback).toBe(false);
     expect(record.telemetry).toBeUndefined();
     expect(record.generationMode).toBeUndefined();
-    expect(record.promptBudgetReport).toBeUndefined();
+    // NOTE: AC13 以降、予算 report は原文を含まないため開発診断に依らず常に記録される。
+    expect(record.promptBudgetReport).toBeDefined();
 
     const persisted = await storage.findGenerationRecord(project.projectId, record.generationId);
     expect(persisted?.telemetry).toBeUndefined();
     expect(persisted?.generationMode).toBeUndefined();
-    expect(persisted?.promptBudgetReport).toBeUndefined();
+    expect(persisted?.promptBudgetReport).toBeDefined();
     await expect(
       storage.readGenerationReasoningSnapshot(project.projectId, record.generationId)
     ).resolves.toBe('');
+  });
+
+  it('records the same prompt budget report for normal and streaming generation (AC13)', async () => {
+    const normal = await createTrackedProject();
+    await projectService.updateProject(normal.projectId, {
+      activeModelProvider: 'deepseek',
+      activeModelName: 'deepseek-v4-flash',
+    });
+    vi.spyOn(DeepSeekAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '通常生成の本文',
+      finishReason: 'stop',
+      retryable: false,
+    });
+    const normalRecord = await generationService.generateScene(normal.projectId, {
+      wish: '続き',
+      mode: 'continue',
+    });
+
+    const streamed = await createTrackedProject();
+    await projectService.updateProject(streamed.projectId, {
+      activeModelProvider: 'deepseek',
+      activeModelName: 'deepseek-v4-flash',
+    });
+    vi.spyOn(DeepSeekAdapter.prototype, 'generateTextStream').mockImplementation(
+      async function* () {
+        yield { type: 'chunk', text: 'ストリーム生成の本文' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    );
+    const streamRecord = await generationService.generateSceneStream(
+      streamed.projectId,
+      { wish: '続き', mode: 'continue' },
+      () => undefined
+    );
+
+    // 同一入力なら予算判定は経路（通常/ストリーミング）に依存しない。
+    expect(normalRecord.promptBudgetReport).toBeDefined();
+    expect(streamRecord.promptBudgetReport).toBeDefined();
+    expect(streamRecord.promptBudgetReport).toEqual(normalRecord.promptBudgetReport);
+    // 再読込（findGenerationRecord）しても同じ report が読める。
+    const persisted = await storage.findGenerationRecord(
+      streamed.projectId,
+      streamRecord.generationId
+    );
+    expect(persisted?.promptBudgetReport).toEqual(streamRecord.promptBudgetReport);
   });
 
   it('keeps a length-limited response as a draft and records why it ended', async () => {
@@ -798,11 +844,12 @@ describe('generationService generation', () => {
     expect(record.responseText).toBe('計測対象の本文');
     expect(record.telemetry).toBeUndefined();
     expect(record.generationMode).toBeUndefined();
-    expect(record.promptBudgetReport).toBeUndefined();
+    // NOTE: AC13 以降、予算 report は開発診断に依らず常に記録される。
+    expect(record.promptBudgetReport).toBeDefined();
 
     const persisted = await storage.findGenerationRecord(project.projectId, record.generationId);
     expect(persisted?.telemetry).toBeUndefined();
-    expect(persisted?.promptBudgetReport).toBeUndefined();
+    expect(persisted?.promptBudgetReport).toBeDefined();
     expect(JSON.stringify(persisted)).not.toContain(reasoningText);
   });
 

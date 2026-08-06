@@ -120,6 +120,85 @@ describe('clientApi streaming', () => {
       },
     ]);
   });
+
+  // NOTE: 設計書 10.6 / 6.3。postprocessing / replace は保存前の表現調整の通知。
+  // onPostprocessing / onReplace は optional で、知らない呼び出し側は素通りして
+  // done まで到達する（設計書 7.3 の後方互換）。
+  it('delivers postprocessing and replace events and treats done.session as the final text', async () => {
+    const session = {
+      sessionId: 'session-client-api',
+      revision: 3,
+      messages: [{ messageId: 'm3', role: 'character', content: '書き換え済みの本文' }],
+    };
+    const payload = [
+      `event: chunk\ndata: ${JSON.stringify({ text: '暫定本文' })}\n\n`,
+      `event: postprocessing\ndata: ${JSON.stringify({})}\n\n`,
+      `event: replace\ndata: ${JSON.stringify({ text: '書き換え済みの本文' })}\n\n`,
+      `event: done\ndata: ${JSON.stringify({ session })}\n\n`,
+    ].join('');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([payload])));
+    const received: string[] = [];
+    let postprocessingCount = 0;
+    let doneSession: unknown;
+    const chunks: string[] = [];
+
+    await api.sendRoleplayMessageStream(
+      'proj-client-api',
+      'session-client-api',
+      { message: 'こんにちは', revision: 2 },
+      {
+        onChunk: (text) => chunks.push(text),
+        onPostprocessing: () => {
+          postprocessingCount += 1;
+        },
+        onReplace: (text) => received.push(text),
+        onDone: (sessionView) => {
+          doneSession = sessionView;
+        },
+        onError: () => undefined,
+      }
+    );
+
+    expect(chunks).toEqual(['暫定本文']);
+    expect(postprocessingCount).toBe(1);
+    expect(received).toEqual(['書き換え済みの本文']);
+    expect(doneSession).toEqual(session);
+  });
+
+  it('ignores unknown SSE events and lets an old handler without replace callbacks reach done', async () => {
+    const session = {
+      sessionId: 'session-client-api',
+      revision: 3,
+      messages: [{ messageId: 'm3', role: 'character', content: '最終保存本文' }],
+    };
+    const payload = [
+      `event: unknown-event\ndata: ${JSON.stringify({ text: '無視される' })}\n\n`,
+      `event: postprocessing\ndata: ${JSON.stringify({})}\n\n`,
+      `event: replace\ndata: ${JSON.stringify({ text: '最終保存本文' })}\n\n`,
+      `event: done\ndata: ${JSON.stringify({ session })}\n\n`,
+    ].join('');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([payload])));
+    let doneSession: unknown;
+    const errors: unknown[] = [];
+
+    // 旧クライアント相当の handler: onPostprocessing / onReplace を持たない。
+    await api.sendRoleplayMessageStream(
+      'proj-client-api',
+      'session-client-api',
+      { message: 'こんにちは', revision: 2 },
+      {
+        onChunk: () => undefined,
+        onDone: (sessionView) => {
+          doneSession = sessionView;
+        },
+        onError: (error) => errors.push(error),
+      }
+    );
+
+    expect(errors).toEqual([]);
+    // done.session（または再接続後の GET）が最終保存本文の正（設計書 11-17）。
+    expect(doneSession).toEqual(session);
+  });
 });
 
 function streamResponse(chunks: string[]): Response {

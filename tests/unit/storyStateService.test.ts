@@ -1080,3 +1080,70 @@ describe('mergeKnowledgeList (Track 2B helper)', () => {
     ]);
   });
 });
+
+// NOTE: 抽出プロンプトの文言固定（設計書 トラック 1A / 2A / 2B）。
+// 文言はマージロジックの契約の一部（addUnknownBy / removeUnknownBy / actor / recipient /
+// knowledge / removeKnowledge）なので、改訂時はここを意図的に書き換える。
+describe('updateStoryStateFromAcceptedScene の抽出プロンプト文言', () => {
+  async function capturePrompt(): Promise<string> {
+    await storage.createProjectDir(projectId);
+    await storage.writeStoryState(projectId, storyState());
+    let capturedUserPrompt = '';
+    const adapter: ModelAdapter = {
+      providerName: 'fake',
+      generateText: vi.fn(async (request) => {
+        capturedUserPrompt = request.userPrompt;
+        return { text: JSON.stringify({}), finishReason: 'stop', retryable: false };
+      }),
+      validateConnection: vi.fn(),
+    };
+    await updateStoryStateFromAcceptedScene({
+      project: project(),
+      adapter,
+      generation: generation(),
+      characters: [],
+      worldText: '',
+      timeoutMs: 1000,
+    });
+    return capturedUserPrompt;
+  }
+
+  it('actor / recipient の指示と差分JSONキーを固定する（Track 1A）', async () => {
+    const prompt = await capturePrompt();
+
+    expect(prompt).toContain('actor は「その出来事の主体（発話者・行為者・宣言者）」のcharacterId。単独行為なら recipient は null。');
+    expect(prompt).toContain('recipient は「その出来事の受け手・宛先（宣告された相手、告白された相手など）」のcharacterId。宛先が特定できない出来事（独白・情景・自然現象）では null にする。');
+    expect(prompt).toContain('actor / recipient は当事者性が明確な場合にのみ埋める。誰が主体か本文から読み取れない場合は null にする（推測しない）。');
+    expect(prompt).toContain('actor / recipient は「主客の構造」を残すためのものであり、知識状態（knownBy / explicitlyUnknownBy）とは独立に扱う。');
+    // 差分JSON形式の例にキーが並ぶ（JSON.stringify の整形のため空白を許容する）。
+    const diffForm = prompt.slice(prompt.indexOf('【差分JSON形式】'));
+    expect(diffForm).toMatch(/"actor":\s*"主体のcharacterIdまたはnull"/);
+    expect(diffForm).toMatch(/"recipient":\s*"受け手のcharacterIdまたはnull"/);
+  });
+
+  it('addUnknownBy / removeUnknownBy の指示と差分JSONキーを固定し、旧キーを含めない（Track 2A）', async () => {
+    const prompt = await capturePrompt();
+
+    expect(prompt).toContain('explicitlyUnknownBy はパッチキーとしては使わない。代わりに addUnknownBy / removeUnknownBy を使う。');
+    expect(prompt).toContain('addUnknownBy には、この場面終了時点で、その場に居合わせず、伝聞・立ち聞き・観察・記録の閲覧などによっても知り得ない人物のcharacterIdを入れる。');
+    expect(prompt).toContain('判定は「この場面が終わった瞬間」で切る。');
+    expect(prompt).toContain('removeUnknownBy は、以前の抽出で誤って explicitlyUnknownBy に入れた人物を取り消したいときにcharacterIdを列挙する。');
+    expect(prompt).toContain('主要人物とは、人物ヒントの role が protagonist / deuteragonist の人物、および当該場面直前の characterStates に登場する人物とする。');
+    const diffForm = prompt.slice(prompt.indexOf('【差分JSON形式】'));
+    expect(diffForm).toMatch(/"addUnknownBy":\s*\[\s*"char-id"/);
+    expect(diffForm).toMatch(/"removeUnknownBy":\s*\[\s*"char-id"/);
+    // 旧形式キーは差分JSON例に載せない（載せるとLLMがそのまま返して破壊的な全置換になる）。
+    expect(diffForm).not.toContain('explicitlyUnknownBy');
+  });
+
+  it('characterStates.knowledge / removeKnowledge の指示と差分JSONキーを固定する（Track 2B）', async () => {
+    const prompt = await capturePrompt();
+
+    expect(prompt).toContain('characterStates.knowledge には、今回の場面で当該人物が新たに得た小さな知識・観察・仮説を短文で追加する（1件30字以内推奨、1人物あたり今回追加は最大3件）。');
+    expect(prompt).toContain('characterStates.removeKnowledge に完全一致する文字列を並べる。誤抽出の巻き戻し用。');
+    expect(prompt).toContain('重複する内容や、importantEvents に既に載せた事件そのものは knowledge に書かない。');
+    const diffForm = prompt.slice(prompt.indexOf('【差分JSON形式】'));
+    expect(diffForm).toMatch(/"knowledge":\s*\[\s*"今回追加する知識・観察（各30字以内、最大3件）"/);
+    expect(diffForm).toMatch(/"removeKnowledge":\s*\[\s*"既存knowledgeから削除する完全一致文字列"/);
+  });
+});

@@ -104,6 +104,9 @@ export const DEFAULT_GENERATION_NOTIFICATION_SETTINGS: GenerationNotificationSet
     settingsUpdated: true,
     reviewRequired: true,
     ngRewrite: true,
+    // NOTE: 予算調整は「本文が省略される」事実の通知なので既定 on。旧保存データには
+    // このキーが無いため、正規化で既定値を補完する。
+    budgetTruncated: true,
   },
 };
 
@@ -151,6 +154,7 @@ export function normalizeGenerationNotificationSettings(value: unknown): Generat
       settingsUpdated: bool(rawEvents.settingsUpdated, defaults.events.settingsUpdated),
       reviewRequired: bool(rawEvents.reviewRequired, defaults.events.reviewRequired),
       ngRewrite: bool(rawEvents.ngRewrite, defaults.events.ngRewrite),
+      budgetTruncated: bool(rawEvents.budgetTruncated, defaults.events.budgetTruncated),
     },
   };
 }

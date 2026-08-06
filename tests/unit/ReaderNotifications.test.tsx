@@ -4,7 +4,7 @@ import Reader from '../../src/client/components/Reader';
 import { api } from '../../src/client/clientApi';
 import { ConfirmProvider } from '../../src/client/components/ConfirmDialog';
 import { NotificationProvider } from '../../src/client/components/NotificationCenter';
-import type { GenerationRecord, ReaderState } from '../../src/shared/types';
+import type { GenerationRecord, PromptBudgetReport, ReaderState } from '../../src/shared/types';
 
 vi.mock('../../src/client/clientApi', () => ({
   api: {
@@ -18,6 +18,7 @@ vi.mock('../../src/client/clientApi', () => ({
     getKnowledge: vi.fn(),
     updateState: vi.fn(),
     navigateDraft: vi.fn(),
+    navigateScene: vi.fn(),
     shutdown: vi.fn(),
     getNotificationSettings: vi.fn(),
     getExpressions: vi.fn().mockResolvedValue({ ngExpressions: [] }),
@@ -33,12 +34,21 @@ const generateStream = vi.mocked(api.generateStream);
 const getReaderState = vi.mocked(api.getReaderState);
 const getKnowledge = vi.mocked(api.getKnowledge);
 const getNotificationSettings = vi.mocked(api.getNotificationSettings);
+const navigateDraft = vi.mocked(api.navigateDraft);
 
 const ENABLED_SETTINGS = {
   soundEnabled: false,
   systemPopupEnabled: false,
   onlyWhenUnfocused: false,
-  events: { firstOutput: true, completed: true, failed: true, settingsUpdated: true, reviewRequired: true },
+  events: {
+    firstOutput: true,
+    completed: true,
+    failed: true,
+    settingsUpdated: true,
+    reviewRequired: true,
+    ngRewrite: true,
+    budgetTruncated: true,
+  },
 };
 
 function renderReader() {
@@ -109,6 +119,45 @@ function generationRecord(): GenerationRecord {
   };
 }
 
+function budgetReport(entries: PromptBudgetReport['entries']): PromptBudgetReport {
+  return { maxChars: 80_000, assembledChars: 40_000, entries };
+}
+
+function readerStateWithGeneration(record: GenerationRecord): ReaderState {
+  return {
+    ...readerState(),
+    currentGeneration: record,
+    navigation: {
+      currentSceneOrder: 1,
+      totalScenes: 1,
+      hasPreviousScene: false,
+      hasNextScene: false,
+    },
+  };
+}
+
+function readerStateWithDrafts(record: GenerationRecord, draftIds: string[]): ReaderState {
+  return {
+    ...readerState(),
+    currentGeneration: record,
+    currentScene: {
+      sceneId: 'scene-drafts',
+      episodeId: 'episode-drafts',
+      order: 1,
+      createdAt: '2026-07-22T00:00:00.000Z',
+      updatedAt: '2026-07-22T00:00:00.000Z',
+      acceptedGenerationId: null,
+      draftGenerationIds: draftIds,
+    },
+    navigation: {
+      currentSceneOrder: 1,
+      totalScenes: 1,
+      hasPreviousScene: false,
+      hasNextScene: false,
+    },
+  };
+}
+
 describe('Reader generation notifications', () => {
   beforeEach(() => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
@@ -117,6 +166,7 @@ describe('Reader generation notifications', () => {
     getReaderState.mockReset();
     getKnowledge.mockReset().mockResolvedValue([]);
     getNotificationSettings.mockReset().mockResolvedValue(ENABLED_SETTINGS);
+    navigateDraft.mockReset();
   });
 
   afterEach(() => {
@@ -188,5 +238,190 @@ describe('Reader generation notifications', () => {
     await waitFor(() => expect(signalRef?.aborted).toBe(true));
     await waitFor(() => expect(queryByText('生成を停止しました')).not.toBeNull());
     expect(queryByText('生成に失敗しました')).toBeNull();
+  });
+
+  // NOTE: AC13。保存済み結果の再読込で、予算調整の report があれば通知し、
+  // ラベルは日本語で生の sectionId は出さない。
+  it('notifies about budget truncation when the reloaded generation has adjusted entries (AC13)', async () => {
+    getReaderState.mockResolvedValue(
+      readerStateWithGeneration({
+        ...generationRecord(),
+        promptBudgetReport: budgetReport([
+          {
+            sectionId: 'user.recentContext',
+            originalChars: 12_000,
+            includedChars: 8_000,
+            action: 'truncated',
+          },
+        ]),
+      })
+    );
+
+    const { findByText, queryByText } = renderReader();
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getNotificationSettings).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(queryByText('プロンプト予算のため一部を調整しました')).not.toBeNull()
+    );
+    expect(await findByText('直近の本文の一部を省略しました')).not.toBeNull();
+    // 利用者向けラベルに生の sectionId が出ない（AC13 / 要件7）。
+    expect(queryByText('user.recentContext')).toBeNull();
+  });
+
+  it('notifies about budget selection right after a generation completes (generate path)', async () => {
+    // 初回ロードは生成なし。生成完了後の再読込でサーバーが新しい生成記録を返す想定。
+    getReaderState
+      .mockResolvedValueOnce(readerState({ streamingEnabled: false }))
+      .mockResolvedValue(
+        readerStateWithGeneration({
+          ...generationRecord(),
+          promptBudgetReport: budgetReport([
+            {
+              sectionId: 'user.knowledgeChunks',
+              originalChars: 18,
+              includedChars: 9,
+              action: 'selected',
+            },
+          ]),
+        })
+      );
+    generate.mockResolvedValue({
+      ...generationRecord(),
+      promptBudgetReport: budgetReport([
+        {
+          sectionId: 'user.knowledgeChunks',
+          originalChars: 18,
+          includedChars: 9,
+          action: 'selected',
+        },
+      ]),
+    });
+
+    const { findByRole, findByText, queryByText } = renderReader();
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getNotificationSettings).toHaveBeenCalled());
+    fireEvent.click(await findByRole('button', { name: '生成' }));
+
+    await waitFor(() =>
+      expect(queryByText('プロンプト予算のため一部を調整しました')).not.toBeNull()
+    );
+    expect(await findByText('参考資料の一部のみを使用しました')).not.toBeNull();
+  });
+
+  it('does not notify about budget when every entry is full (AC13)', async () => {
+    getReaderState.mockResolvedValue(
+      readerStateWithGeneration({
+        ...generationRecord(),
+        promptBudgetReport: budgetReport([
+          {
+            sectionId: 'user.knowledge',
+            originalChars: 1_000,
+            includedChars: 1_000,
+            action: 'full',
+          },
+          {
+            sectionId: 'user.recentContext',
+            originalChars: 8_000,
+            includedChars: 8_000,
+            action: 'full',
+          },
+        ]),
+      })
+    );
+
+    const { queryByText } = renderReader();
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getNotificationSettings).toHaveBeenCalled());
+
+    // 通知が発生しないことを少し待って確認する。
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(queryByText('プロンプト予算のため一部を調整しました')).toBeNull();
+  });
+
+  it('keeps working without a budget report in old records (AC13 / 要件6)', async () => {
+    // generationRecord() は promptBudgetReport を持たない旧形式。
+    getReaderState.mockResolvedValue(readerStateWithGeneration(generationRecord()));
+
+    const { findByRole, queryByText } = renderReader();
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getNotificationSettings).toHaveBeenCalled());
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(queryByText('プロンプト予算のため一部を調整しました')).toBeNull();
+    // 生成ボタンなど Reader 自体は正常に動く。
+    expect(await findByRole('button', { name: '生成' })).not.toBeNull();
+  });
+
+  // NOTE: AC13。案の移動（前の案/次の案）でも表示中の生成記録が変わるため、
+  // report を更新して通知する。
+  it('notifies about budget adjustment when navigating to an adjusted draft', async () => {
+    getReaderState.mockResolvedValue(
+      readerStateWithDrafts(generationRecord(), ['gen-reader-notifications', 'gen-draft-next'])
+    );
+    navigateDraft.mockResolvedValue({
+      ...generationRecord(),
+      generationId: 'gen-draft-next',
+      promptBudgetReport: budgetReport([
+        {
+          sectionId: 'user.recentContext',
+          originalChars: 12_000,
+          includedChars: 8_000,
+          action: 'truncated',
+        },
+      ]),
+    });
+
+    const { findByRole, findByText, queryByText } = renderReader();
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getNotificationSettings).toHaveBeenCalled());
+    // 初期案（report なし）では通知が出ていない。
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(queryByText('プロンプト予算のため一部を調整しました')).toBeNull();
+
+    fireEvent.click(await findByRole('button', { name: '次の案' }));
+
+    await waitFor(() =>
+      expect(queryByText('プロンプト予算のため一部を調整しました')).not.toBeNull()
+    );
+    expect(await findByText('直近の本文の一部を省略しました')).not.toBeNull();
+  });
+
+  it('clears the previous draft budget notice when navigating to a full draft', async () => {
+    getReaderState.mockResolvedValue(
+      readerStateWithDrafts(
+        {
+          ...generationRecord(),
+          promptBudgetReport: budgetReport([
+            {
+              sectionId: 'user.recentContext',
+              originalChars: 12_000,
+              includedChars: 8_000,
+              action: 'truncated',
+            },
+          ]),
+        },
+        ['gen-reader-notifications', 'gen-draft-next']
+      )
+    );
+    // 移動先の案は全項目 full（report なし相当）。
+    navigateDraft.mockResolvedValue({
+      ...generationRecord(),
+      generationId: 'gen-draft-next',
+    });
+
+    const { findByRole, queryAllByText, queryByText } = renderReader();
+    await waitFor(() => expect(getReaderState).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getNotificationSettings).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(queryByText('プロンプト予算のため一部を調整しました')).not.toBeNull()
+    );
+
+    fireEvent.click(await findByRole('button', { name: '次の案' }));
+    await waitFor(() => expect(navigateDraft).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 移動先に調整がないため新しい通知は出ない（直前案の通知文は破棄される）。
+    expect(queryAllByText('プロンプト予算のため一部を調整しました')).toHaveLength(1);
   });
 });

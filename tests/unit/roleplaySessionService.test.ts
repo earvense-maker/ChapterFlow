@@ -59,15 +59,21 @@ function streamChunks(chunks: string[]): AsyncGenerator<AdapterGenerateStreamEve
 
 async function collectStream(gen: AsyncGenerator<roleplayService.RoleplayStreamEvent>): Promise<{
   chunks: string[];
+  postprocessingCount: number;
+  replacements: string[];
   done?: Extract<roleplayService.RoleplayStreamEvent, { type: 'done' }>['session'];
   errors: Array<Extract<roleplayService.RoleplayStreamEvent, { type: 'error' }>['error']>;
 }> {
   const chunks: string[] = [];
   const errors: Array<Extract<roleplayService.RoleplayStreamEvent, { type: 'error' }>['error']> = [];
+  let postprocessingCount = 0;
+  const replacements: string[] = [];
   let done: Extract<roleplayService.RoleplayStreamEvent, { type: 'done' }>['session'] | undefined;
   try {
     for await (const event of gen) {
       if (event.type === 'chunk') chunks.push(event.text);
+      else if (event.type === 'postprocessing') postprocessingCount += 1;
+      else if (event.type === 'replace') replacements.push(event.text);
       else if (event.type === 'done') done = event.session;
       else errors.push(event.error);
     }
@@ -86,18 +92,12 @@ async function collectStream(gen: AsyncGenerator<roleplayService.RoleplayStreamE
       throw err;
     }
   }
-  return { chunks, done, errors };
+  return { chunks, postprocessingCount, replacements, done, errors };
 }
 
 beforeEach(() => {
   roleplayService.__resetInFlightForTesting();
 });
-
-// NOTE: 開発診断は既定オフ（リリース版の状態）。有効時の挙動を見るテストだけが
-// これを呼び、afterEach で必ず未設定に戻す。
-function enableDevDiagnostics(): void {
-  process.env.CHAPTERFLOW_DEV_DIAGNOSTICS = '1';
-}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -139,54 +139,104 @@ describe('roleplaySessionService', () => {
     expect(view.characterName).toBe('アリス');
   });
 
-  it('omits prompt budget reports from release builds and records them for dev diagnostics', async () => {
+  it('records prompt budget reports in every build regardless of dev diagnostics (AC13)', async () => {
     const project = await makeRoleplayProject();
     vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
       streamChunks(['わかったよ。'])
     );
 
-    const released = await roleplayService.createRoleplaySession({
+    const created = await roleplayService.createRoleplaySession({
       projectId: project.projectId,
       characterId: 'char-a',
     });
     await collectStream(
       roleplayService.sendRoleplayMessage({
         projectId: project.projectId,
-        sessionId: released.sessionId,
+        sessionId: created.sessionId,
         message: '話そう',
-        revision: released.revision,
+        revision: created.revision,
       })
     );
-    const releasedSession = await storage.readRoleplaySession(
-      project.projectId,
-      released.sessionId
-    );
-    expect(releasedSession?.contextSnapshot.appliedSettings?.promptBudgetReport).toBeUndefined();
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    // セッション作成時（system 縮小結果）と各ターン（結合済み report）の両方が残る。
+    expect(stored?.contextSnapshot.appliedSettings?.promptBudgetReport).toBeDefined();
+    expect(stored?.contextSnapshot.appliedSettings?.promptBudgetReport?.entries.length).toBeGreaterThan(0);
     expect(
-      releasedSession?.messages.some((message) => message.promptBudgetReport !== undefined)
-    ).toBe(false);
-
-    enableDevDiagnostics();
-    const diagnosed = await roleplayService.createRoleplaySession({
-      projectId: project.projectId,
-      characterId: 'char-a',
-    });
-    await collectStream(
-      roleplayService.sendRoleplayMessage({
-        projectId: project.projectId,
-        sessionId: diagnosed.sessionId,
-        message: '話そう',
-        revision: diagnosed.revision,
-      })
-    );
-    const diagnosedSession = await storage.readRoleplaySession(
-      project.projectId,
-      diagnosed.sessionId
-    );
-    expect(diagnosedSession?.contextSnapshot.appliedSettings?.promptBudgetReport).toBeDefined();
-    expect(
-      diagnosedSession?.messages.some((message) => message.promptBudgetReport !== undefined)
+      stored?.messages.some((message) => message.promptBudgetReport !== undefined)
     ).toBe(true);
+  });
+
+  it('keeps the per-turn budget report identical between done.session, stored session, and reload (AC13)', async () => {
+    const project = await makeRoleplayProject();
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['わかったよ。'])
+    );
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '話そう',
+        revision: created.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    const doneLast = result.done!.messages[result.done!.messages.length - 1];
+    expect(doneLast.promptBudgetReport).toBeDefined();
+
+    // 保存済みセッション（ファイル）と再読込（GET 相当）でも同じ report を返す。
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    const storedLast = stored!.messages[stored!.messages.length - 1];
+    expect(storedLast.promptBudgetReport).toEqual(doneLast.promptBudgetReport);
+
+    const reloaded = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const reloadedLast = reloaded.messages[reloaded.messages.length - 1];
+    expect(reloadedLast.promptBudgetReport).toEqual(doneLast.promptBudgetReport);
+  });
+
+  it('logs the system budget adjustment once at session creation and not again per turn (AC13)', async () => {
+    const project = await makeRoleplayProject();
+    // 基本プロンプトを 5,000 字へ長くし、セッション作成時の system report で
+    // roleplay.projectSystemPrompt が truncated になる状態を作る。
+    const presets = await storage.readPresets(project.projectId);
+    if (!presets) throw new Error('Presets not found');
+    await storage.writePresets(project.projectId, {
+      ...presets,
+      baseSystemPrompt: 'あ'.repeat(5_000),
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['わかったよ。'])
+    );
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    // セッション作成時に一度だけログが出る。
+    const sessionLogs = info.mock.calls.filter(
+      (call) => call[0] === 'Roleplay session prompt budget adjusted'
+    );
+    expect(sessionLogs).toHaveLength(1);
+    expect(JSON.stringify(sessionLogs[0])).toContain('roleplay.projectSystemPrompt');
+
+    info.mockClear();
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '話そう',
+        revision: created.revision,
+      })
+    );
+    // ターンの結合 report には system 側の縮小も含まれるが、ターン固有セクションが
+    // full のターンではログを出さない（system 調整の二重ログを防ぐ）。
+    const turnLogs = info.mock.calls.filter((call) => call[0] === 'Roleplay prompt budget adjusted');
+    expect(turnLogs).toHaveLength(0);
   });
 
   // NOTE: 初期状態は会話が始まったばかりの足場。要約が「今」を語り始めたら落とす。
@@ -1233,5 +1283,404 @@ describe('roleplaySessionService', () => {
     expect(saved.role).toBe('character');
     // 600字ちょうどで保存されている。
     expect(saved.content.length).toBe(600);
+  });
+
+  // NOTE: 設計書 5.2 / 10.1。超過判定は会話履歴だけではなく完成予定プロンプト全体で行い、
+  // 同期要約は 1 send あたり最大1回。要約を実施した turn では background summary を
+  // 追加起動しない（同一 turn 中の二重要約を防ぐ）。
+  it('folds an oversized history with exactly one sync summary call per send (AC5)', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+
+    const streamText = vi.spyOn(GeminiAdapter.prototype, 'generateTextStream');
+    streamText.mockImplementation(() => streamChunks(['わかったよ。']));
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValue({
+        text: JSON.stringify({
+          summary: '二人は長い話をした。',
+          relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      });
+
+    // 第1ターン: 短い会話は予算内 → 同期要約なし。
+    const first = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'ねえ',
+        revision: created.revision,
+      })
+    );
+    expect(first.errors).toEqual([]);
+    expect(generateText).not.toHaveBeenCalled();
+
+    // 16,000 字を超える履歴を作る（通常送信の 2,000 字上限を避けるためファイルへ直接書く）。
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    if (!stored) throw new Error('Roleplay session not found');
+    const bulk: roleplayService.RoleplaySession['messages'] = Array.from(
+      { length: 9 },
+      (_, i) => ({
+        messageId: `bulk-${i * 2}`,
+        role: 'user' as const,
+        content: 'あ'.repeat(2_000),
+        createdAt: `2026-07-04T00:${String(i * 2).padStart(2, '0')}:00.000Z`,
+      })
+    );
+    const replies: roleplayService.RoleplaySession['messages'] = Array.from(
+      { length: 8 },
+      (_, i) => ({
+        messageId: `bulk-${i * 2 + 1}`,
+        role: 'character' as const,
+        content: 'い'.repeat(2_000),
+        createdAt: `2026-07-04T00:${String(i * 2 + 1).padStart(2, '0')}:00.000Z`,
+      })
+    );
+    const bulkMessages = [...bulk, ...replies].sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt)
+    );
+    // 末尾は character 応答で終わらせる（未応答 user が残ると通常送信が pending_response になる）。
+    bulkMessages.push({
+      messageId: 'bulk-tail',
+      role: 'character',
+      content: 'う'.repeat(2_000),
+      createdAt: '2026-07-04T00:18:00.000Z',
+    });
+    await storage.writeRoleplaySession({
+      ...stored,
+      messages: [...stored.messages, ...bulkMessages],
+    });
+
+    // 第2ターン: 完成予定プロンプトが 16,000 字上限を超える → 生成前に同期要約が1回走る。
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const second = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '話を続けよう',
+        revision: latest.revision,
+      })
+    );
+    expect(second.errors).toEqual([]);
+    expect(generateText).toHaveBeenCalledTimes(1);
+
+    const storedAfter = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(storedAfter?.conversationSummary).toBe('二人は長い話をした。');
+    expect(storedAfter?.summaryThroughMessageId).toBeDefined();
+    // 同期要約のターンでは background summary を追加起動しない。要約モデルの呼び出しは
+    // この send 全体で1回のまま（通常ターンの非同期要約が走った場合もここで増える）。
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  // NOTE: 設計書 5.2 / 11-5。同期要約を1回使い切っても完成予定プロンプトが
+  // 24,000 字へ収まらない場合は明示エラーで、同じ send 内で要約ループは繰り返さない。
+  it('returns roleplay_prompt_budget_exceeded when one sync summary cannot fit the prompt (AC5)', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    if (!stored) throw new Error('Roleplay session not found');
+
+    // scenario 1,000字 + summary 6,000字 + 関係性 + 直近 16,000字の最大構成を作る。
+    const longSummary = '要約'.repeat(3_000);
+    await storage.writeRoleplaySession({
+      ...stored,
+      scenario: 'あ'.repeat(1_000),
+      conversationSummary: longSummary,
+      relationshipState: {
+        trust: 100,
+        intimacy: 100,
+        tension: 0,
+        currentAddress: 'あなた',
+        promises: Array.from({ length: 8 }, (_, i) => `約束${i}。${'う'.repeat(150)}`),
+        unresolvedTopics: Array.from({ length: 8 }, (_, i) => `話題${i}。${'え'.repeat(150)}`),
+        updatedAt: '2026-07-04T00:00:00.000Z',
+      },
+      messages: [
+        ...stored.messages,
+        ...Array.from({ length: 10 }, (_, i) => ({
+          messageId: `bulk-${i * 2}`,
+          role: 'user' as const,
+          content: 'お'.repeat(900),
+          createdAt: `2026-07-04T00:${String(i * 2).padStart(2, '0')}:00.000Z`,
+        })),
+        // 末尾は character 応答で終わらせる（未応答 user が残ると通常送信が pending_response になる）。
+        ...Array.from({ length: 9 }, (_, i) => ({
+          messageId: `bulk-${i * 2 + 1}`,
+          role: 'character' as const,
+          content: 'か'.repeat(900),
+          createdAt: `2026-07-04T00:${String(i * 2 + 1).padStart(2, '0')}:00.000Z`,
+        })),
+      ],
+    });
+
+    // 同期要約は1回成功するが、summary が 6,000 字で再構築しても 24,000 字に収まらない。
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: 'う'.repeat(6_000),
+      finishReason: 'stop',
+      retryable: false,
+    });
+    const streamText = vi.spyOn(GeminiAdapter.prototype, 'generateTextStream');
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '返事',
+        revision: latest.revision,
+      })
+    );
+
+    expect(result.errors[0]?.code).toBe('roleplay_prompt_budget_exceeded');
+    expect(result.errors[0]?.retryable).toBe(true);
+    // 同期要約は1回だけ呼ばれ、本文生成ストリームは開始しない。
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(streamText).not.toHaveBeenCalled();
+  });
+
+  // NOTE: 設計書 10.6。NGヒットが無ければ postprocessing 表示も追加モデル呼び出しも発生しない。
+  it('does not start NG postprocessing when the response has no NG hit (10.6)', async () => {
+    const project = await makeRoleplayProject();
+    const expressionService = await import('../../src/server/services/expressionService');
+    await expressionService.createExpression(project.projectId, {
+      text: '息を呑んだ',
+      source: 'manual',
+    });
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText');
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['普通の返事'])
+    );
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'こんにちは',
+        revision: created.revision,
+      })
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(result.postprocessingCount).toBe(0);
+    expect(result.replacements).toEqual([]);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  // NOTE: 設計書 5.5 / 10.6。自動書き換えは保存成功後に replace を送り、done.session の
+  // 保存本文と一致する。再読込（GET）も同じ文字列になる。
+  it('rewrites NG locally, verifies again, and keeps replace == done.session == stored text (AC12)', async () => {
+    const originalAppSettingsPath = process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
+    const settingsDir = await import('node:os').then((os) =>
+      require('node:path').join(os.tmpdir(), `chapterflow-rp-ng-${Date.now()}`)
+    );
+    await import('node:fs/promises').then((fs) =>
+      fs.mkdir(settingsDir, { recursive: true })
+    );
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = require('node:path').join(
+      settingsDir,
+      'app-settings.json'
+    );
+    const appSettings = await import('../../src/server/services/appSettingsService');
+    await appSettings.writeAppSettings({
+      ngAutoRewrite: { enabled: true, maxRewritesPerGeneration: 3 },
+    });
+
+    try {
+      const project = await makeRoleplayProject();
+      const expressionService = await import('../../src/server/services/expressionService');
+      await expressionService.createExpression(project.projectId, {
+        text: '息を呑んだ',
+        source: 'manual',
+      });
+      const generated = '彼は息を呑んだ。静かに続けた。';
+      // NOTE: リライト対象は一文だけ。モデル応答は対象一文の言い換えだけで、
+      // 前後の文はサーバー側がそのまま繋ぎ直す。
+      const rewrittenSentence = '彼は言葉を失った。';
+      const expectedFinal = '彼は言葉を失った。静かに続けた。';
+      vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+        streamChunks([generated])
+      );
+      // 局所リライトのモデル応答。verifyRewrite で再検証して通る文字列。
+      vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+        text: rewrittenSentence,
+        finishReason: 'stop',
+        retryable: false,
+      });
+
+      const created = await roleplayService.createRoleplaySession({
+        projectId: project.projectId,
+        characterId: 'char-a',
+      });
+      const result = await collectStream(
+        roleplayService.sendRoleplayMessage({
+          projectId: project.projectId,
+          sessionId: created.sessionId,
+          message: '続けて',
+          revision: created.revision,
+        })
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.postprocessingCount).toBe(1);
+      expect(result.replacements).toEqual([expectedFinal]);
+      const saved = result.done!.messages[result.done!.messages.length - 1];
+      expect(saved.content).toBe(expectedFinal);
+      // 自動書き換えが成功したターンには警告を残さない。
+      expect(saved.generationWarnings).toBeUndefined();
+
+      // 再読込（GET 相当）でも同じ保存本文になる。
+      const reloaded = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+      expect(reloaded.messages[reloaded.messages.length - 1].content).toBe(expectedFinal);
+    } finally {
+      if (originalAppSettingsPath === undefined) {
+        delete process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
+      } else {
+        process.env.CHAPTERFLOW_APP_SETTINGS_PATH = originalAppSettingsPath;
+      }
+      await import('node:fs/promises').then((fs) =>
+        fs.rm(settingsDir, { recursive: true, force: true })
+      );
+    }
+  });
+
+  // NOTE: 設計書 5.5 / 10.6。自動書き換えが無効なら元の応答を保存し、warning を残す。
+  it('keeps the original response with an ng_expression_detected warning when auto-rewrite is disabled', async () => {
+    // 実機の app-settings.json に依存しないよう、無効設定を明示した一時ファイルへ差し替える。
+    const originalAppSettingsPath = process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
+    const settingsDir = await import('node:os').then((os) =>
+      require('node:path').join(os.tmpdir(), `chapterflow-rp-ng-off-${Date.now()}`)
+    );
+    await import('node:fs/promises').then((fs) => fs.mkdir(settingsDir, { recursive: true }));
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = require('node:path').join(
+      settingsDir,
+      'app-settings.json'
+    );
+    const appSettings = await import('../../src/server/services/appSettingsService');
+    await appSettings.writeAppSettings({
+      ngAutoRewrite: { enabled: false, maxRewritesPerGeneration: 3 },
+    });
+
+    try {
+      const project = await makeRoleplayProject();
+      const expressionService = await import('../../src/server/services/expressionService');
+      await expressionService.createExpression(project.projectId, {
+        text: '息を呑んだ',
+        source: 'manual',
+      });
+      const generated = '彼は息を呑んだ。';
+      vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+        streamChunks([generated])
+      );
+      const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText');
+
+      const created = await roleplayService.createRoleplaySession({
+        projectId: project.projectId,
+        characterId: 'char-a',
+      });
+      const result = await collectStream(
+        roleplayService.sendRoleplayMessage({
+          projectId: project.projectId,
+          sessionId: created.sessionId,
+          message: '続けて',
+          revision: created.revision,
+        })
+      );
+
+      expect(result.errors).toEqual([]);
+      // 検出はするが自動書き換えは無効のため、replace は送らず元の本文を保存する。
+      expect(result.postprocessingCount).toBe(1);
+      expect(result.replacements).toEqual([]);
+      expect(generateText).not.toHaveBeenCalled();
+      const saved = result.done!.messages[result.done!.messages.length - 1];
+      expect(saved.content).toBe(generated);
+      expect(saved.generationWarnings).toEqual([
+        { code: 'ng_expression_detected', expressionIds: [expect.any(String)] },
+      ]);
+    } finally {
+      if (originalAppSettingsPath === undefined) {
+        delete process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
+      } else {
+        process.env.CHAPTERFLOW_APP_SETTINGS_PATH = originalAppSettingsPath;
+      }
+      await import('node:fs/promises').then((fs) =>
+        fs.rm(settingsDir, { recursive: true, force: true })
+      );
+    }
+  });
+
+  // NOTE: 設計書 5.5 / 10.6。書き換えが収束しなくても応答を捨てず、warning 付きで保存する。
+  it('keeps the original response with an ng_rewrite_failed warning when the rewrite model fails', async () => {
+    const originalAppSettingsPath = process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
+    const settingsDir = await import('node:os').then((os) =>
+      require('node:path').join(os.tmpdir(), `chapterflow-rp-ng-fail-${Date.now()}`)
+    );
+    await import('node:fs/promises').then((fs) => fs.mkdir(settingsDir, { recursive: true }));
+    process.env.CHAPTERFLOW_APP_SETTINGS_PATH = require('node:path').join(
+      settingsDir,
+      'app-settings.json'
+    );
+    const appSettings = await import('../../src/server/services/appSettingsService');
+    await appSettings.writeAppSettings({
+      ngAutoRewrite: { enabled: true, maxRewritesPerGeneration: 3 },
+    });
+
+    try {
+      const project = await makeRoleplayProject();
+      const expressionService = await import('../../src/server/services/expressionService');
+      await expressionService.createExpression(project.projectId, {
+        text: '息を呑んだ',
+        source: 'manual',
+      });
+      const generated = '彼は息を呑んだ。';
+      vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+        streamChunks([generated])
+      );
+      vi.spyOn(GeminiAdapter.prototype, 'generateText').mockRejectedValue(
+        new Error('rewrite model failure')
+      );
+
+      const created = await roleplayService.createRoleplaySession({
+        projectId: project.projectId,
+        characterId: 'char-a',
+      });
+      const result = await collectStream(
+        roleplayService.sendRoleplayMessage({
+          projectId: project.projectId,
+          sessionId: created.sessionId,
+          message: '続けて',
+          revision: created.revision,
+        })
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.postprocessingCount).toBe(1);
+      const saved = result.done!.messages[result.done!.messages.length - 1];
+      expect(saved.content).toBe(generated);
+      expect(saved.generationWarnings).toEqual([
+        { code: 'ng_rewrite_failed', expressionIds: [expect.any(String)] },
+      ]);
+    } finally {
+      if (originalAppSettingsPath === undefined) {
+        delete process.env.CHAPTERFLOW_APP_SETTINGS_PATH;
+      } else {
+        process.env.CHAPTERFLOW_APP_SETTINGS_PATH = originalAppSettingsPath;
+      }
+      await import('node:fs/promises').then((fs) =>
+        fs.rm(settingsDir, { recursive: true, force: true })
+      );
+    }
   });
 });

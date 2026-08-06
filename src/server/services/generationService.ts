@@ -69,6 +69,7 @@ import {
   tokensToReducibleChars,
 } from '../prompts/promptBudget.js';
 import { resolveNovelMaxOutputTokens } from '../utils/outputLength.js';
+import { collectAdjustedBudgetEntries } from '../../shared/promptBudgetNotice.js';
 import type { PromptBudgetReport } from '../../shared/types/generation.js';
 import {
   buildReaderContextUsage,
@@ -461,14 +462,16 @@ async function generateSceneUnlocked(
               contentChunks: result.text.trim() ? 1 : 0,
             },
           }),
-          promptBudgetReport,
         }
       : {}),
+    // NOTE: 予算の適用結果は原文を含まないため、開発診断に依らず常に記録する（AC13）。
+    ...(promptBudgetReport ? { promptBudgetReport } : {}),
     ...(styleProfile ? { styleProfile } : {}),
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
   await storage.appendGenerationLog(projectId, record);
+  logAdjustedNovelBudget(projectId, generationId, promptBudgetReport);
 
   await persistTargetScene(projectId, target, generationId);
 
@@ -737,14 +740,16 @@ async function generateSceneStreamUnlocked(
             usage: rawUsage,
             streamMetrics: measuredStreamMetrics,
           }),
-          promptBudgetReport,
         }
       : {}),
+    // NOTE: 予算の適用結果は原文を含まないため、開発診断に依らず常に記録する（AC13）。
+    ...(promptBudgetReport ? { promptBudgetReport } : {}),
     ...(styleProfile ? { styleProfile } : {}),
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
   await storage.appendGenerationLog(projectId, record);
+  logAdjustedNovelBudget(projectId, generationId, promptBudgetReport);
   await persistTargetScene(projectId, target, generationId);
 
   const rawWorldText = await storage.readWorldText(projectId);
@@ -776,6 +781,28 @@ async function generateSceneStreamUnlocked(
 // 初回、一括縮小後の再計測、保守的縮小後の最終計測の3回で打ち切り、
 // 外部APIを無制限に叩かない。
 const NOVEL_TOKEN_MEASUREMENTS_MAX = 3;
+
+// NOTE: AC13 の「ログから確認できる」。本文・秘密・プロンプト原文は含めず、
+// 調整が発生したエントリの数値と sectionId だけをログへ出す。全項目 full なら出さない。
+function logAdjustedNovelBudget(
+  projectId: string,
+  generationId: string,
+  report: PromptBudgetReport | null | undefined
+): void {
+  const adjusted = collectAdjustedBudgetEntries(report);
+  if (adjusted.length === 0) return;
+  console.info('Novel generation prompt budget adjusted', {
+    projectId,
+    generationId,
+    assembledChars: report?.assembledChars,
+    adjusted: adjusted.map((entry) => ({
+      sectionId: entry.sectionId,
+      action: entry.action,
+      originalChars: entry.originalChars,
+      includedChars: entry.includedChars,
+    })),
+  });
+}
 
 /**
  * 本文生成の直前に、組み立て済み prompt がモデルのトークン予算へ収まるか検証し、

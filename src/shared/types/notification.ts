@@ -9,6 +9,9 @@ export interface GenerationNotificationEvents {
   // NOTE: NG表現の局所リライトが本文を書き換えたとき。本文が勝手に変わったことは
   // 必ず知らせたいので、既定は on。
   ngRewrite: boolean;
+  // NOTE: プロンプト予算の適用で本文生成用の素材が切り詰め・省略・部分使用・要約された
+  // とき（AC13）。全文が採用された通常生成では通知しない。既定は on。
+  budgetTruncated: boolean;
 }
 
 // NOTE: リポジトリに音声アセットを持たないため、通知音は Web Audio の合成音で用意する

@@ -13,6 +13,7 @@ import { api, type RoleplayStreamHandlers } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import { useNotificationCenter } from './NotificationCenter';
 import { DEFAULT_ROLEPLAY_USER_ACTION_POLICY } from '@shared/roleplayPersona';
+import { formatBudgetNotice, ROLEPLAY_TURN_SECTION_IDS } from '@shared/promptBudgetNotice';
 import type {
   Character,
   CreateRoleplaySessionBody,
@@ -164,6 +165,51 @@ export default function RoleplayWorkspace({
       cancelled = true;
     };
   }, []);
+
+  // NOTE: AC13 のロールプレイ側。done 直後とセッション再読込（GET）のどちらでも、
+  // 予算調整が発生した応答に対して通知する。
+  // - 各ターン: 末尾の character メッセージの report のうち、ターン固有セクション
+  //   （roleplay.variablePrompt / roleplay.recentMessages）だけを見る（dedupeKey は messageId）。
+  //   system 側の縮小はセッション作成時に一度だけ通知するため、ここでは含めない。
+  // - セッション作成時: セッション開始時 system prompt の縮小結果（dedupeKey は sessionId）
+  // どちらも report 欠損の旧データや全項目 full の report では何も出さない。
+  useEffect(() => {
+    if (!notificationSettings || !activeSession) return;
+    const notifyClickTarget = {
+      kind: 'project' as const,
+      projectId,
+      projectType: 'roleplay' as const,
+    };
+    const lastCharacter = [...activeSession.messages]
+      .reverse()
+      .find((message) => message.role === 'character');
+    if (lastCharacter) {
+      const text = formatBudgetNotice(lastCharacter.promptBudgetReport, {
+        sectionIds: ROLEPLAY_TURN_SECTION_IDS,
+      });
+      if (text) {
+        notificationCenter.notify(notificationSettings, {
+          eventType: 'budgetTruncated',
+          dedupeKey: `budget:roleplay:${activeSession.sessionId}:${lastCharacter.messageId}`,
+          title: 'プロンプト予算のため一部を調整しました',
+          body: text,
+          clickTarget: notifyClickTarget,
+        });
+      }
+    }
+    const snapshotText = formatBudgetNotice(activeSession.appliedSettings?.promptBudgetReport);
+    if (snapshotText) {
+      notificationCenter.notify(notificationSettings, {
+        eventType: 'budgetTruncated',
+        dedupeKey: `budget:roleplay-session:${activeSession.sessionId}`,
+        title: 'プロンプト予算のため一部を調整しました',
+        body: snapshotText,
+        clickTarget: notifyClickTarget,
+      });
+    }
+    // NOTE: activeSession はロード・done・セッション切替のたびに新しい参照になる。
+    // dedupeKey が同一のうちは NotificationCenter 側で重複を畳む。
+  }, [notificationSettings, activeSession, notificationCenter, projectId]);
 
   useEffect(() => {
     if (autoScrollRef.current && messagesEndRef.current) {

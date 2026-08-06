@@ -32,7 +32,8 @@ export interface PromptBudgetEntry {
 }
 
 // NOTE: 予算判定そのものは常に行われる。この型は「判定の内訳を記録に残す」ためのもので、
-// 保存は開発版限定（CHAPTERFLOW_DEV_DIAGNOSTICS）。リリース版のレコードには入らない。
+// 本文・秘密・プロンプト原文を持たない数値と sectionId/action だけを常に保存する
+// （AC13: UI とログの両方から確認できるようにするため、開発診断フラグには依存しない）。
 export interface PromptBudgetReport {
   maxChars: number;
   assembledChars: number;
@@ -101,6 +102,7 @@ export interface GenerationRecord {
   generationMode?: GenerateRequestBody['mode'];
   telemetry?: GenerationTelemetry;
   styleProfile?: GenerationStyleProfile;
+  // NOTE: 予算の適用結果（原文なし）。常に記録する。旧レコードには無いため optional 扱い。
   promptBudgetReport?: PromptBudgetReport;
 }
 

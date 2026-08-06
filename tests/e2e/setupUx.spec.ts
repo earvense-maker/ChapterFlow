@@ -394,7 +394,11 @@ test('初回の案内から候補を出し、試し書きをその場で調整�
   await expect(page.getByPlaceholder('まだ決まっていません')).toHaveValue('サーバー側で確定した核');
   await expect(page.getByText('作品の核を追加', { exact: true })).toBeVisible();
 
-  const previewAction = page.getByRole('button', { name: '試し書きで温度を見る', exact: true });
+  // NOTE: モデル応答由来の suggestedActions は表示しない現行仕様。1往復時点でも常に
+  // 利用できるヘッダーの固定導線から、同じ preview API の失敗・再試行を検証する。
+  const previewAction = page
+    .getByRole('banner')
+    .getByRole('button', { name: '試し書き', exact: true });
   await previewAction.click();
   await expect(page.locator('.setup-error')).toBeVisible();
   await expect(page.getByText('作品の核を追加', { exact: true })).toBeVisible();

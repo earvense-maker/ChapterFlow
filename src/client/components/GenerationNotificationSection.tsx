@@ -235,6 +235,15 @@ export default function GenerationNotificationSection({ onError, onFlashMessage,
             />
             <span>NG表現の書き換えが済んだとき</span>
           </label>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={settings.events.budgetTruncated}
+              onChange={(e) => updateEvent('budgetTruncated', e.target.checked)}
+              disabled={saving}
+            />
+            <span>プロンプト予算のため一部を省略したとき</span>
+          </label>
 
           <div className="summary-card-actions">
             <button type="button" onClick={sendTestNotification} disabled={saving}>

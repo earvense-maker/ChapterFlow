@@ -6,6 +6,7 @@ import { GeneratingLabel } from './GeneratingLabel';
 import { useNotificationCenter } from './NotificationCenter';
 import NgHighlightedText from './NgHighlightedText';
 import { findNgMatches, type NgMatch } from '@shared/ngDetection';
+import { formatBudgetNotice } from '@shared/promptBudgetNotice';
 import { GENERATION_WISH_MAX_CHARS, KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import type {
   ContextUsageEstimate,
@@ -15,6 +16,7 @@ import type {
   NgAutoRewriteSettings,
   NgExpression,
   Project,
+  PromptBudgetReport,
   ReaderNavigationState,
   ReaderState,
   RefineMaintenancePhase,
@@ -150,6 +152,9 @@ export default function Reader({
   const [ngAutoRewriteRunning, setNgAutoRewriteRunning] = useState(false);
   const [selectedText, setSelectedText] = useState('');
   const [selectionButtonPosition, setSelectionButtonPosition] = useState<{ top: number; left: number } | null>(null);
+  // NOTE: AC13。現在表示中の生成記録に付随する予算調整の通知文。全項目 full のときは null。
+  // ref に持たせ、通知設定の取得完了が生成完了より遅れても通知を取りこぼさない。
+  const budgetNoticeRef = useRef<{ text: string; generationId: string } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const rewriteInputRef = useRef<HTMLTextAreaElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
@@ -215,11 +220,16 @@ export default function Reader({
       setGenerationId(state.currentGeneration.generationId);
       setStatus(state.currentGeneration.status);
       setCurrentGenerationWish(state.currentGeneration.request.wish);
+      applyBudgetNoticeFromReport(
+        state.currentGeneration.promptBudgetReport,
+        state.currentGeneration.generationId
+      );
     } else {
       setText('');
       setGenerationId(null);
       setStatus(null);
       setCurrentGenerationWish('');
+      applyBudgetNoticeFromReport(null, null);
     }
     setCurrentScene(state.currentScene);
     setNavigation(state.navigation);
@@ -295,6 +305,23 @@ export default function Reader({
       cancelled = true;
     };
   }, []);
+
+  // NOTE: AC13 の小説側。生成完了直後と保存済み結果の再読込のどちらでも、
+  // 予算調整が発生した生成記録に対して1回ずつ通知する（dedupeKey は generationId）。
+  // 通知設定の取得が生成完了より遅れても、ref の通知文をこの effect が拾う。
+  // 全項目が full の通常生成では ref が null なので何も出ない。
+  useEffect(() => {
+    if (!notificationSettings || !generationId) return;
+    const notice = budgetNoticeRef.current;
+    if (!notice || notice.generationId !== generationId) return;
+    notificationCenter.notify(notificationSettings, {
+      eventType: 'budgetTruncated',
+      dedupeKey: `budget:novel:${notice.generationId}`,
+      title: 'プロンプト予算のため一部を調整しました',
+      body: notice.text,
+      clickTarget: { kind: 'project', projectId, projectType: 'novel' },
+    });
+  }, [notificationSettings, generationId, notificationCenter, projectId]);
 
   // NOTE: 視点セレクト用の人物一覧。取得に失敗しても「自動」だけは選べるので、
   // 生成そのものは止めない。
@@ -408,6 +435,20 @@ export default function Reader({
     };
   }, [menuOpen]);
 
+  // NOTE: 予算調整の通知文を report から組み立てる。全項目 full や report 欠損の
+  // 旧データでは null になり、通知は出ない（AC13）。
+  // 同じ生成記録の再読込（生成直後の load() を含む）では通知文を維持し、
+  // 別の記録へ移ったときだけ差し替える。
+  function applyBudgetNoticeFromReport(
+    report: PromptBudgetReport | null | undefined,
+    generationId: string | null
+  ) {
+    const text = formatBudgetNotice(report);
+    if (generationId !== budgetNoticeRef.current?.generationId) {
+      budgetNoticeRef.current = text && generationId ? { text, generationId } : null;
+    }
+  }
+
   async function handleGenerate(
     mode: 'continue' | 'regenerate' | 'variate',
     requestWish = wish
@@ -516,6 +557,7 @@ export default function Reader({
       setGenerationId(record.generationId);
       setStatus(record.status);
       setCurrentGenerationWish(record.request.wish);
+      applyBudgetNoticeFromReport(record.promptBudgetReport, record.generationId);
       setWish('');
       setRewriteWish('');
       setRewriteSheetOpen(false);
@@ -658,6 +700,9 @@ export default function Reader({
       setGenerationId(record.generationId);
       setStatus(record.status);
       setCurrentGenerationWish(record.request.wish);
+      // NOTE: AC13。案を移動したら表示中の生成記録が変わるため、予算調整の通知文も
+      // 新しい案の report で差し替える（前の案の通知情報を残さない）。
+      applyBudgetNoticeFromReport(record.promptBudgetReport, record.generationId);
     } catch (err) {
       setError(err instanceof Error ? err.message : '案の移動に失敗しました');
     } finally {
