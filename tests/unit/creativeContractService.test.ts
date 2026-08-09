@@ -81,6 +81,15 @@ describe('creativeContractService 正規化と上限（設計書 12.1）', () =>
     ).toThrow(/重複/);
   });
 
+  it('異なる本文でもcontractIdの重複を拒否する', () => {
+    expect(() =>
+      creativeContractService.validateContractItems([
+        item({ contractId: 'ctr-duplicate', text: '最初の約束' }),
+        item({ contractId: 'ctr-duplicate', text: '別の約束' }),
+      ])
+    ).toThrow(/契約ID/);
+  });
+
   it('ai-suggested は soft にしかならない', () => {
     const [normalized] = creativeContractService.validateContractItems([
       item({ source: 'ai-suggested', strength: 'hard' }),

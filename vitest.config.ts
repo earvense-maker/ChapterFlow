@@ -13,6 +13,9 @@ export default defineConfig({
     // 既定の5秒はワーカー並列時のWindowsで不足し、処理速度を検証していない
     // テスト（storyStateのrefresh待ちなど）が散発的にタイムアウトしていた。
     testTimeout: 20_000,
+    // NOTE: 大規模スイートを既定並列度で動かすと、Windowsでworker forkが稀に
+    // 異常終了する。4並列なら全テストの所要時間を保ちつつ安定して完走できる。
+    maxWorkers: 4,
     include: [
       'tests/unit/**/*.test.ts',
       'tests/unit/**/*.test.tsx',

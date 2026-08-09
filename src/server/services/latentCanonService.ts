@@ -377,12 +377,12 @@ export function applyCanonPatchUnlocked(
 // NOTE: activeなprovisional/foreshadowedが上限を超えたら、未使用・未ロックの
 // provisionalからretiredにする（削除はしない・設計書 5.3）。
 function enforceActiveLimit(items: LatentCanonItem[]): LatentCanonItem[] {
-  const activeCount = () =>
-    items.filter(
+  const activeCount = (current: LatentCanonItem[]) =>
+    current.filter(
       (item) =>
         item.status === 'provisional' || item.status === 'foreshadowed'
       ).length;
-  if (activeCount() <= LATENT_CANON_LIMITS.maxActiveItems) return items;
+  if (activeCount(items) <= LATENT_CANON_LIMITS.maxActiveItems) return items;
   const candidates = items
     .filter(
       (item) =>
@@ -392,7 +392,7 @@ function enforceActiveLimit(items: LatentCanonItem[]): LatentCanonItem[] {
   const now = nowIso();
   const result = [...items];
   for (const candidate of candidates) {
-    if (activeCount() <= LATENT_CANON_LIMITS.maxActiveItems) break;
+    if (activeCount(result) <= LATENT_CANON_LIMITS.maxActiveItems) break;
     const index = result.findIndex((item) => item.canonId === candidate.canonId);
     if (index < 0) continue;
     result[index] = {

@@ -19,6 +19,12 @@ import type {
 
 const router = Router();
 
+async function buildProjectCanonSummary(projectId: string, store: LatentCanonStore) {
+  const state = await storage.readState(projectId);
+  const spoilerMode = state?.uiState?.canonSpoilerMode === 'visible' ? 'visible' : 'shielded';
+  return latentCanonService.buildCanonSummary(store, spoilerMode);
+}
+
 // ============================================================
 // 創作契約
 // ============================================================
@@ -136,12 +142,8 @@ router.put('/projects/:id/creative-contract', async (req, res, next) => {
 // NOTE: shielded時は未公開項目の件数・カテゴリだけを返す（設計書 7.2）。
 router.get('/projects/:id/canon-summary', async (req, res, next) => {
   try {
-    const [store, state] = await Promise.all([
-      latentCanonService.readLatentCanonStore(req.params.id),
-      storage.readState(req.params.id),
-    ]);
-    const spoilerMode = state?.uiState?.canonSpoilerMode === 'visible' ? 'visible' : 'shielded';
-    res.json(latentCanonService.buildCanonSummary(store, spoilerMode));
+    const store = await latentCanonService.readLatentCanonStore(req.params.id);
+    res.json(await buildProjectCanonSummary(req.params.id, store));
   } catch (err) {
     next(err);
   }
@@ -294,7 +296,7 @@ router.post('/projects/:id/canon-conflicts/:conflictId/resolve', async (req, res
       );
       return latentCanonService.saveLatentCanonStoreWithNextRevision(resolved);
     });
-    res.json(latentCanonService.buildCanonSummary(saved, 'shielded'));
+    res.json(await buildProjectCanonSummary(req.params.id, saved));
   } catch (err) {
     const known = err as Error & { status?: number; code?: string; retryable?: boolean };
     if (known.status === 404) {
@@ -352,9 +354,7 @@ router.patch('/projects/:id/canon/:canonId', async (req, res, next) => {
       });
       return latentCanonService.saveLatentCanonStoreWithNextRevision(next);
     });
-    const [state] = await Promise.all([storage.readState(req.params.id)]);
-    const spoilerMode = state?.uiState?.canonSpoilerMode === 'visible' ? 'visible' : 'shielded';
-    res.json(latentCanonService.buildCanonSummary(saved, spoilerMode));
+    res.json(await buildProjectCanonSummary(req.params.id, saved));
   } catch (err) {
     const known = err as Error & { status?: number; code?: string };
     if (known.status === 404) {
@@ -732,11 +732,9 @@ router.post('/projects/:id/roleplay/sessions/:sessionId/canon/:canonId/promote',
       await storage.writeRoleplaySession(nextSession);
       return savedCanon;
     });
-    const [state] = await Promise.all([storage.readState(req.params.id)]);
-    const spoilerMode = state?.uiState?.canonSpoilerMode === 'visible' ? 'visible' : 'shielded';
     res.json({
       project: project.projectId,
-      canonSummary: latentCanonService.buildCanonSummary(saved, spoilerMode),
+      canonSummary: await buildProjectCanonSummary(req.params.id, saved),
     });
   } catch (err) {
     const known = err as Error & { status?: number; code?: string };

@@ -24,6 +24,10 @@ function isRevisionConflict(err: unknown, code: 'contract_revision_conflict' | '
 
 const CONTRACT_ITEM_FIELDS = ['kind', 'strength', 'text', 'source', 'status'] as const;
 
+function generateContractId(): string {
+  return `ctr-${globalThis.crypto.randomUUID()}`;
+}
+
 interface ContractDraftRebaseInput {
   baseItems: CreativeContractItemInput[];
   draftItems: CreativeContractItemInput[];
@@ -511,7 +515,7 @@ export default function CanonSettingsSection({ projectId, onError, onFlashMessag
                 setDraftItems((current) => [
                   ...current,
                   {
-                    contractId: `ctr-${Date.now()}`,
+                    contractId: generateContractId(),
                     kind: 'promise',
                     strength: 'hard',
                     text: '',

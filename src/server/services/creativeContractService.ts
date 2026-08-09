@@ -160,6 +160,7 @@ export function validateContractItems(
   options: { enforceRenderLimit?: boolean } = {}
 ): CreativeContractItem[] {
   const normalized: CreativeContractItem[] = [];
+  const seenIds = new Set<string>();
   const seenTexts = new Set<string>();
   let hardCount = 0;
   let softCount = 0;
@@ -183,6 +184,15 @@ export function validateContractItems(
     }
     seenTexts.add(comparable);
 
+    const contractId = normalizeContractId(raw.contractId);
+    if (seenIds.has(contractId)) {
+      throw new CreativeContractValidationError(
+        '同じ契約IDが重複しています。',
+        'duplicate_contract_id'
+      );
+    }
+    seenIds.add(contractId);
+
     const source = normalizeSource(raw.source);
     const kind = normalizeKind(raw.kind);
     const strength: CreativeContractStrength =
@@ -202,7 +212,7 @@ export function validateContractItems(
 
     const now = nowIso();
     normalized.push({
-      contractId: normalizeContractId(raw.contractId),
+      contractId,
       kind,
       strength,
       text,

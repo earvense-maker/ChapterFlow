@@ -263,8 +263,11 @@ describe('latentCanonService canon patch適用（設計書 6.3・12.3）', () =>
     const active = next.items.filter(
       (item) => item.status === 'provisional' || item.status === 'foreshadowed'
     );
-    expect(active.length).toBeLessThanOrEqual(40);
-    expect(next.items.some((item) => item.status === 'retired' && item.retiredReason === 'unused')).toBe(true);
+    const retiredAsUnused = next.items.filter(
+      (item) => item.status === 'retired' && item.retiredReason === 'unused'
+    );
+    expect(active).toHaveLength(40);
+    expect(retiredAsUnused.map((item) => item.canonId)).toEqual(['can-0']);
   });
 
   it('revealedとmanual lock項目は自動退役しない', () => {
