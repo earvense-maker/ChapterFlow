@@ -12,16 +12,20 @@
 
 - `src/server/storage/fileProjectStorage.ts`
 
-## 1. ストレージ契約へ未移行（データ操作のみ・16件）
+## 1. ストレージ契約へ未移行（データ操作のみ・20件）
 
 Phase 2 で `WebStorage` へ差し替えるだけで済む見込みの呼び出し元。
 
 - `src/server/prompts/contextAssembler.ts`
+- `src/server/routes/canon.ts`
 - `src/server/routes/generate.ts`
 - `src/server/routes/settings.ts`
+- `src/server/services/acceptedNarrativeDerivationService.ts`
 - `src/server/services/acceptedTextDerivations.ts`
+- `src/server/services/creativeContractService.ts`
 - `src/server/services/expressionService.ts`
 - `src/server/services/generationReaderState.ts`
+- `src/server/services/latentCanonService.ts`
 - `src/server/services/ngRewriteService.ts`
 - `src/server/services/postGenerationMaintenanceService.ts`
 - `src/server/services/refineAutomationGuard.ts`

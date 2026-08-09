@@ -1185,6 +1185,17 @@ export async function withStoryStateLock<T>(
   return storyStateMutex.runExclusive(projectId, task);
 }
 
+// NOTE: 前後stateの差分要約。acceptedNarrativeDerivationService のdiff記録から呼ぶ
+// （設計書 6.3 の観測抽出経路で使う）。既存 appendStoryStateDiff 内の summarizeDiff と
+// 同一実装を切り出した。
+export function summarizeStoryStateDiff(
+  previous: StoryState,
+  next: StoryState,
+  characters: Character[]
+): StoryStateDiffSummary {
+  return summarizeDiff(previous, next, characters);
+}
+
 export class StoryStateServiceError extends Error {
   constructor(
     message: string,

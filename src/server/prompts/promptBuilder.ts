@@ -30,6 +30,7 @@ import {
 import { getApproximateOutputRange } from '../utils/outputLength.js';
 import {
   matchStoryCharacterStates,
+  normalizeComparableText,
   type CharacterStateMatchResult,
 } from '../utils/characterStateMatching.js';
 import {
@@ -41,10 +42,14 @@ import { extractFrequentPhrases } from '../utils/phraseFrequency.js';
 import { renderStyleLensPrompt } from '../services/styleVariationService.js';
 import { normalizeStyleVariationSettings } from '../../shared/defaults.js';
 import { buildIntimateVocalDirection } from './intimateVocalDirection.js';
+import { renderHardContractText } from '../services/creativeContractService.js';
+import { LATENT_CANON_LIMITS } from '../services/latentCanonService.js';
 import type { PromptBudgetEntry, PromptBudgetReport } from '../../shared/types/generation.js';
 import type {
   Character,
+  CreativeContract,
   GenerationStyleProfile,
+  LatentCanonItem,
   Memory,
   Project,
   ProjectState,
@@ -73,6 +78,11 @@ export interface BuildPromptInput {
   // NOTE: null / 未指定は「自動」。wish の文字列解析で視点を決める旧挙動は廃止した
   // （「アキ視点は避ける」をアキ指定へ昇格させる事故があったため。設計書 4.8）。
   viewpointCharacterId?: string | null;
+  // NOTE: 創作契約（設計書 6.1）。hardはrequired section、softは既存preferences経路へ合流。
+  creativeContract?: CreativeContract | null;
+  // NOTE: 呼び出し側が latentCanonService.selectRelatedCanonItems で選んだ関連潜在設定
+  // （最大12件）。revealedが優先され、foreshadowed / provisionalが続く。
+  latentCanonItems?: LatentCanonItem[];
 }
 
 export interface BuildPromptResult {
@@ -108,7 +118,14 @@ const SECTION = {
   sceneDirection: 'user.sceneDirection',
   outputConditions: 'user.outputConditions',
   wish: 'user.wish',
+  creativeContractHard: 'user.creativeContractHard',
+  latentCanon: 'user.latentCanon',
 } as const;
+
+// NOTE: hard契約のrequired section定数（設計書 6.1）。
+export const CREATIVE_CONTRACT_HARD_MAX_CHARS = 4_000;
+export const CREATIVE_CONTRACT_HARD_SECTION_RESERVE = 4_512;
+export const LATENT_CANON_SELECTED_MAX_ITEMS = LATENT_CANON_LIMITS.selectedMaxItems;
 
 const SECTION_SEPARATOR = '\n\n---\n\n';
 
@@ -122,6 +139,7 @@ const SHRINK_ORDER: readonly string[] = [
   SECTION.relationships,
   SECTION.importantPast,
   SECTION.summary,
+  SECTION.latentCanon,
   SECTION.world,
   SECTION.recent,
 ];
@@ -234,6 +252,10 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
     (m) => m.status === 'active' && m.importance === 'high' && m.type === 'storyFact'
   );
   const preferenceMemories = selectPreferenceMemories(memories);
+  const softContractPreferences = collectSoftContractPreferences(
+    input.creativeContract?.items ?? [],
+    preferenceMemories
+  );
 
   // NOTE: 大量データの後ろに【出力形式】と【今回の指示】を置き、具体的な希望を
   // プロンプトの最終行にする（設計書 4.4）。末尾追従の強いモデルほど効く。
@@ -280,6 +302,26 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
     minReserve: 1_200,
     render: renderCoreConcept,
   });
+  // NOTE: hard契約はrequired section。プロンプト予算で省略・切り詰めない（設計書 6.1）。
+  // 8件×500字とrender枠を超える入力は保存時に拒否済みなので、ここで溢れるのは
+  // 予算全体の不足であり、既存の required overflow 判定が prompt_budget_exceeded を返す。
+  const hardContractTexts = (input.creativeContract?.items ?? [])
+    .filter((item) => item.strength === 'hard' && item.status === 'active')
+    .map((item) => item.text);
+  if (hardContractTexts.length > 0) {
+    push(SECTION.creativeContractHard, renderHardContractText(hardContractTexts), {
+      required: true,
+      minReserve: CREATIVE_CONTRACT_HARD_SECTION_RESERVE,
+      hardMax: CREATIVE_CONTRACT_HARD_MAX_CHARS + 512,
+      render: renderCreativeContractHard,
+    });
+  }
+  const latentCanonItems = input.latentCanonItems ?? [];
+  if (latentCanonItems.length > 0) {
+    push(SECTION.latentCanon, latentCanonBody(latentCanonItems, input.creativeContract), {
+      render: renderLatentCanon,
+    });
+  }
   pushUnits(SECTION.world, worldUnits(worldSelection.selected), {
     hardMax: NOVEL_WORLD_MAX_CHARS + 512,
   });
@@ -305,7 +347,7 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
   push(SECTION.importantPast, importantPastBody(storyState, storyFactMemories, characters), {
     render: renderImportantPast,
   });
-  push(SECTION.preferences, preferenceNotesBody(preferenceMemories), {
+  push(SECTION.preferences, preferenceNotesBody(preferenceMemories, softContractPreferences), {
     render: renderPreferenceNotes,
   });
   push(SECTION.summary, contextSummary.trim(), { render: renderContextSummary });
@@ -451,6 +493,96 @@ function renderCoreConcept(core: string): string {
     ],
     core
   );
+}
+
+function renderCreativeContractHard(body: string): string {
+  return renderAnnotatedDataBlock(
+    '【作品の約束（絶対に守る）】',
+    [
+      'これらの約束は常に有効である。場面の都合や演出のために破ってはならない。約束の存在を本文で説明する必要はない。',
+    ],
+    body
+  );
+}
+
+// NOTE: 潜在設定は本文で明らかになるまで読者に見えない補助設定。foreshadowed /
+// provisional は「必ず回収する約束」ではないため低優先の可能性として扱う
+// （設計書 3.2・6.1）。revealed との矛盾だけは許されない。
+function latentCanonBody(
+  items: LatentCanonItem[],
+  contract: CreativeContract | null | undefined
+): string {
+  const exceptionByGeneration = new Map<string, string>();
+  for (const exception of contract?.exceptions ?? []) {
+    exceptionByGeneration.set(exception.generationId, exception.contractId);
+  }
+  const lines = items
+    .slice(0, LATENT_CANON_SELECTED_MAX_ITEMS)
+    .map((item) => {
+      const statusLabel =
+        item.status === 'revealed'
+          ? '公開済み'
+          : item.status === 'foreshadowed'
+            ? '示唆済み'
+            : '未公開';
+      const epistemic =
+        item.epistemicStatus !== 'fact' ? `（${item.epistemicStatus}）` : '';
+      const lockLabel = item.manualLock ? '（作者固定）' : '';
+      const exceptionContractIds = [
+        ...new Set(
+          item.evidence
+            .map((evidence) =>
+              evidence.generationId
+                ? exceptionByGeneration.get(evidence.generationId)
+                : undefined
+            )
+            .filter((contractId): contractId is string => Boolean(contractId))
+        ),
+      ];
+      const exceptionLabel =
+        exceptionContractIds.length > 0
+          ? `（この事実は作者承認済みの契約例外: ${exceptionContractIds.join('、')}）`
+          : '';
+      return `- ${statusLabel}${item.scope !== 'other' ? `[${item.scope}]` : ''}${epistemic}${lockLabel} ${item.statement}${exceptionLabel}`;
+    })
+    .join('\n');
+  return lines;
+}
+
+function renderLatentCanon(body: string): string {
+  return renderAnnotatedDataBlock(
+    '【作品の補助設定（潜在設定）】',
+    [
+      '公開済みは本文で確定した正史である。これと矛盾する本文を書かない。',
+      '示唆済み・未公開は本文にまだ現れていない可能性であり、必ず回収する義務はない。必要な場合だけ、自然な形で本文に織り込む。',
+    ],
+    body
+  );
+}
+
+// NOTE: soft契約は既存のpreference memoryと同じ経路へ合流させる（設計書 6.1）。
+// contractIdと正規化本文で重複を除き、好みセクションを二重に作らない。
+function collectSoftContractPreferences(
+  items: CreativeContract['items'],
+  preferenceMemories: Memory[]
+): string[] {
+  const existingTexts = new Set(
+    preferenceMemories
+      .filter((memory) => memory.type === 'preference')
+      .map((memory) => normalizeComparableText(memory.content))
+  );
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of items) {
+    if (item.strength !== 'soft' || item.status !== 'active') continue;
+    if (seen.has(item.contractId)) continue;
+    seen.add(item.contractId);
+    const comparable = normalizeComparableText(item.text);
+    if (!comparable || existingTexts.has(comparable)) continue;
+    existingTexts.add(comparable);
+    result.push(item.text);
+  }
+  return result;
 }
 
 // NOTE: 世界設定と参考資料は複数のデータブロックを持つ。整形後の文字列を文字単位で
@@ -679,13 +811,14 @@ function renderImportantPast(body: string): string {
   return renderDataBlock('【重要な過去イベント】', body);
 }
 
-function preferenceNotesBody(memories: Memory[]): string {
+function preferenceNotesBody(memories: Memory[], extraPreferences: string[] = []): string {
   const preferences = memories.filter((m) => m.type === 'preference');
   const negatives = memories.filter((m) => m.type === 'negative');
 
   const parts: string[] = [];
-  if (preferences.length > 0) {
-    parts.push(`【好み】\n${preferences.map((m) => `- ${m.content}`).join('\n')}`);
+  const preferenceTexts = [...preferences.map((m) => m.content), ...extraPreferences];
+  if (preferenceTexts.length > 0) {
+    parts.push(`【好み】\n${preferenceTexts.map((text) => `- ${text}`).join('\n')}`);
   }
   if (negatives.length > 0) {
     // NOTE: ここの【NG】はプリファレンス寄り（「性描写を露骨に書かない」等の方向指示）。

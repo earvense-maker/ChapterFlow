@@ -2,6 +2,7 @@ import type { EpisodeId, GenerationId, MemoryId, SceneId } from './ids.js';
 import type { GenerationStyleProfile } from './style.js';
 import type { ActivePresets } from './project.js';
 import type { AdapterGenerateResult, FinishReason } from './model.js';
+import type { GenerationContractValidation } from './canon.js';
 
 export interface GenerationRequest {
   wish: string;
@@ -104,6 +105,8 @@ export interface GenerationRecord {
   styleProfile?: GenerationStyleProfile;
   // NOTE: 予算の適用結果（原文なし）。常に記録する。旧レコードには無いため optional 扱い。
   promptBudgetReport?: PromptBudgetReport;
+  // NOTE: 契約検証の監査情報（原文なし・設計書 5.6）。旧レコードの欠損は skipped 相当。
+  contractValidation?: GenerationContractValidation;
 }
 
 export interface GenerateRequestBody {

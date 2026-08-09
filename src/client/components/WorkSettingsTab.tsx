@@ -23,6 +23,7 @@ import { useKnowledgeManager } from './workSettings/useKnowledgeManager';
 import { useStoryStatePanel } from './workSettings/useStoryStatePanel';
 import { useSystemPromptPresetManager } from './workSettings/useSystemPromptPresetManager';
 import SystemPromptPresetLibrary from './workSettings/SystemPromptPresetLibrary';
+import CanonSettingsSection from './CanonSettingsSection';
 import { DEFAULT_ROLEPLAY_USER_ACTION_POLICY } from '@shared/roleplayPersona';
 import type {
   Character,
@@ -615,7 +616,13 @@ export default function WorkSettingsTab({
   return (
     <div>
       {/* NOTE: 相談チャット・走査結果・自動レビュー設定は AI相談タブへ移した。
-          ここは直接編集の正本に徹し、各対象から相談へ渡す導線だけを置く。 */}
+           ここは直接編集の正本に徹し、各対象から相談へ渡す導線だけを置く。 */}
+      {/* NOTE: 作品の約束・公開済み設定・未公開設定・要確認（設計書 4.2）。 */}
+      <CanonSettingsSection
+        projectId={projectId}
+        onError={onError}
+        onFlashMessage={onFlashMessage}
+      />
       <section className="summary-card detail-settings-card">
         <header className="summary-card-header">
           <h2>詳細設定</h2>

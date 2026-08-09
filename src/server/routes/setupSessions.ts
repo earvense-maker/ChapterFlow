@@ -2,6 +2,8 @@ import { Router } from 'express';
 import * as setupSessionService from '../services/setupSessionService.js';
 import type {
   CommitSetupBody,
+  ConfirmQuickContractsBody,
+  CreateQuickSetupPlanBody,
   CreateSetupSessionBody,
   PatchSetupSettingsBody,
   RetrySetupMessageBody,
@@ -11,6 +13,28 @@ import type {
 } from '../types/index.js';
 
 const router = Router();
+
+// NOTE: クイックセットアップ（設計書 4.1）。一文の希望から最小計画を作る。
+router.post('/setup-sessions/:id/quick-plan', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as CreateQuickSetupPlanBody;
+    const result = await setupSessionService.createQuickSetupPlan(req.params.id, body);
+    res.json(result);
+  } catch (err) {
+    handleSetupError(err, res, next);
+  }
+});
+
+// NOTE: 確認カードの結果を反映し、commitPlanの契約を再構築する（設計書 4.1-2）。
+router.patch('/setup-sessions/:id/quick-contracts', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as ConfirmQuickContractsBody;
+    const result = await setupSessionService.confirmQuickContracts(req.params.id, body);
+    res.json(result);
+  } catch (err) {
+    handleSetupError(err, res, next);
+  }
+});
 
 router.get('/setup-sessions', async (_req, res, next) => {
   try {

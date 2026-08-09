@@ -46,6 +46,14 @@ const localOperations: WithoutUserContext<ProjectStorage> = {
   readStoryStateDiffs: (projectId) => storage.readStoryStateDiffs(projectId),
   writeStoryStateDiffs: (projectId, diffs) => storage.writeStoryStateDiffs(projectId, diffs),
 
+  readCreativeContract: (projectId) => storage.readCreativeContract(projectId),
+  writeCreativeContract: (contract) => storage.writeCreativeContract(contract),
+  readLatentCanon: (projectId) => storage.readLatentCanon(projectId),
+  writeLatentCanon: (store) => storage.writeLatentCanon(store),
+  readAcceptedDerivations: (projectId) => storage.readAcceptedDerivations(projectId),
+  writeAcceptedDerivations: (projectId, derivations) =>
+    storage.writeAcceptedDerivations(projectId, derivations),
+
   readExpressions: (projectId) => storage.readExpressions(projectId),
   writeExpressions: (projectId, file) => storage.writeExpressions(projectId, file),
 

@@ -8,7 +8,7 @@ import { adapterMap } from '../adapters/index.js';
 import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
-import { readStoryStateDiffs, withStoryStateLock } from './storyStateService.js';
+import { readStoryStateDiffs, withStoryStateLock, normalizeStoryState } from './storyStateService.js';
 import { readStoryStateBacklog } from './generationService.js';
 import { normalizeRefineFindingTopic } from '../../shared/refineFinding.js';
 import {
@@ -360,7 +360,13 @@ export async function loadAcceptedSceneEvidence(
     reviewStatus,
     reviewedStoryStateDiffId
   );
+  // NOTE: readStoryStateBacklog は設計書 6.3 の共通backlog（StoryState OR canon の片側
+  // 未処理）。ここは「物語状態への反映」のラベル付けなので、StoryState側が処理済みの
+  // generation は unprocessed の候補から外す（canon未処理でも 抽出済み 表示を維持する）。
+  const storyState = normalizeStoryState(await storage.readStoryState(project.projectId));
+  const storyStateProcessed = new Set(storyState.processedGenerationIds ?? []);
   const unprocessedRefs = (await readStoryStateBacklog(project.projectId))
+    .filter((item) => !storyStateProcessed.has(item.generationId))
     .slice(-ACCEPTED_SCENE_LIMIT)
     .reverse()
     .map((item) => ({ ...item, storyStateStatus: 'unprocessed' as const }));

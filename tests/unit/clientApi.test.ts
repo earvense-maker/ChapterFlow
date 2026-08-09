@@ -27,6 +27,34 @@ describe('clientApi streaming', () => {
     expect(result).toEqual(record);
   });
 
+  it('streams provisional novel text and replaces it with the verified final text', async () => {
+    const record = generationRecord('検証後の確定本文');
+    const payload = [
+      `event: chunk\ndata: ${JSON.stringify({ text: '検証前の本文' })}\n\n`,
+      `event: phase\ndata: ${JSON.stringify({ phase: 'verifying' })}\n\n`,
+      `event: replace\ndata: ${JSON.stringify({ text: '検証後の確定本文' })}\n\n`,
+      `event: done\ndata: ${JSON.stringify({ record })}\n\n`,
+    ].join('');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(streamResponse([payload])));
+    const chunks: string[] = [];
+    const phases: string[] = [];
+    const replacements: string[] = [];
+
+    const result = await api.generateStream(
+      'proj-client-api',
+      { wish: '', mode: 'continue' },
+      (chunk) => chunks.push(chunk),
+      undefined,
+      (phase) => phases.push(phase),
+      (text) => replacements.push(text)
+    );
+
+    expect(chunks).toEqual(['検証前の本文']);
+    expect(phases).toEqual(['verifying']);
+    expect(replacements).toEqual(['検証後の確定本文']);
+    expect(result.responseText).toBe('検証後の確定本文');
+  });
+
   it('reports a retryable error when a generation stream ends without done', async () => {
     vi.stubGlobal(
       'fetch',

@@ -606,3 +606,51 @@
   gap: 0.5rem;
   margin-top: 1.25rem;
 }
+
+/* ===== クイックセットアップ（設計書 4.1） ===== */
+.quick-setup-workspace {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+
+.quick-setup-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.quick-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.quick-field span {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.quick-field textarea,
+.quick-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.quick-setup-actions {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.quick-setup-confirm {
+  margin-top: 1.25rem;
+}
+
+.quick-confirm-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  cursor: pointer;
+  width: 100%;
+}

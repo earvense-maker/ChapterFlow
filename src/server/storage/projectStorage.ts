@@ -22,6 +22,9 @@ import type {
   StoryState,
   StoryStateDiffRecord,
   WorldContent,
+  CreativeContract,
+  LatentCanonStore,
+  AcceptedNarrativeDerivation,
 } from '../types/index.js';
 
 /**
@@ -77,6 +80,24 @@ export interface ProjectStorage {
     context: UserContext,
     projectId: string,
     diffs: StoryStateDiffRecord[]
+  ): Promise<void>;
+
+  // --- 創作契約・潜在設定・採用本文派生台帳（設計書 7.3） ---
+  readCreativeContract(
+    context: UserContext,
+    projectId: string
+  ): Promise<CreativeContract | null>;
+  writeCreativeContract(context: UserContext, contract: CreativeContract): Promise<void>;
+  readLatentCanon(context: UserContext, projectId: string): Promise<LatentCanonStore | null>;
+  writeLatentCanon(context: UserContext, store: LatentCanonStore): Promise<void>;
+  readAcceptedDerivations(
+    context: UserContext,
+    projectId: string
+  ): Promise<AcceptedNarrativeDerivation[]>;
+  writeAcceptedDerivations(
+    context: UserContext,
+    projectId: string,
+    derivations: AcceptedNarrativeDerivation[]
   ): Promise<void>;
 
   // --- NG表現 ---
@@ -277,6 +298,12 @@ export const PROJECT_STORAGE_METHODS = [
   'writeStoryState',
   'readStoryStateDiffs',
   'writeStoryStateDiffs',
+  'readCreativeContract',
+  'writeCreativeContract',
+  'readLatentCanon',
+  'writeLatentCanon',
+  'readAcceptedDerivations',
+  'writeAcceptedDerivations',
   'readExpressions',
   'writeExpressions',
   'readKnowledgeIndex',

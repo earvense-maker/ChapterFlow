@@ -4,6 +4,7 @@ import type { Character, CharacterRole, CharacterTrait } from './character.js';
 import type { Memory } from './memory.js';
 import type { RoleplayUserPersona } from './roleplay.js';
 import type { StoryState } from './storyState.js';
+import type { CreativeContractItem, LatentCanonItem } from './canon.js';
 
 export type SetupSessionId = string;
 export type SetupSessionStatus = 'active' | 'committed' | 'abandoned';
@@ -112,6 +113,20 @@ export interface SetupDraft {
   scenarioSeeds: string[];
   // NOTE: ロールプレイ用途のみ。novel 用途では常に undefined。
   userPersona?: SetupDraftUserPersona;
+  // NOTE: クイックセットアップ用（設計書 4.1）。自由記述から抽出した創作契約候補。
+  // 'hard' は確認カードで作者が承諾したもの。fullモードへ切り替えた後も保持される。
+  quickContracts?: QuickContractCandidate[];
+}
+
+export interface QuickContractCandidate {
+  id: string;
+  kind: 'promise' | 'prohibition' | 'preference';
+  strength: 'hard' | 'soft';
+  text: string;
+  source: 'user' | 'ai-suggested' | 'manual';
+  status: SetupDraftItemStatus;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SetupLock {
@@ -137,6 +152,8 @@ export interface SetupSession {
   revision: number;
   // NOTE: 相談の用途。undefined は後方互換で 'novel'。サービス境界では必ず normalize する。
   purpose?: SetupPurpose;
+  // NOTE: クイックセットアップ（短縮モード）か完全相談か。欠損は 'full' と解釈する（設計書 4.1）。
+  setupMode?: 'quick' | 'full';
   model: SetupModelSelection;
   projectSettings: SetupProjectSettings;
   messages: SetupMessage[];
@@ -234,6 +251,8 @@ export interface CreateSetupSessionBody {
   model?: Partial<SetupModelSelection>;
   // NOTE: 用途。省略時は 'novel' として扱う。'novel' / 'roleplay' 以外は 400。
   purpose?: SetupPurpose;
+  // NOTE: クイックセットアップ（短縮モード）か完全相談か。省略時は 'full'（設計書 4.1）。
+  setupMode?: 'quick' | 'full';
 }
 
 export interface SendSetupMessageBody {
@@ -330,6 +349,12 @@ export interface SetupCommitPlan {
   scenarioSeeds?: string[];
   // NOTE: ロールプレイ用途の「あなた」の既定像。novel 用途では常に未設定。
   defaultUserPersona?: RoleplayUserPersona;
+  // NOTE: クイックセットアップで確定した創作契約（設計書 4.1）。既存経路では未設定。
+  creativeContract?: CreativeContractItem[];
+  // NOTE: クイックセットアップの薄い初期補完（設計書 4.1）。小説で生成だけが失敗した
+  // 場合は空配列＋latentSeedStatus 'failed' でcommitできる。
+  latentCanonItems?: LatentCanonItem[];
+  latentSeedStatus?: 'ok' | 'failed';
 }
 
 export interface SetupCommitPlanResponse {
@@ -340,6 +365,21 @@ export interface SetupCommitPlanResponse {
 
 export interface CommitSetupBody {
   plan: SetupCommitPlan;
+  revision: number;
+}
+
+export interface CreateQuickSetupPlanBody {
+  /** 見たい作品・関係・感情の自由記述。唯一の必須入力（設計書 4.1）。 */
+  wish: string;
+  /** 作者が明示した「絶対に守ってほしいこと」。hard候補として優先される。 */
+  hardContracts?: string[];
+  /** 最初に見たい場面。小説では最初の希望、ロールプレイでは会話舞台。 */
+  openingWish?: string;
+  revision: number;
+}
+
+export interface ConfirmQuickContractsBody {
+  items: Array<{ id: string; confirmed: boolean }>;
   revision: number;
 }
 

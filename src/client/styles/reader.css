@@ -726,3 +726,15 @@ button:disabled:has(.generating-label) {
     opacity: 0.5;
   }
 }
+
+/* ===== strictモードの検証phase表示（設計書 4.4） ===== */
+.contract-check-phase {
+  margin-bottom: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  text-align: center;
+}
+
+.conflict-banner {
+  border-color: var(--danger, #b3261e);
+}

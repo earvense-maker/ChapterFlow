@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DeepSeekAdapter } from '../../src/server/adapters/deepseekAdapter';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
 import { baseInstruction } from '../../src/server/prompts/baseInstruction';
 import * as projectService from '../../src/server/services/projectService';
@@ -820,6 +821,39 @@ describe('roleplaySessionService', () => {
     expect(capturedSystem).toContain('400字程度');
     expect(capturedSystem).toContain('括弧書き');
     expect(capturedSystem).not.toContain('1〜3文');
+  });
+
+  it('reserves 16k tokens for a 1,000-character DeepSeek V4 Flash roleplay turn', async () => {
+    const project = await makeRoleplayProject();
+    await projectService.updateProject(project.projectId, {
+      activeModelProvider: 'deepseek',
+      activeModelName: 'deepseek-v4-flash',
+      roleplayOutputChars: 500,
+    });
+
+    let capturedMaxOutputTokens: number | undefined;
+    vi.spyOn(DeepSeekAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
+      capturedMaxOutputTokens = request.maxOutputTokens;
+      return streamChunks(['応答です。']);
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'hi',
+        revision: created.revision,
+      })
+    );
+
+    expect(capturedMaxOutputTokens).toBe(16_000);
+    expect(result.done?.messages.at(-1)?.promptBudgetReport?.tokenCheck?.estimatedMaxOutputTokens).toBe(
+      16_000
+    );
   });
 
   // NOTE: Phase D で方針を反転した（設計書 5.5）。登録NG語を main prompt へ列挙すると、

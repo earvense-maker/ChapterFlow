@@ -32,6 +32,9 @@ import type {
 } from '../types/index.js';
 import type { PresetIdsByCategory } from './setupPromptBuilder.js';
 import { normalizeComparableText } from './setupDraftPatchService.js';
+import {
+  normalizeLatentCanonStore,
+} from './latentCanonService.js';
 import { parseWorldMd } from '../utils/worldMd.js';
 import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import {
@@ -48,7 +51,6 @@ export interface NormalizedSetupCommitData {
   memories: Memory[];
   storyState: StoryState;
 }
-
 export async function readPresetIdsByCategory(): Promise<PresetIdsByCategory> {
   const text = await fs.readFile(PRESETS_PATH, 'utf-8');
   const parsed = JSON.parse(text) as {
@@ -143,6 +145,9 @@ export function normalizeSetupCommitPlan(input: {
     projectType,
     scenarioSeeds,
     ...(defaultUserPersona ? { defaultUserPersona } : {}),
+    // NOTE: クイックセットアップの初期創作契約・潜在設定を同一作成列で作る（設計書 7.3）。
+    ...(buildInitialCreativeContract(raw, now) ? { initialCreativeContract: buildInitialCreativeContract(raw, now) } : {}),
+    initialLatentCanon: buildInitialLatentCanon(raw, now),
   };
 
   const memories = mergeDraftPreferenceMemories(
@@ -159,6 +164,88 @@ export function normalizeSetupCommitPlan(input: {
       input.session,
       now
     ),
+  };
+}
+
+// NOTE: クイックセットアップの契約を CreativeContract へ組み立てる（設計書 4.1）。
+// 入力は SetupCommitPlan.creativeContract（CreativeContractItem[]）。件数・文字数・
+// 重複は正規化で整え、不正項目は落とす（保存拒否は契約編集API側の責務）。
+function buildInitialCreativeContract(
+  raw: Record<string, unknown>,
+  now: string
+): import('../types/index.js').CreativeContract | undefined {
+  const items = Array.isArray(raw.creativeContract)
+    ? normalizeContractItemsForCommit(raw.creativeContract, now)
+    : [];
+  if (items.length === 0) return undefined;
+  return {
+    schemaVersion: 1,
+    projectId: '',
+    revision: 0,
+    items,
+    exceptions: [],
+    verificationMode: 'strict',
+    updatedAt: now,
+  };
+}
+
+function normalizeContractItemsForCommit(
+  value: unknown[],
+  now: string
+): import('../types/index.js').CreativeContractItem[] {
+  const result: import('../types/index.js').CreativeContractItem[] = [];
+  const seen = new Set<string>();
+  let hardCount = 0;
+  let softCount = 0;
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const text = asString(item.text);
+    if (!text || text.length > 500) continue;
+    const kind: 'promise' | 'prohibition' | 'preference' =
+      item.kind === 'prohibition' || item.kind === 'preference' ? item.kind : 'promise';
+    const source: 'user' | 'manual' | 'ai-suggested' =
+      item.source === 'user' || item.source === 'manual' || item.source === 'ai-suggested'
+        ? item.source
+        : 'user';
+    const strength: 'hard' | 'soft' =
+      kind === 'preference' ? 'soft' : source === 'ai-suggested' ? 'soft' : 'hard';
+    const comparable = normalizeComparableText(text);
+    if (seen.has(comparable)) continue;
+    if (strength === 'hard') hardCount += 1;
+    else softCount += 1;
+    if (hardCount > 8 || softCount > 12) continue;
+    seen.add(comparable);
+    result.push({
+      contractId: normalizeId(item.contractId, 'ctr'),
+      kind,
+      strength,
+      text,
+      source,
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  return result;
+}
+
+function buildInitialLatentCanon(
+  raw: Record<string, unknown>,
+  now: string
+): import('../types/index.js').LatentCanonStore {
+  const items = Array.isArray(raw.latentCanonItems)
+    ? (raw.latentCanonItems as unknown[])
+    : [];
+  const normalized = normalizeLatentCanonStore({ items }, '');
+  return {
+    schemaVersion: 1,
+    projectId: '',
+    revision: 0,
+    items: normalized.items.slice(0, 8),
+    processedGenerationIds: [],
+    pendingConflicts: [],
+    latentSeedStatus: raw.latentSeedStatus === 'failed' ? 'failed' : 'ok',
+    updatedAt: now,
   };
 }
 

@@ -2,6 +2,11 @@ import type { PromptBudgetReport } from './generation.js';
 import type { CharacterId, ProjectId } from './ids.js';
 import type { Character } from './character.js';
 import type { ActivePresets } from './project.js';
+import type {
+  CanonScope,
+  CreativeContractItem,
+  LatentCanonItem,
+} from './canon.js';
 
 export type RoleplaySessionId = string;
 export type RoleplayMessageRole = 'user' | 'character';
@@ -93,6 +98,10 @@ export interface RoleplayContextSnapshot {
   appliedSettings?: RoleplayAppliedSettings;
   customSystemPrompt: string;
   capturedAt: string;
+  // NOTE: セッション開始時点の創作契約と関連潜在設定の非公開スナップショット（設計書 5.5）。
+  // 本文はAPIレスポンスへ出さない。
+  creativeContract?: CreativeContractItem[];
+  latentCanonSnapshot?: LatentCanonItem[];
 }
 
 export interface RoleplaySession {
@@ -115,15 +124,34 @@ export interface RoleplaySession {
   revision: number;
   createdAt: string;
   updatedAt: string;
+  // NOTE: セッションローカル正史（設計書 5.5）。conversationSummary foldと同じ境界で
+  // 抽出され、`sessionCanonThroughMessageId`までが反映済み。APIレスポンスへは出さない。
+  sessionCanon?: LatentCanonItem[];
+  sessionCanonThroughMessageId?: string;
 }
 
-// NOTE: APIレスポンス用。contextSnapshot を除外して secrets を漏らさない。
-// characterName はサーバー側で snapshot から取り出して付与する。
-export type RoleplaySessionView = Omit<RoleplaySession, 'contextSnapshot'> & {
+// NOTE: APIレスポンス用。contextSnapshot と sessionCanon 本文を型レベルで除外して
+// 秘密・未公開設定を漏らさない（設計書 5.5）。characterName はサーバー側で snapshot から
+// 取り出して付与する。
+export type RoleplaySessionView = Omit<
+  RoleplaySession,
+  'contextSnapshot' | 'sessionCanon'
+> & {
   characterName: string;
   userPersona?: RoleplayUserPersona;
   appliedSettings?: RoleplayAppliedSettings;
   settingsChanged: boolean;
+  sessionCanonSummary?: {
+    total: number;
+    pendingPromotion: number;
+    categories: Array<{ scope: CanonScope; count: number }>;
+    items: Array<{
+      canonId: string;
+      scope: CanonScope;
+      label: string;
+      promotedToProjectAt?: string;
+    }>;
+  };
 };
 
 export interface RoleplaySessionSummary {

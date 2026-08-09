@@ -700,6 +700,137 @@ describe('generationService generation', () => {
     expect(record.responseText).toBe('再試行');
   });
 
+  it('streams strict-mode text immediately and replaces it after contract repair', async () => {
+    const project = await createTrackedProject();
+    const now = '2026-07-02T00:00:00Z';
+    await storage.writeCreativeContract({
+      schemaVersion: 1,
+      projectId: project.projectId,
+      revision: 1,
+      items: [
+        {
+          contractId: 'ctr-streaming',
+          kind: 'promise',
+          strength: 'hard',
+          text: '主人公は約束を守る',
+          source: 'user',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      exceptions: [],
+      verificationMode: 'strict',
+      updatedAt: now,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* () {
+      yield { type: 'chunk', text: '主人公は約束を破った。' };
+      yield { type: 'done', finishReason: 'stop' };
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      if (request.debugLabel === 'contractVerification.repair') {
+        return { text: '主人公は約束を守った。', finishReason: 'stop', retryable: false };
+      }
+      if (request.debugLabel === 'contractVerification.semanticCheck') {
+        const isRecheck = request.userPrompt.includes('主人公は約束を守った。');
+        return {
+          text: JSON.stringify({
+            results: [
+              {
+                contractId: 'ctr-streaming',
+                verdict: isRecheck ? 'pass' : 'fail',
+                reason: isRecheck ? '問題なし' : '約束を破っている',
+              },
+            ],
+            canonContradiction: '',
+          }),
+          finishReason: 'stop',
+          retryable: false,
+        };
+      }
+      throw new Error(`unexpected call: ${request.debugLabel}`);
+    });
+    const chunks: string[] = [];
+    const replacements: string[] = [];
+
+    const record = await generationService.generateSceneStream(
+      project.projectId,
+      {
+        wish: '続き',
+        mode: 'continue',
+        onReplace: (text) => replacements.push(text),
+      },
+      (text) => chunks.push(text)
+    );
+
+    expect(chunks).toEqual(['主人公は約束を破った。']);
+    expect(replacements).toEqual(['主人公は約束を守った。']);
+    expect(record.responseText).toBe('主人公は約束を守った。');
+    expect(record.contractValidation?.status).toBe('repaired');
+  });
+
+  it('does not persist a draft when strict verification is aborted', async () => {
+    const project = await createTrackedProject();
+    const now = '2026-07-02T00:00:00Z';
+    await storage.writeCreativeContract({
+      schemaVersion: 1,
+      projectId: project.projectId,
+      revision: 1,
+      items: [
+        {
+          contractId: 'ctr-abort',
+          kind: 'promise',
+          strength: 'hard',
+          text: '主人公は約束を守る',
+          source: 'user',
+          status: 'active',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      exceptions: [],
+      verificationMode: 'strict',
+      updatedAt: now,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(async function* () {
+      yield { type: 'chunk', text: '検証前の暫定本文。' };
+      yield { type: 'done', finishReason: 'stop' };
+    });
+    const controller = new AbortController();
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+      expect(request.abortSignal).toBe(controller.signal);
+      controller.abort();
+      return {
+        text: JSON.stringify({
+          results: [{ contractId: 'ctr-abort', verdict: 'pass', reason: '問題なし' }],
+          canonContradiction: '',
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      };
+    });
+    const appendGeneration = vi.spyOn(storage, 'appendGenerationLog');
+    const writePromptSnapshot = vi.spyOn(storage, 'writeGenerationPromptSnapshot');
+    const chunks: string[] = [];
+
+    await expect(
+      generationService.generateSceneStream(
+        project.projectId,
+        {
+          wish: '続き',
+          mode: 'continue',
+          abortSignal: controller.signal,
+        },
+        (text) => chunks.push(text)
+      )
+    ).rejects.toMatchObject({ code: 'aborted' });
+
+    expect(chunks).toEqual(['検証前の暫定本文。']);
+    expect(writePromptSnapshot).not.toHaveBeenCalled();
+    expect(appendGeneration).not.toHaveBeenCalled();
+    expect((await storage.readState(project.projectId))?.selectedDraftGenerationId).toBeNull();
+  });
+
   it('persists generation mode, stream timings, reasoning aggregates, and provider usage', async () => {
     enableDevDiagnostics();
     const project = await createTrackedProject();

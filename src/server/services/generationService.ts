@@ -17,7 +17,7 @@ import { KeyedMutex } from '../utils/keyedMutex.js';
 import { invalidateContextSummaryOnAcceptedTextChangeUnlocked } from './acceptedTextDerivations.js';
 import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
 import { adapterMap } from '../adapters/index.js';
-import { ModelAdapterError } from '../adapters/modelAdapter.js';
+import { ModelAdapterError, type ModelAdapter } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import {
   revertLatestStoryStateDiffForGeneration,
@@ -79,6 +79,16 @@ import {
   startStoryStateRefreshAfterAcceptance,
   writeStoryStateRefreshUnlocked,
 } from './generationReaderState.js';
+import { readCreativeContractOrEmpty } from './creativeContractService.js';
+import {
+  readLatentCanonStore,
+  selectRelatedCanonItems,
+} from './latentCanonService.js';
+import {
+  shouldRunVerification,
+  verifyGeneratedText,
+  type ContractVerificationResult,
+} from './contractVerificationService.js';
 export {
   calculateStoryStateBacklog,
   findGeneration,
@@ -143,6 +153,10 @@ export interface GenerateOptions {
 
 export interface GenerateStreamOptions extends GenerateOptions {
   abortSignal?: AbortSignal;
+  // NOTE: 契約検証中も暫定本文は通常のchunkとして送る。検証・修復で確定本文が
+  // 変わった場合だけonReplaceで全文を差し替え、保存本文と画面表示を一致させる。
+  onPhase?: (phase: 'generating' | 'verifying' | 'repairing' | 'rechecking') => void;
+  onReplace?: (text: string) => void;
 }
 
 interface GeneratedSceneResult {
@@ -303,6 +317,16 @@ async function generateSceneUnlocked(
   const characters = await storage.readCharacters(projectId);
   const worldText = await storage.readWorldPromptText(projectId);
   const presets = await storage.readPresets(projectId);
+  const contract = await readCreativeContractOrEmpty(projectId);
+  const canonStore = await readLatentCanonStore(projectId);
+  const rawStoryState = await storage.readStoryState(projectId);
+  const latentCanonItems = selectRelatedCanonItems({
+    items: canonStore.items,
+    wish: options.wish,
+    viewpointCharacterId: options.viewpointCharacterId ?? null,
+    characters,
+    excludeStatements: (rawStoryState?.authorUndecided ?? []).map((item) => item.text),
+  });
 
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
@@ -344,6 +368,8 @@ async function generateSceneUnlocked(
     mode: options.mode,
     styleProfile,
     viewpointCharacterId: options.viewpointCharacterId ?? null,
+    creativeContract: contract,
+    latentCanonItems,
   });
 
   const fitted = await fitPromptToTokenBudget({ project, built });
@@ -415,6 +441,20 @@ async function generateSceneUnlocked(
   if (devDiagnostics) {
     await persistGenerationReasoning(projectId, generationId, reasoningParts);
   }
+
+  // NOTE: 契約検証は生成requestとproject lockの内側で同期実行し、refine maintenanceの
+  // 予約より前に完了させる（設計書 6.2）。strictではバッファされた本文、fastでは
+  // ストリーム表示後の本文が対象になる。
+  const verification = await runNovelContractVerification({
+    project,
+    adapter,
+    contract,
+    canonStore,
+    text: result.text,
+    ngExpressions,
+  });
+  const finalText = verification?.finalText ?? result.text;
+
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -427,7 +467,7 @@ async function generateSceneUnlocked(
       previousContextChars: userPrompt.length,
       viewpointCharacterId: options.viewpointCharacterId ?? null,
     },
-    responseText: result.text,
+    responseText: finalText,
     usedPresets: project.activePresetIds,
     usedModel: {
       provider: project.activeModelProvider,
@@ -440,6 +480,7 @@ async function generateSceneUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason: result.finishReason,
+    ...(verification ? { contractValidation: verification.validation } : {}),
     ...(devDiagnostics
       ? {
           generationMode: options.mode,
@@ -551,6 +592,20 @@ async function generateSceneStreamUnlocked(
   const characters = await storage.readCharacters(projectId);
   const worldText = await storage.readWorldPromptText(projectId);
   const presets = await storage.readPresets(projectId);
+  const contract = await readCreativeContractOrEmpty(projectId);
+  const canonStore = await readLatentCanonStore(projectId);
+  const rawStoryState = await storage.readStoryState(projectId);
+  const latentCanonItems = selectRelatedCanonItems({
+    items: canonStore.items,
+    wish: options.wish,
+    viewpointCharacterId: options.viewpointCharacterId ?? null,
+    characters,
+    excludeStatements: (rawStoryState?.authorUndecided ?? []).map((item) => item.text),
+  });
+  // NOTE: strictでも本文chunkは即時転送する。strict判定は検証phaseと最終的な
+  // review-requiredの扱いに使い、暫定ストリーミング自体は止めない。
+  const strict = contract.verificationMode === 'strict' && shouldRunVerification(contract);
+  if (strict) options.onPhase?.('generating');
 
   const target = await prepareTargetScene(projectId, state, options.mode);
   const { episodeId, sceneId } = target;
@@ -592,6 +647,8 @@ async function generateSceneStreamUnlocked(
     mode: options.mode,
     styleProfile,
     viewpointCharacterId: options.viewpointCharacterId ?? null,
+    creativeContract: contract,
+    latentCanonItems,
   });
 
   const fitted = await fitPromptToTokenBudget({ project, built });
@@ -639,6 +696,8 @@ async function generateSceneStreamUnlocked(
         contentChars += event.text.length;
         contentChunks += 1;
         textParts.push(event.text);
+        // NOTE: strictでも暫定本文を即時表示する。作者が読み始められる利点を優先し、
+        // 検証・修復後に本文が変わった場合は下のonReplaceで確定稿へ差し替える。
         onChunk(event.text);
       } else {
         firstObservedEventAt ??= new Date().toISOString();
@@ -701,10 +760,28 @@ async function generateSceneStreamUnlocked(
   const generationId = generateTimestampId('gen');
   const outputFilePath = storage.generationMdPath(projectId, generationId);
   const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
-  await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
-  if (devDiagnostics) {
-    await persistGenerationReasoning(projectId, generationId, reasoningParts);
-  }
+
+  // NOTE: 画面には暫定本文を流しつつ、保存前には従来どおり検証・必要なら修復する。
+  const verification = await runNovelContractVerification({
+    project,
+    adapter,
+    contract,
+    canonStore,
+    text: streamedText,
+    ngExpressions,
+    onPhase: options.onPhase,
+    abortSignal: options.abortSignal,
+  });
+  // NOTE: 検証・修復中に停止された場合、暫定本文は保存せず以前のReader状態へ戻す。
+  throwIfAborted(options.abortSignal);
+  const finalText = verification?.finalText ?? streamedText;
+  // NOTE: 修復で本文が変わった場合だけ全文置換を通知する。done.recordと再読込後の
+  // 保存本文が最終正であり、replace非対応の旧クライアントもdoneで収束できる。
+  if (finalText !== streamedText) options.onReplace?.(finalText);
+  // NOTE: replace送信直後の切断も含め、ここまでに停止された生成はプロンプトスナップ
+  // ショットを含む永続ファイルを作らない。以降は一続きのローカル保存として完了させる。
+  throwIfAborted(options.abortSignal);
+
   const record: GenerationRecord = {
     generationId,
     sceneId,
@@ -717,7 +794,7 @@ async function generateSceneStreamUnlocked(
       previousContextChars: userPrompt.length,
       viewpointCharacterId: options.viewpointCharacterId ?? null,
     },
-    responseText: streamedText,
+    responseText: finalText,
     usedPresets: project.activePresetIds,
     usedModel: {
       provider: project.activeModelProvider,
@@ -730,6 +807,7 @@ async function generateSceneStreamUnlocked(
     outputFilePath,
     bannedExpressions,
     finishReason,
+    ...(verification ? { contractValidation: verification.validation } : {}),
     ...(devDiagnostics
       ? {
           generationMode: options.mode,
@@ -747,6 +825,10 @@ async function generateSceneStreamUnlocked(
     ...(styleProfile ? { styleProfile } : {}),
   };
 
+  await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
+  if (devDiagnostics) {
+    await persistGenerationReasoning(projectId, generationId, reasoningParts);
+  }
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
   await storage.appendGenerationLog(projectId, record);
   logAdjustedNovelBudget(projectId, generationId, promptBudgetReport);
@@ -775,6 +857,59 @@ async function generateSceneStreamUnlocked(
   await projectService.updateProject(projectId, { updatedAt: nowIso() });
 
   return { record, maintenanceRunId: maintenanceReservation.runId };
+}
+
+// NOTE: 生成後・保存前の契約検証（設計書 6.2）。hard契約が無ければ呼ばず、検証・修復・
+// 再検証は最大+3回の追加モデル呼び出しになる。検証結果はGenerationRecordへ監査情報として
+// 残すが、未公開設定本文や診断DTOへの複製はしない。
+async function runNovelContractVerification(input: {
+  project: Project;
+  adapter: ModelAdapter;
+  contract: import('../types/index.js').CreativeContract;
+  canonStore: import('../types/index.js').LatentCanonStore;
+  text: string;
+  ngExpressions: Array<{ id: string; text: string; alternatives?: string[] }>;
+  onPhase?: GenerateStreamOptions['onPhase'];
+  abortSignal?: AbortSignal;
+}): Promise<ContractVerificationResult | null> {
+  if (!shouldRunVerification(input.contract)) return null;
+  const revealedCanon = input.canonStore.items.filter((item) => item.status === 'revealed');
+  try {
+    return await verifyGeneratedText({
+      project: input.project,
+      adapter: input.adapter,
+      contract: input.contract,
+      revealedCanon,
+      text: input.text,
+      ngExpressions: input.ngExpressions,
+      onPhase: input.onPhase,
+      abortSignal: input.abortSignal,
+    });
+  } catch (error) {
+    // NOTE: fail-closed（レビュー指摘 P1）。検証処理自体の例外は「確認が必要」として
+    // 扱う。暫定本文はすでに表示され得るが、recordにはreview-requiredの
+    // contractValidationを付け、確定後の通常表示はクライアントで確認扱いにする。
+    console.warn('Contract verification failed; treating as review-required', {
+      projectId: input.project.projectId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    const hardContractIds = (input.contract.items ?? [])
+      .filter((item) => item.strength === 'hard' && item.status === 'active')
+      .map((item) => item.contractId);
+    return {
+      validation: {
+        status: 'review-required',
+        checkedContractIds: hardContractIds,
+        failedContractIds: [],
+        uncertainContractIds: hardContractIds,
+        verifierCalls: 1,
+        repairCalls: 0,
+        completedAt: new Date().toISOString(),
+      },
+      finalText: input.text,
+      reviewRequired: true,
+    };
+  }
 }
 
 // NOTE: provider 実測を使う経路の計測上限（設計書 3.1 step 5）。
@@ -1264,6 +1399,17 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
       buildStoryStateRefreshStatus('stale', generation.generationId, '採用取消に合わせて物語状態を戻しました。必要なら再抽出してください。')
     );
   }
+
+  // NOTE: canon側の巻き戻し（設計書 6.4）。evidence削除・両processed集合から除外・
+  // 未解決conflictの取り下げ・derivationをextractedへ戻す。モデルは呼ばない。
+  const { rollbackCanonForGeneration } = await import('./acceptedNarrativeDerivationService.js');
+  await rollbackCanonForGeneration(projectId, generation.generationId).catch((err) => {
+    console.warn('Canon rollback after unaccept failed', {
+      projectId,
+      generationId: generation.generationId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
 
   if (invalidatedContextSummary) {
     // NOTE: 空にした要約を、採用が外れた後の本文から背景で作り直す。NGリライトの

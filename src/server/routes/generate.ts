@@ -115,6 +115,10 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
         mode: body.mode,
         viewpointCharacterId: body.viewpointCharacterId ?? null,
         abortSignal: abortController.signal,
+        // NOTE: strictでも本文chunkは即時送信する。検証・修復で確定本文が変わった
+        // 場合はreplaceで全文を差し替え、done.recordを最終正とする。
+        onPhase: (phase) => send('phase', { phase }),
+        onReplace: (text) => send('replace', { text }),
       },
       (text) => send('chunk', { text })
     );

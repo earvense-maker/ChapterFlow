@@ -7,6 +7,12 @@ import {
   isSupportedProvider,
 } from './modelInfoService.js';
 import { createEmptyStoryState } from './storyStateService.js';
+import {
+  normalizeCreativeContract,
+} from './creativeContractService.js';
+import {
+  normalizeLatentCanonStore,
+} from './latentCanonService.js';
 import { writeShortcut } from './shortcutService.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import { identifyBaseInstruction } from '../prompts/baseInstruction.js';
@@ -300,6 +306,17 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   await storage.writeMemories(projectId, []);
   await storage.writeWorld(projectId, world);
   await storage.writeStoryState(projectId, { ...sourceStoryState, updatedAt: now });
+  // NOTE: 創作契約・潜在設定・採用本文派生台帳も同一作成列で作る（設計書 7.3）。
+  // 既存プロジェクトはファイルが無いだけで従来どおり動く。複製時はcreative contractだけ
+  // を引き継ぎ、latent canon台帳とaccepted derivationsは空で開始する（設計書 9）。
+  const sourceContract =
+    body.initialCreativeContract ??
+    (body.duplicateFrom ? await storage.readCreativeContract(body.duplicateFrom) : null);
+  await storage.writeCreativeContract(normalizeCreativeContract(sourceContract, projectId));
+  await storage.writeLatentCanon(
+    normalizeLatentCanonStore(body.initialLatentCanon ?? null, projectId)
+  );
+  await storage.writeAcceptedDerivations(projectId, []);
   if (body.duplicateFrom && sourceProject) {
     // NOTE: 複製元の knowledge はコピーするが、roleplay/sessions は複製元だけに残す
     // （設計書 2.4）。ここでは何もしない。将来 sessions のコピーが必要になったら

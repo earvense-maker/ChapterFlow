@@ -131,6 +131,7 @@ export default function Reader({
   const [knowledgeItems, setKnowledgeItems] = useState<KnowledgeListItem[]>([]);
   const [storyStateRefresh, setStoryStateRefresh] = useState<StoryStateRefreshStatus | null>(null);
   const [storyStateBacklogCount, setStoryStateBacklogCount] = useState(0);
+  const [canonConflictCount, setCanonConflictCount] = useState(0);
   const [maintenancePhase, setMaintenancePhase] = useState<RefineMaintenancePhase | null>(null);
   const [maintenanceStartedAt, setMaintenanceStartedAt] = useState<string | null>(null);
   const [maintenanceClock, setMaintenanceClock] = useState(() => Date.now());
@@ -144,6 +145,13 @@ export default function Reader({
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isGeneratingStream, setIsGeneratingStream] = useState(false);
+  // NOTE: strictモードの検証phase表示（設計書 4.4）。
+  const [contractCheckPhase, setContractCheckPhase] = useState<
+    'generating' | 'verifying' | 'repairing' | 'rechecking' | null
+  >(null);
+  // NOTE: 契約検証が確認不要でない本文（設計書 5.6）。「問題箇所を確認」まで表示しない。
+  const [contractReview, setContractReview] = useState<GenerationRecord | null>(null);
+  const [revealedContractReview, setRevealedContractReview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(18);
@@ -215,16 +223,31 @@ export default function Reader({
   function applyReaderState(state: ReaderState) {
     setProject(state.project);
     setFontSize(state.state.uiState.fontSize);
-    if (state.currentGeneration) {
-      setText(state.currentGeneration.responseText);
-      setGenerationId(state.currentGeneration.generationId);
-      setStatus(state.currentGeneration.status);
-      setCurrentGenerationWish(state.currentGeneration.request.wish);
+    // NOTE: review-requiredの本文は、作者が「問題箇所を確認」を選ぶまで再読込・画面再入場・
+    // draft移動後も通常表示しない（設計書 5.6・レビュー指摘 P1）。
+    const generation = state.currentGeneration;
+    if (generation?.contractValidation?.status === 'review-required') {
+      setContractReview(generation);
+      setRevealedContractReview(false);
+      setText('');
+      setGenerationId(generation.generationId);
+      setStatus(generation.status);
+      setCurrentGenerationWish(generation.request.wish);
+      applyBudgetNoticeFromReport(generation.promptBudgetReport, generation.generationId);
+    } else if (generation) {
+      setContractReview(null);
+      setRevealedContractReview(false);
+      setText(generation.responseText);
+      setGenerationId(generation.generationId);
+      setStatus(generation.status);
+      setCurrentGenerationWish(generation.request.wish);
       applyBudgetNoticeFromReport(
-        state.currentGeneration.promptBudgetReport,
-        state.currentGeneration.generationId
+        generation.promptBudgetReport,
+        generation.generationId
       );
     } else {
+      setContractReview(null);
+      setRevealedContractReview(false);
       setText('');
       setGenerationId(null);
       setStatus(null);
@@ -237,6 +260,7 @@ export default function Reader({
     setKnowledgeItems(state.knowledgeFiles);
     setStoryStateRefresh(state.state.storyStateRefresh ?? null);
     setStoryStateBacklogCount(state.storyStateBacklogCount ?? state.state.storyStateBacklogCount ?? 0);
+    setCanonConflictCount(state.canonConflictCount ?? 0);
     const nextMaintenancePhase = state.state.refineMaintenance?.phase ?? null;
     setMaintenancePhase(nextMaintenancePhase);
     setMaintenanceStartedAt(state.state.refineMaintenance?.startedAt ?? null);
@@ -271,6 +295,7 @@ export default function Reader({
   useEffect(() => {
     setLoading(false);
     setIsGeneratingStream(false);
+    setContractCheckPhase(null);
     generationAbortRef.current = null;
     generationRunRef.current = null;
     return () => {
@@ -501,39 +526,59 @@ export default function Reader({
       }
       setGenerationId(null);
       setStatus(null);
+      let streamedText = '';
+      if (shouldStream) setText('');
 
       const record = shouldStream
         ? await api.generateStream(
             projectId,
             { wish: requestWish, mode, viewpointCharacterId },
-            (() => {
-              let streamedText = '';
-              setText('');
-              return (chunk: string) => {
-                if (
-                  !mountedRef.current ||
-                  generationRunRef.current !== runId ||
-                  projectIdRef.current !== generationProjectId
-                ) {
-                  return;
+            (chunk: string) => {
+              if (
+                !mountedRef.current ||
+                generationRunRef.current !== runId ||
+                projectIdRef.current !== generationProjectId
+              ) {
+                return;
+              }
+              if (!firstChunkFired && chunk.trim()) {
+                firstChunkFired = true;
+                if (notificationSettings) {
+                  notificationCenter.notify(notificationSettings, {
+                    eventType: 'firstOutput',
+                    dedupeKey: `firstOutput:${clientRequestId}`,
+                    title: '本文の生成が始まりました',
+                    body: project?.title ?? '',
+                    clickTarget: { kind: 'project', projectId: generationProjectId, projectType: 'novel' },
+                  });
                 }
-                if (!firstChunkFired && chunk.trim()) {
-                  firstChunkFired = true;
-                  if (notificationSettings) {
-                    notificationCenter.notify(notificationSettings, {
-                      eventType: 'firstOutput',
-                      dedupeKey: `firstOutput:${clientRequestId}`,
-                      title: '本文の生成が始まりました',
-                      body: project?.title ?? '',
-                      clickTarget: { kind: 'project', projectId: generationProjectId, projectType: 'novel' },
-                    });
-                  }
-                }
-                streamedText += chunk;
-                setText(streamedText);
-              };
-            })(),
-            abortController?.signal
+              }
+              streamedText += chunk;
+              setText(streamedText);
+            },
+            abortController?.signal,
+            // NOTE: 本文をストリーミング表示したまま契約検証の進捗も表示する。
+            (phase) => {
+              if (
+                !mountedRef.current ||
+                generationRunRef.current !== runId ||
+                projectIdRef.current !== generationProjectId
+              ) {
+                return;
+              }
+              setContractCheckPhase(phase);
+            },
+            (replacement) => {
+              if (
+                !mountedRef.current ||
+                generationRunRef.current !== runId ||
+                projectIdRef.current !== generationProjectId
+              ) {
+                return;
+              }
+              streamedText = replacement;
+              setText(replacement);
+            }
           )
         : await api.generate(projectId, { wish: requestWish, mode, viewpointCharacterId });
 
@@ -552,6 +597,24 @@ export default function Reader({
           body: project?.title ?? '',
           clickTarget: { kind: 'project', projectId: generationProjectId, projectType: 'novel' },
         });
+      }
+      // NOTE: 前の要確認ドラフトを表示済みでも、新しい生成結果の確認状態を持ち越さない。
+      setContractReview(null);
+      setRevealedContractReview(false);
+      // NOTE: 検証中は暫定本文を表示するが、review-requiredで確定した後は、作者が
+      // 「問題箇所を確認」を選ぶまで通常表示から隠して確認を求める。
+      if (record.contractValidation?.status === 'review-required') {
+        setContractReview(record);
+        setText('');
+        setGenerationId(record.generationId);
+        setStatus(record.status);
+        setCurrentGenerationWish(record.request.wish);
+        applyBudgetNoticeFromReport(record.promptBudgetReport, record.generationId);
+        setWish('');
+        setRewriteWish('');
+        setRewriteSheetOpen(false);
+        inputRef.current?.focus();
+        return;
       }
       setText(record.responseText);
       setGenerationId(record.generationId);
@@ -632,6 +695,7 @@ export default function Reader({
       releaseRun();
       if (mountedRef.current && projectIdRef.current === generationProjectId) {
         setIsGeneratingStream(false);
+        setContractCheckPhase(null);
         setLoading(false);
       }
     }
@@ -1262,6 +1326,53 @@ export default function Reader({
           </div>
         )}
 
+        {canonConflictCount > 0 && (
+          <div className="story-state-banner conflict-banner">
+            <div>
+              <strong>作品の約束や公開済み設定との競合が {canonConflictCount} 件あります</strong>
+              <p>
+                採用した本文が作品の約束や公開済み設定と矛盾している可能性があります。作品設定の「要確認」から確認してください。
+              </p>
+            </div>
+            <button type="button" onClick={onOpenWorkSettings}>
+              設定を開く
+            </button>
+          </div>
+        )}
+
+        {contractReview && !revealedContractReview && (
+          <div className="story-state-banner conflict-banner">
+            <div>
+              <strong>作品の約束を確認できませんでした</strong>
+              <p>
+                生成された本文が、強く守る約束や公開済み設定との矛盾を検出したため、確認が必要な状態で保存されています。問題箇所を確認するか、再生成してください。
+              </p>
+            </div>
+            <div className="conflict-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  if (!contractReview) return;
+                  setText(contractReview.responseText);
+                  setRevealedContractReview(true);
+                }}
+              >
+                問題箇所を確認
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContractReview(null);
+                  setRevealedContractReview(false);
+                }}
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        )}
+
         {selectionButtonPosition && (
           <button
             className="ng-expression-float-button"
@@ -1393,6 +1504,14 @@ export default function Reader({
             placeholder="次のシーンへの指示（Ctrl+Enterで送信）"
             disabled={loading}
           />
+          {isGeneratingStream && contractCheckPhase && (
+            <div className="contract-check-phase" role="status">
+              {contractCheckPhase === 'generating' && '本文を生成中…'}
+              {contractCheckPhase === 'verifying' && '作品の約束を確認中…'}
+              {contractCheckPhase === 'repairing' && '違反箇所を修復中…'}
+              {contractCheckPhase === 'rechecking' && '再確認中…'}
+            </div>
+          )}
           {isGeneratingStream ? (
             <button type="button" className="danger" onClick={handleStopGeneration}>
               生成を停止

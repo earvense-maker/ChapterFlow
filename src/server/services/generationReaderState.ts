@@ -18,9 +18,15 @@ import { ModelAdapterError } from '../adapters/modelAdapter.js';
 import { reloadCredentials } from './credentialService.js';
 import {
   normalizeStoryState,
-  updateStoryStateFromAcceptedScene,
   withStoryStateLock,
 } from './storyStateService.js';
+import { runAcceptedNarrativeDerivation } from './acceptedNarrativeDerivationService.js';
+import { readCreativeContractOrEmpty } from './creativeContractService.js';
+import {
+  normalizeLatentCanonStore,
+  readLatentCanonStore,
+  selectRelatedCanonItems,
+} from './latentCanonService.js';
 
 import { runOutsideDataDirWrite, withDataDirWrite } from './dataDirLock.js';
 import { withProjectWriteLock } from './projectLock.js';
@@ -232,26 +238,39 @@ async function refreshStoryStateForGeneration(
     const adapter = adapterMap[project.activeModelProvider];
     if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
 
-    const [characters, worldText] = await Promise.all([
+    const [characters, worldText, contract, canonStore, storyState] = await Promise.all([
       storage.readCharacters(projectId),
       storage.readWorldPromptText(projectId),
+      readCreativeContractOrEmpty(projectId),
+      readLatentCanonStore(projectId),
+      storage.readStoryState(projectId),
     ]);
+    const normalizedStoryState = normalizeStoryState(storyState);
 
-    const updated = await updateStoryStateFromAcceptedScene({
+    // NOTE: 抽出には今回に関連する最大12件のcanonとauthorUndecidedを添える
+    // （設計書 6.3-2・6.5）。全件は渡さない。
+    const relatedCanon = selectRelatedCanonItems({
+      items: canonStore.items,
+      wish: generation.request.wish ?? '',
+      viewpointCharacterId: generation.request.viewpointCharacterId ?? null,
+      characters,
+      excludeStatements: (normalizedStoryState.authorUndecided ?? []).map((item) => item.text),
+    });
+
+    const applied = await runAcceptedNarrativeDerivation({
       project,
       adapter,
       generation,
       characters,
       worldText,
+      contract,
+      authorUndecided: normalizedStoryState.authorUndecided ?? [],
+      relatedCanon,
       timeoutMs: STORY_STATE_TIMEOUT_MS,
-      applyIfCurrent: (apply) =>
-        withProjectWriteLock(projectId, async () => {
-          if (!(await isCurrentAcceptedGeneration(projectId, generation))) return null;
-          return apply();
-        }),
+      isCurrentAcceptance: () => isCurrentAcceptedGeneration(projectId, generation),
     });
 
-    if (!updated) {
+    if (!applied.storyStateApplied && !applied.canonApplied) {
       // 差し替え採用により、モデル応答待ちの間に対象が現在の採用本文でなくなった。
       // runStoryStateRefreshJob が待機列と最新 backlog を見て次の採用本文へ進む。
       const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
@@ -315,23 +334,45 @@ export async function calculateStoryStateBacklog(projectId: string): Promise<Acc
     // NOTE: 旧データは pending の採用本文だけを未処理として引き継ぐ。通常の
     // Reader 読み込みではこの移行を書き込むが、レビューは read-only query を使う。
     const storyState = normalizeStoryState(rawStoryState ?? undefined);
-    storyState.processedGenerationIds = accepted
+    const seeded = accepted
       .map((item) => item.generationId)
       .filter((generationId) => !protectedGenerationIds.has(generationId));
+    storyState.processedGenerationIds = seeded;
     await storage.writeStoryState(projectId, storyState);
+
+    // NOTE: 新設のcanon台帳（latent-canon.jsonが作られているが未処理集合が空）にも
+    // 同じ移行を適用する。既存の採用済み本文をcanon側の未処理として再抽出し続けると、
+    // 移行直後のbacklogが全採用場面になり、無駄な抽出が走る（設計書 6.3）。
+    // 欠損だけでなく空配列も移行対象にする（createProjectは空配列で作るため）。
+    const rawCanon = await storage.readLatentCanon(projectId);
+    const canonProcessedIds = rawCanon?.processedGenerationIds;
+    if (
+      rawCanon !== null &&
+      (!Array.isArray(canonProcessedIds) || canonProcessedIds.length === 0)
+    ) {
+      const store = normalizeLatentCanonStore(rawCanon, projectId);
+      await storage.writeLatentCanon({
+        ...store,
+        processedGenerationIds: seeded,
+        updatedAt: nowIso(),
+      });
+    }
   });
 
   return readStoryStateBacklog(projectId);
 }
 
-// NOTE: レビューや進行中ジョブが安全に利用できる、書き込みを行わない backlog query。
-// processedGenerationIds を持たない旧データは、現行移行規則と同じく pending の採用
-// generation だけを未抽出扱いにする。
+// NOTE: 採用済み本文から派生する未処理を返す共通backlog（設計書 6.3）。
+// StoryStateまたはlatent canonのどちらか一方でも未処理のgenerationを返す。
+// derivationがpartially-applied / staleのgenerationも必ず残す。旧プロジェクト
+// （latent-canon.jsonが無い）はcanon側を「全処理済み」とみなし従来どおり動く。
 export async function readStoryStateBacklog(projectId: string): Promise<AcceptedGenerationRef[]> {
-  const [accepted, state, storyState] = await Promise.all([
+  const [accepted, state, storyState, canonStoreRaw, derivations] = await Promise.all([
     listAcceptedGenerationRefs(projectId),
     storage.readState(projectId),
     storage.readStoryState(projectId),
+    storage.readLatentCanon(projectId),
+    storage.readAcceptedDerivations(projectId),
   ]);
   const pendingGenerationId =
     state?.storyStateRefresh?.status === 'pending' ? state.storyStateRefresh.generationId : null;
@@ -343,8 +384,26 @@ export async function readStoryStateBacklog(projectId: string): Promise<Accepted
       : [];
   }
 
-  const processed = new Set(processedIds);
-  return accepted.filter((item) => !processed.has(item.generationId));
+  const processedStory = new Set(processedIds);
+  const canonActive = canonStoreRaw !== null;
+  const processedCanon = canonActive
+    ? new Set<string>(Array.isArray(canonStoreRaw?.processedGenerationIds) ? canonStoreRaw!.processedGenerationIds : [])
+    : null;
+  const stuck = new Set(
+    (Array.isArray(derivations) ? derivations : [])
+      .filter(
+        (derivation) =>
+          derivation.status === 'partially-applied' || derivation.status === 'stale'
+      )
+      .map((derivation) => derivation.generationId)
+  );
+
+  return accepted.filter((item) => {
+    if (stuck.has(item.generationId)) return true;
+    if (!processedStory.has(item.generationId)) return true;
+    if (processedCanon !== null && !processedCanon.has(item.generationId)) return true;
+    return false;
+  });
 }
 
 async function isCurrentAcceptedGeneration(
@@ -420,6 +479,10 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
   const contextUsage = await buildReaderContextUsage(project, state, '');
   const contextSummary = await storage.readContextSummary(projectId);
   const storyStateBacklogCount = (await calculateStoryStateBacklog(projectId)).length;
+  const canonStore = await readLatentCanonStore(projectId);
+  const canonConflictCount = canonStore.pendingConflicts.filter(
+    (conflict) => conflict.status === 'pending'
+  ).length;
   const stateWithBacklog: ProjectState = {
     ...state,
     storyStateBacklogCount,
@@ -429,6 +492,7 @@ export async function getReaderState(projectId: string): Promise<ReaderState> {
     project,
     state: stateWithBacklog,
     storyStateBacklogCount,
+    canonConflictCount,
     currentEpisode,
     currentScene,
     currentGeneration,

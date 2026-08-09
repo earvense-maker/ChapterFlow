@@ -1426,3 +1426,167 @@
   flex-wrap: wrap;
   margin-top: 0.4rem;
 }
+
+/* ===== 作品の約束と未公開設定（設計書 4.2・4.3） ===== */
+.canon-card {
+  margin: 0.9rem 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.canon-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.canon-note {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.canon-spoiler-warning {
+  margin-left: 0.5rem;
+  color: var(--danger, #b3261e);
+}
+
+.canon-evidence {
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.contract-item-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.contract-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2, var(--surface));
+}
+
+.contract-item.disabled {
+  opacity: 0.55;
+}
+
+.contract-strength {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.contract-strength.hard {
+  color: #fff;
+  background: var(--danger, #b3261e);
+}
+
+.contract-strength.soft {
+  color: var(--text);
+  background: var(--border);
+}
+
+.contract-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  flex: 1 1 auto;
+}
+
+.contract-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.contract-editor {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.contract-edit-row {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.contract-edit-row select,
+.contract-edit-row input {
+  min-width: 0;
+}
+
+.contract-edit-row input {
+  flex: 1 1 auto;
+}
+
+.contract-mode-row {
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.contract-edit-actions {
+  display: inline-flex;
+  gap: 0.5rem;
+}
+
+.settings-inline-button {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2, var(--surface));
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.settings-inline-button:hover {
+  border-color: var(--text-muted);
+}
+
+.settings-inline-button.primary {
+  border-color: var(--accent, #1f6feb);
+  color: var(--accent, #1f6feb);
+  font-weight: 600;
+}
+
+.settings-inline-button.danger {
+  border-color: var(--danger, #b3261e);
+  color: var(--danger, #b3261e);
+}
+
+.settings-badge-link {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  background: var(--surface-2, var(--surface));
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.settings-loading {
+  color: var(--text-muted);
+}

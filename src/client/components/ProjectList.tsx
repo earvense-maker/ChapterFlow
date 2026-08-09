@@ -4,10 +4,12 @@ import { useConfirm } from './ConfirmDialog';
 import type { ProjectSummary, ProjectType } from '@shared/types';
 
 interface Props {
-  onOpen: (projectId: string, projectType: ProjectType) => void;
+  onOpen: (projectId: string, projectType?: ProjectType) => void;
   onNew: () => void;
   onSetupNew: () => void;
   onSetupRoleplay: () => void;
+  onQuickSetupNovel: () => void;
+  onQuickSetupRoleplay: () => void;
   onOpenAppSettings: () => void;
 }
 
@@ -16,6 +18,8 @@ export default function ProjectList({
   onNew,
   onSetupNew,
   onSetupRoleplay,
+  onQuickSetupNovel,
+  onQuickSetupRoleplay,
   onOpenAppSettings,
 }: Props) {
   const confirmAction = useConfirm();
@@ -102,9 +106,13 @@ export default function ProjectList({
           <p className="product-tagline">API-Powered Narrative Studio</p>
         </div>
         <div className="project-list-actions">
+          <button className="primary" onClick={onQuickSetupNovel}>一文から始める</button>
           <button className="primary" onClick={onSetupNew}>相談して作る</button>
           <button className="primary" onClick={onSetupRoleplay}>
             キャラと話す作品を作る
+          </button>
+          <button className="primary" onClick={onQuickSetupRoleplay}>
+            一文からキャラ会話を始める
           </button>
           <button onClick={onNew}>設定を直接入力</button>
           <button onClick={onOpenAppSettings}>アプリ設定</button>
@@ -120,8 +128,9 @@ export default function ProjectList({
         <div className="loading">読み込み中…</div>
       ) : projects.length === 0 ? (
         <div className="empty">
-          <p>まずは相談しながら物語を作るか、設定を直接入力して始めましょう。</p>
+          <p>まずは一文から始めるか、相談しながら物語を作りましょう。</p>
           <div className="project-list-actions center">
+            <button className="primary" onClick={onQuickSetupNovel}>一文から始める</button>
             <button className="primary" onClick={onSetupNew}>相談して作る</button>
             <button className="primary" onClick={onSetupRoleplay}>
               キャラと話す作品を作る

@@ -2,6 +2,7 @@ import type { EpisodeId, GenerationId, MemoryId, ProjectId, SceneId } from './id
 import type { StyleVariationSettings } from './style.js';
 import type { Character } from './character.js';
 import type { RefineAutomationSettings, RefineMaintenanceStatus } from './refineAutomation.js';
+import type { CreativeContract, LatentCanonStore } from './canon.js';
 // NOTE: roleplay.ts も project.ts を型参照するが、型のみの相互参照なので実行時の循環はない。
 import type { RoleplayUserPersona } from './roleplay.js';
 
@@ -97,6 +98,8 @@ export interface ProjectState {
   uiState: {
     readingPosition: number;
     fontSize: number;
+    // NOTE: 潜在設定の作者UI表示モード。欠損は 'shielded' と解釈する（設計書 5.4）。
+    canonSpoilerMode?: 'shielded' | 'visible';
   };
 }
 
@@ -150,6 +153,11 @@ export interface CreateProjectBody {
   roleplayOutputChars?: number;
   defaultUserPersona?: RoleplayUserPersona;
   styleVariation?: StyleVariationSettings;
+  // NOTE: server内部入力（setup commit / quick setup 用）。公開のUpdate経路では受け付けない
+  // （設計書 7.3）。クイックセットアップで作成した初期創作契約・潜在設定ストアを
+  // createProject の書き込み列で一緒に作る。
+  initialCreativeContract?: CreativeContract;
+  initialLatentCanon?: LatentCanonStore;
 }
 
 export interface UpdateProjectBody {

@@ -40,13 +40,34 @@ import {
   checkPromptTokenBudget,
   tokensToReducibleChars,
 } from '../prompts/promptBudget.js';
-import { countPromptTokens, resolveModelTokenLimits } from './modelInfoService.js';
-import { estimateMaxOutputTokens } from '../utils/outputLength.js';
+import {
+  countPromptTokens,
+  resolveModelTokenLimits,
+  type ModelTokenLimits,
+} from './modelInfoService.js';
+import {
+  estimateMaxOutputTokens,
+  INTERACTIVE_TASK_MAX_OUTPUT_TOKENS,
+} from '../utils/outputLength.js';
 import { findNgMatches } from '../../shared/ngDetection.js';
 import {
   collectAdjustedBudgetEntries,
   ROLEPLAY_TURN_SECTION_IDS,
 } from '../../shared/promptBudgetNotice.js';
+import {
+  applySessionCanonPatch,
+  buildSessionCanonInstruction,
+  buildSessionCanonPromptSection,
+  parseSessionCanonEntries,
+  SESSION_CANON_JSON_FORMAT,
+} from './roleplayCanonFoldService.js';
+import { normalizeComparableText } from '../utils/characterStateMatching.js';
+import { readCreativeContractOrEmpty } from './creativeContractService.js';
+import {
+  buildSessionCanonSummary as buildSharedSessionCanonSummary,
+  readLatentCanonStore,
+  selectRelatedCanonItems,
+} from './latentCanonService.js';
 import {
   DEFAULT_ROLEPLAY_USER_ACTION_POLICY,
   isRoleplayUserActionPolicy,
@@ -74,7 +95,9 @@ import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
 import type {
   ActivePresets,
   Character,
+  CreativeContractItem,
   FinishReason,
+  LatentCanonItem,
   NgAutoRewriteSettings,
   NgExpression,
   PresetsFile,
@@ -100,6 +123,7 @@ const ROLEPLAY_SUMMARY_THRESHOLD = 40;
 const ROLEPLAY_RELATIONSHIP_LIST_MAX = 8;
 const ROLEPLAY_RELATIONSHIP_ITEM_MAX_CHARS = 160;
 const ROLEPLAY_RELATIONSHIP_MAX_STEP = 15;
+const ROLEPLAY_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = INTERACTIVE_TASK_MAX_OUTPUT_TOKENS;
 
 // NOTE: 上限と既定方針は作品既定ペルソナ・相談draftと共有する（shared/roleplayPersona）。
 // ここでは「壊れた入力は 400 で知らせる」ため、共有の非throw正規化ではなく独自検証を使う。
@@ -119,6 +143,28 @@ function resolveOutputCaps(projectOutputChars: number | undefined): {
     outputLength: target,
     hardCap: Math.max(ROLEPLAY_OUTPUT_HARD_MIN_CAP, target * 2),
   };
+}
+
+function resolveRoleplayTurnMaxOutputTokens(
+  provider: string,
+  modelName: string,
+  outputLength: number,
+  limits: ModelTokenLimits
+): number {
+  const modelCap = Math.min(
+    limits.contextWindowTokens,
+    limits.outputTokenLimit ?? limits.contextWindowTokens
+  );
+  if (
+    provider.trim().toLowerCase() === 'deepseek' &&
+    modelName.trim().toLowerCase() === 'deepseek-v4-flash'
+  ) {
+    // NOTE: 本文は最大1,000字（安全側で約3,600 tokens）に制限される一方、V4 Flash の
+    // high reasoning は同じ max_tokens を消費する。既知の12,248-token推論にも本文枠を
+    // 残せる16,000を確保し、プロンプトの文脈チェックにも同じ値を予約する。
+    return Math.min(ROLEPLAY_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS, modelCap);
+  }
+  return estimateMaxOutputTokens(outputLength, modelCap);
 }
 
 // NOTE: sessionId 単位の変更操作用 mutex。setupSessionService と同型。
@@ -249,7 +295,7 @@ export function toRoleplaySessionView(
   session: RoleplaySession,
   currentSettingsFingerprint?: string
 ): RoleplaySessionView {
-  const { contextSnapshot, ...rest } = session;
+  const { contextSnapshot, sessionCanon, ...rest } = session;
   return {
     ...rest,
     characterName: contextSnapshot.character.name ?? '',
@@ -259,6 +305,11 @@ export function toRoleplaySessionView(
       contextSnapshot.settingsFingerprint,
       currentSettingsFingerprint
     ),
+    // NOTE: session canon本文は型で除外し、件数・カテゴリ・非ネタバレlabelだけを返す
+    // （設計書 5.5・7.2）。
+    ...(sessionCanon && sessionCanon.length > 0
+      ? { sessionCanonSummary: buildSharedSessionCanonSummary(sessionCanon) }
+      : {}),
   };
 }
 
@@ -291,17 +342,24 @@ function toRoleplaySessionSummary(
 export async function listRoleplaySessions(
   projectId: string
 ): Promise<RoleplaySessionSummary[]> {
-  const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(projectId).catch(
-    () => undefined
-  );
   const ids = await storage.listRoleplaySessionIds(projectId);
   const sessions = await Promise.all(
     ids.map((id) => storage.readRoleplaySession(projectId, id).catch(() => null))
   );
-  return sessions
-    .filter((s): s is RoleplaySession => s !== null && s.status === 'active')
-    .map((session) => toRoleplaySessionSummary(session, currentSettingsFingerprint))
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return (
+    await Promise.all(
+      sessions
+        .filter((s): s is RoleplaySession => s !== null && s.status === 'active')
+        .map(async (session) => {
+          const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
+            projectId,
+            undefined,
+            { characterId: session.characterId, scenario: session.scenario }
+          ).catch(() => undefined);
+          return toRoleplaySessionSummary(session, currentSettingsFingerprint);
+        })
+    )
+  ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export async function getRoleplaySession(
@@ -309,9 +367,11 @@ export async function getRoleplaySession(
   sessionId: string
 ): Promise<RoleplaySessionView> {
   const session = await loadRoleplaySessionOrThrow(projectId, sessionId);
-  const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(projectId).catch(
-    () => undefined
-  );
+  const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
+    projectId,
+    undefined,
+    { characterId: session.characterId, scenario: session.scenario }
+  ).catch(() => undefined);
   return toRoleplaySessionView(session, currentSettingsFingerprint);
 }
 
@@ -335,6 +395,9 @@ async function buildContextSnapshot(input: {
   customSystemPrompt: string;
   activePresetIds: ActivePresets;
   userPersona?: RoleplayUserPersona;
+  // NOTE: セッション開始時点の創作契約と関連潜在設定のスナップショット（設計書 8.1）。
+  creativeContract?: CreativeContractItem[];
+  latentCanonSnapshot?: LatentCanonItem[];
 }): Promise<RoleplayContextSnapshot> {
   const capturedAt = nowIso();
   const activePresetIds = normalizeActivePresetIds(input.activePresetIds);
@@ -359,6 +422,10 @@ async function buildContextSnapshot(input: {
     ROLEPLAY_STYLE_HEADING
   );
   const appliedSettings = await buildAppliedSettings(activePresetIds, capturedAt);
+  const canonFingerprintPart = buildCanonFingerprintPart(
+    input.creativeContract ?? [],
+    input.latentCanonSnapshot ?? []
+  );
   const snapshot: RoleplayContextSnapshot = {
     character: { ...input.character },
     otherCharacters: input.otherCharacters.map((c) => ({
@@ -376,11 +443,19 @@ async function buildContextSnapshot(input: {
     settingsFingerprint: buildSettingsFingerprint(
       activePresetIds,
       resolution.baseSystemPrompt,
-      resolution.customSystemPrompt
+      resolution.customSystemPrompt,
+      canonFingerprintPart
     ),
     appliedSettings,
     customSystemPrompt: resolution.customSystemPrompt,
     capturedAt,
+    // NOTE: 契約・canon本文はAPIレスポンスへ出さない（RoleplaySessionViewで型除外）。
+    ...(input.creativeContract && input.creativeContract.length > 0
+      ? { creativeContract: input.creativeContract }
+      : {}),
+    ...(input.latentCanonSnapshot && input.latentCanonSnapshot.length > 0
+      ? { latentCanonSnapshot: input.latentCanonSnapshot }
+      : {}),
   };
 
   // NOTE: セッション作成時点の system prompt 縮小結果を設定詳細から確認できるようにする
@@ -449,10 +524,36 @@ async function buildAppliedSettings(
   return { capturedAt, presets };
 }
 
+// NOTE: 契約・canonの安定hash（設計書 5.5・8.1）。active契約はID順、canon snapshotは
+// 選択済みcanonId順に正規化する。同じIDでもstatement・status・epistemicStatusが変われば
+// hashが変わるよう、本文ではなく正規化内容のハッシュを指紋へ含める（レビュー指摘 P2）。
+// 本文をfingerprintやAPIレスポンスへ露出しない。
+function buildCanonFingerprintPart(
+  contracts: CreativeContractItem[],
+  canonItems: LatentCanonItem[]
+): string {
+  const contractPart = contracts
+    .filter((item) => item.status === 'active')
+    .map((item) => `${item.contractId}:${item.strength}:${normalizeComparableText(item.text)}`)
+    .sort()
+    .join('\n');
+  const canonPart = canonItems
+    .map(
+      (item) =>
+        `${item.canonId}|${item.status}|${item.epistemicStatus}|${normalizeComparableText(item.statement)}`
+    )
+    .sort()
+    .join('\n');
+  return createHash('sha256')
+    .update(`${contractPart}\n---\n${canonPart}`)
+    .digest('hex');
+}
+
 function buildSettingsFingerprint(
   activePresetIds: ActivePresets,
   baseSystemPrompt: string,
-  customSystemPrompt: string
+  customSystemPrompt: string,
+  canonFingerprintPart = ''
 ): string {
   const normalized = normalizeActivePresetIds(activePresetIds);
   const roleplayPresets = ROLEPLAY_PRESET_CATEGORY_ORDER.map((key) => [
@@ -463,13 +564,15 @@ function buildSettingsFingerprint(
     roleplayPresets,
     baseSystemPrompt: baseSystemPrompt.trim(),
     customSystemPrompt: customSystemPrompt.trim(),
+    canonFingerprintPart,
   });
   return createHash('sha256').update(payload).digest('hex');
 }
 
 async function buildSettingsFingerprintFromPresets(
   project: Project,
-  presets: PresetsFile | null
+  presets: PresetsFile | null,
+  options: { canonFingerprintPart?: string } = {}
 ): Promise<string> {
   const activePresetIds = normalizeActivePresetIds(project.activePresetIds);
   const resolution = await resolveSystemPrompt(
@@ -480,18 +583,36 @@ async function buildSettingsFingerprintFromPresets(
   return buildSettingsFingerprint(
     activePresetIds,
     resolution.baseSystemPrompt,
-    resolution.customSystemPrompt
+    resolution.customSystemPrompt,
+    options.canonFingerprintPart
   );
 }
 
+// NOTE: 現在値側のfingerprint（設計書 8.1）。契約・選択済みcanonの変更をsettingsChangedで
+// 検知するため、セッション開始時と同じ関連選択規則でcanon部分を計算する。
 async function resolveCurrentSettingsFingerprint(
   projectId: string,
-  currentProject?: Project | null
+  currentProject?: Project | null,
+  options: { characterId?: string; scenario?: string } = {}
 ): Promise<string | undefined> {
   const project = currentProject ?? (await storage.readProject(projectId));
   if (!project) return undefined;
   const presets = await storage.readPresets(projectId);
-  return await buildSettingsFingerprintFromPresets(project, presets);
+  const contract = await readCreativeContractOrEmpty(projectId);
+  const canonStore = await readLatentCanonStore(projectId);
+  const characters = await storage.readCharacters(projectId);
+  const canonFingerprintPart = buildCanonFingerprintPart(
+    contract.items,
+    selectRelatedCanonItems({
+      items: canonStore.items,
+      wish: options.scenario ?? '',
+      viewpointCharacterId: options.characterId ?? null,
+      characters,
+    })
+  );
+  return await buildSettingsFingerprintFromPresets(project, presets, {
+    canonFingerprintPart,
+  });
 }
 
 function settingsFingerprintChanged(
@@ -546,6 +667,17 @@ export async function createRoleplaySession(
     const worldText = await storage.readWorldPromptText(input.projectId);
     const presets = await storage.readPresets(input.projectId);
 
+    // NOTE: セッション開始時点の創作契約と関連潜在設定をスナップショットする（設計書 8.1）。
+    // 進行中の会話へプロジェクト設定変更を自動反映しない。
+    const contract = await readCreativeContractOrEmpty(input.projectId);
+    const canonStore = await readLatentCanonStore(input.projectId);
+    const latentCanonSnapshot = selectRelatedCanonItems({
+      items: canonStore.items,
+      wish: scenario,
+      viewpointCharacterId: input.characterId,
+      characters,
+    });
+
     const snapshot = await buildContextSnapshot({
       character,
       otherCharacters: characters.filter((c) => c.characterId !== input.characterId),
@@ -554,6 +686,8 @@ export async function createRoleplaySession(
       customSystemPrompt: presets?.customSystemPrompt ?? '',
       activePresetIds: project.activePresetIds,
       userPersona,
+      creativeContract: contract.items,
+      latentCanonSnapshot,
     });
 
     const now = nowIso();
@@ -699,9 +833,17 @@ export async function archiveRoleplaySession(
   sessionId: string,
   revision: number
 ): Promise<RoleplaySessionView> {
-  const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(projectId).catch(
-    () => undefined
-  );
+  const existingSession = await storage
+    .readRoleplaySession(projectId, sessionId)
+    .catch(() => null);
+  const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
+    projectId,
+    undefined,
+    {
+      characterId: existingSession?.characterId,
+      scenario: existingSession?.scenario,
+    }
+  ).catch(() => undefined);
   return withSessionLock(sessionId, async () => {
     const session = await loadRoleplaySessionOrThrow(projectId, sessionId);
     assertValidRevision(revision);
@@ -824,7 +966,8 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
     const project = await storage.readProject(input.projectId);
     const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
       input.projectId,
-      project
+      project,
+      { characterId: postUserSession.characterId, scenario: postUserSession.scenario }
     ).catch(() => undefined);
     const caps = resolveOutputCaps(project?.roleplayOutputChars);
     // NOTE: 検出には ID が要るので、文字列配列ではなく登録オブジェクトごと読む。
@@ -907,6 +1050,7 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
         systemInstructions: prompt.systemInstructions,
         userPrompt: prompt.userPrompt,
         outputLength: caps.outputLength,
+        maxOutputTokens: prompt.maxOutputTokens,
         temperature: ROLEPLAY_TEMPERATURE,
         timeoutMs: ROLEPLAY_TIMEOUT_MS,
         modelName,
@@ -1085,7 +1229,9 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
       // NOTE: 生成中も作品設定は編集できる。開始前の fingerprint を使うと、完了直後だけ
       // 設定差分バッジが消えるため、done view の構築直前にもう一度比較元を読む。
       const latestSettingsFingerprint = await resolveCurrentSettingsFingerprint(
-        input.projectId
+        input.projectId,
+        undefined,
+        { characterId: committed.characterId, scenario: committed.scenario }
       ).catch(() => currentSettingsFingerprint);
       yield {
         type: 'done',
@@ -1539,6 +1685,7 @@ async function buildTurnPrompt(input: {
 }): Promise<{
   systemInstructions: string;
   userPrompt: string;
+  maxOutputTokens: number;
   budgetReport: PromptBudgetReport;
 }> {
   const { session } = input;
@@ -1565,9 +1712,11 @@ async function buildTurnPrompt(input: {
   });
 
   const limits = await resolveModelTokenLimits(session.model.provider, session.model.modelName);
-  const estimatedMaxOutputTokens = estimateMaxOutputTokens(
+  const maxOutputTokens = resolveRoleplayTurnMaxOutputTokens(
+    session.model.provider,
+    session.model.modelName,
     input.outputLength,
-    Math.min(limits.contextWindowTokens, limits.outputTokenLimit ?? limits.contextWindowTokens)
+    limits
   );
 
   // NOTE: 縮小の回数は「進捗があるか」で決める。固定回数（3回）で打ち切ると、
@@ -1614,13 +1763,14 @@ async function buildTurnPrompt(input: {
       ...(limits.inputTokenLimit === undefined
         ? {}
         : { inputTokenLimit: limits.inputTokenLimit }),
-      estimatedMaxOutputTokens,
+      estimatedMaxOutputTokens: maxOutputTokens,
       providerTokens: providerTokens?.tokens ?? null,
     });
     if (check.ok) {
       return {
         systemInstructions: system.systemInstructions,
         userPrompt: built.prompt,
+        maxOutputTokens,
         budgetReport: {
           maxChars: ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS,
           assembledChars: system.systemInstructions.length + built.prompt.length,
@@ -1688,6 +1838,7 @@ type SummaryOutcome =
       conversationSummary: string;
       summaryThroughMessageId: string;
       relationshipState?: RoleplayRelationshipState;
+      sessionCanonItems?: LatentCanonItem[];
     };
 
 interface BudgetJudgement {
@@ -1779,6 +1930,7 @@ async function runSummaryIfNeeded(input: {
     conversationSummary: outcome.conversationSummary,
     summaryThroughMessageId: outcome.summaryThroughMessageId,
     relationshipState: outcome.relationshipState,
+    sessionCanonItems: outcome.sessionCanonItems,
   });
   if (!merged) {
     // 他経路が要約を進めた場合。最新セッションを取得しなおして再判定。
@@ -1843,6 +1995,7 @@ async function mergeSummaryIfCursorUnchanged(input: {
   conversationSummary: string;
   summaryThroughMessageId: string;
   relationshipState?: RoleplayRelationshipState;
+  sessionCanonItems?: LatentCanonItem[];
 }): Promise<RoleplaySession | null> {
   return await withSessionLock(input.sessionId, async () => {
     const latest = await storage.readRoleplaySession(input.projectId, input.sessionId);
@@ -1857,6 +2010,13 @@ async function mergeSummaryIfCursorUnchanged(input: {
       relationshipState: input.relationshipState
         ? { ...input.relationshipState, updatedAt: summaryUpdatedAt }
         : latest.relationshipState,
+      // NOTE: session canonは要約カーソルと同じfold境界まで進める（設計書 8.2）。
+      ...(input.sessionCanonItems
+        ? {
+            sessionCanon: input.sessionCanonItems,
+            sessionCanonThroughMessageId: input.summaryThroughMessageId,
+          }
+        : {}),
     };
     await withDataDirWrite(() => storage.writeRoleplaySession(next));
     return next;
@@ -1916,14 +2076,15 @@ async function performSummary(
     'promises は未達成の約束、unresolvedTopics は会話に残っている未解決事項だけにしてください。',
     `summary は${ROLEPLAY_SUMMARY_MAX_CHARS}字以内にしてください。`,
     '出力は説明やMarkdownを付けず、次の形のJSONオブジェクトだけにしてください。',
-    '{"summary":"統合後の要約","relationshipState":{"trust":50,"intimacy":30,"tension":20,"currentAddress":"現在の呼び方","promises":[],"unresolvedTopics":[]}}',
+    buildSessionCanonInstruction(),
+    `{"summary":"統合後の要約","relationshipState":{"trust":50,"intimacy":30,"tension":20,"currentAddress":"現在の呼び方","promises":[],"unresolvedTopics":[]},"sessionCanon":[${SESSION_CANON_JSON_FORMAT}]}`,
   ].join('\n');
-
   const userPrompt = [
     existingSummary ? `【既存の要約】\n${existingSummary}` : '',
     existingRelationshipState
       ? `【既存の関係性状態】\n${existingRelationshipState}`
       : '【既存の関係性状態】\nまだ記録なし',
+    buildSessionCanonPromptSection(session.sessionCanon),
     `【追加する会話】\n${foldedText}`,
     '【出力】',
     '指定されたJSONだけを出力してください。',
@@ -1955,6 +2116,15 @@ async function performSummary(
     conversationSummary: parsed.conversationSummary,
     summaryThroughMessageId: lastFolded.messageId,
     relationshipState: parsed.relationshipState,
+    ...(parsed.sessionCanonEntries
+      ? {
+          sessionCanonItems: applySessionCanonPatch(
+            session.sessionCanon ?? [],
+            parsed.sessionCanonEntries,
+            lastFolded.messageId
+          ),
+        }
+      : {}),
   };
 }
 
@@ -1964,6 +2134,7 @@ function parseSummaryOutput(
 ): {
   conversationSummary: string;
   relationshipState?: RoleplayRelationshipState;
+  sessionCanonEntries?: import('./roleplayCanonFoldService.js').SessionCanonEntry[];
 } | null {
   const text = raw.trim();
   if (!text) return null;
@@ -1988,6 +2159,9 @@ function parseSummaryOutput(
             value.relationshipState,
             previousRelationshipState
           ),
+          ...(value.sessionCanon !== undefined
+            ? { sessionCanonEntries: parseSessionCanonEntries(value.sessionCanon) }
+            : {}),
         };
       }
     } catch {

@@ -52,6 +52,7 @@ export const ROLEPLAY_SYSTEM_SEPARATOR_RESERVE = 256;
 export const RP_SECTION = {
   fixedRules: 'roleplay.fixedRules',
   character: 'roleplay.character',
+  contractCanon: 'roleplay.contractCanon',
   userPersona: 'roleplay.userPersona',
   dialogueExamples: 'roleplay.dialogueExamples',
   style: 'roleplay.stylePreset',
@@ -70,6 +71,8 @@ const SYSTEM_SECTION_LIMITS: ReadonlyArray<{
 }> = [
   { sectionId: RP_SECTION.fixedRules, hardMax: 1_200, minReserve: 1_200, required: true },
   { sectionId: RP_SECTION.character, hardMax: 4_000, minReserve: 1_500, required: true },
+  // NOTE: セッション開始時点の創作契約・潜在設定（設計書 8.1）。会話中は変更されない。
+  { sectionId: RP_SECTION.contractCanon, hardMax: 1_500, minReserve: 400 },
   { sectionId: RP_SECTION.userPersona, hardMax: 1_000, minReserve: 400 },
   { sectionId: RP_SECTION.dialogueExamples, hardMax: 1_000, minReserve: 300 },
   { sectionId: RP_SECTION.style, hardMax: 1_500, minReserve: 500 },
@@ -215,6 +218,12 @@ export function buildRoleplaySystemInstructionsWithReport(
     includeInitialState: !input.hasConversationSummary,
   });
 
+  // NOTE: セッション開始時点の創作契約と潜在設定（設計書 8.1）。会話中は変質させない。
+  const contractCanonBody = buildContractCanonBody(
+    snapshot.creativeContract ?? [],
+    snapshot.latentCanonSnapshot ?? []
+  );
+
   // NOTE: 「固定規則と対象キャラの名前だけで上限を超える」場合は組み立てを諦める
   // （設計書 5.1）。名前が入らない状態で会話を始めても、誰を演じるか決まらない。
   const nameLine = personaCard.split('\n')[0] ?? '';
@@ -237,6 +246,14 @@ export function buildRoleplaySystemInstructionsWithReport(
       { body: personaCard, render: (body) => renderDataBlock('【対象キャラクター】', body) },
     ],
   ]);
+
+  if (contractCanonBody) {
+    bodies.set(RP_SECTION.contractCanon, {
+      body: contractCanonBody,
+      render: (body) =>
+        renderDataBlock('【作品の約束と補助設定（セッション開始時点）】', body),
+    });
+  }
 
   const userPersona = buildUserPersonaSection(snapshot.userPersona);
   if (userPersona) {
@@ -541,6 +558,43 @@ function relationshipLevel(
  * 単純な先頭 slice と違い「口調の途中で切れる」ことが起きない。
  * 保存済みキャラクター本文は変更せず、実行時の描画だけを縮める。
  */
+function buildContractCanonBody(
+  contracts: RoleplayContextSnapshot['creativeContract'],
+  latentCanon: RoleplayContextSnapshot['latentCanonSnapshot']
+): string {
+  const parts: string[] = [];
+  const hardContracts = (contracts ?? []).filter(
+    (item) => item.strength === 'hard' && item.status === 'active'
+  );
+  if (hardContracts.length > 0) {
+    parts.push(
+      '【作品の約束（絶対に守る）】',
+      hardContracts.map((item) => `- ${item.text}`).join('\n')
+    );
+  }
+  const softContracts = (contracts ?? []).filter(
+    (item) => item.strength === 'soft' && item.status === 'active'
+  );
+  if (softContracts.length > 0) {
+    parts.push('【好み】', softContracts.map((item) => `- ${item.text}`).join('\n'));
+  }
+  const canonItems = (latentCanon ?? []).filter((item) => item.status !== 'retired');
+  if (canonItems.length > 0) {
+    const lines = canonItems.slice(0, 12).map((item) => {
+      const label =
+        item.status === 'revealed'
+          ? '公開済み'
+          : item.status === 'foreshadowed'
+            ? '示唆済み'
+            : '未公開';
+      const epistemic = item.epistemicStatus !== 'fact' ? `（${item.epistemicStatus}）` : '';
+      return `- ${label}${epistemic} ${item.statement}`;
+    });
+    parts.push('【補助設定（潜在設定）】', ...lines);
+  }
+  return parts.join('\n');
+}
+
 function buildPersonaCard(
   character: Character,
   options: { includeInitialState: boolean }

@@ -53,6 +53,10 @@ export function hasSetupDraftContent(session: SetupSession): boolean {
       draft.ng.some((item) => item.trim()) ||
       draft.openingSeeds.some((item) => item.trim()) ||
       (draft.scenarioSeeds ?? []).some((item) => item.trim()) ||
+      // NOTE: クイックセットアップの契約候補だけでも「草案に書いた」扱いにする（設計書 4.1）。
+      (draft.quickContracts ?? []).some(
+        (item) => item.status === 'active' && item.text.trim()
+      ) ||
       // NOTE: ユーザーペルソナだけ埋めた状態でも「草案に書いた」ことに変わりはない。
       // ここに入れておかないと、画面に内容が見えているのに作品化ボタンが押せない。
       Object.values(draft.userPersona ?? {}).some((value) => value?.trim())

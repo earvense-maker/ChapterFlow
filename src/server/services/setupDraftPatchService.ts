@@ -6,6 +6,7 @@ import {
 import { ROLEPLAY_USER_PERSONA_LIMITS } from '../../shared/roleplayPersona.js';
 import type {
   CharacterRole,
+  QuickContractCandidate,
   SetupDraft,
   SetupDraftCandidate,
   SetupDraftCharacter,
@@ -48,6 +49,7 @@ export function createEmptySetupDraft(): SetupDraft {
     ng: [],
     openingSeeds: [],
     scenarioSeeds: [],
+    quickContracts: [],
   };
 }
 
@@ -92,7 +94,32 @@ export function normalizeSetupDraft(value: unknown, fallbackNow = nowIso()): Set
     ng: normalizeStringList(value.ng, LIMITS.ng),
     openingSeeds: normalizeStringList(value.openingSeeds, LIMITS.openingSeeds),
     scenarioSeeds: normalizeStringList(value.scenarioSeeds, LIMITS.scenarioSeeds),
+    quickContracts: asArray(value.quickContracts)
+      .map((item) => normalizeQuickContract(item, fallbackNow))
+      .filter((item): item is QuickContractCandidate => item !== null)
+      .slice(0, 20),
     ...(userPersona ? { userPersona } : {}),
+  };
+}
+
+// NOTE: クイックセットアップの契約候補（設計書 4.1）。hardは確認カード通過後のみ active。
+function normalizeQuickContract(value: unknown, fallbackNow: string): QuickContractCandidate | null {
+  if (!isRecord(value)) return null;
+  const text = asString(value.text);
+  if (!text) return null;
+  const kind = value.kind === 'prohibition' || value.kind === 'preference' ? value.kind : 'promise';
+  const source = value.source === 'user' || value.source === 'manual' ? value.source : 'ai-suggested';
+  const strength: QuickContractCandidate['strength'] =
+    kind === 'preference' ? 'soft' : source === 'ai-suggested' ? 'soft' : 'hard';
+  return {
+    id: normalizeItemId(value.id, 'qctr'),
+    kind,
+    strength,
+    text: text.slice(0, 500),
+    source,
+    status: value.status === 'archived' ? 'archived' : 'active',
+    createdAt: asString(value.createdAt) || fallbackNow,
+    updatedAt: asString(value.updatedAt) || fallbackNow,
   };
 }
 

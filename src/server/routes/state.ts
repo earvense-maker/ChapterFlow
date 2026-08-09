@@ -142,6 +142,13 @@ function parseProjectStateUpdates(value: unknown): Partial<ProjectState> {
       }
       uiState.fontSize = value.uiState.fontSize;
     }
+    if (Object.hasOwn(value.uiState, 'canonSpoilerMode')) {
+      // NOTE: 潜在設定の作者UI表示モード（設計書 5.4）。欠損は 'shielded' と解釈する。
+      if (value.uiState.canonSpoilerMode !== 'shielded' && value.uiState.canonSpoilerMode !== 'visible') {
+        throw new StateValidationError('canonSpoilerModeが不正です。');
+      }
+      uiState.canonSpoilerMode = value.uiState.canonSpoilerMode;
+    }
     if (Object.keys(uiState).length === 0) {
       throw new StateValidationError('uiStateに更新項目がありません。');
     }

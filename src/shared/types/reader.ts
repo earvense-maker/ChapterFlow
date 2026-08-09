@@ -8,6 +8,9 @@ export interface ReaderState {
   project: Project;
   state: ProjectState;
   storyStateBacklogCount?: number;
+  // NOTE: 未解決のcanon競合件数（設計書 6.3）。Readerの状態バナーと作品設定の
+  // 「要確認」一覧への遷移に使う。
+  canonConflictCount?: number;
   currentEpisode: EpisodeRecord | null;
   currentScene: SceneRecord | null;
   currentGeneration: GenerationRecord | null;

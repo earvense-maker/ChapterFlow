@@ -1,10 +1,15 @@
 import type {
   ArchiveRoleplaySessionBody,
+  CanonConflict,
+  CanonPatchBody,
+  CanonSummaryResponse,
   Character,
   CommitSetupBody,
   CreateMemoryBody,
   CreateProjectBody,
   CreateRoleplaySessionBody,
+  CreativeContract,
+  CreativeContractPutBody,
   DataDirApplyResponse,
   DataDirInfo,
   DataDirPreview,
@@ -18,6 +23,8 @@ import type {
   KnowledgeContentResponse,
   KnowledgeFile,
   KnowledgeListItem,
+  LatentCanonItem,
+  LatentCanonStore,
   Memory,
   ModelProviderInfo,
   NgAutoRewriteSettings,
@@ -54,6 +61,8 @@ import type {
   StoryStateDiffRecord,
   StyleSamplePreset,
   CreateSetupSessionBody,
+  ConfirmQuickContractsBody,
+  CreateQuickSetupPlanBody,
   PatchSetupSettingsBody,
   PatchSetupSettingsResponse,
   RetrySetupMessageBody,
@@ -84,7 +93,9 @@ export class ApiError extends Error {
     public readonly code?: string,
     public readonly retryable = false,
     public readonly status = 0,
-    options?: ErrorOptions
+    options?: ErrorOptions,
+    // NOTE: サーバー応答本文（contract_conflict の conflictFingerprint 等の取得用・設計書 5.2）。
+    public readonly body?: Record<string, unknown>
   ) {
     super(message, options);
     this.name = 'ApiError';
@@ -205,6 +216,17 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+  // NOTE: クイックセットアップ（設計書 4.1）。
+  createQuickSetupPlan: (id: string, body: CreateQuickSetupPlanBody) =>
+    request<SetupCommitPlanResponse>(`/setup-sessions/${id}/quick-plan`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  confirmQuickContracts: (id: string, body: ConfirmQuickContractsBody) =>
+    request<SetupCommitPlanResponse>(`/setup-sessions/${id}/quick-contracts`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
   abandonSetupSession: (id: string) =>
     request<SetupSession>(`/setup-sessions/${id}/abandon`, { method: 'POST' }),
   patchSetupSettings: (id: string, body: PatchSetupSettingsBody) =>
@@ -275,6 +297,53 @@ export const api = {
       `/projects/${id}/story-state/diffs/${diffId}/revert`,
       { method: 'POST' }
     ),
+
+  getCreativeContract: (id: string) =>
+    request<CreativeContract>(`/projects/${id}/creative-contract`),
+  updateCreativeContract: (id: string, body: CreativeContractPutBody) =>
+    request<CreativeContract>(`/projects/${id}/creative-contract`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getCanonSummary: (id: string) => request<CanonSummaryResponse>(`/projects/${id}/canon-summary`),
+  revealCanonItem: (id: string, canonId: string) =>
+    request<LatentCanonItem>(`/projects/${id}/canon/reveal`, {
+      method: 'POST',
+      body: JSON.stringify({ canonId }),
+    }),
+  getCanonConflicts: (id: string) =>
+    request<{ revision: number; conflicts: CanonConflict[] }>(`/projects/${id}/canon-conflicts`),
+  resolveCanonConflict: (
+    id: string,
+    conflictId: string,
+    body: { revision: number; status: 'resolved' | 'exception-accepted' | 'dismissed' }
+  ) =>
+    request<CanonSummaryResponse>(
+      `/projects/${id}/canon-conflicts/${conflictId}/resolve`,
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
+  updateCanonItem: (id: string, canonId: string, body: CanonPatchBody) =>
+    request<CanonSummaryResponse>(`/projects/${id}/canon/${canonId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  setCanonLock: (id: string, canonId: string, body: { revision: number; locked: boolean }) =>
+    request<LatentCanonStore>(`/projects/${id}/canon/${canonId}/lock`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  retireCanonItem: (id: string, canonId: string, body: { revision: number; reason: string }) =>
+    request<LatentCanonStore>(`/projects/${id}/canon/${canonId}/retire`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  restoreCanonItem: (id: string, canonId: string, body: { revision: number }) =>
+    request<LatentCanonStore>(`/projects/${id}/canon/${canonId}/restore`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  reextractCanon: (id: string) =>
+    request<ReaderState>(`/projects/${id}/canon/reextract`, { method: 'POST' }),
 
   getMemories: (id: string) => request<Memory[]>(`/projects/${id}/memories`),
   createMemory: (id: string, memory: CreateMemoryBody) =>
@@ -416,8 +485,10 @@ export const api = {
     id: string,
     body: GenerateRequestBody,
     onChunk: (text: string) => void,
-    abortSignal?: AbortSignal
-  ) => requestGenerationStream(id, body, onChunk, abortSignal),
+    abortSignal?: AbortSignal,
+    onPhase?: (phase: 'generating' | 'verifying' | 'repairing' | 'rechecking') => void,
+    onReplace?: (text: string) => void
+  ) => requestGenerationStream(id, body, onChunk, abortSignal, onPhase, onReplace),
   sendSetupMessageStream: (
     id: string,
     body: SendSetupMessageBody,
@@ -776,7 +847,9 @@ async function requestGenerationStream(
   id: string,
   body: GenerateRequestBody,
   onChunk: (text: string) => void,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  onPhase?: (phase: 'generating' | 'verifying' | 'repairing' | 'rechecking') => void,
+  onReplace?: (text: string) => void
 ): Promise<GenerationRecord> {
   let res: Response;
   try {
@@ -807,6 +880,22 @@ async function requestGenerationStream(
       if (event === 'chunk') {
         const payload = JSON.parse(data) as { text?: string };
         if (payload.text) onChunk(payload.text);
+      }
+      if (event === 'replace') {
+        const payload = JSON.parse(data) as { text?: string };
+        if (typeof payload.text === 'string') onReplace?.(payload.text);
+      }
+      if (event === 'phase') {
+        // NOTE: 本文を表示したまま、検証・修復の進捗も知らせる。
+        const payload = JSON.parse(data) as { phase?: string };
+        if (
+          payload.phase === 'generating' ||
+          payload.phase === 'verifying' ||
+          payload.phase === 'repairing' ||
+          payload.phase === 'rechecking'
+        ) {
+          onPhase?.(payload.phase);
+        }
       }
       if (event === 'done') {
         const payload = JSON.parse(data) as { record?: GenerationRecord };
@@ -891,7 +980,9 @@ function apiErrorFromBody(
     formatApiError(body, status),
     body.code,
     body.retryable ?? (status === 429 || status >= 500),
-    status
+    status,
+    undefined,
+    body as Record<string, unknown>
   );
 }
 

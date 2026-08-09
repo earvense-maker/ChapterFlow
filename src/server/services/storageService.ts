@@ -10,7 +10,9 @@ import {
 } from '../utils/safeWrite.js';
 import { withDataDirWrite } from './dataDirLock.js';
 import type {
+  AcceptedNarrativeDerivation,
   Character,
+  CreativeContract,
   EpisodeRecord,
   ExpressionsFile,
   GenerationRecord,
@@ -19,6 +21,7 @@ import type {
   GenerationStatus,
   KnowledgeExtension,
   KnowledgeIndexFile,
+  LatentCanonStore,
   Memory,
   PresetsFile,
   Project,
@@ -109,6 +112,18 @@ export function storyStateJsonPath(projectId: string): string {
 
 export function storyStateDiffsJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'story-state-diffs.json');
+}
+
+export function creativeContractJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'creative-contract.json');
+}
+
+export function latentCanonJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'latent-canon.json');
+}
+
+export function acceptedDerivationsJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'accepted-derivations.json');
 }
 
 export function expressionsJsonPath(projectId: string): string {
@@ -360,6 +375,40 @@ export async function writeStoryStateDiffs(
   diffs: StoryStateDiffRecord[]
 ): Promise<void> {
   await safeWriteJson(storyStateDiffsJsonPath(projectId), diffs);
+}
+
+export async function readCreativeContract(
+  projectId: string
+): Promise<CreativeContract | null> {
+  return readJsonFile<CreativeContract>(creativeContractJsonPath(projectId));
+}
+
+export async function writeCreativeContract(contract: CreativeContract): Promise<void> {
+  await safeWriteJson(creativeContractJsonPath(contract.projectId), contract);
+}
+
+export async function readLatentCanon(projectId: string): Promise<LatentCanonStore | null> {
+  return readJsonFile<LatentCanonStore>(latentCanonJsonPath(projectId));
+}
+
+export async function writeLatentCanon(store: LatentCanonStore): Promise<void> {
+  await safeWriteJson(latentCanonJsonPath(store.projectId), store);
+}
+
+export async function readAcceptedDerivations(
+  projectId: string
+): Promise<AcceptedNarrativeDerivation[]> {
+  const data = await readJsonFile<AcceptedNarrativeDerivation[]>(
+    acceptedDerivationsJsonPath(projectId)
+  );
+  return Array.isArray(data) ? data : [];
+}
+
+export async function writeAcceptedDerivations(
+  projectId: string,
+  derivations: AcceptedNarrativeDerivation[]
+): Promise<void> {
+  await safeWriteJson(acceptedDerivationsJsonPath(projectId), derivations);
 }
 
 export async function readExpressions(projectId: string): Promise<ExpressionsFile> {

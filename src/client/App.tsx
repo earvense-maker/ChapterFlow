@@ -4,6 +4,7 @@ import ProjectForm from './components/ProjectForm';
 import Reader from './components/Reader';
 import SettingPanel from './components/SettingPanel';
 import SetupWorkspace from './components/SetupWorkspace';
+import QuickSetupWorkspace from './components/QuickSetupWorkspace';
 import AppSettingsPanel from './components/AppSettingsPanel';
 import RoleplayWorkspace from './components/RoleplayWorkspace';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -20,6 +21,7 @@ type View =
   | 'list'
   | 'new'
   | 'setup'
+  | 'quick-setup'
   | 'read'
   | 'roleplay'
   | 'app-settings'
@@ -152,6 +154,14 @@ export default function App() {
               setSetupPurpose('roleplay');
               setView('setup');
             }}
+            onQuickSetupNovel={() => {
+              setSetupPurpose('novel');
+              setView('quick-setup');
+            }}
+            onQuickSetupRoleplay={() => {
+              setSetupPurpose('roleplay');
+              setView('quick-setup');
+            }}
             onOpenAppSettings={() => openAppSettings('list')}
           />
         </>
@@ -167,6 +177,16 @@ export default function App() {
           onCreated={handleCreateProject}
           onCancel={handleBackToList}
           onOpenSettings={() => openAppSettings('setup')}
+        />
+      )}
+      {view === 'quick-setup' && (
+        <QuickSetupWorkspace
+          purpose={setupPurpose}
+          onCreated={handleCreateProject}
+          onCancel={handleBackToList}
+          onOpenFullSetup={() => {
+            setView('setup');
+          }}
         />
       )}
       {view === 'read' && activeProjectId && (

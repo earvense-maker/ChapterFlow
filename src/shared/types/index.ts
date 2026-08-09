@@ -11,6 +11,7 @@ export * from './memory.js';
 export * from './knowledge.js';
 export * from './expression.js';
 export * from './storyState.js';
+export * from './canon.js';
 export * from './setup.js';
 export * from './episode.js';
 export * from './generation.js';

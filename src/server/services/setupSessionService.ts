@@ -35,10 +35,17 @@ import { hasSetupDraftContent } from '../../shared/setupContent.js';
 import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
 import type {
+  CanonScope,
+  Character,
   CommitSetupBody,
+  ConfirmQuickContractsBody,
+  CreateQuickSetupPlanBody,
   CreateSetupSessionBody,
+  CreativeContractItem,
   FinishReason,
+  LatentCanonItem,
   PatchSetupSettingsBody,
+  QuickContractCandidate,
   RetrySetupMessageBody,
   SendSetupMessageBody,
   SetLockStateBody,
@@ -46,6 +53,7 @@ import type {
   SetupCommitPlanResponse,
   SetupCommitResponse,
   SetupDraft,
+  SetupDraftCharacter,
   SetupDraftResponse,
   SetupLock,
   SetupLockStateResponse,
@@ -146,6 +154,7 @@ export async function createSetupSession(
     );
   }
   const purpose: SetupPurpose = normalizeSetupPurpose(body.purpose);
+  const setupMode: 'quick' | 'full' = body.setupMode === 'quick' ? 'quick' : 'full';
   const requestedPresetIds = body.projectSettings?.activePresetIds ?? {};
   const session: SetupSession = {
     schemaVersion: 2,
@@ -154,6 +163,7 @@ export async function createSetupSession(
     status: 'active',
     revision: 1,
     purpose,
+    setupMode,
     model: {
       provider,
       modelName:
@@ -1006,6 +1016,518 @@ async function generateSetupPreviewText(session: SetupSession, instruction = '')
   });
 }
 
+// ============================================================
+// クイックセットアップ（設計書 4.1）
+// ============================================================
+
+const QUICK_PLAN_OUTPUT_LENGTH = 5_000;
+const QUICK_PLAN_TEMPERATURE = 0.5;
+
+export interface CreateQuickSetupPlanResult {
+  plan: SetupCommitPlan;
+  session: SetupSession;
+  revision: number;
+}
+
+// NOTE: 一文の希望から最小の計画を1回の構造化呼び出しで作る。契約候補・最小人物・
+// 薄い潜在設定（最大8件）を SetupDraft / SetupCommitPlan を通して確認・commitする。
+export async function createQuickSetupPlan(
+  sessionId: string,
+  body: CreateQuickSetupPlanBody
+): Promise<CreateQuickSetupPlanResult> {
+  return withSessionLock(sessionId, async () => {
+    const session = ensureActiveSession(await readSetupSessionOrThrow(sessionId));
+    assertValidRevision(body?.revision);
+    assertRevision(session, body.revision);
+    const wish = asString(body?.wish);
+    if (!wish) {
+      throw new SetupServiceError(
+        '見たい作品を一文で書いてください。',
+        'quick_wish_required',
+        false,
+        400,
+        session
+      );
+    }
+    const purpose: SetupPurpose = normalizeSetupPurpose(session.purpose);
+    const hardContracts = Array.isArray(body.hardContracts)
+      ? body.hardContracts.map(asString).filter(Boolean).slice(0, 8)
+      : [];
+    const openingWish = asString(body?.openingWish);
+
+    const userPrompt = [
+      'あなたは小説アプリのクイックセットアップ係です。',
+      '利用者の一文の希望から、作品開始に必要な最小限の計画をJSONで作ってください。',
+      '裏設定を大量に作らないこと。薄い初期補完に留め、人物・世界は本文で自然に明らかになる余地を残してください。',
+      'JSONオブジェクトだけを出力してください。',
+      '【希望】',
+      wish,
+      ...(hardContracts.length > 0
+        ? ['【絶対に守ってほしいこと（作者明示・hard契約になる）】', ...hardContracts.map((text) => `- ${text}`)]
+        : []),
+      ...(openingWish ? ['【最初に見たい場面】', openingWish] : []),
+      purpose === 'roleplay'
+        ? '【用途】ロールプレイ。会話相手となる主人公格のキャラクター（greeting付き）を必ず含めてください。'
+        : '【用途】連載小説。',
+      '【出力形式】',
+      JSON.stringify(
+        {
+          title: '仮タイトル',
+          coreConcept: '作品の核（1文）',
+          contracts: [{ kind: 'promise|prohibition|preference', text: '契約の文言' }],
+          characters: [
+            {
+              role: 'protagonist|deuteragonist|supporting',
+              name: '名前',
+              description: '概要（2〜3文）',
+              speechStyle: '口調（任意）',
+              secrets: '見せない面（任意）',
+              greeting: 'ロールプレイの開幕メッセージ（roleplayのみ）',
+            },
+          ],
+          world: { foundation: '世界の土台', initialSituation: '開始時点の状況' },
+          openingSeeds: ['最初の場面の候補'],
+          scenarioSeeds: ['ロールプレイの会話舞台候補'],
+          latentCanon: [
+            {
+              scope: 'world|character|relationship|history|plot|other',
+              statement: '本文にまだ出ない設定（最大8件）',
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      '【制約】',
+      [
+        '- contracts は hope から読み取れる約束・禁止・好みだけを抽出する。作者が明示した hardContracts は必ず contracts に含める。',
+        '- contracts は最大5件。promise / prohibition は hard 候補、preference は soft。',
+        '- characters は小説では1〜3人、ロールプレイでは1人以上（会話相手が必要）。',
+        '- latentCanon は最大8件。本文にまだ出ない設定だけを入れる。',
+        '- 本文にすでに現れる内容や、作者がまだ決めていないことを勝手に確定する設定は入れない。',
+      ].join('\n'),
+    ].join('\n\n---\n\n');
+
+    const result = await generateWithSessionModel(session, {
+      debugLabel: 'setup.quickPlan',
+      systemInstructions:
+        'あなたは小説アプリのクイックセットアップ係です。JSONオブジェクトだけを出力してください。',
+      userPrompt,
+      outputLength: QUICK_PLAN_OUTPUT_LENGTH,
+      temperature: QUICK_PLAN_TEMPERATURE,
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
+      reasoningEffort: 'medium',
+      responseMimeType: 'application/json',
+    }).catch(async (err) => {
+      const nextSession = await writeSessionError(session, err);
+      throw toSetupServiceError(err, nextSession);
+    });
+
+    if (result.finishReason === 'error' || result.finishReason === 'timeout') {
+      const error = adapterResultToError(result);
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+    const parsed = parseJsonObject(result.text);
+    if (!parsed) {
+      const error = new SetupServiceError(
+        'クイックセットアップのJSONを読み取れませんでした。もう一度試してください。',
+        'invalid_quick_json',
+        true,
+        503,
+        session
+      );
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const plan = buildQuickSetupPlan({
+      raw: parsed,
+      session,
+      purpose,
+      hardContracts,
+      openingWish,
+    });
+    // NOTE: ロールプレイは会話相手のCharacter生成が不可欠（設計書 4.1）。
+    if (purpose === 'roleplay' && plan.characters.length === 0) {
+      const error = new SetupServiceError(
+        '会話相手の人物を作成できませんでした。再試行してください。',
+        'quick_character_failed',
+        true,
+        503,
+        session
+      );
+      const nextSession = await writeSessionError(session, error);
+      throw toSetupServiceError(error, nextSession);
+    }
+
+    const now = nowIso();
+    const draft = buildQuickSetupDraft(parsed, hardContracts, session, now);
+    const nextSession: SetupSession = {
+      ...session,
+      draft,
+      commitPlan: { plan, createdAt: now },
+      revision: session.revision + 1,
+      lastError: null,
+      updatedAt: now,
+    };
+    await storage.writeSetupSession(nextSession);
+    return { plan, session: nextSession, revision: nextSession.revision };
+  });
+}
+
+// NOTE: 確認カードの結果をdraft.quickContractsへ反映し、commitPlanの契約を再構築する
+// （設計書 4.1-2）。confirmed の項目だけが hard 契約（source: user）になる。
+export async function confirmQuickContracts(
+  sessionId: string,
+  body: ConfirmQuickContractsBody
+): Promise<CreateQuickSetupPlanResult> {
+  return withSessionLock(sessionId, async () => {
+    const session = ensureActiveSession(await readSetupSessionOrThrow(sessionId));
+    assertValidRevision(body?.revision);
+    assertRevision(session, body.revision);
+    if (!session.commitPlan) {
+      throw new SetupServiceError(
+        '先にクイックセットアップの計画を作成してください。',
+        'quick_plan_missing',
+        false,
+        400,
+        session
+      );
+    }
+    const confirmed = new Map(
+      (Array.isArray(body.items) ? body.items : []).map((item) => [
+        asString(item.id),
+        item.confirmed === true,
+      ])
+    );
+    const now = nowIso();
+    const quickContracts = (session.draft.quickContracts ?? []).map((item) =>
+      confirmed.has(item.id)
+        ? {
+            ...item,
+            source: confirmed.get(item.id) ? ('user' as const) : item.source,
+            status: confirmed.get(item.id) ? ('active' as const) : ('archived' as const),
+            updatedAt: now,
+          }
+        : item
+    );
+    const draft: SetupDraft = { ...session.draft, quickContracts };
+
+    const plan: SetupCommitPlan = {
+      ...session.commitPlan.plan,
+      // NOTE: hard候補は確認済み（source user）だけを契約に残す。softはAI提案でも
+      // 「確認不要」として表示しているため、activeならsourceを維持したまま残す
+      // （レビュー指摘 P2）。件数はhard 8 / soft 12の上限に従う。
+      creativeContract: (() => {
+        const result: CreativeContractItem[] = [];
+        let hardCount = 0;
+        let softCount = 0;
+        for (const item of quickContracts) {
+          if (item.status !== 'active') continue;
+          if (item.source !== 'user' && item.strength !== 'soft') continue;
+          if (item.strength === 'hard') {
+            if (hardCount >= 8) continue;
+            hardCount += 1;
+          } else {
+            if (softCount >= 12) continue;
+            softCount += 1;
+          }
+          result.push({
+            contractId: item.id,
+            kind: item.kind,
+            strength: item.strength,
+            text: item.text,
+            source: item.source === 'ai-suggested' ? ('ai-suggested' as const) : ('user' as const),
+            status: 'active' as const,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
+          });
+        }
+        return result;
+      })(),
+    };
+    const nextSession: SetupSession = {
+      ...session,
+      draft,
+      commitPlan: { plan, createdAt: session.commitPlan.createdAt },
+      revision: session.revision + 1,
+      lastError: null,
+      updatedAt: now,
+    };
+    await storage.writeSetupSession(nextSession);
+    return { plan, session: nextSession, revision: nextSession.revision };
+  });
+}
+
+function buildQuickSetupPlan(input: {
+  raw: Record<string, unknown>;
+  session: SetupSession;
+  purpose: SetupPurpose;
+  hardContracts: string[];
+  openingWish: string;
+}): SetupCommitPlan {
+  const { raw, session, purpose, hardContracts, openingWish } = input;
+  const now = nowIso();
+  const rawCharacters = asArray(raw.characters);
+  const characters: Character[] = [];
+  for (const item of rawCharacters) {
+    const normalized = normalizeQuickCharacter(item);
+    if (normalized) characters.push(normalized);
+  }
+  const rawCanon = asArray(raw.latentCanon);
+  const latentCanonItems: LatentCanonItem[] = rawCanon
+    .map((item): LatentCanonItem | null => {
+      if (!isRecord(item)) return null;
+      const statement = asString(item.statement);
+      if (!statement) return null;
+      const scope = asCanonScope(item.scope);
+      return {
+        canonId: generateTimestampId('can'),
+        scope,
+        statement: statement.slice(0, 2000),
+        status: 'provisional',
+        baseStatusWithoutEvidence: 'provisional',
+        epistemicStatus: 'unknown',
+        source: 'setup',
+        manualLock: false,
+        evidence: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+    })
+    .filter((item): item is LatentCanonItem => item !== null)
+    .slice(0, 8);
+
+  const contracts = buildQuickContractItems(raw, hardContracts, now);
+  const projectType = purpose === 'roleplay' ? 'roleplay' : 'novel';
+
+  return {
+    project: {
+      title: truncate(asString(raw.title), 100) || '無題の作品',
+      outputLength: session.projectSettings.outputLength,
+      activePresetIds: session.projectSettings.activePresetIds,
+      projectType,
+    },
+    coreConcept: truncate(asString(raw.coreConcept), 300),
+    firstWishSuggestion: purpose === 'novel' ? truncate(openingWish, 300) : '',
+    styleSample: '',
+    world: {
+      foundation: truncate(asString(isRecord(raw.world) ? raw.world.foundation : ''), 4000),
+      initialSituation: truncate(
+        asString(isRecord(raw.world) ? raw.world.initialSituation : ''),
+        4000
+      ),
+    },
+    characters,
+    memories: [],
+    storyState: {
+      schemaVersion: 1,
+      currentSituation: [],
+      characterStates: [],
+      importantEvents: [],
+      openThreads: [],
+      authorUndecided: [],
+      clock: { day: 1 },
+      processedGenerationIds: [],
+      updatedAt: now,
+    },
+    customSystemPrompt: '',
+    scenarioSeeds:
+      purpose === 'roleplay'
+        ? asArray(raw.scenarioSeeds)
+            .map(asString)
+            .filter(Boolean)
+            .slice(0, 10)
+        : [],
+    ...(contracts.length > 0 ? { creativeContract: contracts } : {}),
+    ...(latentCanonItems.length > 0 ? { latentCanonItems } : {}),
+    latentSeedStatus: latentCanonItems.length > 0 ? 'ok' : 'failed',
+  };
+}
+
+function buildQuickContractItems(
+  raw: Record<string, unknown>,
+  hardContracts: string[],
+  now: string
+): CreativeContractItem[] {
+  const result: CreativeContractItem[] = [];
+  const seen = new Set<string>();
+  // 作者明示のhardContractsを最優先で入れる。
+  for (const text of hardContracts) {
+    const comparable = normalizeComparableText(text);
+    if (seen.has(comparable)) continue;
+    seen.add(comparable);
+    result.push({
+      contractId: generateTimestampId('ctr'),
+      kind: 'promise',
+      strength: 'hard',
+      text: text.slice(0, 500),
+      source: 'user',
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  for (const item of asArray(raw.contracts)) {
+    if (!isRecord(item)) continue;
+    const text = asString(item.text);
+    if (!text || text.length > 500) continue;
+    const comparable = normalizeComparableText(text);
+    if (seen.has(comparable)) continue;
+    const kind = item.kind === 'prohibition' || item.kind === 'preference' ? item.kind : 'promise';
+    // NOTE: LLM抽出は ai-suggested（softのみ）。hard候補は確認カード通過後にsource userへ
+    // 昇格して hard になる（confirmQuickContracts）。ここではsoftとして入れておく。
+    const strength = kind === 'preference' ? 'soft' : 'soft';
+    seen.add(comparable);
+    result.push({
+      contractId: generateTimestampId('ctr'),
+      kind,
+      strength,
+      text,
+      source: 'ai-suggested',
+      status: 'active',
+      createdAt: now,
+      updatedAt: now,
+    });
+    if (result.length >= 8) break;
+  }
+  return result;
+}
+
+function buildQuickSetupDraft(
+  raw: Record<string, unknown>,
+  hardContracts: string[],
+  session: SetupSession,
+  now: string
+): SetupDraft {
+  const characters: SetupDraftCharacter[] = asArray(raw.characters)
+    .map((item) => {
+      if (!isRecord(item)) return null;
+      const name = asString(item.name);
+      const description = asString(item.description);
+      if (!name && !description) return null;
+      const role = item.role === 'protagonist' || item.role === 'deuteragonist' || item.role === 'supporting' ? item.role : 'supporting';
+      return {
+        id: generateTimestampId('char-draft'),
+        role,
+        name,
+        label: name,
+        description: description || name,
+        ...(asString(item.speechStyle) ? { speechStyle: asString(item.speechStyle) } : {}),
+        ...(asString(item.secrets) ? { secrets: asString(item.secrets) } : {}),
+        ...(asString(item.greeting) ? { greeting: asString(item.greeting) } : {}),
+        source: 'ai-suggested',
+        status: 'active',
+        createdAt: now,
+        updatedAt: now,
+      };
+    })
+    .filter((item): item is SetupDraftCharacter => item !== null)
+    .slice(0, 4);
+  const quickContracts: QuickContractCandidate[] = [
+    ...hardContracts.map((text) => ({
+      id: generateTimestampId('qctr'),
+      kind: 'promise' as const,
+      strength: 'hard' as const,
+      text: text.slice(0, 500),
+      source: 'user' as const,
+      status: 'active' as const,
+      createdAt: now,
+      updatedAt: now,
+    })),
+    ...asArray(raw.contracts)
+      .map((item): QuickContractCandidate | null => {
+        if (!isRecord(item)) return null;
+        const text = asString(item.text);
+        if (!text) return null;
+        const kind = item.kind === 'prohibition' || item.kind === 'preference' ? item.kind : 'promise';
+        return {
+          id: generateTimestampId('qctr'),
+          kind,
+          strength: (kind === 'preference' ? 'soft' : 'hard') as 'hard' | 'soft',
+          text: text.slice(0, 500),
+          source: 'ai-suggested' as const,
+          status: 'active' as const,
+          createdAt: now,
+          updatedAt: now,
+        };
+      })
+      .filter((item): item is QuickContractCandidate => item !== null)
+      .slice(0, 10),
+  ];
+  return {
+    coreConcept: truncate(asString(raw.coreConcept), 300),
+    confirmed: [],
+    candidates: [],
+    undecided: [],
+    characters,
+    relationshipSeeds: [],
+    // クイック生成の world は { foundation, initialSituation }。詳細設定の草案は文字列
+    // リストなので、2つのセクションを順に移して引き継ぐ。配列形式も旧データ互換で残す。
+    world: (isRecord(raw.world)
+      ? [raw.world.foundation, raw.world.initialSituation]
+      : asArray(raw.world)
+    )
+      .map(asString)
+      .filter(Boolean)
+      .slice(0, 20),
+    tone: [],
+    ng: [],
+    openingSeeds: asArray(raw.openingSeeds).map(asString).filter(Boolean).slice(0, 10),
+    scenarioSeeds:
+      normalizeSetupPurpose(session.purpose) === 'roleplay'
+        ? asArray(raw.scenarioSeeds).map(asString).filter(Boolean).slice(0, 10)
+        : [],
+    quickContracts,
+  };
+}
+
+function normalizeQuickCharacter(value: unknown): Character | null {
+  if (!isRecord(value)) return null;
+  const name = asString(value.name);
+  const description = asString(value.description);
+  if (!name && !description) return null;
+  const role =
+    value.role === 'protagonist' || value.role === 'deuteragonist' || value.role === 'supporting'
+      ? value.role
+      : 'supporting';
+  const character: Character = {
+    characterId: generateTimestampId('char'),
+    name,
+    role,
+    description: description || name,
+    ...(asString(value.speechStyle) ? { speechStyle: asString(value.speechStyle) } : {}),
+    ...(asString(value.secrets) ? { secrets: asString(value.secrets) } : {}),
+    ...(asString(value.greeting) ? { greeting: asString(value.greeting) } : {}),
+  };
+  return character;
+}
+
+function asCanonScope(value: unknown): CanonScope {
+  return value === 'world' ||
+    value === 'character' ||
+    value === 'relationship' ||
+    value === 'history' ||
+    value === 'plot' ||
+    value === 'other'
+    ? value
+    : 'other';
+}
+
+function truncate(value: string, maxChars: number): string {
+  const text = value.trim();
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 export async function createSetupCommitPlan(
   sessionId: string,
   _body?: { revision?: number }
@@ -1237,6 +1759,18 @@ function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPla
     // NOTE: novel 用途では normalizeSetupCommitPlan が undefined にしている。
     ...(projectInput.defaultUserPersona
       ? { defaultUserPersona: projectInput.defaultUserPersona }
+      : {}),
+    // NOTE: クイックセットアップの契約・潜在設定（設計書 4.1）。commit時に再度
+    // normalizeSetupCommitPlan を通って createProject へ渡る。
+    ...(projectInput.initialCreativeContract
+      ? { creativeContract: projectInput.initialCreativeContract.items }
+      : {}),
+    ...(projectInput.initialLatentCanon &&
+    projectInput.initialLatentCanon.items.length > 0
+      ? { latentCanonItems: projectInput.initialLatentCanon.items }
+      : {}),
+    ...(projectInput.initialLatentCanon?.latentSeedStatus === 'failed'
+      ? { latentSeedStatus: 'failed' as const }
       : {}),
   };
 }
