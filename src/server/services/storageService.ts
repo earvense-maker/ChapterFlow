@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { PROJECTS_DIR, SETUP_SESSIONS_DIR } from '../config.js';
 import {
   ensureDir,
@@ -16,6 +17,7 @@ import type {
   EpisodeRecord,
   ExpressionsFile,
   GenerationRecord,
+  GenerationTextRevisionRecord,
   GenerationStyleProfile,
   GenerationStyleTraceStore,
   GenerationStatus,
@@ -33,6 +35,7 @@ import type {
   SetupSession,
   StoryState,
   StoryStateDiffRecord,
+  StoryStateRebuildReview,
   WorldContent,
 } from '../types/index.js';
 import {
@@ -112,6 +115,10 @@ export function storyStateJsonPath(projectId: string): string {
 
 export function storyStateDiffsJsonPath(projectId: string): string {
   return path.join(projectDir(projectId), 'story-state-diffs.json');
+}
+
+export function storyStateRebuildReviewJsonPath(projectId: string): string {
+  return path.join(projectDir(projectId), 'story-state-rebuild-review.json');
 }
 
 export function creativeContractJsonPath(projectId: string): string {
@@ -375,6 +382,19 @@ export async function writeStoryStateDiffs(
   diffs: StoryStateDiffRecord[]
 ): Promise<void> {
   await safeWriteJson(storyStateDiffsJsonPath(projectId), diffs);
+}
+
+export async function readStoryStateRebuildReview(
+  projectId: string
+): Promise<StoryStateRebuildReview | null> {
+  return readJsonFile<StoryStateRebuildReview>(storyStateRebuildReviewJsonPath(projectId));
+}
+
+export async function writeStoryStateRebuildReview(
+  projectId: string,
+  review: StoryStateRebuildReview
+): Promise<void> {
+  await safeWriteJson(storyStateRebuildReviewJsonPath(projectId), review);
 }
 
 export async function readCreativeContract(
@@ -653,21 +673,96 @@ export async function appendGenerationTextRevisionLog(
   projectId: string,
   generationId: string,
   responseText: string,
-  revision: { reason: string; before: string; after: string }
+  revision: {
+    reason: string;
+    before: string;
+    after: string;
+    source?: GenerationTextRevisionRecord['source'];
+    revisionId?: string;
+    revisionNumber?: number;
+  }
 ): Promise<void> {
   const logPath = generationLogPath(projectId);
   await withDataDirWrite(async () => {
     await ensureDir(generationsDir(projectId));
+    const existing = await readGenerationTextRevisionEntries(projectId, generationId);
+    const revisionNumber = revision.revisionNumber ?? existing.length + 1;
+    const revisionId = revision.revisionId ?? `textrev-${generationId}-${revisionNumber}`;
+    const source = revision.source ?? 'manual-edit';
     const line =
       JSON.stringify({
         entryType: 'text-revision',
         generationId,
         responseText,
+        revisionId,
+        revisionNumber,
+        source,
         revision,
         updatedAt: new Date().toISOString(),
       }) + '\n';
     await fs.appendFile(logPath, line, 'utf-8');
   });
+}
+
+export async function readGenerationTextRevisionEntries(
+  projectId: string,
+  generationId: string
+): Promise<GenerationTextRevisionRecord[]> {
+  const text = await readTextFile(generationLogPath(projectId));
+  if (!text) return [];
+
+  const entries: GenerationTextRevisionRecord[] = [];
+  const lines = text.split('\n');
+  let byteOffset = 0;
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      if (entry.entryType !== 'text-revision' || entry.generationId !== generationId) continue;
+      const responseText = typeof entry.responseText === 'string' ? entry.responseText : '';
+      const revision = isRecord(entry.revision) ? entry.revision : undefined;
+      const revisionNumber =
+        typeof entry.revisionNumber === 'number' && Number.isInteger(entry.revisionNumber)
+          ? entry.revisionNumber
+          : entries.length + 1;
+      const reason = typeof revision?.reason === 'string' ? revision.reason : '';
+      const source = isGenerationTextRevisionSource(entry.source)
+        ? entry.source
+        : reason.startsWith('ng-rewrite:')
+          ? 'ng-auto-rewrite'
+          : 'manual-edit';
+      const before = typeof revision?.before === 'string' ? revision.before : '';
+      const after = typeof revision?.after === 'string' ? revision.after : responseText;
+      const afterHash = hashText(responseText || after);
+      entries.push({
+        revisionId:
+          typeof entry.revisionId === 'string' && entry.revisionId.trim()
+            ? entry.revisionId
+            : `legacy:${generationId}:${byteOffset}:${afterHash}`,
+        revisionNumber,
+        generationId,
+        responseText,
+        source,
+        reason: reason || source,
+        before,
+        after,
+        beforeHash: hashText(before),
+        afterHash,
+        updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : new Date().toISOString(),
+      });
+    } catch {
+      // ignore malformed lines
+    } finally {
+      byteOffset += Buffer.byteLength(line, 'utf8') + 1;
+    }
+  }
+  return entries;
+}
+
+export async function countGenerationTextRevisions(
+  projectId: string,
+  generationId: string
+): Promise<number> {
+  return (await readGenerationTextRevisionEntries(projectId, generationId)).length;
 }
 
 export async function findGenerationRecord(
@@ -676,6 +771,25 @@ export async function findGenerationRecord(
 ): Promise<GenerationRecord | null> {
   const records = await findGenerationRecords(projectId, [generationId]);
   return records.get(generationId) ?? null;
+}
+
+/** 追記型の status / text-revision を重ねる前の生成時レコードを返す。 */
+export async function findOriginalGenerationRecord(
+  projectId: string,
+  generationId: string
+): Promise<GenerationRecord | null> {
+  const text = await readTextFile(generationLogPath(projectId));
+  if (!text) return null;
+  for (const line of text.split('\n')) {
+    try {
+      const entry = JSON.parse(line) as Partial<GenerationRecord> & { entryType?: string };
+      if (entry.entryType || entry.generationId !== generationId) continue;
+      if (typeof entry.responseText === 'string') return entry as GenerationRecord;
+    } catch {
+      // 破損行を無視して後続の正規レコードを探す。
+    }
+  }
+  return null;
 }
 
 // NOTE: 生成ログは追記型なので、複数 ID を一度に解決する場合も後方から 1 回だけ
@@ -693,6 +807,9 @@ export async function findGenerationRecords(
   const latestStatuses = new Map<string, GenerationStatus>();
   const latestStyleProfiles = new Map<string, GenerationStyleProfile>();
   const latestTexts = new Map<string, string>();
+  const latestTextRevisionNumbers = new Map<string, number>();
+  const latestTextRevisionTimes = new Map<string, string>();
+  const countedTextRevisions = new Map<string, number>();
   const records = new Map<string, GenerationRecord>();
   const lines = text.trim().split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -712,8 +829,18 @@ export async function findGenerationRecords(
       // 分岐より前に置く必要がある。順序を入れ替えると改訂行が元レコードとして
       // 採用され、改訂前の本文が二度と現れなくなる。
       if (entry.entryType === 'text-revision' && typeof entry.responseText === 'string') {
+        countedTextRevisions.set(
+          entry.generationId,
+          (countedTextRevisions.get(entry.generationId) ?? 0) + 1
+        );
         if (!latestTexts.has(entry.generationId)) {
           latestTexts.set(entry.generationId, entry.responseText);
+          const explicitRevision = (entry as { revisionNumber?: unknown }).revisionNumber;
+          if (typeof explicitRevision === 'number' && Number.isInteger(explicitRevision)) {
+            latestTextRevisionNumbers.set(entry.generationId, explicitRevision);
+          }
+          const updatedAt = (entry as { updatedAt?: unknown }).updatedAt;
+          if (typeof updatedAt === 'string') latestTextRevisionTimes.set(entry.generationId, updatedAt);
         }
         continue;
       }
@@ -729,11 +856,17 @@ export async function findGenerationRecords(
         const latestStatus = latestStatuses.get(entry.generationId);
         const latestStyleProfile = latestStyleProfiles.get(entry.generationId);
         const latestText = latestTexts.get(entry.generationId);
+        const textRevisionNumber =
+          latestTextRevisionNumbers.get(entry.generationId) ??
+          countedTextRevisions.get(entry.generationId);
+        const editedAt = latestTextRevisionTimes.get(entry.generationId);
         records.set(entry.generationId, {
           ...record,
           ...(latestStatus ? { status: latestStatus } : {}),
           ...(latestStyleProfile ? { styleProfile: latestStyleProfile } : {}),
           ...(latestText !== undefined ? { responseText: latestText } : {}),
+          ...(textRevisionNumber !== undefined ? { textRevisionNumber } : {}),
+          ...(editedAt ? { editedAt } : {}),
         });
         if (records.size === targets.size) break;
       }
@@ -864,6 +997,20 @@ export async function deleteProjectDir(projectId: string): Promise<void> {
 
 function isGenerationStatus(value: unknown): value is GenerationStatus {
   return value === 'draft' || value === 'accepted' || value === 'rejected' || value === 'superseded';
+}
+
+function isGenerationTextRevisionSource(
+  value: unknown
+): value is GenerationTextRevisionRecord['source'] {
+  return value === 'manual-edit' || value === 'history-restore' || value === 'ng-auto-rewrite';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hashText(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
 }
 
 export { readTextFile };

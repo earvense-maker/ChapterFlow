@@ -21,6 +21,7 @@ import type {
   SetupSession,
   StoryState,
   StoryStateDiffRecord,
+  StoryStateRebuildReview,
   WorldContent,
   CreativeContract,
   LatentCanonStore,
@@ -80,6 +81,15 @@ export interface ProjectStorage {
     context: UserContext,
     projectId: string,
     diffs: StoryStateDiffRecord[]
+  ): Promise<void>;
+  readStoryStateRebuildReview(
+    context: UserContext,
+    projectId: string
+  ): Promise<StoryStateRebuildReview | null>;
+  writeStoryStateRebuildReview(
+    context: UserContext,
+    projectId: string,
+    review: StoryStateRebuildReview
   ): Promise<void>;
 
   // --- 創作契約・潜在設定・採用本文派生台帳（設計書 7.3） ---
@@ -202,8 +212,39 @@ export interface ProjectStorage {
     projectId: string,
     generationId: string,
     responseText: string,
-    revision: { reason: string; before: string; after: string }
+    revision: {
+      reason: string;
+      before: string;
+      after: string;
+      source?: 'manual-edit' | 'history-restore' | 'ng-auto-rewrite';
+      revisionId?: string;
+      revisionNumber?: number;
+    }
   ): Promise<void>;
+  readGenerationTextRevisionEntries(
+    context: UserContext,
+    projectId: string,
+    generationId: string
+  ): Promise<
+    Array<{
+      revisionId: string;
+      revisionNumber: number;
+      generationId: string;
+      responseText: string;
+      source: 'manual-edit' | 'history-restore' | 'ng-auto-rewrite';
+      reason: string;
+      before: string;
+      after: string;
+      beforeHash: string;
+      afterHash: string;
+      updatedAt: string;
+    }>
+  >;
+  countGenerationTextRevisions(
+    context: UserContext,
+    projectId: string,
+    generationId: string
+  ): Promise<number>;
   findGenerationRecord(
     context: UserContext,
     projectId: string,
@@ -298,6 +339,8 @@ export const PROJECT_STORAGE_METHODS = [
   'writeStoryState',
   'readStoryStateDiffs',
   'writeStoryStateDiffs',
+  'readStoryStateRebuildReview',
+  'writeStoryStateRebuildReview',
   'readCreativeContract',
   'writeCreativeContract',
   'readLatentCanon',
@@ -330,6 +373,8 @@ export const PROJECT_STORAGE_METHODS = [
   'appendGenerationStatusLog',
   'appendGenerationStyleProfileLog',
   'appendGenerationTextRevisionLog',
+  'readGenerationTextRevisionEntries',
+  'countGenerationTextRevisions',
   'findGenerationRecord',
   'findGenerationRecords',
   'readGenerationStyleTraceStore',

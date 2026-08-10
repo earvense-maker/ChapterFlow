@@ -580,6 +580,11 @@ export function normalizeDerivation(value: unknown): AcceptedNarrativeDerivation
   const status = asEnum(record.status, ['extracted', 'partially-applied', 'applied', 'stale']);
   return {
     generationId,
+    ...(typeof record.sourceTextRevisionNumber === 'number' &&
+    Number.isInteger(record.sourceTextRevisionNumber) &&
+    record.sourceTextRevisionNumber >= 0
+      ? { sourceTextRevisionNumber: record.sourceTextRevisionNumber }
+      : {}),
     extractedAt: asString(record.extractedAt) || nowIso(),
     observations: Array.isArray(record.observations)
       ? normalizeObservations(record.observations)
@@ -633,7 +638,12 @@ export async function runAcceptedNarrativeDerivation(input: {
     (item) => item.generationId === generationId
   );
   let derivation: AcceptedNarrativeDerivation;
-  if (existing && existing.status !== 'stale') {
+  const sourceTextRevisionNumber = input.generation.textRevisionNumber ?? 0;
+  if (
+    existing &&
+    existing.status !== 'stale' &&
+    (existing.sourceTextRevisionNumber ?? 0) === sourceTextRevisionNumber
+  ) {
     derivation = existing;
   } else {
     const previousState = normalizeStoryState(await storage.readStoryState(projectId));
@@ -651,6 +661,7 @@ export async function runAcceptedNarrativeDerivation(input: {
     });
     derivation = {
       generationId,
+      sourceTextRevisionNumber,
       extractedAt: nowIso(),
       observations,
       storyStatePatch: deriveStoryStatePatch(observations, input.generation, input.characters),

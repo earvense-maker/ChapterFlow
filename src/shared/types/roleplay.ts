@@ -70,6 +70,28 @@ export interface RoleplayMessage {
   // 「なぜ履歴が短くなったのか」を後から確認できるようにする（設計書 6.1）。
   // 原文なし・常に記録する。旧メッセージには無いため optional 扱い。
   promptBudgetReport?: PromptBudgetReport;
+  contentRevision?: number;
+  editedAt?: string;
+}
+
+export type RoleplayMessageRevisionSource = 'manual-edit' | 'history-restore';
+
+export interface RoleplayMessageRevision {
+  revisionId: string;
+  messageId: string;
+  revisionNumber: number;
+  source: RoleplayMessageRevisionSource;
+  beforeContent: string;
+  afterContent: string;
+  createdAt: string;
+}
+
+export interface RoleplayDerivedMemoryStatus {
+  status: 'fresh' | 'pending' | 'stale';
+  sourcePrefixFingerprint: string;
+  editedMessageId?: string;
+  updatedAt: string;
+  errorMessage?: string;
 }
 
 // NOTE: 会話開始時に固定するペルソナ・世界観のスナップショット。プロンプト構築の
@@ -128,6 +150,8 @@ export interface RoleplaySession {
   // 抽出され、`sessionCanonThroughMessageId`までが反映済み。APIレスポンスへは出さない。
   sessionCanon?: LatentCanonItem[];
   sessionCanonThroughMessageId?: string;
+  messageRevisions?: RoleplayMessageRevision[];
+  derivedMemoryStatus?: RoleplayDerivedMemoryStatus;
 }
 
 // NOTE: APIレスポンス用。contextSnapshot と sessionCanon 本文を型レベルで除外して
@@ -135,7 +159,7 @@ export interface RoleplaySession {
 // 取り出して付与する。
 export type RoleplaySessionView = Omit<
   RoleplaySession,
-  'contextSnapshot' | 'sessionCanon'
+  'contextSnapshot' | 'sessionCanon' | 'messageRevisions'
 > & {
   characterName: string;
   userPersona?: RoleplayUserPersona;
@@ -196,4 +220,15 @@ export interface RoleplaySessionResponse {
 
 export interface RoleplaySessionListResponse {
   sessions: RoleplaySessionSummary[];
+}
+
+export interface EditRoleplayMessageBody {
+  content: string;
+  expectedSessionRevision: number;
+  expectedMessageRevision: number;
+}
+
+export interface RestoreRoleplayMessageBody {
+  expectedSessionRevision: number;
+  expectedMessageRevision: number;
 }

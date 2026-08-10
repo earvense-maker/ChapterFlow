@@ -12,6 +12,7 @@ import type {
   ContextUsageEstimate,
   GenerationNotificationSettings,
   GenerationRecord,
+  GenerationTextVersion,
   KnowledgeListItem,
   NgAutoRewriteSettings,
   NgExpression,
@@ -119,6 +120,11 @@ export default function Reader({
   const [text, setText] = useState('');
   const [generationId, setGenerationId] = useState<string | null>(null);
   const [status, setStatus] = useState<GenerationRecord['status'] | null>(null);
+  const [textRevisionNumber, setTextRevisionNumber] = useState(0);
+  const [textEditorOpen, setTextEditorOpen] = useState(false);
+  const [textEditorValue, setTextEditorValue] = useState('');
+  const [textHistory, setTextHistory] = useState<GenerationTextVersion[] | null>(null);
+  const [textEditBusy, setTextEditBusy] = useState(false);
   const [currentGenerationWish, setCurrentGenerationWish] = useState('');
   const [navigation, setNavigation] = useState<ReaderNavigationState>({
     currentSceneOrder: null,
@@ -232,6 +238,7 @@ export default function Reader({
       setText('');
       setGenerationId(generation.generationId);
       setStatus(generation.status);
+      setTextRevisionNumber(generation.textRevisionNumber ?? 0);
       setCurrentGenerationWish(generation.request.wish);
       applyBudgetNoticeFromReport(generation.promptBudgetReport, generation.generationId);
     } else if (generation) {
@@ -240,6 +247,7 @@ export default function Reader({
       setText(generation.responseText);
       setGenerationId(generation.generationId);
       setStatus(generation.status);
+      setTextRevisionNumber(generation.textRevisionNumber ?? 0);
       setCurrentGenerationWish(generation.request.wish);
       applyBudgetNoticeFromReport(
         generation.promptBudgetReport,
@@ -251,6 +259,7 @@ export default function Reader({
       setText('');
       setGenerationId(null);
       setStatus(null);
+      setTextRevisionNumber(0);
       setCurrentGenerationWish('');
       applyBudgetNoticeFromReport(null, null);
     }
@@ -816,6 +825,112 @@ export default function Reader({
     }
   }
 
+  async function resolveStoryStateReview(
+    resolution: 'use-rebuilt' | 'use-previous-as-override'
+  ) {
+    const label = resolution === 'use-rebuilt'
+      ? '再抽出した新しい状態を採用しますか？'
+      : '編集前の状態を作者の手動修正として優先しますか？';
+    if (!(await confirmAction(label, { confirmLabel: '確定' }))) return;
+    try {
+      setLoading(true);
+      setError(null);
+      await api.resolveStoryStateRebuildReview(projectId, resolution);
+      await load();
+      setNotice('再抽出結果を確定しました。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '再抽出結果を確定できませんでした');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openTextEditor() {
+    setTextEditorValue(text);
+    setTextHistory(null);
+    setTextEditorOpen(true);
+  }
+
+  async function openTextHistory() {
+    if (!generationId) return;
+    setTextEditorOpen(true);
+    setTextEditorValue(text);
+    setTextEditBusy(true);
+    setError(null);
+    try {
+      const result = await api.getGenerationTextRevisions(projectId, generationId);
+      setTextHistory(result.revisions);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '編集履歴を読み込めませんでした');
+    } finally {
+      setTextEditBusy(false);
+    }
+  }
+
+  async function saveEditedText() {
+    if (!generationId || !status) return;
+    const expectedAcceptedGenerationId = currentScene?.acceptedGenerationId ?? null;
+    if (
+      status === 'accepted' &&
+      !(await confirmAction(
+        '採用状態を維持したまま本文を更新し、作品の状態と潜在設定を再抽出します。保存しますか？',
+        { confirmLabel: '本文を保存' }
+      ))
+    ) return;
+    setTextEditBusy(true);
+    setError(null);
+    try {
+      const result = await api.updateGenerationText(projectId, generationId, {
+        text: textEditorValue,
+        expectedRevisionNumber: textRevisionNumber,
+        expectedStatus: status,
+        expectedAcceptedGenerationId,
+      });
+      setText(result.generation.responseText);
+      setTextRevisionNumber(result.revisionNumber);
+      setTextEditorOpen(false);
+      setTextHistory(null);
+      setNotice(
+        result.derivationStatus === 'pending'
+          ? '本文を保存しました。作品の状態を再抽出しています。'
+          : '本文を保存しました。'
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '本文を保存できませんでした');
+    } finally {
+      setTextEditBusy(false);
+    }
+  }
+
+  async function restoreTextVersion(version: GenerationTextVersion) {
+    if (!generationId || !status) return;
+    if (
+      !(await confirmAction(`版 ${version.revisionNumber} の本文を新しい改訂として復元しますか？`, {
+        confirmLabel: 'この版を復元',
+      }))
+    ) return;
+    setTextEditBusy(true);
+    setError(null);
+    try {
+      const result = await api.restoreGenerationText(projectId, generationId, version.revisionId, {
+        expectedRevisionNumber: textRevisionNumber,
+        expectedStatus: status,
+        expectedAcceptedGenerationId: currentScene?.acceptedGenerationId ?? null,
+      });
+      setText(result.generation.responseText);
+      setTextRevisionNumber(result.revisionNumber);
+      setTextEditorOpen(false);
+      setTextHistory(null);
+      setNotice('選択した版を新しい改訂として復元しました。');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '本文を復元できませんでした');
+    } finally {
+      setTextEditBusy(false);
+    }
+  }
+
   async function adjustFontSize(delta: number) {
     const next = Math.max(12, Math.min(32, fontSize + delta));
     setFontSize(next);
@@ -1072,6 +1187,7 @@ export default function Reader({
   const isDraft = status === 'draft';
   const hasText = text.length > 0;
   const storyStateIsPending = storyStateRefresh?.status === 'pending';
+  const storyStateAwaitsReview = storyStateRefresh?.status === 'awaiting-review';
   const isDelayedPending =
     storyStateIsPending && isDelayedStoryStatePending(storyStateRefresh?.updatedAt);
   const maintenanceBlocksGeneration =
@@ -1079,7 +1195,6 @@ export default function Reader({
   const maintenanceIsDelayed =
     maintenanceBlocksGeneration &&
     hasElapsedSince(maintenanceStartedAt, MAINTENANCE_DELAY_GRACE_MS, maintenanceClock);
-  const blocksGeneration = (storyStateIsPending && !isDelayedPending) || maintenanceBlocksGeneration;
   const needsStoryStateConfirmation =
     isDelayedPending ||
     (!storyStateIsPending &&
@@ -1088,7 +1203,14 @@ export default function Reader({
   const storyStateIsStale =
     !(storyStateIsPending && !isDelayedPending) &&
     (isDelayedPending || storyStateRefresh?.status === 'stale' || storyStateBacklogCount > 0);
-  const storyStateNeedsAttention = storyStateIsPending || storyStateIsStale;
+  const manualTextEditDerivationBlocked =
+    storyStateRefresh?.reason === 'manual-text-edit' && storyStateRefresh.status !== 'fresh';
+  const blocksGeneration =
+    manualTextEditDerivationBlocked ||
+    (storyStateIsPending && !isDelayedPending) ||
+    storyStateAwaitsReview ||
+    maintenanceBlocksGeneration;
+  const storyStateNeedsAttention = storyStateIsPending || storyStateIsStale || storyStateAwaitsReview;
 
   const draftIds = currentScene?.draftGenerationIds ?? [];
   const totalDrafts = draftIds.length;
@@ -1295,7 +1417,9 @@ export default function Reader({
                   ? '生成後設定レビューに時間がかかっています'
                   : maintenanceBlocksGeneration
                   ? '設定の自動レビューを実行しています'
-                  : blocksGeneration
+                   : storyStateAwaitsReview
+                   ? '本文編集前の状態と再抽出結果を確認してください'
+                   : blocksGeneration
                   ? '続きに反映する情報を整理しています'
                   : isDelayedPending
                     ? '物語の状態整理に時間がかかっています'
@@ -1308,7 +1432,9 @@ export default function Reader({
                   ? 'レビューを継続しています。しばらく待っても完了しない場合は、設定画面を開いて状態を更新してください。'
                   : maintenanceBlocksGeneration
                   ? '生成直後の設定走査・反映が完了するまで、新しい本文生成はできません。'
-                  : blocksGeneration
+                   : storyStateAwaitsReview
+                   ? '新しい本文から再抽出した状態を使うか、編集前の状態を作者の手動修正として優先するか選んでください。'
+                   : blocksGeneration
                   ? '採用した場面から人物の状況や伏線を読み取り、次の場面に反映する準備をしています。'
                   : isDelayedPending
                     ? '処理が続いている可能性があります。再抽出するか、未反映であることを確認して生成できます。'
@@ -1318,7 +1444,16 @@ export default function Reader({
                       '採用済み本文から物語の状態を再抽出してください。'}
               </p>
             </div>
-            {canRetryExtraction && (
+            {storyStateAwaitsReview ? (
+              <div className="conflict-actions">
+                <button type="button" onClick={() => void resolveStoryStateReview('use-rebuilt')} disabled={loading}>
+                  新しい状態を使う
+                </button>
+                <button type="button" onClick={() => void resolveStoryStateReview('use-previous-as-override')} disabled={loading}>
+                  編集前を優先
+                </button>
+              </div>
+            ) : canRetryExtraction && (
               <button type="button" onClick={handleRefreshStoryState} disabled={loading}>
                 再抽出
               </button>
@@ -1426,6 +1561,78 @@ export default function Reader({
         )}
       </main>
 
+      {textEditorOpen && (
+        <div className="text-editor-backdrop" role="presentation">
+          <section className="text-editor-dialog" role="dialog" aria-modal="true" aria-label="本文を編集">
+            <header>
+              <div>
+                <strong>{textHistory ? '本文の編集履歴' : '本文を編集'}</strong>
+                <span>現在の版: {textRevisionNumber}</span>
+              </div>
+              <button
+                type="button"
+                aria-label="閉じる"
+                onClick={() => {
+                  setTextEditorOpen(false);
+                  setTextHistory(null);
+                }}
+                disabled={textEditBusy}
+              >
+                ×
+              </button>
+            </header>
+            {textHistory ? (
+              <div className="text-history-list">
+                {textHistory
+                  .slice()
+                  .reverse()
+                  .map((version) => (
+                    <article key={version.revisionId} className="text-history-item">
+                      <div>
+                        <strong>版 {version.revisionNumber}</strong>
+                        <span>{version.source === 'original' ? '原文' : '改訂'}</span>
+                        <time>{new Date(version.createdAt).toLocaleString()}</time>
+                      </div>
+                      <pre>{version.text}</pre>
+                      {version.revisionNumber !== textRevisionNumber && (
+                        <button
+                          type="button"
+                          onClick={() => void restoreTextVersion(version)}
+                          disabled={textEditBusy}
+                        >
+                          この版を復元
+                        </button>
+                      )}
+                    </article>
+                  ))}
+              </div>
+            ) : (
+              <>
+                <textarea
+                  value={textEditorValue}
+                  onChange={(event) => setTextEditorValue(event.target.value)}
+                  disabled={textEditBusy}
+                  autoFocus
+                />
+                {status === 'accepted' && (
+                  <p className="text-editor-warning">
+                    採用状態は維持されます。保存後、作品の状態と潜在設定を編集済み本文から再抽出します。
+                  </p>
+                )}
+                <footer>
+                  <button type="button" onClick={() => void openTextHistory()} disabled={textEditBusy}>
+                    編集履歴
+                  </button>
+                  <button type="button" className="primary" onClick={() => void saveEditedText()} disabled={textEditBusy}>
+                    保存
+                  </button>
+                </footer>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
       <footer className="reader-controls">
         {hasText && isDraft && (
           <div className="draft-actions">
@@ -1458,6 +1665,18 @@ export default function Reader({
             <button onClick={handleUnaccept} disabled={loading}>
               採用取消
             </button>
+          </div>
+        )}
+        {hasText && (isDraft || isCurrentAccepted) && (
+          <div className="accepted-actions">
+            <button onClick={openTextEditor} disabled={loading || textEditBusy}>
+              本文を編集
+            </button>
+            {textRevisionNumber > 0 && (
+              <button onClick={() => void openTextHistory()} disabled={loading || textEditBusy}>
+                編集履歴
+              </button>
+            )}
           </div>
         )}
         <form

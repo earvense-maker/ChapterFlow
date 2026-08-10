@@ -303,6 +303,7 @@ async function generateSceneUnlocked(
   const project = await storage.readProject(projectId);
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
+  assertStoryStateRefreshAllowsMutation(state);
   // The preflight guard can race another generation while this request waits
   // for the project lock. Re-check the state captured under that lock before
   // any prompt or model work so a fresh scanning slot cannot be overwritten.
@@ -571,6 +572,7 @@ async function generateSceneStreamUnlocked(
   const project = await storage.readProject(projectId);
   const state = await storage.readState(projectId);
   if (!project || !state) throw new Error(`Project not found: ${projectId}`);
+  assertStoryStateRefreshAllowsMutation(state);
   // See the non-streaming path: the outer preflight is not a substitute for
   // checking the maintenance slot after this request acquires the project lock.
   if (maintenanceBlocksGeneration(state.refineMaintenance?.phase)) {
@@ -1194,6 +1196,7 @@ async function acceptGenerationUnlocked(
 ): Promise<AcceptGenerationResult> {
   const state = await storage.readState(projectId);
   if (!state) throw new Error(`State not found: ${projectId}`);
+  assertStoryStateRefreshAllowsMutation(state);
 
   const targetId = generationId || state.selectedDraftGenerationId;
   if (!targetId) throw new Error('No draft generation selected');
@@ -1326,6 +1329,7 @@ export async function unacceptCurrentScene(projectId: string): Promise<Generatio
 async function unacceptCurrentSceneUnlocked(projectId: string): Promise<GenerationRecord | null> {
   const state = await storage.readState(projectId);
   if (!state?.currentEpisodeId || !state.currentSceneId) return null;
+  assertStoryStateRefreshAllowsMutation(state);
 
   const episode = await storage.readEpisodeRecord(projectId, state.currentEpisodeId);
   if (!episode) return null;
@@ -1876,6 +1880,24 @@ async function updateEpisodeMarkdown(projectId: string, episode: EpisodeRecord):
 
 // NOTE: withProjectWriteLock は projectLock.ts から re-export。移設理由の詳細は
 // projectLock.ts のコメント参照（refineAutomationGuard との循環 import 回避）。
+
+function assertStoryStateRefreshAllowsMutation(state: ProjectState): void {
+  const status = state.storyStateRefresh?.status;
+  if (!status || status === 'fresh') return;
+  if (
+    status !== 'awaiting-review' &&
+    state.storyStateRefresh?.reason !== 'manual-text-edit'
+  ) return;
+  const awaitingReview = status === 'awaiting-review';
+  throw new RefineAutomationError(
+    awaitingReview
+      ? '物語状態の再構築結果を確認してから操作してください。'
+      : '物語状態を更新中です。完了してからもう一度お試しください。',
+    awaitingReview ? 'story_state_review_required' : 'story_state_refresh_in_progress',
+    !awaitingReview,
+    409
+  );
+}
 
 function splitTextIntoChunks(text: string, maxChars: number): string[] {
   const chunks: string[] = [];

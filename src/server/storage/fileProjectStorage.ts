@@ -45,6 +45,9 @@ const localOperations: WithoutUserContext<ProjectStorage> = {
   writeStoryState: (projectId, storyState) => storage.writeStoryState(projectId, storyState),
   readStoryStateDiffs: (projectId) => storage.readStoryStateDiffs(projectId),
   writeStoryStateDiffs: (projectId, diffs) => storage.writeStoryStateDiffs(projectId, diffs),
+  readStoryStateRebuildReview: (projectId) => storage.readStoryStateRebuildReview(projectId),
+  writeStoryStateRebuildReview: (projectId, review) =>
+    storage.writeStoryStateRebuildReview(projectId, review),
 
   readCreativeContract: (projectId) => storage.readCreativeContract(projectId),
   writeCreativeContract: (contract) => storage.writeCreativeContract(contract),
@@ -92,6 +95,10 @@ const localOperations: WithoutUserContext<ProjectStorage> = {
     storage.appendGenerationStyleProfileLog(projectId, generationId, styleProfile),
   appendGenerationTextRevisionLog: (projectId, generationId, responseText, revision) =>
     storage.appendGenerationTextRevisionLog(projectId, generationId, responseText, revision),
+  readGenerationTextRevisionEntries: (projectId, generationId) =>
+    storage.readGenerationTextRevisionEntries(projectId, generationId),
+  countGenerationTextRevisions: (projectId, generationId) =>
+    storage.countGenerationTextRevisions(projectId, generationId),
   findGenerationRecord: (projectId, generationId) =>
     storage.findGenerationRecord(projectId, generationId),
   findGenerationRecords: (projectId, generationIds) =>

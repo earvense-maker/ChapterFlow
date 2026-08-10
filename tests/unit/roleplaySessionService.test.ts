@@ -100,6 +100,168 @@ beforeEach(() => {
   roleplayService.__resetInFlightForTesting();
 });
 
+describe('roleplay message manual editing', () => {
+  it('tracks revisions, rejects stale writes, and restores the original message', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const message = created.messages[0];
+    expect(message).toBeDefined();
+
+    const edited = await roleplayService.editRoleplayMessage({
+      projectId: project.projectId,
+      sessionId: created.sessionId,
+      messageId: message!.messageId,
+      content: 'edited greeting',
+      expectedSessionRevision: created.revision,
+      expectedMessageRevision: 0,
+    });
+    expect(edited).toMatchObject({
+      memoryRebuildStarted: false,
+      session: {
+        revision: created.revision + 1,
+        messages: [{ content: 'edited greeting', contentRevision: 1 }],
+        derivedMemoryStatus: { status: 'fresh' },
+      },
+    });
+
+    await expect(
+      roleplayService.editRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        messageId: message!.messageId,
+        content: 'stale write',
+        expectedSessionRevision: created.revision,
+        expectedMessageRevision: 0,
+      })
+    ).rejects.toMatchObject({ code: 'revision_conflict', status: 409 });
+
+    const history = await roleplayService.getRoleplayMessageRevisions(
+      project.projectId,
+      created.sessionId,
+      message!.messageId
+    );
+    expect(history).toMatchObject({
+      originalContent: message!.content,
+      revisions: [{ revisionNumber: 1, source: 'manual-edit', afterContent: 'edited greeting' }],
+    });
+
+    const restored = await roleplayService.restoreRoleplayMessageRevision({
+      projectId: project.projectId,
+      sessionId: created.sessionId,
+      messageId: message!.messageId,
+      revisionId: `original:${message!.messageId}`,
+      expectedSessionRevision: edited.session.revision,
+      expectedMessageRevision: 1,
+    });
+    expect(restored.session.messages[0]).toMatchObject({
+      content: message!.content,
+      contentRevision: 2,
+    });
+  });
+
+  it('does not edit messages in an archived session', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const archived = await roleplayService.archiveRoleplaySession(
+      project.projectId,
+      created.sessionId,
+      created.revision
+    );
+    await expect(
+      roleplayService.editRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        messageId: created.messages[0]!.messageId,
+        content: 'cannot edit',
+        expectedSessionRevision: archived.revision,
+        expectedMessageRevision: 0,
+      })
+    ).rejects.toMatchObject({ code: 'session_archived', status: 409 });
+  });
+
+  it('rebuilds summarized memory after editing a folded message', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const greeting = created.messages[0]!;
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    await storage.writeRoleplaySession({
+      ...saved!,
+      messages: [
+        greeting,
+        {
+          messageId: 'manual-user-message',
+          role: 'user',
+          content: 'follow up',
+          createdAt: saved!.updatedAt,
+        },
+      ],
+      conversationSummary: 'old summary',
+      summaryThroughMessageId: greeting.messageId,
+    });
+
+    const edited = await roleplayService.editRoleplayMessage({
+      projectId: project.projectId,
+      sessionId: created.sessionId,
+      messageId: greeting.messageId,
+      content: 'edited folded greeting',
+      expectedSessionRevision: created.revision,
+      expectedMessageRevision: 0,
+    });
+    expect(edited).toMatchObject({
+      memoryRebuildStarted: true,
+      session: { derivedMemoryStatus: { status: 'pending' } },
+    });
+
+    await vi.waitFor(async () => {
+      const rebuilt = await storage.readRoleplaySession(project.projectId, created.sessionId);
+      expect(rebuilt).toMatchObject({ derivedMemoryStatus: { status: 'fresh' } });
+      expect(rebuilt?.conversationSummary).toBeUndefined();
+      expect(rebuilt?.summaryThroughMessageId).toBeUndefined();
+    });
+  });
+
+  it('does not let a later edit clear a stale derived-memory marker', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    await storage.writeRoleplaySession({
+      ...saved!,
+      derivedMemoryStatus: {
+        status: 'stale',
+        sourcePrefixFingerprint: 'stale-prefix',
+        updatedAt: saved!.updatedAt,
+        errorMessage: 'rebuild failed',
+      },
+    });
+
+    await expect(
+      roleplayService.editRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        messageId: created.messages[0]!.messageId,
+        content: 'must remain blocked',
+        expectedSessionRevision: created.revision,
+        expectedMessageRevision: 0,
+      })
+    ).rejects.toMatchObject({ code: 'derived_memory_not_fresh', status: 409 });
+    await expect(storage.readRoleplaySession(project.projectId, created.sessionId)).resolves.toMatchObject({
+      derivedMemoryStatus: { status: 'stale', errorMessage: 'rebuild failed' },
+    });
+  });
+});
+
 afterEach(async () => {
   vi.restoreAllMocks();
   delete process.env.CHAPTERFLOW_DEV_DIAGNOSTICS;

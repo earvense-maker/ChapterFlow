@@ -54,18 +54,78 @@ const STORY_STATE_TIMEOUT_MS = 30_000;
 interface StoryStateRefreshJob {
   promise: Promise<void>;
   generationId: string;
+  revisionNumber?: number;
   queuedGenerationIds: string[];
 }
 // NOTE: これは二重抽出を防ぐプロセス内キューであり、物語状態の正本ではない。
 // 再起動後は永続化された pending を readStoryStateBacklog から手動回復できる。
 const storyStateRefreshJobs = new Map<string, StoryStateRefreshJob>();
 
-export function startStoryStateRefreshAfterAcceptance(projectId: string, generationId: string): void {
+export function startStoryStateRefreshAfterAcceptance(
+  projectId: string,
+  generationId: string,
+  revisionNumber?: number
+): void {
+  if (revisionNumber !== undefined) {
+    void (async () => {
+      try {
+        await writeStoryStateRefreshUnlocked(
+          projectId,
+          buildStoryStateRefreshStatus('pending', generationId, undefined, revisionNumber, {
+            reason: 'manual-text-edit',
+          })
+        );
+        await startStoryStateRefreshJob(projectId, generationId, revisionNumber);
+      } catch (err) {
+        console.warn('Story state refresh after text edit failed', {
+          projectId,
+          generationId,
+          revisionNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await markOwnedStoryStateRefreshStale(
+          projectId,
+          generationId,
+          revisionNumber,
+          storyStateErrorMessage(err)
+        ).catch(() => undefined);
+      }
+    })();
+    return;
+  }
   void startStoryStateRefreshJob(projectId, generationId).catch((err) => {
     console.warn('Story state refresh failed', {
       projectId,
       generationId,
       error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
+async function markOwnedStoryStateRefreshStale(
+  projectId: string,
+  generationId: string,
+  revisionNumber: number,
+  errorMessage: string
+): Promise<void> {
+  await withProjectWriteLock(projectId, async () => {
+    const state = await storage.readState(projectId);
+    const current = state?.storyStateRefresh;
+    if (
+      !state ||
+      current?.status !== 'pending' ||
+      current.generationId !== generationId ||
+      current.revisionNumber !== revisionNumber
+    ) return;
+    await storage.writeState(projectId, {
+      ...state,
+      storyStateRefresh: buildStoryStateRefreshStatus(
+        'stale',
+        generationId,
+        errorMessage,
+        revisionNumber,
+        { reason: 'manual-text-edit' }
+      ),
     });
   });
 }
@@ -82,14 +142,23 @@ export async function refreshStoryState(projectId: string): Promise<ReaderState>
 
     const backlog = await calculateStoryStateBacklog(projectId);
     if (backlog.length === 0) {
-      await writeStoryStateRefreshUnlocked(projectId, buildStoryStateRefreshStatus('fresh', null));
+      const review = await storage.readStoryStateRebuildReview(projectId);
+      await writeStoryStateRefreshUnlocked(
+        projectId,
+        buildStoryStateRefreshStatus(
+          review?.status === 'pending' ? 'awaiting-review' : 'fresh',
+          null,
+          undefined,
+          null
+        )
+      );
       return { job: null, readerState: null };
     }
 
     const generationId = backlog[0].generationId;
     await writeStoryStateRefreshUnlocked(
       projectId,
-      buildStoryStateRefreshStatus('pending', generationId)
+      buildStoryStateRefreshStatus('pending', generationId, undefined, undefined)
     );
     return { job: startStoryStateRefreshJob(projectId, generationId), readerState: null };
   });
@@ -100,11 +169,15 @@ export async function refreshStoryState(projectId: string): Promise<ReaderState>
   return getReaderState(projectId);
 }
 
-function startStoryStateRefreshJob(projectId: string, generationId: string): Promise<void> {
+function startStoryStateRefreshJob(
+  projectId: string,
+  generationId: string,
+  revisionNumber?: number
+): Promise<void> {
   const existing = storyStateRefreshJobs.get(projectId);
   if (existing) {
     if (
-      existing.generationId !== generationId &&
+      (existing.generationId !== generationId || existing.revisionNumber !== revisionNumber) &&
       !existing.queuedGenerationIds.includes(generationId)
     ) {
       existing.queuedGenerationIds.push(generationId);
@@ -115,6 +188,7 @@ function startStoryStateRefreshJob(projectId: string, generationId: string): Pro
   const job: StoryStateRefreshJob = {
     promise: Promise.resolve(),
     generationId,
+    revisionNumber,
     queuedGenerationIds: [],
   };
   // NOTE: 背景抽出は採用時の AsyncLocalStorage 書込みスコープを継承させない。
@@ -152,6 +226,12 @@ async function runStoryStateRefreshJob(projectId: string, job: StoryStateRefresh
 
     if (backlogItem) {
       const generation = await findGeneration(projectId, generationId);
+      // Only text-edit rebuild jobs own a concrete text revision. Normal acceptance
+      // refreshes intentionally keep revisionNumber absent so their existing queueing
+      // semantics remain compatible with legacy project state.
+      if (generation && job.revisionNumber !== undefined) {
+        job.revisionNumber = generation.textRevisionNumber ?? 0;
+      }
       const refreshStatus =
         !generation || generation.status !== 'accepted'
           ? buildStoryStateRefreshStatus(
@@ -190,12 +270,26 @@ async function runStoryStateRefreshJob(projectId: string, job: StoryStateRefresh
       continue;
     }
 
+    const review = remaining.length === 0
+      ? await storage.readStoryStateRebuildReview(projectId)
+      : null;
+    if (review?.status === 'pending') {
+      const rebuiltState = await storage.readStoryState(projectId);
+      if (rebuiltState) {
+        await storage.writeStoryStateRebuildReview(projectId, { ...review, rebuiltState });
+      }
+    }
     const terminalStatus = buildStoryStateRefreshStatus(
-      remaining.length > 0 ? 'stale' : 'fresh',
+      remaining.length > 0
+        ? 'stale'
+        : review?.status === 'pending'
+          ? 'awaiting-review'
+          : 'fresh',
       generationId,
       remaining.length > 0
         ? `物語の状態に未反映の場面があと${remaining.length}件あります。`
-        : undefined
+        : undefined,
+      job.revisionNumber
     );
     await writeStoryStateRefreshIfOwned(projectId, generationId, terminalStatus);
     if (terminalStatus.status === 'stale') {
@@ -273,11 +367,21 @@ async function refreshStoryStateForGeneration(
     if (!applied.storyStateApplied && !applied.canonApplied) {
       // 差し替え採用により、モデル応答待ちの間に対象が現在の採用本文でなくなった。
       // runStoryStateRefreshJob が待機列と最新 backlog を見て次の採用本文へ進む。
-      const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
+      const fresh = buildStoryStateRefreshStatus(
+        'fresh',
+        generation.generationId,
+        undefined,
+        generation.textRevisionNumber ?? 0
+      );
       return options.skipRefreshStatusWrite ? fresh : writeStoryStateRefresh(projectId, fresh);
     }
 
-    const fresh = buildStoryStateRefreshStatus('fresh', generation.generationId);
+    const fresh = buildStoryStateRefreshStatus(
+      'fresh',
+      generation.generationId,
+      undefined,
+      generation.textRevisionNumber ?? 0
+    );
     return options.skipRefreshStatusWrite ? fresh : writeStoryStateRefresh(projectId, fresh);
   } catch (err) {
     const stale = buildStoryStateRefreshStatus('stale', generation.generationId, storyStateErrorMessage(err));
@@ -397,8 +501,22 @@ export async function readStoryStateBacklog(projectId: string): Promise<Accepted
       )
       .map((derivation) => derivation.generationId)
   );
+  const generationRecords = await storage.findGenerationRecords(
+    projectId,
+    accepted.map((item) => item.generationId)
+  );
+  const derivationByGenerationId = new Map(
+    (Array.isArray(derivations) ? derivations : []).map((derivation) => [
+      derivation.generationId,
+      derivation,
+    ])
+  );
 
   return accepted.filter((item) => {
+    const currentTextRevision = generationRecords.get(item.generationId)?.textRevisionNumber ?? 0;
+    const derivedTextRevision =
+      derivationByGenerationId.get(item.generationId)?.sourceTextRevisionNumber ?? 0;
+    if (currentTextRevision !== derivedTextRevision) return true;
     if (stuck.has(item.generationId)) return true;
     if (!processedStory.has(item.generationId)) return true;
     if (processedCanon !== null && !processedCanon.has(item.generationId)) return true;
@@ -410,13 +528,17 @@ async function isCurrentAcceptedGeneration(
   projectId: string,
   generation: GenerationRecord
 ): Promise<boolean> {
-  const episode = await storage.readEpisodeRecord(projectId, generation.episodeId);
+  const [episode, latest] = await Promise.all([
+    storage.readEpisodeRecord(projectId, generation.episodeId),
+    findGeneration(projectId, generation.generationId),
+  ]);
   return (
-    episode?.scenes.some(
+    (latest?.textRevisionNumber ?? 0) === (generation.textRevisionNumber ?? 0) &&
+    (episode?.scenes.some(
       (scene) =>
         scene.sceneId === generation.sceneId &&
         scene.acceptedGenerationId === generation.generationId
-    ) ?? false
+    ) ?? false)
   );
 }
 
@@ -523,7 +645,9 @@ async function writeStoryStateRefreshIfOwned(
     if (
       !state ||
       state.storyStateRefresh?.status !== 'pending' ||
-      state.storyStateRefresh.generationId !== generationId
+      state.storyStateRefresh.generationId !== generationId ||
+      (storyStateRefresh.revisionNumber !== undefined &&
+        state.storyStateRefresh.revisionNumber !== storyStateRefresh.revisionNumber)
     ) {
       return false;
     }
@@ -576,11 +700,15 @@ export async function writeStoryStateRefreshUnlocked(
 export function buildStoryStateRefreshStatus(
   status: StoryStateRefreshStatus['status'],
   generationId: string | null,
-  errorMessage?: string
+  errorMessage?: string,
+  revisionNumber?: number | null,
+  details: Pick<StoryStateRefreshStatus, 'reason' | 'acceptedSequenceFingerprint'> = {}
 ): StoryStateRefreshStatus {
   return {
     status,
     generationId,
+    ...(revisionNumber !== undefined ? { revisionNumber } : {}),
+    ...details,
     updatedAt: nowIso(),
     ...(errorMessage ? { errorMessage } : {}),
   };

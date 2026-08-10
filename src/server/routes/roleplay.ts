@@ -12,8 +12,10 @@ import * as roleplayService from '../services/roleplaySessionService.js';
 import type {
   ArchiveRoleplaySessionBody,
   CreateRoleplaySessionBody,
+  EditRoleplayMessageBody,
   RegenerateRoleplayBody,
   SendRoleplayMessageBody,
+  RestoreRoleplayMessageBody,
 } from '../types/index.js';
 
 const router = Router();
@@ -79,6 +81,81 @@ router.delete('/projects/:id/roleplay/sessions/:sessionId', async (req, res, nex
     next(err);
   }
 });
+
+router.patch(
+  '/projects/:id/roleplay/sessions/:sessionId/messages/:messageId',
+  async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as EditRoleplayMessageBody;
+      const result = await roleplayService.editRoleplayMessage({
+        projectId: req.params.id,
+        sessionId: req.params.sessionId,
+        messageId: req.params.messageId,
+        content: body.content,
+        expectedSessionRevision: body.expectedSessionRevision,
+        expectedMessageRevision: body.expectedMessageRevision,
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof roleplayService.RoleplayServiceError) return handleRoleplayError(err, res);
+      next(err);
+    }
+  }
+);
+
+router.get(
+  '/projects/:id/roleplay/sessions/:sessionId/messages/:messageId/revisions',
+  async (req, res, next) => {
+    try {
+      const result = await roleplayService.getRoleplayMessageRevisions(
+        req.params.id,
+        req.params.sessionId,
+        req.params.messageId
+      );
+      res.json(result);
+    } catch (err) {
+      if (err instanceof roleplayService.RoleplayServiceError) return handleRoleplayError(err, res);
+      next(err);
+    }
+  }
+);
+
+router.post(
+  '/projects/:id/roleplay/sessions/:sessionId/messages/:messageId/revisions/:revisionId/restore',
+  async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as RestoreRoleplayMessageBody;
+      const result = await roleplayService.restoreRoleplayMessageRevision({
+        projectId: req.params.id,
+        sessionId: req.params.sessionId,
+        messageId: req.params.messageId,
+        revisionId: req.params.revisionId,
+        expectedSessionRevision: body.expectedSessionRevision,
+        expectedMessageRevision: body.expectedMessageRevision,
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof roleplayService.RoleplayServiceError) return handleRoleplayError(err, res);
+      next(err);
+    }
+  }
+);
+
+router.post(
+  '/projects/:id/roleplay/sessions/:sessionId/memory-rebuild',
+  async (req, res, next) => {
+    try {
+      const session = await roleplayService.retryRoleplayMemoryRebuild(
+        req.params.id,
+        req.params.sessionId
+      );
+      res.json({ session });
+    } catch (err) {
+      if (err instanceof roleplayService.RoleplayServiceError) return handleRoleplayError(err, res);
+      next(err);
+    }
+  }
+);
 
 router.post(
   '/projects/:id/roleplay/sessions/:sessionId/messages-stream',

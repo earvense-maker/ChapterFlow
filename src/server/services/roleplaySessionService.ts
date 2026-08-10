@@ -106,6 +106,7 @@ import type {
   RoleplayAppliedSettings,
   RoleplayContextSnapshot,
   RoleplayMessage,
+  RoleplayMessageRevision,
   RoleplayRelationshipState,
   RoleplaySession,
   RoleplaySessionSummary,
@@ -124,6 +125,7 @@ const ROLEPLAY_RELATIONSHIP_LIST_MAX = 8;
 const ROLEPLAY_RELATIONSHIP_ITEM_MAX_CHARS = 160;
 const ROLEPLAY_RELATIONSHIP_MAX_STEP = 15;
 const ROLEPLAY_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = INTERACTIVE_TASK_MAX_OUTPUT_TOKENS;
+const ROLEPLAY_MESSAGE_EDIT_MAX_CHARS = 20_000;
 
 // NOTE: 上限と既定方針は作品既定ペルソナ・相談draftと共有する（shared/roleplayPersona）。
 // ここでは「壊れた入力は 400 で知らせる」ため、共有の非throw正規化ではなく独自検証を使う。
@@ -295,7 +297,7 @@ export function toRoleplaySessionView(
   session: RoleplaySession,
   currentSettingsFingerprint?: string
 ): RoleplaySessionView {
-  const { contextSnapshot, sessionCanon, ...rest } = session;
+  const { contextSnapshot, sessionCanon, messageRevisions: _messageRevisions, ...rest } = session;
   return {
     ...rest,
     characterName: contextSnapshot.character.name ?? '',
@@ -373,6 +375,352 @@ export async function getRoleplaySession(
     { characterId: session.characterId, scenario: session.scenario }
   ).catch(() => undefined);
   return toRoleplaySessionView(session, currentSettingsFingerprint);
+}
+
+export async function getRoleplayMessageRevisions(
+  projectId: string,
+  sessionId: string,
+  messageId: string
+): Promise<{ originalContent: string; revisions: RoleplayMessageRevision[] }> {
+  const session = await loadRoleplaySessionOrThrow(projectId, sessionId);
+  const message = session.messages.find((candidate) => candidate.messageId === messageId);
+  if (!message) {
+    throw new RoleplayServiceError('発言が見つかりません。', 'message_not_found', false, 404);
+  }
+  const revisions = (session.messageRevisions ?? []).filter(
+    (revision) => revision.messageId === messageId
+  );
+  return {
+    originalContent: revisions[0]?.beforeContent ?? message.content,
+    revisions,
+  };
+}
+
+export async function editRoleplayMessage(input: {
+  projectId: string;
+  sessionId: string;
+  messageId: string;
+  content: string;
+  expectedSessionRevision: number;
+  expectedMessageRevision: number;
+  source?: RoleplayMessageRevision['source'];
+}): Promise<{ session: RoleplaySessionView; memoryRebuildStarted: boolean }> {
+  const result = await withSessionLock(input.sessionId, async () => {
+    const session = await loadRoleplaySessionOrThrow(input.projectId, input.sessionId);
+    assertActiveSession(session);
+    assertValidRevision(input.expectedSessionRevision);
+    assertRevision(session, input.expectedSessionRevision);
+    if (
+      session.derivedMemoryStatus &&
+      (session.derivedMemoryStatus.status !== 'fresh' ||
+        session.derivedMemoryStatus.sourcePrefixFingerprint !== buildRoleplayPrefixFingerprint(session))
+    ) {
+      throw new RoleplayServiceError(
+        session.derivedMemoryStatus.status === 'pending'
+          ? '会話の記憶を再構築しています。完了してから編集してください。'
+          : '会話の記憶を再構築できていません。再試行してから編集してください。',
+        'derived_memory_not_fresh',
+        session.derivedMemoryStatus.status !== 'pending',
+        409,
+        session.revision
+      );
+    }
+    if (generationInFlight.has(input.sessionId)) {
+      throw new RoleplayServiceError(
+        '応答生成中は発言を編集できません。',
+        'generation_in_progress',
+        true,
+        409,
+        session.revision
+      );
+    }
+    if (summaryInFlight.has(input.sessionId)) {
+      throw new RoleplayServiceError(
+        '会話の記憶を整理中です。完了してから編集してください。',
+        'summary_in_progress',
+        true,
+        409,
+        session.revision
+      );
+    }
+    const messageIndex = session.messages.findIndex(
+      (candidate) => candidate.messageId === input.messageId
+    );
+    const message = session.messages[messageIndex];
+    if (!message) {
+      throw new RoleplayServiceError('発言が見つかりません。', 'message_not_found', false, 404);
+    }
+    const currentMessageRevision = message.contentRevision ?? 0;
+    if (
+      !Number.isInteger(input.expectedMessageRevision) ||
+      input.expectedMessageRevision !== currentMessageRevision
+    ) {
+      throw new RoleplayServiceError(
+        '発言が別の操作で更新されています。再読み込みしてください。',
+        'message_revision_conflict',
+        false,
+        409,
+        session.revision
+      );
+    }
+    const content = normalizeRoleplayEditedContent(input.content);
+    if (content === message.content) {
+      return { session, rebuild: false };
+    }
+
+    const now = nowIso();
+    const nextMessageRevision = currentMessageRevision + 1;
+    const revision: RoleplayMessageRevision = {
+      revisionId: generateTimestampId('rptextrev'),
+      messageId: message.messageId,
+      revisionNumber: nextMessageRevision,
+      source: input.source ?? 'manual-edit',
+      beforeContent: message.content,
+      afterContent: content,
+      createdAt: now,
+    };
+    const messages = [...session.messages];
+    messages[messageIndex] = {
+      ...message,
+      content,
+      contentRevision: nextMessageRevision,
+      editedAt: now,
+      ...(message.role === 'character' ? { generationWarnings: [] } : {}),
+    };
+
+    const summaryIndex = session.summaryThroughMessageId
+      ? session.messages.findIndex(
+          (candidate) => candidate.messageId === session.summaryThroughMessageId
+        )
+      : -1;
+    const requiresRebuild = summaryIndex >= 0 && messageIndex <= summaryIndex;
+    const nextRevision = session.revision + 1;
+    const next: RoleplaySession = {
+      ...session,
+      messages,
+      messageRevisions: [...(session.messageRevisions ?? []), revision],
+      revision: nextRevision,
+      updatedAt: now,
+      derivedMemoryStatus: requiresRebuild
+        ? {
+            status: 'pending',
+            sourcePrefixFingerprint: buildRoleplayPrefixFingerprint({ ...session, messages }),
+            editedMessageId: message.messageId,
+            updatedAt: now,
+          }
+        : {
+            status: 'fresh',
+            sourcePrefixFingerprint: buildRoleplayPrefixFingerprint({ ...session, messages }),
+            updatedAt: now,
+          },
+    };
+    await withDataDirWrite(() => storage.writeRoleplaySession(next));
+    return { session: next, rebuild: requiresRebuild };
+  });
+
+  if (result.rebuild) startRoleplayMemoryRebuild(input.projectId, input.sessionId, result.session.revision);
+  const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
+    input.projectId,
+    undefined,
+    { characterId: result.session.characterId, scenario: result.session.scenario }
+  ).catch(() => undefined);
+  return {
+    session: toRoleplaySessionView(result.session, currentSettingsFingerprint),
+    memoryRebuildStarted: result.rebuild,
+  };
+}
+
+export async function restoreRoleplayMessageRevision(input: {
+  projectId: string;
+  sessionId: string;
+  messageId: string;
+  revisionId: string;
+  expectedSessionRevision: number;
+  expectedMessageRevision: number;
+}): Promise<{ session: RoleplaySessionView; memoryRebuildStarted: boolean }> {
+  const history = await getRoleplayMessageRevisions(
+    input.projectId,
+    input.sessionId,
+    input.messageId
+  );
+  const content = input.revisionId === `original:${input.messageId}`
+    ? history.originalContent
+    : history.revisions.find((revision) => revision.revisionId === input.revisionId)?.afterContent;
+  if (content === undefined) {
+    throw new RoleplayServiceError('復元対象の版が見つかりません。', 'revision_not_found', false, 404);
+  }
+  return editRoleplayMessage({
+    projectId: input.projectId,
+    sessionId: input.sessionId,
+    messageId: input.messageId,
+    content,
+    expectedSessionRevision: input.expectedSessionRevision,
+    expectedMessageRevision: input.expectedMessageRevision,
+    source: 'history-restore',
+  });
+}
+
+export async function retryRoleplayMemoryRebuild(
+  projectId: string,
+  sessionId: string
+): Promise<RoleplaySessionView> {
+  const session = await loadRoleplaySessionOrThrow(projectId, sessionId);
+  assertActiveSession(session);
+  if (session.derivedMemoryStatus?.status === 'fresh') return getRoleplaySession(projectId, sessionId);
+  await runRoleplayMemoryRebuild(projectId, sessionId, session.revision);
+  return getRoleplaySession(projectId, sessionId);
+}
+
+function normalizeRoleplayEditedContent(value: string): string {
+  if (typeof value !== 'string') {
+    throw new RoleplayServiceError('発言を文字列で指定してください。', 'invalid_request', false, 400);
+  }
+  const content = value.replace(/\r\n?/g, '\n').trim();
+  if (!content) {
+    throw new RoleplayServiceError('発言を空にはできません。', 'empty_message', false, 400);
+  }
+  if (content.length > ROLEPLAY_MESSAGE_EDIT_MAX_CHARS) {
+    throw new RoleplayServiceError(
+      `発言は${ROLEPLAY_MESSAGE_EDIT_MAX_CHARS.toLocaleString()}文字以内にしてください。`,
+      'message_too_long',
+      false,
+      400
+    );
+  }
+  return content;
+}
+
+function buildRoleplayPrefixFingerprint(session: RoleplaySession): string {
+  const cursorIndex = session.summaryThroughMessageId
+    ? session.messages.findIndex((message) => message.messageId === session.summaryThroughMessageId)
+    : -1;
+  const prefix = cursorIndex >= 0 ? session.messages.slice(0, cursorIndex + 1) : [];
+  return createHash('sha256')
+    .update(prefix.map((message) => `${message.messageId}:${message.contentRevision ?? 0}`).join('\n'))
+    .digest('hex');
+}
+
+function startRoleplayMemoryRebuild(projectId: string, sessionId: string, revision: number): void {
+  if (summaryInFlight.has(sessionId)) return;
+  summaryInFlight.add(sessionId);
+  runOutsideDataDirWrite(() => {
+    void runRoleplayMemoryRebuild(projectId, sessionId, revision)
+      .catch((error) => {
+        console.warn('Roleplay memory rebuild failed', {
+          projectId,
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => summaryInFlight.delete(sessionId));
+  });
+}
+
+async function runRoleplayMemoryRebuild(
+  projectId: string,
+  sessionId: string,
+  expectedRevision: number
+): Promise<void> {
+  try {
+    await runRoleplayMemoryRebuildUnsafe(projectId, sessionId, expectedRevision);
+  } catch (error) {
+    await withSessionLock(sessionId, async () => {
+      const latest = await loadRoleplaySessionOrThrow(projectId, sessionId);
+      if (latest.revision !== expectedRevision || latest.derivedMemoryStatus?.status !== 'pending') {
+        return;
+      }
+      await withDataDirWrite(() =>
+        storage.writeRoleplaySession({
+          ...latest,
+          derivedMemoryStatus: {
+            status: 'stale',
+            sourcePrefixFingerprint: buildRoleplayPrefixFingerprint(latest),
+            updatedAt: nowIso(),
+            errorMessage: '会話の記憶を再構築できませんでした。再試行してください。',
+          },
+        })
+      );
+    }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function runRoleplayMemoryRebuildUnsafe(
+  projectId: string,
+  sessionId: string,
+  expectedRevision: number
+): Promise<void> {
+  const snapshot = await loadRoleplaySessionOrThrow(projectId, sessionId);
+  if (snapshot.revision !== expectedRevision) return;
+  const cleanSnapshot: RoleplaySession = {
+    ...snapshot,
+    conversationSummary: undefined,
+    summaryThroughMessageId: undefined,
+    summaryUpdatedAt: undefined,
+    relationshipState: undefined,
+    sessionCanon: undefined,
+    sessionCanonThroughMessageId: undefined,
+  };
+  const outcome = await performSummary(cleanSnapshot, cleanSnapshot.messages);
+  await withSessionLock(sessionId, async () => {
+    const latest = await loadRoleplaySessionOrThrow(projectId, sessionId);
+    if (latest.revision !== expectedRevision || latest.derivedMemoryStatus?.status !== 'pending') return;
+    const now = nowIso();
+    if (outcome.kind === 'ok') {
+      const next: RoleplaySession = {
+        ...latest,
+        conversationSummary: outcome.conversationSummary,
+        summaryThroughMessageId: outcome.summaryThroughMessageId,
+        summaryUpdatedAt: now,
+        relationshipState: outcome.relationshipState,
+        ...(outcome.sessionCanonItems
+          ? {
+              sessionCanon: outcome.sessionCanonItems,
+              sessionCanonThroughMessageId: outcome.summaryThroughMessageId,
+            }
+          : {}),
+      };
+      next.derivedMemoryStatus = {
+        status: 'fresh',
+        sourcePrefixFingerprint: buildRoleplayPrefixFingerprint(next),
+        updatedAt: now,
+      };
+      await withDataDirWrite(() => storage.writeRoleplaySession(next));
+      return;
+    }
+    if (outcome.kind === 'not_needed') {
+      const next: RoleplaySession = {
+        ...latest,
+        conversationSummary: undefined,
+        summaryThroughMessageId: undefined,
+        summaryUpdatedAt: now,
+        relationshipState: undefined,
+        sessionCanon: undefined,
+        sessionCanonThroughMessageId: undefined,
+        derivedMemoryStatus: {
+          status: 'fresh',
+          sourcePrefixFingerprint: buildRoleplayPrefixFingerprint({
+            ...latest,
+            summaryThroughMessageId: undefined,
+          }),
+          updatedAt: now,
+        },
+      };
+      await withDataDirWrite(() => storage.writeRoleplaySession(next));
+      return;
+    }
+    await withDataDirWrite(() =>
+      storage.writeRoleplaySession({
+        ...latest,
+        derivedMemoryStatus: {
+          status: 'stale',
+          sourcePrefixFingerprint: buildRoleplayPrefixFingerprint(latest),
+          updatedAt: now,
+          errorMessage: '会話の記憶を再構築できませんでした。再試行してください。',
+        },
+      })
+    );
+  });
 }
 
 // ===== contextSnapshot 構築 =====
@@ -1290,6 +1638,21 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
     assertValidRevision(input.revision);
     assertRevision(session, input.revision);
     assertActiveSession(session);
+    if (
+      session.derivedMemoryStatus &&
+      (session.derivedMemoryStatus.status !== 'fresh' ||
+        session.derivedMemoryStatus.sourcePrefixFingerprint !== buildRoleplayPrefixFingerprint(session))
+    ) {
+      throw new RoleplayServiceError(
+        session.derivedMemoryStatus.status === 'pending'
+          ? '会話の記憶を再構築しています。完了してから送信してください。'
+          : '会話の記憶を再構築できていません。再試行してください。',
+        'derived_memory_not_fresh',
+        session.derivedMemoryStatus.status !== 'pending',
+        409,
+        session.revision
+      );
+    }
     if (generationInFlight.has(input.sessionId)) {
       throw new RoleplayServiceError(
         'このセッションは既に応答生成中です。',
@@ -1927,6 +2290,7 @@ async function runSummaryIfNeeded(input: {
     projectId: session.projectId,
     sessionId: session.sessionId,
     expectedCursor: session.summaryThroughMessageId,
+    expectedRevision: session.revision,
     conversationSummary: outcome.conversationSummary,
     summaryThroughMessageId: outcome.summaryThroughMessageId,
     relationshipState: outcome.relationshipState,
@@ -1992,6 +2356,7 @@ async function mergeSummaryIfCursorUnchanged(input: {
   projectId: string;
   sessionId: string;
   expectedCursor: string | undefined;
+  expectedRevision: number;
   conversationSummary: string;
   summaryThroughMessageId: string;
   relationshipState?: RoleplayRelationshipState;
@@ -2000,7 +2365,10 @@ async function mergeSummaryIfCursorUnchanged(input: {
   return await withSessionLock(input.sessionId, async () => {
     const latest = await storage.readRoleplaySession(input.projectId, input.sessionId);
     if (!latest) return null;
-    if (latest.summaryThroughMessageId !== input.expectedCursor) return null;
+    if (
+      latest.summaryThroughMessageId !== input.expectedCursor ||
+      latest.revision !== input.expectedRevision
+    ) return null;
     const summaryUpdatedAt = nowIso();
     const next: RoleplaySession = {
       ...latest,
@@ -2315,6 +2683,7 @@ async function runBackgroundSummary(projectId: string, sessionId: string): Promi
     projectId,
     sessionId,
     expectedCursor: snapshot.summaryThroughMessageId,
+    expectedRevision: snapshot.revision,
     conversationSummary: outcome.conversationSummary,
     summaryThroughMessageId: outcome.summaryThroughMessageId,
     relationshipState: outcome.relationshipState,

@@ -1,6 +1,6 @@
 import type { EpisodeId, GenerationId, MemoryId, SceneId } from './ids.js';
 import type { GenerationStyleProfile } from './style.js';
-import type { ActivePresets } from './project.js';
+import type { ActivePresets, StoryStateRefreshStatus } from './project.js';
 import type { AdapterGenerateResult, FinishReason } from './model.js';
 import type { GenerationContractValidation } from './canon.js';
 
@@ -53,6 +53,20 @@ export interface PromptBudgetReport {
 
 export type GenerationStatus = 'draft' | 'accepted' | 'rejected' | 'superseded';
 
+export type GenerationTextRevisionSource = 'manual-edit' | 'history-restore' | 'ng-auto-rewrite';
+
+export interface EditGenerationTextBody {
+  text: string;
+  expectedRevisionNumber: number;
+  expectedStatus: GenerationStatus;
+  expectedAcceptedGenerationId: GenerationId | null;
+}
+
+export interface RestoreGenerationTextBody {
+  expectedRevisionNumber: number;
+  expectedStatus: GenerationStatus;
+  expectedAcceptedGenerationId: GenerationId | null;
+}
 // NOTE: モデルの推論本文は含めない。生成速度の切り分けに必要な時刻・件数・使用量だけを
 // GenerationRecord と一緒に永続化し、既存レコードとの互換性は optional field で保つ。
 // NOTE: 開発版限定。CHAPTERFLOW_DEV_DIAGNOSTICS が立っているときだけ記録されるため、
@@ -107,6 +121,39 @@ export interface GenerationRecord {
   promptBudgetReport?: PromptBudgetReport;
   // NOTE: 契約検証の監査情報（原文なし・設計書 5.6）。旧レコードの欠損は skipped 相当。
   contractValidation?: GenerationContractValidation;
+  /** 実効本文の改訂番号。旧レコード・原文は 0。 */
+  textRevisionNumber?: number;
+  editedAt?: string;
+}
+
+export interface GenerationTextRevisionRecord {
+  revisionId: string;
+  revisionNumber: number;
+  generationId: GenerationId;
+  responseText: string;
+  source: GenerationTextRevisionSource;
+  reason: string;
+  before: string;
+  after: string;
+  beforeHash: string;
+  afterHash: string;
+  updatedAt: string;
+}
+
+export interface GenerationTextVersion {
+  revisionId: string;
+  revisionNumber: number;
+  source: 'original' | GenerationTextRevisionSource;
+  text: string;
+  createdAt: string;
+  beforeHash?: string;
+  afterHash: string;
+}
+
+export interface GenerationTextEditResult {
+  generation: GenerationRecord;
+  revisionNumber: number;
+  derivationStatus: 'not-applicable' | StoryStateRefreshStatus['status'];
 }
 
 export interface GenerateRequestBody {

@@ -112,10 +112,13 @@ export interface ContextSummaryState {
 }
 
 export interface StoryStateRefreshStatus {
-  status: 'fresh' | 'pending' | 'stale';
+  status: 'fresh' | 'pending' | 'stale' | 'awaiting-review';
   generationId: GenerationId | null;
+  revisionNumber?: number | null;
   updatedAt: string;
   errorMessage?: string;
+  reason?: 'acceptance' | 'manual-text-edit' | 'recovery';
+  acceptedSequenceFingerprint?: string;
 }
 
 export interface ProjectSummary {

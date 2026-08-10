@@ -8,6 +8,7 @@ import type {
   CreateMemoryBody,
   CreateProjectBody,
   CreateRoleplaySessionBody,
+  EditRoleplayMessageBody,
   CreativeContract,
   CreativeContractPutBody,
   DataDirApplyResponse,
@@ -20,6 +21,10 @@ import type {
   GenerateRequestBody,
   GenerationNotificationSettings,
   GenerationRecord,
+  EditGenerationTextBody,
+  GenerationTextEditResult,
+  GenerationTextVersion,
+  RestoreGenerationTextBody,
   KnowledgeContentResponse,
   KnowledgeFile,
   KnowledgeListItem,
@@ -55,10 +60,13 @@ import type {
   RoleplaySessionListResponse,
   RoleplaySessionResponse,
   RoleplaySessionView,
+  RoleplayMessageRevision,
   SceneNavigationDirection,
   SendRoleplayMessageBody,
+  RestoreRoleplayMessageBody,
   StoryState,
   StoryStateDiffRecord,
+  StoryStateRebuildReview,
   StyleSamplePreset,
   CreateSetupSessionBody,
   ConfirmQuickContractsBody,
@@ -511,6 +519,35 @@ export const api = {
     }),
   refreshStoryState: (id: string) =>
     request<ReaderState>(`/projects/${id}/story-state/refresh`, { method: 'POST' }),
+  getStoryStateRebuildReview: (id: string) =>
+    request<StoryStateRebuildReview>(`/projects/${id}/story-state/rebuild-review`),
+  resolveStoryStateRebuildReview: (
+    id: string,
+    resolution: 'use-rebuilt' | 'use-previous-as-override'
+  ) =>
+    request<{ generation: GenerationRecord | null }>(
+      `/projects/${id}/story-state/rebuild-review/resolve`,
+      { method: 'POST', body: JSON.stringify({ resolution }) }
+    ),
+  updateGenerationText: (id: string, generationId: string, body: EditGenerationTextBody) =>
+    request<GenerationTextEditResult>(`/projects/${id}/generations/${generationId}/text`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+  getGenerationTextRevisions: (id: string, generationId: string) =>
+    request<{ revisions: GenerationTextVersion[] }>(
+      `/projects/${id}/generations/${generationId}/text-revisions`
+    ),
+  restoreGenerationText: (
+    id: string,
+    generationId: string,
+    revisionId: string,
+    body: RestoreGenerationTextBody
+  ) =>
+    request<GenerationTextEditResult>(
+      `/projects/${id}/generations/${generationId}/text-revisions/${encodeURIComponent(revisionId)}/restore`,
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
 
   getReaderState: (id: string) => request<ReaderState>(`/projects/${id}/reader-state`),
   updateState: (id: string, state: Partial<ProjectState>) =>
@@ -526,6 +563,36 @@ export const api = {
     request<RoleplaySessionListResponse>(`/projects/${projectId}/roleplay/sessions`),
   getRoleplaySession: (projectId: string, sessionId: string) =>
     request<RoleplaySessionResponse>(`/projects/${projectId}/roleplay/sessions/${sessionId}`),
+  editRoleplayMessage: (
+    projectId: string,
+    sessionId: string,
+    messageId: string,
+    body: EditRoleplayMessageBody
+  ) =>
+    request<{ session: RoleplaySessionView; memoryRebuildStarted: boolean }>(
+      `/projects/${projectId}/roleplay/sessions/${sessionId}/messages/${messageId}`,
+      { method: 'PATCH', body: JSON.stringify(body) }
+    ),
+  getRoleplayMessageRevisions: (projectId: string, sessionId: string, messageId: string) =>
+    request<{ originalContent: string; revisions: RoleplayMessageRevision[] }>(
+      `/projects/${projectId}/roleplay/sessions/${sessionId}/messages/${messageId}/revisions`
+    ),
+  restoreRoleplayMessage: (
+    projectId: string,
+    sessionId: string,
+    messageId: string,
+    revisionId: string,
+    body: RestoreRoleplayMessageBody
+  ) =>
+    request<{ session: RoleplaySessionView; memoryRebuildStarted: boolean }>(
+      `/projects/${projectId}/roleplay/sessions/${sessionId}/messages/${messageId}/revisions/${encodeURIComponent(revisionId)}/restore`,
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
+  rebuildRoleplayMemory: (projectId: string, sessionId: string) =>
+    request<RoleplaySessionResponse>(
+      `/projects/${projectId}/roleplay/sessions/${sessionId}/memory-rebuild`,
+      { method: 'POST' }
+    ),
   archiveRoleplaySession: (
     projectId: string,
     sessionId: string,

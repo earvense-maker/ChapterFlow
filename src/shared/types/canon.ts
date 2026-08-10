@@ -267,6 +267,8 @@ export interface CanonPatchEntry {
 
 export interface AcceptedNarrativeDerivation {
   generationId: GenerationId;
+  /** 抽出元の実効本文 revision。欠損は旧データの 0 と解釈する。 */
+  sourceTextRevisionNumber?: number;
   extractedAt: string;
   observations: NarrativeObservation[];
   // NOTE: 正規化済みobservationsからserverが作る再試行用cache。LLM出力ではない（設計書 5.3）。

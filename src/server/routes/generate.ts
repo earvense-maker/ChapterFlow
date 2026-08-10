@@ -4,6 +4,7 @@ import * as storage from '../services/storageService.js';
 import * as storyStateService from '../services/storyStateService.js';
 import * as refineAutomationService from '../services/refineAutomationService.js';
 import * as ngRewriteService from '../services/ngRewriteService.js';
+import * as generationTextRevisionService from '../services/generationTextRevisionService.js';
 import { DataDirLockedError } from '../services/dataDirLock.js';
 import { GENERATION_WISH_MAX_CHARS } from '../types/index.js';
 import type { GenerateRequestBody, SceneNavigationDirection } from '../types/index.js';
@@ -282,6 +283,9 @@ router.post('/projects/:id/unaccept', async (req, res, next) => {
     if (!record) return res.status(404).json({ error: 'No accepted generation to unaccept' });
     res.json(record);
   } catch (err) {
+    if (err instanceof refineAutomationService.RefineAutomationError) {
+      return res.status(err.status).json({ error: err.message, code: err.code, retryable: err.retryable });
+    }
     next(err);
   }
 });
@@ -310,6 +314,37 @@ router.post('/projects/:id/story-state/refresh', async (req, res, next) => {
         code: err.code,
         retryable: err.retryable,
       });
+    }
+    next(err);
+  }
+});
+
+router.get('/projects/:id/story-state/rebuild-review', async (req, res, next) => {
+  try {
+    const review = await generationTextRevisionService.getStoryStateRebuildReview(req.params.id);
+    res.json(review);
+  } catch (err) {
+    if (err instanceof generationTextRevisionService.GenerationTextRevisionError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+    next(err);
+  }
+});
+
+router.post('/projects/:id/story-state/rebuild-review/resolve', async (req, res, next) => {
+  try {
+    const resolution = req.body?.resolution;
+    if (resolution !== 'use-rebuilt' && resolution !== 'use-previous-as-override') {
+      return res.status(400).json({ error: 'resolution が不正です。', code: 'invalid_resolution' });
+    }
+    const generation = await generationTextRevisionService.resolveStoryStateRebuildReview(
+      req.params.id,
+      resolution
+    );
+    res.json({ generation });
+  } catch (err) {
+    if (err instanceof generationTextRevisionService.GenerationTextRevisionError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
     }
     next(err);
   }
@@ -389,6 +424,74 @@ router.get('/projects/:id/generations/:generationId/markdown', async (req, res, 
   }
 });
 
+router.patch('/projects/:id/generations/:generationId/text', async (req, res, next) => {
+  try {
+    const body = parseGenerationTextMutationBody(req.body, true);
+    const result = await generationTextRevisionService.updateGenerationText({
+      projectId: req.params.id,
+      generationId: req.params.generationId,
+      nextText: body.text!,
+      expectedRevisionNumber: body.expectedRevisionNumber,
+      expectedStatus: body.expectedStatus,
+      expectedAcceptedGenerationId: body.expectedAcceptedGenerationId,
+    });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof generationTextRevisionService.GenerationTextRevisionError) {
+      return res.status(err.status).json({
+        error: err.message,
+        code: err.code,
+        retryable: err.retryable,
+        latestRevisionNumber: err.latestRevisionNumber,
+      });
+    }
+    next(err);
+  }
+});
+
+router.get('/projects/:id/generations/:generationId/text-revisions', async (req, res, next) => {
+  try {
+    const revisions = await generationTextRevisionService.readGenerationTextVersions(
+      req.params.id,
+      req.params.generationId
+    );
+    res.json({ revisions });
+  } catch (err) {
+    if (err instanceof generationTextRevisionService.GenerationTextRevisionError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
+    next(err);
+  }
+});
+
+router.post(
+  '/projects/:id/generations/:generationId/text-revisions/:revisionId/restore',
+  async (req, res, next) => {
+    try {
+      const body = parseGenerationTextMutationBody(req.body, false);
+      const result = await generationTextRevisionService.restoreGenerationTextRevision({
+        projectId: req.params.id,
+        generationId: req.params.generationId,
+        revisionId: req.params.revisionId,
+        expectedRevisionNumber: body.expectedRevisionNumber,
+        expectedStatus: body.expectedStatus,
+        expectedAcceptedGenerationId: body.expectedAcceptedGenerationId,
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof generationTextRevisionService.GenerationTextRevisionError) {
+        return res.status(err.status).json({
+          error: err.message,
+          code: err.code,
+          retryable: err.retryable,
+          latestRevisionNumber: err.latestRevisionNumber,
+        });
+      }
+      next(err);
+    }
+  }
+);
+
 // NOTE: NG表現の局所リライト。全文の再生成ではなく当たった一文だけを書き換えるので
 // 生成系ルートに置く。保守中は本文を触らせない（生成と同じ扱い）。
 router.post('/projects/:id/generations/:generationId/ng-rewrite', async (req, res, next) => {
@@ -420,6 +523,64 @@ router.post('/projects/:id/generations/:generationId/ng-rewrite', async (req, re
 });
 
 export default router;
+
+function parseGenerationTextMutationBody(
+  value: unknown,
+  requireText: boolean
+): {
+  text?: string;
+  expectedRevisionNumber: number;
+  expectedStatus: 'draft' | 'accepted' | 'rejected' | 'superseded';
+  expectedAcceptedGenerationId: string | null;
+} {
+  const body = (value ?? {}) as Record<string, unknown>;
+  const expectedRevisionNumber = body.expectedRevisionNumber;
+  const expectedStatus = body.expectedStatus;
+  const expectedAcceptedGenerationId = body.expectedAcceptedGenerationId;
+  if (requireText && typeof body.text !== 'string') {
+    throw new generationTextRevisionService.GenerationTextRevisionError(
+      '本文を指定してください。',
+      'invalid_text',
+      400
+    );
+  }
+  if (
+    typeof expectedRevisionNumber !== 'number' ||
+    !Number.isInteger(expectedRevisionNumber) ||
+    expectedRevisionNumber < 0
+  ) {
+    throw new generationTextRevisionService.GenerationTextRevisionError(
+      'expectedRevisionNumber が不正です。',
+      'invalid_revision',
+      400
+    );
+  }
+  if (
+    expectedStatus !== 'draft' &&
+    expectedStatus !== 'accepted' &&
+    expectedStatus !== 'rejected' &&
+    expectedStatus !== 'superseded'
+  ) {
+    throw new generationTextRevisionService.GenerationTextRevisionError(
+      'expectedStatus が不正です。',
+      'invalid_status',
+      400
+    );
+  }
+  if (expectedAcceptedGenerationId !== null && typeof expectedAcceptedGenerationId !== 'string') {
+    throw new generationTextRevisionService.GenerationTextRevisionError(
+      'expectedAcceptedGenerationId が不正です。',
+      'invalid_accepted_generation',
+      400
+    );
+  }
+  return {
+    ...(typeof body.text === 'string' ? { text: body.text } : {}),
+    expectedRevisionNumber,
+    expectedStatus,
+    expectedAcceptedGenerationId,
+  };
+}
 
 class GenerateRequestValidationError extends Error {
   constructor(message: string) {

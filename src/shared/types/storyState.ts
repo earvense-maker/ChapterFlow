@@ -90,3 +90,16 @@ export interface StoryStateDiffRecord {
   resultUpdatedAt: string;
   reverted: boolean;
 }
+
+export interface StoryStateRebuildReview {
+  schemaVersion: 1;
+  projectId: string;
+  status: 'pending' | 'resolved';
+  previousState: StoryState;
+  rebuiltState?: StoryState;
+  resolution?: 'use-rebuilt' | 'use-previous-as-override';
+  sourceGenerationId: GenerationId;
+  sourceRevisionNumber: number;
+  createdAt: string;
+  resolvedAt?: string;
+}

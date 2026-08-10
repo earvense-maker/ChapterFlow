@@ -21,6 +21,7 @@ import type {
   Project,
   RoleplaySessionSummary,
   RoleplaySessionView,
+  RoleplayMessageRevision,
   RoleplayUserPersona,
 } from '@shared/types';
 
@@ -80,6 +81,14 @@ export default function RoleplayWorkspace({
     left: number;
   } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState('');
+  const [messageHistory, setMessageHistory] = useState<{
+    messageId: string;
+    originalContent: string;
+    revisions: RoleplayMessageRevision[];
+  } | null>(null);
+  const [messageEditBusy, setMessageEditBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const projectIdRef = useRef(projectId);
@@ -216,6 +225,35 @@ export default function RoleplayWorkspace({
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
   }, [activeSession?.messages.length, streamingText]);
+
+  useEffect(() => {
+    if (!activeSession || activeSession.derivedMemoryStatus?.status !== 'pending') return;
+    const sessionId = activeSession.sessionId;
+    let cancelled = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const result = await api.getRoleplaySession(projectId, sessionId);
+        if (!cancelled && mountedRef.current && projectIdRef.current === projectId) {
+          setActiveSession((current) =>
+            current?.sessionId === sessionId ? result.session : current
+          );
+        }
+      } catch {
+        // A transient read failure must not replace the saved session shown to the user.
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 750);
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeSession?.derivedMemoryStatus?.status, activeSession?.sessionId, projectId]);
 
   const currentCharacterName = activeSession?.characterName ?? '';
   const pinnedAppliedSettings =
@@ -678,6 +716,112 @@ export default function RoleplayWorkspace({
     }
   }, [activeSession, confirmAction, isStopping, isStreaming, projectId]);
 
+  const saveRoleplayMessageEdit = useCallback(async () => {
+    if (!activeSession || !editingMessageId) return;
+    const target = activeSession.messages.find((item) => item.messageId === editingMessageId);
+    if (!target) return;
+    const targetIndex = activeSession.messages.findIndex((item) => item.messageId === editingMessageId);
+    if (
+      targetIndex < activeSession.messages.length - 1 &&
+      !(await confirmAction(
+        'この発言より後の会話は残ります。訂正内容は次回以降の応答と記憶に反映されます。保存しますか？',
+        { confirmLabel: '発言を保存' }
+      ))
+    ) return;
+    setMessageEditBusy(true);
+    setError(null);
+    try {
+      const result = await api.editRoleplayMessage(
+        projectId,
+        activeSession.sessionId,
+        editingMessageId,
+        {
+          content: editingMessageText,
+          expectedSessionRevision: activeSession.revision,
+          expectedMessageRevision: target.contentRevision ?? 0,
+        }
+      );
+      setActiveSession(result.session);
+      setEditingMessageId(null);
+      setMessageHistory(null);
+      setNotice(
+        result.memoryRebuildStarted
+          ? '発言を保存しました。会話の記憶を再構築しています。'
+          : '発言を保存しました。'
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '発言を保存できませんでした');
+    } finally {
+      setMessageEditBusy(false);
+    }
+  }, [activeSession, confirmAction, editingMessageId, editingMessageText, projectId]);
+
+  const openRoleplayMessageHistory = useCallback(async (messageId: string) => {
+    if (!activeSession) return;
+    setMessageEditBusy(true);
+    setError(null);
+    try {
+      const result = await api.getRoleplayMessageRevisions(
+        projectId,
+        activeSession.sessionId,
+        messageId
+      );
+      setMessageHistory({ messageId, ...result });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '編集履歴を読み込めませんでした');
+    } finally {
+      setMessageEditBusy(false);
+    }
+  }, [activeSession, projectId]);
+
+  const restoreRoleplayMessage = useCallback(async (
+    messageId: string,
+    revisionId: string,
+    label: string
+  ) => {
+    if (!activeSession) return;
+    const target = activeSession.messages.find((item) => item.messageId === messageId);
+    if (!target) return;
+    if (!(await confirmAction(`${label}を新しい改訂として復元しますか？`, { confirmLabel: '復元' }))) {
+      return;
+    }
+    setMessageEditBusy(true);
+    setError(null);
+    try {
+      const result = await api.restoreRoleplayMessage(
+        projectId,
+        activeSession.sessionId,
+        messageId,
+        revisionId,
+        {
+          expectedSessionRevision: activeSession.revision,
+          expectedMessageRevision: target.contentRevision ?? 0,
+        }
+      );
+      setActiveSession(result.session);
+      setMessageHistory(null);
+      setNotice('選択した版を復元しました。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '発言を復元できませんでした');
+    } finally {
+      setMessageEditBusy(false);
+    }
+  }, [activeSession, confirmAction, projectId]);
+
+  const retryRoleplayMemory = useCallback(async () => {
+    if (!activeSession) return;
+    setMessageEditBusy(true);
+    setError(null);
+    try {
+      const result = await api.rebuildRoleplayMemory(projectId, activeSession.sessionId);
+      setActiveSession(result.session);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '会話の記憶を再構築できませんでした');
+    } finally {
+      setMessageEditBusy(false);
+    }
+  }, [activeSession, projectId]);
+
   // NOTE: 選択→NG登録の対象範囲検証（review §5.6 / P2）。
   //   1) selection の anchor/focus 両方が同一の「character バブル本文」要素内に閉じているか
   //      を data 属性 + closest で検証。user 発言・ラベル・複数バブルを跨いだ選択は弾く。
@@ -878,6 +1022,23 @@ export default function RoleplayWorkspace({
               </div>
             </div>
 
+            {activeSession.derivedMemoryStatus?.status !== undefined &&
+              activeSession.derivedMemoryStatus.status !== 'fresh' && (
+                <div style={styles.memoryStatusBanner}>
+                  <span>
+                    {activeSession.derivedMemoryStatus.status === 'pending'
+                      ? '会話の記憶を再構築しています。完了まで新しい送信はできません。'
+                      : activeSession.derivedMemoryStatus.errorMessage ||
+                        '会話の記憶を再構築できませんでした。'}
+                  </span>
+                  {activeSession.derivedMemoryStatus.status === 'stale' && (
+                    <button onClick={() => void retryRoleplayMemory()} disabled={messageEditBusy}>
+                      再構築
+                    </button>
+                  )}
+                </div>
+              )}
+
             <div
               style={styles.chatArea}
               onScroll={(e) => {
@@ -914,6 +1075,9 @@ export default function RoleplayWorkspace({
                   >
                     <div style={styles.bubbleLabel}>
                       {m.role === 'user' ? 'あなた' : currentCharacterName}
+                      {(m.contentRevision ?? 0) > 0 && (
+                        <span style={styles.editedBadge}>編集済み</span>
+                      )}
                       {/* NOTE: 一致箇所のハイライトは Phase 1 の対象外。offset を保存せず、
                           警告アイコンと一般的な文言だけにしている（設計書 5.5）。 */}
                       {(m.generationWarnings?.length ?? 0) > 0 && (
@@ -925,14 +1089,55 @@ export default function RoleplayWorkspace({
                         </span>
                       )}
                     </div>
-                    <div
-                      style={styles.bubbleContent}
-                      // NOTE: 選択→NG登録の対象範囲マーカー。character 発言本文だけに付ける
-                      //（ラベル・user 発言・複数バブル横断選択を弾く根拠になる）。
-                      data-roleplay-character-bubble={m.role === 'character' ? 'true' : undefined}
-                    >
-                      {m.content}
-                    </div>
+                    {editingMessageId === m.messageId ? (
+                      <div style={styles.messageEditor}>
+                        <textarea
+                          value={editingMessageText}
+                          onChange={(event) => setEditingMessageText(event.target.value)}
+                          disabled={messageEditBusy}
+                          autoFocus
+                        />
+                        <div>
+                          <button onClick={() => setEditingMessageId(null)} disabled={messageEditBusy}>
+                            キャンセル
+                          </button>
+                          <button className="primary" onClick={() => void saveRoleplayMessageEdit()} disabled={messageEditBusy}>
+                            保存
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div
+                          style={styles.bubbleContent}
+                          data-roleplay-character-bubble={m.role === 'character' ? 'true' : undefined}
+                        >
+                          {m.content}
+                        </div>
+                        {!isStreaming && activeSession.status === 'active' && (
+                          <div style={styles.messageActions}>
+                            <button
+                              onClick={() => {
+                                setEditingMessageId(m.messageId);
+                                setEditingMessageText(m.content);
+                                setMessageHistory(null);
+                              }}
+                              disabled={messageEditBusy}
+                            >
+                              編集
+                            </button>
+                            {(m.contentRevision ?? 0) > 0 && (
+                              <button
+                                onClick={() => void openRoleplayMessageHistory(m.messageId)}
+                                disabled={messageEditBusy}
+                              >
+                                履歴
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 ))}
               {isStreaming && (
@@ -951,6 +1156,49 @@ export default function RoleplayWorkspace({
               <div ref={messagesEndRef} />
             </div>
 
+            {messageHistory && (
+              <div style={styles.historyPanel}>
+                <div style={styles.historyHeader}>
+                  <strong>発言の編集履歴</strong>
+                  <button onClick={() => setMessageHistory(null)}>閉じる</button>
+                </div>
+                <article style={styles.historyItem}>
+                  <strong>原文</strong>
+                  <pre>{messageHistory.originalContent}</pre>
+                  <button
+                    onClick={() =>
+                      void restoreRoleplayMessage(
+                        messageHistory.messageId,
+                        `original:${messageHistory.messageId}`,
+                        '原文'
+                      )
+                    }
+                    disabled={messageEditBusy}
+                  >
+                    原文を復元
+                  </button>
+                </article>
+                {messageHistory.revisions.slice().reverse().map((revision) => (
+                  <article key={revision.revisionId} style={styles.historyItem}>
+                    <strong>版 {revision.revisionNumber}</strong>
+                    <pre>{revision.afterContent}</pre>
+                    <button
+                      onClick={() =>
+                        void restoreRoleplayMessage(
+                          messageHistory.messageId,
+                          revision.revisionId,
+                          `版 ${revision.revisionNumber}`
+                        )
+                      }
+                      disabled={messageEditBusy}
+                    >
+                      この版を復元
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+
             <div style={styles.inputArea}>
               <textarea
                 value={message}
@@ -961,7 +1209,12 @@ export default function RoleplayWorkspace({
                     if (!isStreaming) void handleSend();
                   }
                 }}
-                disabled={(isStreaming && !isStopping) || activeSession.status !== 'active'}
+                disabled={
+                  (isStreaming && !isStopping) ||
+                  activeSession.status !== 'active' ||
+                  activeSession.derivedMemoryStatus?.status === 'pending' ||
+                  activeSession.derivedMemoryStatus?.status === 'stale'
+                }
                 placeholder={
                   activeSession.status === 'archived'
                     ? 'このセッションはアーカイブ済みです'
@@ -988,7 +1241,12 @@ export default function RoleplayWorkspace({
                     <button
                       className="primary"
                       onClick={handleSend}
-                      disabled={!message.trim() || activeSession.status !== 'active'}
+                      disabled={
+                        !message.trim() ||
+                        activeSession.status !== 'active' ||
+                        activeSession.derivedMemoryStatus?.status === 'pending' ||
+                        activeSession.derivedMemoryStatus?.status === 'stale'
+                      }
                     >
                       {pendingReplaceMessageId ? '訂正して送信' : '送信'}
                     </button>
@@ -1701,6 +1959,54 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text)',
     cursor: 'pointer',
     fontSize: '0.8rem',
+  },
+  editedBadge: {
+    marginLeft: '0.45rem',
+    fontSize: '0.68rem',
+    color: 'var(--text-muted)',
+  },
+  messageActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '0.35rem',
+    marginTop: '0.35rem',
+  },
+  messageEditor: {
+    display: 'grid',
+    gap: '0.5rem',
+  },
+  memoryStatusBanner: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '0.75rem',
+    padding: '0.6rem 0.75rem',
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    background: 'var(--surface)',
+  },
+  historyPanel: {
+    display: 'grid',
+    gap: '0.5rem',
+    maxHeight: '45vh',
+    padding: '0.75rem',
+    overflow: 'auto',
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    background: 'var(--surface)',
+  },
+  historyHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  historyItem: {
+    display: 'grid',
+    gap: '0.4rem',
+    padding: '0.6rem',
+    border: '1px solid var(--border)',
+    borderRadius: '6px',
+    whiteSpace: 'pre-wrap',
   },
   modalActions: {
     display: 'flex',

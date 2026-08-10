@@ -78,8 +78,8 @@ async function rewriteNgOccurrenceUnlocked(
     );
   }
 
-  const storedText = await storage.readGenerationMarkdown(projectId, generationId);
-  const text = storedText || record.responseText;
+  // The append-only generation log is authoritative. Markdown is only a repaired projection.
+  const text = record.responseText;
 
   // NOTE: クライアントが持っている位置は本文が変わると簡単にずれる。範囲の中身が
   // 本当にその登録語かをここで検算し、ずれていたら書き換えずに再読込を促す。
@@ -137,12 +137,15 @@ async function rewriteNgOccurrenceUnlocked(
   }
 
   const { text: nextText, before: original, after: accepted, attempts } = rewritten;
-  await storage.writeGenerationMarkdown(projectId, generationId, nextText);
+  const revisionNumber = (record.textRevisionNumber ?? 0) + 1;
   await storage.appendGenerationTextRevisionLog(projectId, generationId, nextText, {
     reason: `ng-rewrite:${expression.id}`,
-    before: original,
-    after: accepted,
+    before: text,
+    after: nextText,
+    source: 'ng-auto-rewrite',
+    revisionNumber,
   });
+  await storage.writeGenerationMarkdown(projectId, generationId, nextText);
   const invalidatedSummary = await invalidateContextSummaryForGenerationUnlocked(
     projectId,
     generationId

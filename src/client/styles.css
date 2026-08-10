@@ -3,5 +3,6 @@
 @import './styles/setup.css';
 @import './styles/notifications.css';
 @import './styles/reader.css';
+@import './styles/manual-edit.css';
 @import './styles/settings.css';
 @import './styles/responsive.css';
