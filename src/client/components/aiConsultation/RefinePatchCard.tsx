@@ -149,9 +149,6 @@ function PatchOpView({ op, characters }: { op: RefinePatchOperation; characters:
           {(op.character.traits?.length ?? 0) > 0 && (
             <div className="refine-patch-new">{formatCharacterPatchValue(op.character.traits)}</div>
           )}
-          {op.character.secrets && (
-            <div className="refine-patch-new">見せない面: {op.character.secrets}</div>
-          )}
         </div>
       );
     case 'character-remove': {

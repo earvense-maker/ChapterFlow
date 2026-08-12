@@ -120,7 +120,9 @@ describe('setupCommitService', () => {
     expect(normalized.projectInput.world?.initialSituation).toContain('江戸時代風の町');
   });
 
-  it('normalizes traits, promotes reserved labels to secrets, and accepts legacy fields', () => {
+  // NOTE: 「見せない面」「秘密」の trait ラベルは secrets へ昇格せず、そのまま通常の
+  // trait として人物像に残す（設計書 5.2・12.1）。旧 want/fear は従来どおり traits 化する。
+  it('keeps reserved trait labels as normal traits and accepts legacy want/fear fields', () => {
     const normalized = normalizeSetupCommitData({
       session: session(),
       now,
@@ -144,13 +146,14 @@ describe('setupCommitService', () => {
     });
 
     expect(normalized.projectInput.characters?.[0]).toMatchObject({
-      secrets: '実は王女',
       traits: [
+        { label: '見せない面', text: '実は王女' },
         { label: 'こだわり', text: '紅茶は熱いうちに飲む' },
         { label: '望み', text: '自由になりたい' },
         { label: '恐れ', text: '忘れられること' },
       ],
     });
+    expect(normalized.projectInput.characters?.[0]).not.toHaveProperty('secrets');
     expect(normalized.projectInput.characters?.[0]).not.toHaveProperty('want');
   });
 

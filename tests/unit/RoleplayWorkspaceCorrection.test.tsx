@@ -194,6 +194,54 @@ describe('RoleplayWorkspace correction send', () => {
     expect(screen.queryByRole('button', { name: '訂正して送信' })).toBeNull();
   });
 
+  it('focuses the message input after a response completes', async () => {
+    const initial = session();
+    const completed = session({
+      revision: 2,
+      messages: [
+        ...initial.messages,
+        {
+          messageId: 'message-user',
+          role: 'user',
+          content: '次も続けたい発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+        {
+          messageId: 'message-character',
+          role: 'character',
+          content: '続けられる応答',
+          createdAt: '2026-07-18T00:02:00.000Z',
+        },
+      ],
+    });
+    apiMock.getRoleplaySession.mockResolvedValueOnce({ session: initial });
+    apiMock.sendRoleplayMessageStream.mockImplementationOnce(
+      async (_projectId, _sessionId, _body, handlers) => {
+        handlers.onDone(completed);
+      }
+    );
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    const input = await screen.findByRole('textbox');
+    fireEvent.change(input, { target: { value: '次も続けたい発言' } });
+    const sendButton = screen.getByRole('button', { name: '送信' });
+    sendButton.focus();
+    expect(sendButton).toHaveFocus();
+    fireEvent.click(sendButton);
+
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(input).toBeEnabled();
+    expect(input).toHaveValue('');
+  });
+
   it('keeps ordinary response failures on the retry path instead of correction mode', async () => {
     const initial = session();
     const pending = session({
@@ -238,6 +286,33 @@ describe('RoleplayWorkspace correction send', () => {
     expect(await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })).toBeVisible();
     expect(screen.queryByRole('button', { name: '訂正して送信' })).toBeNull();
     expect(input).toHaveValue('');
+  });
+
+  it('recovers the send UI when the stream client rejects unexpectedly', async () => {
+    const initial = session();
+    apiMock.getRoleplaySession
+      .mockResolvedValueOnce({ session: initial })
+      .mockResolvedValueOnce({ session: initial });
+    apiMock.sendRoleplayMessageStream.mockRejectedValueOnce(
+      new Error('送信ストリームの予期しない失敗')
+    );
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    const input = await screen.findByRole('textbox');
+    fireEvent.change(input, { target: { value: '再送できる発言' } });
+    fireEvent.click(screen.getByRole('button', { name: '送信' }));
+
+    expect(await screen.findByText('送信ストリームの予期しない失敗')).toBeVisible();
+    expect(input).toHaveValue('再送できる発言');
+    expect(screen.getByRole('button', { name: '送信' })).toBeEnabled();
   });
 
   it('returns an aborted regenerate to retry without entering correction mode', async () => {
@@ -293,6 +368,354 @@ describe('RoleplayWorkspace correction send', () => {
     expect(await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })).toBeVisible();
     expect(screen.queryByRole('button', { name: '訂正して送信' })).toBeNull();
     expect(screen.getByRole('textbox')).toHaveValue('');
+  });
+
+  it('gets another response for a saved unanswered user message', async () => {
+    const pending = session({
+      revision: 1,
+      messages: [
+        ...session().messages,
+        {
+          messageId: 'message-pending',
+          role: 'user',
+          content: 'もう一度応答してほしい発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+      ],
+    });
+    const completed = session({
+      revision: 2,
+      messages: [
+        ...pending.messages,
+        {
+          messageId: 'message-response',
+          role: 'character',
+          content: '再取得した応答',
+          createdAt: '2026-07-18T00:02:00.000Z',
+        },
+      ],
+    });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: pending });
+    apiMock.regenerateRoleplayStream.mockImplementationOnce(
+      async (_projectId, _sessionId, _body, handlers) => {
+        handlers.onDone(completed);
+      }
+    );
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })
+    );
+
+    await waitFor(() =>
+      expect(apiMock.regenerateRoleplayStream).toHaveBeenCalledWith(
+        'project-roleplay',
+        'session-a',
+        { revision: 1 },
+        expect.any(Object),
+        expect.any(AbortSignal)
+      )
+    );
+    expect(await screen.findByText('再取得した応答')).toBeVisible();
+  });
+
+  it('scrolls the conversation to the latest response after regenerate completes', async () => {
+    const answered = session({
+      revision: 2,
+      messages: [
+        ...session().messages,
+        {
+          messageId: 'message-user',
+          role: 'user',
+          content: '再生成する発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+        {
+          messageId: 'message-old-response',
+          role: 'character',
+          content: '古い応答',
+          createdAt: '2026-07-18T00:02:00.000Z',
+        },
+      ],
+    });
+    const regenerated = session({
+      revision: 3,
+      messages: [
+        ...answered.messages.slice(0, -1),
+        {
+          messageId: 'message-new-response',
+          role: 'character',
+          content: '新しい応答',
+          createdAt: '2026-07-18T00:03:00.000Z',
+        },
+      ],
+    });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: answered });
+    apiMock.regenerateRoleplayStream.mockImplementationOnce(
+      async (_projectId, _sessionId, _body, handlers) => {
+        handlers.onDone(regenerated);
+      }
+    );
+
+    const { container } = render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    await screen.findByText('古い応答');
+    const chatArea = container.querySelector<HTMLElement>('[data-roleplay-chat-area="true"]')!;
+    Object.defineProperties(chatArea, {
+      scrollHeight: { configurable: true, value: 1_200 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, writable: true, value: 0 },
+    });
+    fireEvent.scroll(chatArea);
+
+    fireEvent.click(screen.getByRole('button', { name: '↻ 再生成' }));
+
+    expect(await screen.findByText('新しい応答')).toBeVisible();
+    await waitFor(() => expect(chatArea.scrollTop).toBe(1_200));
+  });
+
+  it('does not abort the active regenerate on a rapid double click', async () => {
+    const pending = session({
+      revision: 1,
+      messages: [
+        ...session().messages,
+        {
+          messageId: 'message-pending',
+          role: 'user',
+          content: '二重クリックで再送しない発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+      ],
+    });
+    const completed = session({
+      revision: 2,
+      messages: [
+        ...pending.messages,
+        {
+          messageId: 'message-response',
+          role: 'character',
+          content: '一度だけ取得した応答',
+          createdAt: '2026-07-18T00:02:00.000Z',
+        },
+      ],
+    });
+    let observedSignal: AbortSignal | undefined;
+    apiMock.getRoleplaySession.mockResolvedValue({ session: pending });
+    apiMock.regenerateRoleplayStream.mockImplementationOnce(
+      async (_projectId, _sessionId, _body, handlers, signal?: AbortSignal) => {
+        observedSignal = signal;
+        await new Promise((resolve) => window.setTimeout(resolve, 20));
+        handlers.onDone(completed);
+      }
+    );
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    const retryButton = await screen.findByRole('button', {
+      name: '↻ もう一度応答をもらう',
+    });
+    retryButton.click();
+    retryButton.click();
+
+    expect(apiMock.regenerateRoleplayStream).toHaveBeenCalledTimes(1);
+    expect(observedSignal?.aborted).toBe(false);
+    expect(await screen.findByText('一度だけ取得した応答')).toBeVisible();
+  });
+
+  it('recovers the UI when regenerate rejects unexpectedly', async () => {
+    const pending = session({
+      revision: 1,
+      messages: [
+        ...session().messages,
+        {
+          messageId: 'message-pending',
+          role: 'user',
+          content: '未応答の発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+      ],
+    });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: pending });
+    apiMock.regenerateRoleplayStream.mockRejectedValueOnce(new Error('再応答APIの予期しない失敗'));
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })
+    );
+
+    expect(await screen.findByText('再応答APIの予期しない失敗')).toBeVisible();
+    expect(await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })).toBeEnabled();
+  });
+
+  it('clears an obsolete memory error after session resync reports fresh', async () => {
+    const pending = session({
+      revision: 1,
+      messages: [
+        ...session().messages,
+        {
+          messageId: 'message-pending',
+          role: 'user',
+          content: '記憶の復旧後に再試行する発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+      ],
+      derivedMemoryStatus: {
+        status: 'fresh',
+        sourcePrefixFingerprint: 'fingerprint',
+        updatedAt: '2026-07-18T00:02:00.000Z',
+      },
+    });
+    apiMock.getRoleplaySession
+      .mockResolvedValueOnce({ session: pending })
+      .mockResolvedValueOnce({ session: { ...pending } });
+    apiMock.regenerateRoleplayStream.mockImplementationOnce(
+      async (_projectId, _sessionId, _body, handlers) => {
+        await handlers.onError({
+          error: '会話の記憶を再構築できていません。再試行してください。',
+          code: 'derived_memory_not_fresh',
+          retryable: true,
+        });
+      }
+    );
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })
+    );
+
+    await waitFor(() => expect(apiMock.getRoleplaySession).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        screen.queryByText('会話の記憶を再構築できていません。再試行してください。')
+      ).toBeNull()
+    );
+    expect(await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })).toBeEnabled();
+  });
+
+  it('keeps a memory error visible when session resync fails', async () => {
+    const pending = session({
+      revision: 1,
+      messages: [
+        ...session().messages,
+        {
+          messageId: 'message-pending',
+          role: 'user',
+          content: '再同期に失敗した発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+      ],
+      derivedMemoryStatus: {
+        status: 'fresh',
+        sourcePrefixFingerprint: 'fingerprint',
+        updatedAt: '2026-07-18T00:02:00.000Z',
+      },
+    });
+    apiMock.getRoleplaySession
+      .mockResolvedValueOnce({ session: pending })
+      .mockRejectedValueOnce(new Error('resync failed'));
+    apiMock.regenerateRoleplayStream.mockImplementationOnce(
+      async (_projectId, _sessionId, _body, handlers) => {
+        await handlers.onError({
+          error: '会話の記憶を再構築できていません。再試行してください。',
+          code: 'derived_memory_not_fresh',
+          retryable: true,
+        });
+      }
+    );
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })
+    );
+
+    expect(
+      await screen.findByText('会話の記憶を再構築できていません。再試行してください。')
+    ).toBeVisible();
+    await waitFor(() => expect(apiMock.getRoleplaySession).toHaveBeenCalledTimes(2));
+    expect(
+      screen.getByText('会話の記憶を再構築できていません。再試行してください。')
+    ).toBeVisible();
+  });
+
+  it('disables another-response while roleplay memory is rebuilding', async () => {
+    const pending = session({
+      revision: 1,
+      messages: [
+        ...session().messages,
+        {
+          messageId: 'message-pending',
+          role: 'user',
+          content: '未応答の発言',
+          createdAt: '2026-07-18T00:01:00.000Z',
+        },
+      ],
+      derivedMemoryStatus: {
+        status: 'pending',
+        sourcePrefixFingerprint: 'fingerprint',
+        updatedAt: '2026-07-18T00:02:00.000Z',
+      },
+    });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: pending });
+
+    render(
+      <RoleplayWorkspace
+        projectId="project-roleplay"
+        onBack={vi.fn()}
+        onOpenWorkSettings={vi.fn()}
+        onOpenTechSettings={vi.fn()}
+      />
+    );
+
+    expect(
+      await screen.findByRole('button', { name: '↻ もう一度応答をもらう' })
+    ).toBeDisabled();
+    expect(apiMock.regenerateRoleplayStream).not.toHaveBeenCalled();
   });
 
   it('registers a selected character phrase through the common NG API only', async () => {

@@ -406,10 +406,15 @@ export async function editRoleplayMessage(input: {
   source?: RoleplayMessageRevision['source'];
 }): Promise<{ session: RoleplaySessionView; memoryRebuildStarted: boolean }> {
   const result = await withSessionLock(input.sessionId, async () => {
-    const session = await loadRoleplaySessionOrThrow(input.projectId, input.sessionId);
+    let session = await loadRoleplaySessionOrThrow(input.projectId, input.sessionId);
     assertActiveSession(session);
     assertValidRevision(input.expectedSessionRevision);
     assertRevision(session, input.expectedSessionRevision);
+    const repairedSession = repairFreshMemoryFingerprintAfterSummary(session);
+    if (repairedSession !== session) {
+      session = repairedSession;
+      await withDataDirWrite(() => storage.writeRoleplaySession(session));
+    }
     if (
       session.derivedMemoryStatus &&
       (session.derivedMemoryStatus.status !== 'fresh' ||
@@ -564,10 +569,39 @@ export async function retryRoleplayMemoryRebuild(
   projectId: string,
   sessionId: string
 ): Promise<RoleplaySessionView> {
-  const session = await loadRoleplaySessionOrThrow(projectId, sessionId);
-  assertActiveSession(session);
-  if (session.derivedMemoryStatus?.status === 'fresh') return getRoleplaySession(projectId, sessionId);
-  await runRoleplayMemoryRebuild(projectId, sessionId, session.revision);
+  const prepared = await withSessionLock(sessionId, async () => {
+    const session = await loadRoleplaySessionOrThrow(projectId, sessionId);
+    assertActiveSession(session);
+    const sourcePrefixFingerprint = buildRoleplayPrefixFingerprint(session);
+    if (
+      session.derivedMemoryStatus?.status === 'fresh' &&
+      session.derivedMemoryStatus.sourcePrefixFingerprint === sourcePrefixFingerprint
+    ) {
+      return { revision: session.revision, rebuild: false };
+    }
+
+    // NOTE: rebuild の確定処理は pending のセッションだけを書き換える。失敗後の stale を
+    // そのまま再実行すると要約は成功しても保存されないため、手動再試行の入口で戻す。
+    const now = nowIso();
+    await withDataDirWrite(() =>
+      storage.writeRoleplaySession({
+        ...session,
+        derivedMemoryStatus: {
+          status: 'pending',
+          sourcePrefixFingerprint,
+          ...(session.derivedMemoryStatus?.editedMessageId
+            ? { editedMessageId: session.derivedMemoryStatus.editedMessageId }
+            : {}),
+          updatedAt: now,
+        },
+      })
+    );
+    return { revision: session.revision, rebuild: true };
+  });
+
+  if (prepared.rebuild) {
+    await runRoleplayMemoryRebuild(projectId, sessionId, prepared.revision);
+  }
   return getRoleplaySession(projectId, sessionId);
 }
 
@@ -595,9 +629,50 @@ function buildRoleplayPrefixFingerprint(session: RoleplaySession): string {
     ? session.messages.findIndex((message) => message.messageId === session.summaryThroughMessageId)
     : -1;
   const prefix = cursorIndex >= 0 ? session.messages.slice(0, cursorIndex + 1) : [];
+  return hashRoleplayMessagePrefix(prefix);
+}
+
+function hashRoleplayMessagePrefix(messages: RoleplayMessage[]): string {
   return createHash('sha256')
-    .update(prefix.map((message) => `${message.messageId}:${message.contentRevision ?? 0}`).join('\n'))
+    .update(messages.map((message) => `${message.messageId}:${message.contentRevision ?? 0}`).join('\n'))
     .digest('hex');
+}
+
+function repairFreshMemoryFingerprintAfterSummary(session: RoleplaySession): RoleplaySession {
+  const memoryStatus = session.derivedMemoryStatus;
+  if (memoryStatus?.status !== 'fresh') return session;
+  const sourcePrefixFingerprint = buildRoleplayPrefixFingerprint(session);
+  if (memoryStatus.sourcePrefixFingerprint === sourcePrefixFingerprint) return session;
+  // NOTE: 要約の更新時刻が memory marker より新しい場合だけ、旧版が要約カーソル更新後の
+  // fingerprint を保存しなかった不具合の候補になる。さらに marker が現在の会話内の
+  // 「現在カーソルより古いprefix」と一致することを確認し、編集由来の不整合を祝福しない。
+  const currentCursorIndex = session.summaryThroughMessageId
+    ? session.messages.findIndex((message) => message.messageId === session.summaryThroughMessageId)
+    : -1;
+  const matchesOlderPrefix =
+    currentCursorIndex >= 0 &&
+    Array.from({ length: currentCursorIndex + 1 }, (_, prefixIndex) => prefixIndex - 1).some(
+      (prefixIndex) =>
+        hashRoleplayMessagePrefix(
+          prefixIndex >= 0 ? session.messages.slice(0, prefixIndex + 1) : []
+        ) === memoryStatus.sourcePrefixFingerprint
+    );
+  if (
+    !session.conversationSummary ||
+    !session.summaryUpdatedAt ||
+    session.summaryUpdatedAt <= memoryStatus.updatedAt ||
+    !matchesOlderPrefix
+  ) {
+    return session;
+  }
+  return {
+    ...session,
+    derivedMemoryStatus: {
+      status: 'fresh',
+      sourcePrefixFingerprint,
+      updatedAt: session.summaryUpdatedAt,
+    },
+  };
 }
 
 function startRoleplayMemoryRebuild(projectId: string, sessionId: string, revision: number): void {
@@ -667,24 +742,7 @@ async function runRoleplayMemoryRebuildUnsafe(
     if (latest.revision !== expectedRevision || latest.derivedMemoryStatus?.status !== 'pending') return;
     const now = nowIso();
     if (outcome.kind === 'ok') {
-      const next: RoleplaySession = {
-        ...latest,
-        conversationSummary: outcome.conversationSummary,
-        summaryThroughMessageId: outcome.summaryThroughMessageId,
-        summaryUpdatedAt: now,
-        relationshipState: outcome.relationshipState,
-        ...(outcome.sessionCanonItems
-          ? {
-              sessionCanon: outcome.sessionCanonItems,
-              sessionCanonThroughMessageId: outcome.summaryThroughMessageId,
-            }
-          : {}),
-      };
-      next.derivedMemoryStatus = {
-        status: 'fresh',
-        sourcePrefixFingerprint: buildRoleplayPrefixFingerprint(next),
-        updatedAt: now,
-      };
+      const next = buildMergedSessionAfterSummary(latest, outcome);
       await withDataDirWrite(() => storage.writeRoleplaySession(next));
       return;
     }
@@ -1634,10 +1692,15 @@ interface TurnTicket {
 // user 保存が失敗した場合はフラグ未設定なので後片付け不要。
 async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
   return await withSessionLock(input.sessionId, async () => {
-    const session = await loadRoleplaySessionOrThrow(input.projectId, input.sessionId);
+    let session = await loadRoleplaySessionOrThrow(input.projectId, input.sessionId);
     assertValidRevision(input.revision);
     assertRevision(session, input.revision);
     assertActiveSession(session);
+    const repairedSession = repairFreshMemoryFingerprintAfterSummary(session);
+    if (repairedSession !== session) {
+      session = repairedSession;
+      await withDataDirWrite(() => storage.writeRoleplaySession(session));
+    }
     if (
       session.derivedMemoryStatus &&
       (session.derivedMemoryStatus.status !== 'fresh' ||
@@ -1981,6 +2044,7 @@ async function runNgPostprocess(input: {
   // ずれると、演じる前提が変わるうえプロバイダーのプロンプトキャッシュも共有できない。
   const systemInstructions = buildRoleplaySystemInstructionsWithReport({
     snapshot: input.session.contextSnapshot,
+    sessionCanon: input.session.sessionCanon,
     outputLength: input.outputLength,
     hasConversationSummary: Boolean(input.session.conversationSummary?.trim()),
   }).systemInstructions;
@@ -2057,6 +2121,7 @@ async function buildTurnPrompt(input: {
   // 初期状態を並べて送り続けると序盤の状態へ引き戻す圧力になる。
   const system = buildRoleplaySystemInstructionsWithReport({
     snapshot: session.contextSnapshot,
+    sessionCanon: session.sessionCanon,
     outputLength: input.outputLength,
     hasConversationSummary: Boolean(session.conversationSummary?.trim()),
   });
@@ -2201,7 +2266,9 @@ type SummaryOutcome =
       conversationSummary: string;
       summaryThroughMessageId: string;
       relationshipState?: RoleplayRelationshipState;
-      sessionCanonItems?: LatentCanonItem[];
+      // NOTE: session canon は要約カーソルと同じfold境界まで進める（設計書 6.3）。
+      // 項目が無い場合も空配列で必ず返す。
+      sessionCanonItems: LatentCanonItem[];
     };
 
 interface BudgetJudgement {
@@ -2291,10 +2358,7 @@ async function runSummaryIfNeeded(input: {
     sessionId: session.sessionId,
     expectedCursor: session.summaryThroughMessageId,
     expectedRevision: session.revision,
-    conversationSummary: outcome.conversationSummary,
-    summaryThroughMessageId: outcome.summaryThroughMessageId,
-    relationshipState: outcome.relationshipState,
-    sessionCanonItems: outcome.sessionCanonItems,
+    outcome,
   });
   if (!merged) {
     // 他経路が要約を進めた場合。最新セッションを取得しなおして再判定。
@@ -2357,10 +2421,7 @@ async function mergeSummaryIfCursorUnchanged(input: {
   sessionId: string;
   expectedCursor: string | undefined;
   expectedRevision: number;
-  conversationSummary: string;
-  summaryThroughMessageId: string;
-  relationshipState?: RoleplayRelationshipState;
-  sessionCanonItems?: LatentCanonItem[];
+  outcome: Extract<SummaryOutcome, { kind: 'ok' }>;
 }): Promise<RoleplaySession | null> {
   return await withSessionLock(input.sessionId, async () => {
     const latest = await storage.readRoleplaySession(input.projectId, input.sessionId);
@@ -2369,26 +2430,37 @@ async function mergeSummaryIfCursorUnchanged(input: {
       latest.summaryThroughMessageId !== input.expectedCursor ||
       latest.revision !== input.expectedRevision
     ) return null;
-    const summaryUpdatedAt = nowIso();
-    const next: RoleplaySession = {
-      ...latest,
-      conversationSummary: input.conversationSummary,
-      summaryThroughMessageId: input.summaryThroughMessageId,
-      summaryUpdatedAt,
-      relationshipState: input.relationshipState
-        ? { ...input.relationshipState, updatedAt: summaryUpdatedAt }
-        : latest.relationshipState,
-      // NOTE: session canonは要約カーソルと同じfold境界まで進める（設計書 8.2）。
-      ...(input.sessionCanonItems
-        ? {
-            sessionCanon: input.sessionCanonItems,
-            sessionCanonThroughMessageId: input.summaryThroughMessageId,
-          }
-        : {}),
-    };
+    const next = buildMergedSessionAfterSummary(latest, input.outcome);
     await withDataDirWrite(() => storage.writeRoleplaySession(next));
     return next;
   });
+}
+
+// NOTE: 要約成功outcomeの保存契約（設計書 6.5）。同期要約・バックグラウンド要約・
+// 手動編集後の記憶再構築で共有し、summary、relationship、session canon、両カーソル、
+// derivedMemoryStatus を1回の書き込みで進める。引数漏れで一部だけ進む状態を作らない。
+function buildMergedSessionAfterSummary(
+  latest: RoleplaySession,
+  outcome: Extract<SummaryOutcome, { kind: 'ok' }>
+): RoleplaySession {
+  const summaryUpdatedAt = nowIso();
+  const next: RoleplaySession = {
+    ...latest,
+    conversationSummary: outcome.conversationSummary,
+    summaryThroughMessageId: outcome.summaryThroughMessageId,
+    summaryUpdatedAt,
+    relationshipState: outcome.relationshipState
+      ? { ...outcome.relationshipState, updatedAt: summaryUpdatedAt }
+      : latest.relationshipState,
+    sessionCanon: outcome.sessionCanonItems,
+    sessionCanonThroughMessageId: outcome.summaryThroughMessageId,
+  };
+  next.derivedMemoryStatus = {
+    status: 'fresh',
+    sourcePrefixFingerprint: buildRoleplayPrefixFingerprint(next),
+    updatedAt: summaryUpdatedAt,
+  };
+  return next;
 }
 
 // NOTE: 実際の要約生成。afterCursor の古い方を conversationSummary へ畳む。
@@ -2433,6 +2505,9 @@ async function performSummary(
       })
     : '';
 
+  // NOTE: 初期 canon は照合候補としてID付きで渡す（設計書 6.3）。session canon に
+  // 上書きされていない候補の target は、会話内のevidenceがあるときだけsession-local化する。
+  const initialCanonCandidates = session.contextSnapshot.latentCanonSnapshot;
   const systemInstructions = [
     'あなたはロールプレイ会話の要約係です。',
     '与えられた会話履歴と既存の要約を統合し、続きの会話に必要な情報だけを残してください。',
@@ -2452,7 +2527,7 @@ async function performSummary(
     existingRelationshipState
       ? `【既存の関係性状態】\n${existingRelationshipState}`
       : '【既存の関係性状態】\nまだ記録なし',
-    buildSessionCanonPromptSection(session.sessionCanon),
+    buildSessionCanonPromptSection(session.sessionCanon, { initialCanonCandidates }),
     `【追加する会話】\n${foldedText}`,
     '【出力】',
     '指定されたJSONだけを出力してください。',
@@ -2484,15 +2559,12 @@ async function performSummary(
     conversationSummary: parsed.conversationSummary,
     summaryThroughMessageId: lastFolded.messageId,
     relationshipState: parsed.relationshipState,
-    ...(parsed.sessionCanonEntries
-      ? {
-          sessionCanonItems: applySessionCanonPatch(
-            session.sessionCanon ?? [],
-            parsed.sessionCanonEntries,
-            lastFolded.messageId
-          ),
-        }
-      : {}),
+    sessionCanonItems: applySessionCanonPatch(
+      session.sessionCanon ?? [],
+      parsed.sessionCanonEntries,
+      lastFolded.messageId,
+      { initialCanonCandidates, foldTargetText: foldedText }
+    ),
   };
 }
 
@@ -2502,7 +2574,7 @@ function parseSummaryOutput(
 ): {
   conversationSummary: string;
   relationshipState?: RoleplayRelationshipState;
-  sessionCanonEntries?: import('./roleplayCanonFoldService.js').SessionCanonEntry[];
+  sessionCanonEntries: import('./roleplayCanonFoldService.js').SessionCanonEntry[];
 } | null {
   const text = raw.trim();
   if (!text) return null;
@@ -2513,32 +2585,28 @@ function parseSummaryOutput(
     .trim();
   const objectStart = withoutFence.indexOf('{');
   const objectEnd = withoutFence.lastIndexOf('}');
-  if (objectStart >= 0 && objectEnd > objectStart) {
-    try {
-      const value: unknown = JSON.parse(withoutFence.slice(objectStart, objectEnd + 1));
-      if (isRecord(value) && typeof value.summary === 'string') {
-        const conversationSummary = value.summary
-          .trim()
-          .slice(0, ROLEPLAY_SUMMARY_MAX_CHARS);
-        if (!conversationSummary) return null;
-        return {
-          conversationSummary,
-          relationshipState: normalizeRelationshipState(
-            value.relationshipState,
-            previousRelationshipState
-          ),
-          ...(value.sessionCanon !== undefined
-            ? { sessionCanonEntries: parseSessionCanonEntries(value.sessionCanon) }
-            : {}),
-        };
-      }
-    } catch {
-      // NOTE: 旧モデルや既存テストは平文要約を返す。JSON化移行中も会話を止めない。
-    }
+  if (objectStart < 0 || objectEnd <= objectStart) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(withoutFence.slice(objectStart, objectEnd + 1));
+  } catch {
+    return null;
   }
-
-  const conversationSummary = text.slice(0, ROLEPLAY_SUMMARY_MAX_CHARS);
-  return conversationSummary ? { conversationSummary } : null;
+  if (!isRecord(value) || typeof value.summary !== 'string') return null;
+  const conversationSummary = value.summary.trim().slice(0, ROLEPLAY_SUMMARY_MAX_CHARS);
+  if (!conversationSummary) return null;
+  // NOTE: sessionCanon は空配列でも必須（設計書 6.3）。プロパティ欠落・配列以外・
+  // JSON全体の破損は要約成功として扱わない。summaryだけ先へ進めると、同じfold区間の
+  // session canon 抽出機会を失うため。配列内の不正項目だけは parse 側で捨てる。
+  if (!Array.isArray(value.sessionCanon)) return null;
+  return {
+    conversationSummary,
+    relationshipState: normalizeRelationshipState(
+      value.relationshipState,
+      previousRelationshipState
+    ),
+    sessionCanonEntries: parseSessionCanonEntries(value.sessionCanon),
+  };
 }
 
 function normalizeRelationshipState(
@@ -2679,14 +2747,14 @@ async function runBackgroundSummary(projectId: string, sessionId: string): Promi
   }
 
   // NOTE: マージ段階。カーソルが動いていない場合だけ保存する（stale ジョブ検知）。
+  // sessionCanonItems も summary と同時に渡し、一部だけ進んだ状態を作らない
+  // （設計書 6.5・テスト18/19）。
   const merged = await mergeSummaryIfCursorUnchanged({
     projectId,
     sessionId,
     expectedCursor: snapshot.summaryThroughMessageId,
     expectedRevision: snapshot.revision,
-    conversationSummary: outcome.conversationSummary,
-    summaryThroughMessageId: outcome.summaryThroughMessageId,
-    relationshipState: outcome.relationshipState,
+    outcome,
   });
   if (!merged) {
     // 別経路で要約が進んだ、あるいはセッションが消えた／アーカイブされた場合。捨てる。

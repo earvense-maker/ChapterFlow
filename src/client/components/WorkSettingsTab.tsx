@@ -1236,7 +1236,7 @@ export default function WorkSettingsTab({
                             )}
                           </dd>
                         </div>
-                        {(c.aliases?.length || c.traits?.length || c.secrets || c.currentState) && (
+                        {(c.aliases?.length || c.traits?.length || c.currentState) && (
                           <div>
                             <dt>詳細</dt>
                             <dd>
@@ -1244,7 +1244,6 @@ export default function WorkSettingsTab({
                                 {[
                                   c.aliases?.length ? `呼び名: ${c.aliases.join(' / ')}` : '',
                                   ...(c.traits ?? []).map((trait) => `${trait.label}: ${trait.text}`),
-                                  c.secrets ? `見せない面: ${c.secrets}` : '',
                                   c.currentState ? `${initialStateLabel}: ${c.currentState}` : '',
                                 ].filter(Boolean).join('\n')}
                               </span>
@@ -1304,11 +1303,6 @@ export default function WorkSettingsTab({
                       })
                     }
                     placeholder="呼び名（カンマ区切り）"
-                  />
-                  <textarea
-                    value={c.secrets || ''}
-                    onChange={(e) => updateCharacterDraft(i, { secrets: e.target.value })}
-                    placeholder="見せない面（秘密、建前、外では見せない一面など）"
                   />
                   <CharacterTraitsEditor
                     idPrefix={`work-character-${c.characterId}`}

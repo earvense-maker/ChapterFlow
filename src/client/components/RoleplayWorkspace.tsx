@@ -8,7 +8,7 @@
 //  - 生成中は生成中の吹き出しに streamingText を表示。
 //  - done 受信時に返却 session.messages で置換する。
 //  - error/停止時は暫定表示を破棄して GET で再同期する（409復旧）。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api, type RoleplayStreamHandlers } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import { useNotificationCenter } from './NotificationCenter';
@@ -40,6 +40,14 @@ const PINNED_ROLEPLAY_SETTING_CATEGORIES = new Set([
   'rpMood',
 ]);
 
+const RESOLVED_ROLEPLAY_MEMORY_ERRORS = new Set([
+  '会話の記憶を再構築してから、もう一度応答を取得してください。',
+  '会話の記憶を再構築できていません。再試行してください。',
+  '会話の記憶を再構築できていません。再試行してから編集してください。',
+  '会話の記憶を再構築できませんでした',
+  '会話の記憶を再構築できませんでした。再試行してください。',
+]);
+
 const ACTION_POLICY_LABELS: Record<RoleplayUserPersona['actionPolicy'], string> = {
   strict: '補完しない',
   conservative: '控えめに補完',
@@ -66,6 +74,7 @@ export default function RoleplayWorkspace({
   // NOTE: 保存前のNG検出・局所リライト中であることの表示（設計書 6.3）。
   const [postprocessing, setPostprocessing] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [shouldFocusMessageInput, setShouldFocusMessageInput] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [isRegenerate, setIsRegenerate] = useState(false);
   const [pendingReplaceMessageId, setPendingReplaceMessageId] = useState<string | null>(null);
@@ -83,6 +92,10 @@ export default function RoleplayWorkspace({
   const [notice, setNotice] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingMessageText, setEditingMessageText] = useState('');
+  const [editingMessageSize, setEditingMessageSize] = useState<{
+    bubbleWidth: number;
+    contentHeight: number;
+  } | null>(null);
   const [messageHistory, setMessageHistory] = useState<{
     messageId: string;
     originalContent: string;
@@ -90,19 +103,26 @@ export default function RoleplayWorkspace({
   } | null>(null);
   const [messageEditBusy, setMessageEditBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // NOTE: React state の反映前に二重クリックされても、現在の controller を古いものと
+  // 誤認して中断しないための同期ガード。abortRef は通信所有権、こちらはUI操作を守る。
+  const streamActiveRef = useRef(false);
+  const streamStartedAtRef = useRef(0);
   const mountedRef = useRef(true);
   const projectIdRef = useRef(projectId);
   const sessionLoadRequestRef = useRef(0);
   const noticeTimerRef = useRef<number | null>(null);
   const sentMessageRef = useRef('');
   const stopRequestedRef = useRef(false);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const chatAreaRef = useRef<HTMLDivElement | null>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const autoScrollRef = useRef(true);
   projectIdRef.current = projectId;
 
   useEffect(() => {
     mountedRef.current = true;
     abortRef.current = null;
+    streamActiveRef.current = false;
+    streamStartedAtRef.current = 0;
     stopRequestedRef.current = false;
     sentMessageRef.current = '';
     setIsStreaming(false);
@@ -116,6 +136,8 @@ export default function RoleplayWorkspace({
       sessionLoadRequestRef.current += 1;
       abortRef.current?.abort();
       abortRef.current = null;
+      streamActiveRef.current = false;
+      streamStartedAtRef.current = 0;
       if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
     };
   }, [projectId]);
@@ -220,11 +242,15 @@ export default function RoleplayWorkspace({
     // dedupeKey が同一のうちは NotificationCenter 側で重複を畳む。
   }, [notificationSettings, activeSession, notificationCenter, projectId]);
 
-  useEffect(() => {
-    if (autoScrollRef.current && messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
-  }, [activeSession?.messages.length, streamingText]);
+  const latestMessageId = activeSession?.messages[activeSession.messages.length - 1]?.messageId;
+  useLayoutEffect(() => {
+    const chatArea = chatAreaRef.current;
+    if (!autoScrollRef.current || !chatArea) return;
+    // NOTE: smooth scroll の途中で onScroll が発火すると、まだ下端から遠い瞬間を
+    // ユーザー操作と誤認して自動追従が切れる。会話欄自体を同期的に最下端へ合わせ、
+    // 再生成（件数不変）でも isStreaming / messageId の変化で完了後に再度揃える。
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }, [activeSession?.messages.length, isStreaming, latestMessageId, postprocessing, streamingText]);
 
   useEffect(() => {
     if (!activeSession || activeSession.derivedMemoryStatus?.status !== 'pending') return;
@@ -255,6 +281,16 @@ export default function RoleplayWorkspace({
     };
   }, [activeSession?.derivedMemoryStatus?.status, activeSession?.sessionId, projectId]);
 
+  useEffect(() => {
+    if (activeSession?.derivedMemoryStatus?.status !== 'fresh') return;
+    // NOTE: 再同期や再構築で fresh に戻っても、以前の 409 文言だけが上部に残ると
+    // 生成不能に見える。新しい session を受け取った時だけ、記憶由来の既知エラーを
+    // 消す。error 自体を依存にすると、古い fresh 表示のまま 409 を即座に隠してしまう。
+    setError((current) =>
+      current && RESOLVED_ROLEPLAY_MEMORY_ERRORS.has(current) ? null : current
+    );
+  }, [activeSession]);
+
   const currentCharacterName = activeSession?.characterName ?? '';
   const pinnedAppliedSettings =
     activeSession?.appliedSettings?.presets.filter((preset) =>
@@ -268,9 +304,18 @@ export default function RoleplayWorkspace({
     setIsStopping(false);
     setIsRegenerate(false);
     abortRef.current = null;
+    streamActiveRef.current = false;
+    streamStartedAtRef.current = 0;
     stopRequestedRef.current = false;
     sentMessageRef.current = '';
   }, []);
+
+  useEffect(() => {
+    if (!shouldFocusMessageInput || isStreaming) return;
+    setShouldFocusMessageInput(false);
+    const input = messageInputRef.current;
+    if (input && !input.disabled) input.focus();
+  }, [isStreaming, shouldFocusMessageInput]);
 
   const showStopNotice = useCallback((text: string) => {
     setNotice(text);
@@ -358,7 +403,21 @@ export default function RoleplayWorkspace({
   );
 
   const handleSend = useCallback(async () => {
-    if (!activeSession || !message.trim() || isStreaming || abortRef.current) return;
+    if (!activeSession || !message.trim() || isStreaming) return;
+    if (streamActiveRef.current) {
+      // NOTE: 同一イベントループ内の二重クリックは守りつつ、画面が待機表示へ戻ったのに
+      // ref だけ残った場合は次の明示操作で自己回復する。Fast Refresh や想定外例外で
+      // 生成ボタンが永続的に無反応になるのを避ける。
+      if (Date.now() - streamStartedAtRef.current < 500) return;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      streamActiveRef.current = false;
+      streamStartedAtRef.current = 0;
+    }
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     const text = message.trim();
     const replacePendingMessageId = pendingReplaceMessageId ?? undefined;
     // NOTE: 送信前 revision を控え、pre-header 失敗（user 未保存）と post-header 失敗
@@ -376,6 +435,8 @@ export default function RoleplayWorkspace({
     autoScrollRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
+    streamActiveRef.current = true;
+    streamStartedAtRef.current = Date.now();
     const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let firstChunkFired = false;
     const notifyClickTarget = { kind: 'project' as const, projectId, projectType: 'roleplay' as const };
@@ -385,6 +446,7 @@ export default function RoleplayWorkspace({
         if (
           mountedRef.current &&
           projectIdRef.current === projectId &&
+          abortRef.current === controller &&
           !stopRequestedRef.current
         ) {
           if (!firstChunkFired && chunk.trim() && notificationSettings) {
@@ -402,19 +464,31 @@ export default function RoleplayWorkspace({
       },
       // NOTE: 保存前の表現調整。ここで表示を差し替えず、待機中であることだけを伝える。
       onPostprocessing: () => {
-        if (mountedRef.current && projectIdRef.current === projectId) {
+        if (
+          mountedRef.current &&
+          projectIdRef.current === projectId &&
+          abortRef.current === controller
+        ) {
           setPostprocessing(true);
         }
       },
       // NOTE: 保存済み本文の先行通知。暫定表示を確定本文へ置き換える。
       // これを取りこぼしても onDone の session が最終正なので表示は必ず一致する。
       onReplace: (text) => {
-        if (mountedRef.current && projectIdRef.current === projectId) {
+        if (
+          mountedRef.current &&
+          projectIdRef.current === projectId &&
+          abortRef.current === controller
+        ) {
           setStreamingText(text);
         }
       },
       onDone: async (session) => {
-        if (!mountedRef.current || projectIdRef.current !== projectId) return;
+        if (
+          !mountedRef.current ||
+          projectIdRef.current !== projectId ||
+          abortRef.current !== controller
+        ) return;
         if (notificationSettings) {
           notificationCenter.notify(notificationSettings, {
             eventType: 'completed',
@@ -433,6 +507,7 @@ export default function RoleplayWorkspace({
         }
         setActiveSession(session);
         setPendingReplaceMessageId(null);
+        setShouldFocusMessageInput(true);
         resetStreamState();
         const list = await api.listRoleplaySessions(projectId).catch(() => null);
         if (list && mountedRef.current && projectIdRef.current === projectId) {
@@ -440,7 +515,11 @@ export default function RoleplayWorkspace({
         }
       },
       onError: async (err) => {
-        if (!mountedRef.current || projectIdRef.current !== projectId) return;
+        if (
+          !mountedRef.current ||
+          projectIdRef.current !== projectId ||
+          abortRef.current !== controller
+        ) return;
         const stoppedSend = err.code === 'aborted' && stopRequestedRef.current;
         const sentText = sentMessageRef.current || text;
         setStreamingText('');
@@ -497,13 +576,23 @@ export default function RoleplayWorkspace({
       },
     };
 
-    await api.sendRoleplayMessageStream(
-      projectId,
-      activeSession.sessionId,
-      { message: text, revision: preSendRevision, replacePendingMessageId },
-      handlers,
-      controller.signal
-    );
+    try {
+      await api.sendRoleplayMessageStream(
+        projectId,
+        activeSession.sessionId,
+        { message: text, revision: preSendRevision, replacePendingMessageId },
+        handlers,
+        controller.signal
+      );
+    } catch (err) {
+      // NOTE: 通常の通信失敗は clientApi が onError に正規化する。そこを越えて reject
+      // した場合も同じ再同期経路へ流し、同期ガードだけが残らないようにする。
+      await handlers.onError({
+        error: err instanceof Error ? err.message : '応答の取得に失敗しました。',
+        code: 'unexpected_client_error',
+        retryable: true,
+      });
+    }
   }, [
     activeSession,
     message,
@@ -544,7 +633,29 @@ export default function RoleplayWorkspace({
   }, [activeSession]);
 
   const handleRegenerate = useCallback(async () => {
-    if (!activeSession || !canRegenerate || isStreaming || abortRef.current) return;
+    if (!activeSession || !canRegenerate || isStreaming) return;
+    if (streamActiveRef.current) {
+      if (Date.now() - streamStartedAtRef.current < 500) return;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      streamActiveRef.current = false;
+      streamStartedAtRef.current = 0;
+    }
+    if (
+      activeSession.status !== 'active' ||
+      (activeSession.derivedMemoryStatus &&
+        activeSession.derivedMemoryStatus.status !== 'fresh')
+    ) {
+      setError('会話の記憶を再構築してから、もう一度応答を取得してください。');
+      return;
+    }
+    // NOTE: 通信断や開発時の画面更新で AbortController だけが残ると、従来は
+    // 見た目が有効なボタンから無言で return していた。UI が生成中でないなら
+    // その controller は古い処理なので破棄し、このクリックを新しい正として扱う。
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     if (pendingReplaceMessageId) {
       // 「もう一度応答をもらう」は保存済みの発言をそのまま再試行する操作。
       // 訂正用に復元した同じ文を新規入力として残さない。
@@ -553,6 +664,7 @@ export default function RoleplayWorkspace({
     }
     setStreamingText('');
     setPostprocessing(false);
+    setError(null);
     setIsStreaming(true);
     setIsStopping(false);
     setIsRegenerate(true);
@@ -561,6 +673,8 @@ export default function RoleplayWorkspace({
     autoScrollRef.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
+    streamActiveRef.current = true;
+    streamStartedAtRef.current = Date.now();
     const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let firstChunkFired = false;
     const notifyClickTarget = { kind: 'project' as const, projectId, projectType: 'roleplay' as const };
@@ -570,6 +684,7 @@ export default function RoleplayWorkspace({
         if (
           mountedRef.current &&
           projectIdRef.current === projectId &&
+          abortRef.current === controller &&
           !stopRequestedRef.current
         ) {
           if (!firstChunkFired && chunk.trim() && notificationSettings) {
@@ -587,19 +702,31 @@ export default function RoleplayWorkspace({
       },
       // NOTE: 保存前の表現調整。ここで表示を差し替えず、待機中であることだけを伝える。
       onPostprocessing: () => {
-        if (mountedRef.current && projectIdRef.current === projectId) {
+        if (
+          mountedRef.current &&
+          projectIdRef.current === projectId &&
+          abortRef.current === controller
+        ) {
           setPostprocessing(true);
         }
       },
       // NOTE: 保存済み本文の先行通知。暫定表示を確定本文へ置き換える。
       // これを取りこぼしても onDone の session が最終正なので表示は必ず一致する。
       onReplace: (text) => {
-        if (mountedRef.current && projectIdRef.current === projectId) {
+        if (
+          mountedRef.current &&
+          projectIdRef.current === projectId &&
+          abortRef.current === controller
+        ) {
           setStreamingText(text);
         }
       },
       onDone: async (session) => {
-        if (!mountedRef.current || projectIdRef.current !== projectId) return;
+        if (
+          !mountedRef.current ||
+          projectIdRef.current !== projectId ||
+          abortRef.current !== controller
+        ) return;
         if (notificationSettings) {
           notificationCenter.notify(notificationSettings, {
             eventType: 'completed',
@@ -618,7 +745,11 @@ export default function RoleplayWorkspace({
         }
       },
       onError: async (err) => {
-        if (!mountedRef.current || projectIdRef.current !== projectId) return;
+        if (
+          !mountedRef.current ||
+          projectIdRef.current !== projectId ||
+          abortRef.current !== controller
+        ) return;
         const stoppedRegenerate = err.code === 'aborted' && stopRequestedRef.current;
         if (stoppedRegenerate) {
           setError(null);
@@ -649,13 +780,26 @@ export default function RoleplayWorkspace({
       },
     };
 
-    await api.regenerateRoleplayStream(
-      projectId,
-      activeSession.sessionId,
-      { revision: activeSession.revision },
-      handlers,
-      controller.signal
-    );
+    try {
+      await api.regenerateRoleplayStream(
+        projectId,
+        activeSession.sessionId,
+        { revision: activeSession.revision },
+        handlers,
+        controller.signal
+      );
+    } catch (err) {
+      // NOTE: clientApi は通常 onError へ正規化するが、予期しない同期例外や
+      // 実装差し替えでも「生成中」のまま固まらないよう、画面境界でも回収する。
+      if (
+        mountedRef.current &&
+        projectIdRef.current === projectId &&
+        abortRef.current === controller
+      ) {
+        setError(err instanceof Error ? err.message : '応答の再取得に失敗しました。');
+        resetStreamState();
+      }
+    }
   }, [
     activeSession,
     canRegenerate,
@@ -701,6 +845,8 @@ export default function RoleplayWorkspace({
       setIsStopping(false);
       setIsRegenerate(false);
       abortRef.current = null;
+      streamActiveRef.current = false;
+      streamStartedAtRef.current = 0;
       stopRequestedRef.current = false;
       sentMessageRef.current = '';
       setActiveSession(null);
@@ -743,6 +889,7 @@ export default function RoleplayWorkspace({
       );
       setActiveSession(result.session);
       setEditingMessageId(null);
+      setEditingMessageSize(null);
       setMessageHistory(null);
       setNotice(
         result.memoryRebuildStarted
@@ -1040,6 +1187,8 @@ export default function RoleplayWorkspace({
               )}
 
             <div
+              ref={chatAreaRef}
+              data-roleplay-chat-area="true"
               style={styles.chatArea}
               onScroll={(e) => {
                 const el = e.currentTarget;
@@ -1068,7 +1217,14 @@ export default function RoleplayWorkspace({
                     style={{
                       ...styles.bubble,
                       ...(m.role === 'user' ? styles.userBubble : styles.characterBubble),
+                      ...(editingMessageId === m.messageId && editingMessageSize
+                        ? {
+                            width: `${editingMessageSize.bubbleWidth}px`,
+                            boxSizing: 'border-box' as const,
+                          }
+                        : {}),
                     }}
+                    data-roleplay-message-bubble="true"
                     // NOTE: onMouseUp でも即時判定する（selectionchange はブラウザによって
                     // 遅延・欠落する場合がある）。touch 系は selectionchange 経由で拾う。
                     onMouseUp={m.role === 'character' ? evaluateSelection : undefined}
@@ -1096,9 +1252,21 @@ export default function RoleplayWorkspace({
                           onChange={(event) => setEditingMessageText(event.target.value)}
                           disabled={messageEditBusy}
                           autoFocus
+                          style={{
+                            ...styles.messageEditTextarea,
+                            height: editingMessageSize
+                              ? `${editingMessageSize.contentHeight}px`
+                              : undefined,
+                          }}
                         />
                         <div>
-                          <button onClick={() => setEditingMessageId(null)} disabled={messageEditBusy}>
+                          <button
+                            onClick={() => {
+                              setEditingMessageId(null);
+                              setEditingMessageSize(null);
+                            }}
+                            disabled={messageEditBusy}
+                          >
                             キャンセル
                           </button>
                           <button className="primary" onClick={() => void saveRoleplayMessageEdit()} disabled={messageEditBusy}>
@@ -1111,13 +1279,28 @@ export default function RoleplayWorkspace({
                         <div
                           style={styles.bubbleContent}
                           data-roleplay-character-bubble={m.role === 'character' ? 'true' : undefined}
+                          data-roleplay-message-content="true"
                         >
                           {m.content}
                         </div>
                         {!isStreaming && activeSession.status === 'active' && (
                           <div style={styles.messageActions}>
                             <button
-                              onClick={() => {
+                              onClick={(event) => {
+                                const bubble = event.currentTarget.closest<HTMLElement>(
+                                  '[data-roleplay-message-bubble="true"]'
+                                );
+                                const content = bubble?.querySelector<HTMLElement>(
+                                  '[data-roleplay-message-content="true"]'
+                                );
+                                if (bubble && content) {
+                                  setEditingMessageSize({
+                                    bubbleWidth: bubble.getBoundingClientRect().width,
+                                    contentHeight: content.getBoundingClientRect().height,
+                                  });
+                                } else {
+                                  setEditingMessageSize(null);
+                                }
                                 setEditingMessageId(m.messageId);
                                 setEditingMessageText(m.content);
                                 setMessageHistory(null);
@@ -1153,7 +1336,6 @@ export default function RoleplayWorkspace({
                   </div>
                 </div>
               )}
-              <div ref={messagesEndRef} />
             </div>
 
             {messageHistory && (
@@ -1201,6 +1383,7 @@ export default function RoleplayWorkspace({
 
             <div style={styles.inputArea}>
               <textarea
+                ref={messageInputRef}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={(e) => {
@@ -1233,6 +1416,12 @@ export default function RoleplayWorkspace({
                     {canRegenerate && (
                       <button
                         onClick={handleRegenerate}
+                        disabled={
+                          activeSession.status !== 'active' ||
+                          activeSession.derivedMemoryStatus?.status === 'pending' ||
+                          activeSession.derivedMemoryStatus?.status === 'stale' ||
+                          messageEditBusy
+                        }
                         title="末尾のキャラ発言を作り直す、または直前ユーザー発言への応答をもう一度取り直す"
                       >
                         {regenerateLabel}
@@ -1974,6 +2163,14 @@ const styles: Record<string, React.CSSProperties> = {
   messageEditor: {
     display: 'grid',
     gap: '0.5rem',
+  },
+  messageEditTextarea: {
+    width: '100%',
+    minHeight: '6rem',
+    maxHeight: '70vh',
+    boxSizing: 'border-box',
+    resize: 'vertical',
+    lineHeight: 1.6,
   },
   memoryStatusBanner: {
     display: 'flex',

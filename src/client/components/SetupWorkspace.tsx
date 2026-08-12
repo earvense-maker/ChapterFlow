@@ -1474,7 +1474,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                     target.speechStyle = values.speechStyle.trim() || undefined;
                     target.relationshipNotes = values.relationshipNotes.trim() || undefined;
                     target.traits = values.traits.length > 0 ? values.traits : undefined;
-                    target.secrets = values.secrets.trim() || undefined;
                     // NOTE: roleplay 用途のみ更新。novel では onSave の values に
                     // greeting/dialogueExamples が含まれない（undefined）ため
                     // 既存値をそのまま保持する。
@@ -1506,7 +1505,6 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
                       speechStyle: values.speechStyle.trim() || undefined,
                       relationshipNotes: values.relationshipNotes.trim() || undefined,
                       traits: values.traits.length > 0 ? values.traits : undefined,
-                      secrets: values.secrets.trim() || undefined,
                       greeting:
                         values.greeting !== undefined && values.greeting.trim()
                           ? values.greeting.trim()

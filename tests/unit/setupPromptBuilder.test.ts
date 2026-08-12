@@ -236,7 +236,6 @@ describe('setupPromptBuilder', () => {
             speechStyle: '',
             relationshipNotes: '',
             traits: [],
-            secrets: '',
             source: 'llm',
             status: 'active',
             createdAt: now,
@@ -342,7 +341,9 @@ describe('setupPromptBuilder', () => {
     expect(userPrompt).toContain('相談29');
   });
 
-  it('uses free-form traits and a separate secrets key in both commit prompt variants', () => {
+  // NOTE: 「見せない面」の独立キーは廃止した（設計書 5.2）。commit prompt は traits だけを
+  // 要求し、secrets キーや旧 want/fear キーを要求しない。
+  it('requests free-form traits and no secrets key in both commit prompt variants', () => {
     const novel = buildSetupCommitPrompt({
       session: baseSession(),
       presetIdsByCategory,
@@ -354,9 +355,9 @@ describe('setupPromptBuilder', () => {
 
     for (const prompt of [novel.userPrompt, roleplay.userPrompt]) {
       expect(prompt).toContain('traits は最大4件');
-      expect(prompt).toContain('独立した secrets');
       expect(prompt).toContain('"traits"');
-      expect(prompt).toContain('"secrets"');
+      expect(prompt).not.toContain('"secrets"');
+      expect(prompt).not.toContain('独立した secrets');
       expect(prompt).not.toContain('"want"');
       expect(prompt).not.toContain('"fear"');
     }

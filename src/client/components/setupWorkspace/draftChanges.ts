@@ -130,7 +130,6 @@ export function collectDraftChanges(
         item.speechStyle ?? '',
         item.relationshipNotes ?? '',
         item.traits ?? [],
-        item.secrets ?? '',
         // NOTE: roleplay の要である初回メッセージ・セリフ例も差分判定に含める。
         // 含めないと、この2欄だけが更新されたターンで更新バッジが出ない。
         item.greeting ?? '',

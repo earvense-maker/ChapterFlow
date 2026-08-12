@@ -31,7 +31,6 @@ export function isValidCharacterInput(value: unknown): value is LegacyCharacterI
     optionalStringArray(value.aliases) &&
     optionalString(value.speechStyle) &&
     optionalString(value.relationshipNotes) &&
-    optionalString(value.secrets) &&
     optionalString(value.want) &&
     optionalString(value.fear) &&
     optionalCharacterTraits(value.traits) &&
@@ -84,7 +83,6 @@ export function normalizeCharacterForStorage(value: LegacyCharacterInput): Chara
   if (value.aliases !== undefined) next.aliases = value.aliases;
   if (value.speechStyle !== undefined) next.speechStyle = value.speechStyle;
   if (value.relationshipNotes !== undefined) next.relationshipNotes = value.relationshipNotes;
-  if (value.secrets !== undefined) next.secrets = value.secrets;
   if (traits.length > 0) next.traits = traits;
   if (value.currentState !== undefined) next.currentState = value.currentState;
   if (greeting !== undefined) next.greeting = greeting;

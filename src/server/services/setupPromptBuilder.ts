@@ -16,7 +16,7 @@ function purposeOf(session: SetupSession): SetupPurpose {
 }
 
 // NOTE: 相談の指示は「会話の質」だけを扱う。以前はここに draft のフィールド名
-// （traits / secrets / suggestedActions / charactersAdd …）と出力形式が混ざっていて、
+// （traits / suggestedActions / charactersAdd …）と出力形式が混ざっていて、
 // モデルは1ターンごとに「会話する」と「12フィールドの構造化抽出をルール付きでやる」を
 // 同時にやらされていた。帳簿の指示は buildSetupDraftExtractionPrompt へ移し、
 // 設定草案への書き出しは利用者が明示的に実行したときだけ走らせる。
@@ -134,7 +134,6 @@ export function buildSetupDraftExtractionPrompt(input: {
                 { label: '会話で望むこと', text: 'この会話や相手に期待していること' },
                 { label: '距離の詰め方', text: '親しくなるときの振る舞い' },
               ],
-              secrets: '見せない面（必要な場合だけ）',
               greeting: '会話開始時にキャラ側から発する1〜3文の挨拶',
               dialogueExamples: [
                 'そのキャラが実際に発する台詞1',
@@ -187,7 +186,6 @@ export function buildSetupDraftExtractionPrompt(input: {
                 { label: 'こだわり', text: 'その人物らしい判断の軸' },
                 { label: '意地の張り方', text: '関係や展開を動かす反応' },
               ],
-              secrets: '見せない面（必要な場合だけ）',
             },
           ],
           charactersUpdate: [
@@ -222,7 +220,6 @@ export function buildSetupDraftExtractionPrompt(input: {
     '- dialogueExamples は必ずそのキャラが発する短い台詞形式で入れる（説明文にしない）。',
     '- 人物には会話を動かす traits を2〜4個入れる。ラベルは自由に選び、望み・恐れを固定で要求しない。',
     '- 軽い役には traits を無理に詰めず、0〜2個で構わない。',
-    '- secrets は必要な人物だけに入れ、全員へ付けない。',
     '- scenarioSeedsAdd はプロットや事件案ではなく、会話が始まる舞台（場所・時間・状況）だけを入れる。',
     '- userPersonaUpdate はユーザー本人の設定だけを入れる。キャラ側の情報を混ぜない。',
     '- userPersonaUpdate に入れられるのは、ユーザーが選んだ・答えた内容だけである。勝手に名前や年齢を決めない。',
@@ -253,7 +250,6 @@ export function buildSetupDraftExtractionPrompt(input: {
     '- 名前、年齢、過去、事件の真相などは、ユーザーが決めていなければ undecidedAdd か candidatesAdd に入れる。',
     '- 主要人物には traits を2〜4個入れる。ラベルは物語の毛色に合わせて自由に決める（「望み」「恐れ」「こだわり」「意地の張り方」など）。ユーザーが明言していない場合は候補として提案してよい。',
     '- 軽い役（supporting / other）には traits を無理に詰めない。0〜2個で足りることが多い。',
-    '- secrets は、その人物や物語にとって必要な場合だけ入れる。全員に付ける必要はない。',
     '- 同じ内容は再送しない。会話に出たのに草案へ入っていない分だけを返す。',
     '- ユーザーが草案へ書いた内容を変更・撤回した場合は、新情報で上書きする。'
       + '確認・候補・未確定・人物は、該当項目の [id] を使う Update 系'
@@ -368,7 +364,7 @@ function compactDraftForPrompt(draft: SetupDraft): string {
   pushList('未確定', active.undecided.map((item) => `[${item.id}] ${item.text}`));
   // NOTE: 人物はフィールドごとに行を分ける。1行へ ' | ' で畳んでいたところ、
   // 実機で「description の全文を返せ」と指示したモデルが、畳んだ行そのもの
-  // （name: desc | traits | secrets）を description へ書き戻した。どこまでが
+  // （name: desc | traits）を description へ書き戻した。どこまでが
   // description なのか表記から判別できないと、書き戻しのたびに欄が混ざる。
   for (const character of active.characters) {
     lines.push(`人物[${character.id}] role=${character.role}`);
@@ -379,7 +375,6 @@ function compactDraftForPrompt(draft: SetupDraft): string {
       .map((trait) => `${trait.label}=${trait.text}`)
       .join('、');
     if (traits) lines.push(`  traits: ${traits}`);
-    if (character.secrets?.trim()) lines.push(`  secrets: ${character.secrets.trim()}`);
   }
   pushList('関係の火種', active.relationshipSeeds);
   pushList('世界観', active.world);
@@ -526,7 +521,6 @@ function buildCommitUserPrompt(input: {
           '- defaultUserPersona.knownFacts には「キャラがユーザーについて既に知っていること」だけを書く。ユーザーの内面や願望を勝手に決めない。',
           '- traits は最大4件、各項目は { label, text } とする。labelは12文字以内、textは200文字以内にする。',
           '- 主要人物には会話を動かす traits を2〜4件、軽い役には必要な0〜2件を入れる。',
-          '- 「見せない面」「秘密」は traits のラベルにせず、必要な場合だけ独立した secrets に入れる。',
           '- storyState は最小構成（currentSituation と characterStates のみ、importantEvents/openThreads は空）にする。',
           '- world は foundation と initialSituation の 2 フィールドで返す。片方が空でよいがフィールドは省略しない。',
           '- customSystemPrompt にはキャラの振る舞いだけを短く書く。作品メモを詰め込まない。',
@@ -542,7 +536,6 @@ function buildCommitUserPrompt(input: {
           '- world は foundation と initialSituation の 2 フィールドで返す。片方が空でよいがフィールドは省略しない。',
           '- traits は最大4件、各項目は { label, text } とする。labelは12文字以内、textは200文字以内にする。',
           '- 主人公と物語の弧を背負う人物には traits を2〜4件、軽い役には必要な0〜2件を入れる。',
-          '- 「見せない面」「秘密」は traits のラベルにせず、必要な場合だけ独立した secrets に入れる。',
         ].join('\n');
 
   const previewLabel =
@@ -601,7 +594,6 @@ function buildNovelCommitOutputExample(session: SetupSession): unknown {
           { label: 'こだわり', text: 'その人物らしい判断の軸' },
           { label: '意地の張り方', text: '関係や展開を動かす反応' },
         ],
-        secrets: '見せない面（必要な場合だけ）',
         currentState: '開始時点の状態',
       },
     ],
@@ -663,7 +655,6 @@ function buildRoleplayCommitOutputExample(session: SetupSession): unknown {
           { label: '会話で望むこと', text: 'この会話や相手に期待していること' },
           { label: '距離の詰め方', text: '親しくなるときの振る舞い' },
         ],
-        secrets: '見せない面（必要な場合だけ）',
         currentState: '会話開始時点の状態',
         greeting: '会話開始時にキャラから発する1〜3文の挨拶',
         dialogueExamples: [

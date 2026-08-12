@@ -15,7 +15,6 @@ export interface Character {
   description: string;
   speechStyle?: string;
   relationshipNotes?: string;
-  secrets?: string;
   traits?: CharacterTrait[];
   // NOTE: novel では物語開始時点、roleplay では会話開始時点の状態。
   // 進行中の状態は StoryState.characterStates で管理する。

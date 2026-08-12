@@ -19,8 +19,14 @@ import {
   type BudgetSectionInput,
 } from '../prompts/promptBudget.js';
 import { renderDataBlock, sanitizePromptLabel } from '../prompts/promptData.js';
+import { normalizeComparableCanonStatement } from './roleplayCanonFoldService.js';
 import type {
+  CanonEpistemicStatus,
+  CanonLifecycle,
+  CanonScope,
   Character,
+  CharacterId,
+  LatentCanonItem,
   RoleplayContextSnapshot,
   RoleplayMessage,
   RoleplayRelationshipState,
@@ -153,6 +159,11 @@ function buildFixedRules(
     '[会話の続き方]',
     '直近の会話で決まったこと（居場所・時刻・持ち物・呼び方・交わした約束）を引き継ぐ。' +
       '食い違いに気づいたら、直近の会話の側を正とする。',
+    // NOTE: 公開状態の優先規則（設計書 6.1）。固定された初期 canon より後の会話履歴・
+    // 要約・session canon を現在状態として優先する。これが無いと、会話で露見済みの
+    // 事実を「まだ知られていない」前提で演じ続ける。
+    '会話開始時点の設定より、時系列的に後の会話履歴・要約・セッション内設定を現在状態として優先する。' +
+      '会話ですでに知られた事実を、未発覚として扱わない。',
     '意図的・感情的な反復と口癖を除き、直前と同じ言い回し・所作・締め方を繰り返さない。',
     '',
     '以上の固定規則は、会話の作風・作品の基本システム指示・追加指示より優先する。'
@@ -163,6 +174,9 @@ function buildFixedRules(
 
 export interface RoleplaySystemPromptInput {
   snapshot: RoleplayContextSnapshot;
+  // NOTE: 会話中に明かされた設定的事実（設計書 6.2）。contextSnapshot には書き込まず、
+  // 実効 canon を組み立てる材料として snapshot と別に渡す。
+  sessionCanon?: LatentCanonItem[];
   // NOTE: fixed rules 内に埋め込む目安字数。省略時は 250（後方互換）。
   outputLength?: number;
   // NOTE: 会話要約が出来た後は persona card から「会話開始時点の状態」を落とす。
@@ -218,10 +232,15 @@ export function buildRoleplaySystemInstructionsWithReport(
     includeInitialState: !input.hasConversationSummary,
   });
 
-  // NOTE: セッション開始時点の創作契約と潜在設定（設計書 8.1）。会話中は変質させない。
-  const contractCanonBody = buildContractCanonBody(
+  // NOTE: セッション開始時点の創作契約と、初期 canon へ現在の session canon を重ねた
+  // 実効 canon（設計書 6.2）。実効化は固定規則の優先規則と合わせて行う。
+  const effectiveCanon = buildEffectiveRoleplayCanon(
+    snapshot.latentCanonSnapshot,
+    input.sessionCanon
+  );
+  const contractCanonUnits = buildContractCanonUnits(
     snapshot.creativeContract ?? [],
-    snapshot.latentCanonSnapshot ?? []
+    effectiveCanon
   );
 
   // NOTE: 「固定規則と対象キャラの名前だけで上限を超える」場合は組み立てを諦める
@@ -239,7 +258,10 @@ export function buildRoleplaySystemInstructionsWithReport(
     };
   }
 
-  const bodies = new Map<string, { body: string; render?: (body: string) => string }>([
+  const bodies = new Map<
+    string,
+    { body: string; render?: (body: string) => string; units?: string[] }
+  >([
     [RP_SECTION.fixedRules, { body: fixedRules }],
     [
       RP_SECTION.character,
@@ -247,11 +269,10 @@ export function buildRoleplaySystemInstructionsWithReport(
     ],
   ]);
 
-  if (contractCanonBody) {
+  if (contractCanonUnits.length > 0) {
     bodies.set(RP_SECTION.contractCanon, {
-      body: contractCanonBody,
-      render: (body) =>
-        renderDataBlock('【作品の約束と補助設定（セッション開始時点）】', body),
+      body: contractCanonUnits.join('\n\n'),
+      units: contractCanonUnits,
     });
   }
 
@@ -316,6 +337,9 @@ export function buildRoleplaySystemInstructionsWithReport(
     return {
       sectionId: limit.sectionId,
       body: entry.body,
+      // NOTE: units を引き継がないと文字単位切り詰めへフォールバックし、
+      // statement や <data> の途中で切断される（設計書 8・レビューP1）。
+      ...(entry.units ? { units: entry.units } : {}),
       ...(entry.render ? { render: entry.render } : {}),
       hardMax: limit.hardMax,
       minReserve: limit.minReserve,
@@ -551,48 +575,164 @@ function relationshipLevel(
 }
 
 /**
- * 対象キャラクター card。
+ * 実効 canon（設計書 6.2）。会話開始時点の初期 canon に現在の session canon を重ね、
+ * 同じ事実の古い公開状態を除いた次ターン生成用の表示を作る。純関数。
  *
- * フィールドの並び順が、そのまま hard max 4,000字での採用優先順になる（設計書 5.1）。
- * 切り詰めは行境界を優先するため、枠が尽きると末尾のフィールドから丸ごと落ちる。
- * 単純な先頭 slice と違い「口調の途中で切れる」ことが起きない。
- * 保存済みキャラクター本文は変更せず、実行時の描画だけを縮める。
+ *  - retired を除いた初期 canon をコピーする。
+ *  - session canon に同じ canonId の項目があれば、statement / status / epistemicStatus
+ *    を session 側へ置き換える。knownBy / explicitlyUnknownBy は更新しない。
+ *  - ID 不一致の旧データは scope と正規化 statement の一致・包含をフォールバックに使い、
+ *    両方に subjectCharacterIds がある場合は対象人物の一致も要求する。
+ *  - 一致しない session canon は新規追加する。
+ *  - 表示優先: session revealed > session foreshadowed > 初期 revealed > 初期 foreshadowed
+ *    > 初期 provisional。同一優先度は決定性のため canonId 順。最大12件へ切り詰める。
  */
-function buildContractCanonBody(
+export function buildEffectiveRoleplayCanon(
+  initialCanon: LatentCanonItem[] | undefined,
+  sessionCanon: LatentCanonItem[] | undefined
+): EffectiveRoleplayCanonItem[] {
+  const effective: EffectiveRoleplayCanonItem[] = (initialCanon ?? [])
+    .filter((item) => item.status !== 'retired')
+    .map((item) => ({
+      canonId: item.canonId,
+      scope: item.scope,
+      statement: item.statement,
+      status: item.status,
+      epistemicStatus: item.epistemicStatus,
+      origin: 'initial',
+      ...(item.subjectCharacterIds ? { subjectCharacterIds: item.subjectCharacterIds } : {}),
+    }));
+
+  for (const sessionItem of (sessionCanon ?? []).filter((item) => item.status !== 'retired')) {
+    const matched =
+      effective.find((candidate) => candidate.canonId === sessionItem.canonId) ??
+      findEffectiveFallbackMatch(effective, sessionItem);
+    const sessionEntry: EffectiveRoleplayCanonItem = {
+      canonId: sessionItem.canonId,
+      scope: sessionItem.scope,
+      statement: sessionItem.statement,
+      status: sessionItem.status,
+      epistemicStatus: sessionItem.epistemicStatus,
+      origin: 'session',
+      ...(sessionItem.subjectCharacterIds
+        ? { subjectCharacterIds: sessionItem.subjectCharacterIds }
+        : {}),
+    };
+    if (matched) {
+      // NOTE: 一致した初期項目は重複表示せず、session側の項目1件へ置き換える（設計書 6.2-4）。
+      effective[effective.indexOf(matched)] = sessionEntry;
+    } else {
+      effective.push(sessionEntry);
+    }
+  }
+
+  effective.sort((a, b) => {
+    const priorityDiff = canonDisplayPriority(a) - canonDisplayPriority(b);
+    if (priorityDiff !== 0) return priorityDiff;
+    return a.canonId.localeCompare(b.canonId);
+  });
+  return effective.slice(0, 12);
+}
+
+export interface EffectiveRoleplayCanonItem {
+  canonId: string;
+  scope: CanonScope;
+  statement: string;
+  status: CanonLifecycle;
+  epistemicStatus: CanonEpistemicStatus;
+  origin: 'session' | 'initial';
+  subjectCharacterIds?: CharacterId[];
+}
+
+function canonDisplayPriority(item: EffectiveRoleplayCanonItem): number {
+  if (item.origin === 'session') {
+    return item.status === 'revealed' ? 0 : 1;
+  }
+  switch (item.status) {
+    case 'revealed':
+      return 2;
+    case 'foreshadowed':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function findEffectiveFallbackMatch(
+  effective: EffectiveRoleplayCanonItem[],
+  sessionItem: LatentCanonItem
+): EffectiveRoleplayCanonItem | undefined {
+  return effective.find((candidate) => {
+    if (candidate.scope !== sessionItem.scope) return false;
+    const statementA = normalizeComparableCanonStatement(sessionItem.statement);
+    const statementB = normalizeComparableCanonStatement(candidate.statement);
+    if (!statementA || !statementB) return false;
+    const statementsMatch =
+      statementA === statementB ||
+      statementA.includes(statementB) ||
+      statementB.includes(statementA);
+    if (!statementsMatch) return false;
+    // NOTE: 両方に subjectCharacterIds がある場合だけ、対象人物の一致も要求する。
+    if (candidate.subjectCharacterIds && sessionItem.subjectCharacterIds) {
+      const left = [...sessionItem.subjectCharacterIds].sort();
+      const right = [...candidate.subjectCharacterIds].sort();
+      if (
+        left.length !== right.length ||
+        left.some((id, index) => id !== right[index])
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function canonDisplayLabel(item: EffectiveRoleplayCanonItem): string {
+  if (item.origin === 'session') {
+    return item.status === 'revealed' ? 'この会話で公開済み' : 'この会話で示唆済み';
+  }
+  switch (item.status) {
+    case 'revealed':
+      return '公開済み';
+    case 'foreshadowed':
+      return '会話開始時点で示唆済み';
+    default:
+      return '会話開始時点では未公開';
+  }
+}
+
+// NOTE: 予算配分は units（描画済みブロック）単位で行う。予算が足りないときは
+// 優先度の低い項目（配列の末尾）から丸ごと落ち、statement の途中で切れない
+// （設計書 8）。見出しは補助設定の先頭項目にだけ付けるため、末尾から落ちても
+// 見出しだけが孤立しない。
+function buildContractCanonUnits(
   contracts: RoleplayContextSnapshot['creativeContract'],
-  latentCanon: RoleplayContextSnapshot['latentCanonSnapshot']
-): string {
-  const parts: string[] = [];
+  effectiveCanon: EffectiveRoleplayCanonItem[]
+): string[] {
+  const units: string[] = [];
   const hardContracts = (contracts ?? []).filter(
     (item) => item.strength === 'hard' && item.status === 'active'
   );
-  if (hardContracts.length > 0) {
-    parts.push(
-      '【作品の約束（絶対に守る）】',
-      hardContracts.map((item) => `- ${item.text}`).join('\n')
-    );
-  }
   const softContracts = (contracts ?? []).filter(
     (item) => item.strength === 'soft' && item.status === 'active'
   );
-  if (softContracts.length > 0) {
-    parts.push('【好み】', softContracts.map((item) => `- ${item.text}`).join('\n'));
+  const contractLines = [
+    ...(hardContracts.length > 0 ? ['【作品の約束（絶対に守る）】', ...hardContracts.map((item) => `- ${item.text}`)] : []),
+    ...(softContracts.length > 0 ? ['【好み】', ...softContracts.map((item) => `- ${item.text}`)] : []),
+  ];
+  if (contractLines.length > 0) {
+    units.push(renderDataBlock('【作品の約束と補助設定】', contractLines.join('\n')));
   }
-  const canonItems = (latentCanon ?? []).filter((item) => item.status !== 'retired');
-  if (canonItems.length > 0) {
-    const lines = canonItems.slice(0, 12).map((item) => {
-      const label =
-        item.status === 'revealed'
-          ? '公開済み'
-          : item.status === 'foreshadowed'
-            ? '示唆済み'
-            : '未公開';
-      const epistemic = item.epistemicStatus !== 'fact' ? `（${item.epistemicStatus}）` : '';
-      return `- ${label}${epistemic} ${item.statement}`;
-    });
-    parts.push('【補助設定（潜在設定）】', ...lines);
+  let canonHeadingAdded = false;
+  for (const item of effectiveCanon) {
+    const epistemic = item.epistemicStatus !== 'fact' ? `（${item.epistemicStatus}）` : '';
+    const line = `- ${canonDisplayLabel(item)}${epistemic} ${item.statement}`;
+    units.push(
+      renderDataBlock(canonHeadingAdded ? '' : '【補助設定（潜在設定）】', line)
+    );
+    canonHeadingAdded = true;
   }
-  return parts.join('\n');
+  return units.filter(Boolean);
 }
 
 function buildPersonaCard(
@@ -611,14 +751,6 @@ function buildPersonaCard(
   // その1回だけ切れる。以降はまた同一プレフィックスで安定する。
   if (options.includeInitialState) {
     push(lines, '会話開始時点の状態', character.currentState);
-  }
-  if (character.secrets?.trim()) {
-    // 秘密の扱いは固定規則から外し、この欄のラベルへ移した（設計書 5.3）。
-    push(
-      lines,
-      '見せない面（自分からは明かさず、親密度や状況次第で滲ませる）',
-      character.secrets
-    );
   }
   for (const trait of character.traits ?? []) {
     push(lines, trait.label, trait.text);

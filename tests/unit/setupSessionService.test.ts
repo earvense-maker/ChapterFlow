@@ -71,6 +71,7 @@ describe('setupSessionService', () => {
     });
   });
 
+  // NOTE: 旧 `secret` フィールドとロックは読み込み時に無視する（設計書 5.2・7.3）。
   it('migrates v1 character fields to v2 when reading a stored setup session', async () => {
     const result = await setupSessionService.createSetupSession({});
     createdSessionIds.push(result.sessionId);
@@ -107,9 +108,10 @@ describe('setupSessionService', () => {
         { label: '望み', text: '故郷へ帰りたい' },
         { label: '恐れ', text: '仲間を失うこと' },
       ],
-      secrets: '王家の血を引く',
-      lockedFields: ['traits', 'secrets'],
+      lockedFields: ['traits'],
     });
+    expect(loaded?.draft.characters[0]).not.toHaveProperty('secrets');
+    expect(loaded?.draft.characters[0]).not.toHaveProperty('secret');
   });
 
   it('reports unsupported setup schemas and omits them from the session list', async () => {

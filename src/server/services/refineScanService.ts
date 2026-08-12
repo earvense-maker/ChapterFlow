@@ -468,7 +468,6 @@ function createStaticInputHash(input: {
       description: normalizeHashText(character.description),
       speechStyle: normalizeHashText(character.speechStyle ?? ''),
       relationshipNotes: normalizeHashText(character.relationshipNotes ?? ''),
-      secrets: normalizeHashText(character.secrets ?? ''),
       traits: (character.traits ?? []).map((trait) => ({
         label: normalizeHashText(trait.label),
         text: normalizeHashText(trait.text),
@@ -708,9 +707,6 @@ function renderCharactersForPrompt(characters: Character[]): string {
       }
       if ((c.relationshipNotes ?? '').trim()) {
         lines.push(`  relationshipNotes: ${c.relationshipNotes!.trim()}`);
-      }
-      if ((c.secrets ?? '').trim()) {
-        lines.push(`  secrets: ${c.secrets!.trim()}`);
       }
       for (const trait of c.traits ?? []) {
         lines.push(`  ${trait.label}: ${indentContinuation(trait.text, 4)}`);

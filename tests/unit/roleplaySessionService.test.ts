@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeepSeekAdapter } from '../../src/server/adapters/deepseekAdapter';
 import { GeminiAdapter } from '../../src/server/adapters/geminiAdapter';
@@ -94,6 +95,52 @@ async function collectStream(gen: AsyncGenerator<roleplayService.RoleplayStreamE
     }
   }
   return { chunks, postprocessingCount, replacements, done, errors };
+}
+
+async function waitForCondition(
+  check: () => Promise<boolean>,
+  timeoutMs = 8_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('condition was not met within timeout');
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function seedMessages(
+  projectId: string,
+  sessionId: string,
+  count: number,
+  prefix: string
+): Promise<void> {
+  const stored = await storage.readRoleplaySession(projectId, sessionId);
+  if (!stored) throw new Error('Roleplay session not found');
+  const messages = Array.from({ length: count }, (_, i) => ({
+    messageId: `${prefix}-${i}`,
+    role: (i % 2 === 0 ? 'user' : 'character') as 'user' | 'character',
+    content: `${prefix}の会話 ${i}`,
+    createdAt: `2026-07-04T00:${String(Math.floor(i / 2)).padStart(2, '0')}:00.000Z`,
+  }));
+  await storage.writeRoleplaySession({
+    ...stored,
+    messages: [...stored.messages, ...messages],
+  });
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 beforeEach(() => {
@@ -259,6 +306,148 @@ describe('roleplay message manual editing', () => {
     await expect(storage.readRoleplaySession(project.projectId, created.sessionId)).resolves.toMatchObject({
       derivedMemoryStatus: { status: 'stale', errorMessage: 'rebuild failed' },
     });
+  });
+
+  it('moves stale memory back to pending before a manual rebuild', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    await storage.writeRoleplaySession({
+      ...saved!,
+      conversationSummary: 'obsolete summary',
+      summaryThroughMessageId: saved!.messages[0]!.messageId,
+      derivedMemoryStatus: {
+        status: 'stale',
+        sourcePrefixFingerprint: 'stale-prefix',
+        editedMessageId: saved!.messages[0]!.messageId,
+        updatedAt: saved!.updatedAt,
+        errorMessage: 'rebuild failed',
+      },
+    });
+
+    const rebuilt = await roleplayService.retryRoleplayMemoryRebuild(
+      project.projectId,
+      created.sessionId
+    );
+
+    expect(rebuilt).toMatchObject({
+      derivedMemoryStatus: { status: 'fresh' },
+    });
+    expect(rebuilt.conversationSummary).toBeUndefined();
+    expect(rebuilt.summaryThroughMessageId).toBeUndefined();
+  });
+
+  it('repairs the legacy fresh fingerprint after a newer summary before regenerating', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const edited = await roleplayService.editRoleplayMessage({
+      projectId: project.projectId,
+      sessionId: created.sessionId,
+      messageId: created.messages[0]!.messageId,
+      content: 'edited greeting',
+      expectedSessionRevision: created.revision,
+      expectedMessageRevision: 0,
+    });
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    const memoryUpdatedAt = stored!.derivedMemoryStatus!.updatedAt;
+    const summaryUpdatedAt = new Date(Date.parse(memoryUpdatedAt) + 1_000).toISOString();
+    await storage.writeRoleplaySession({
+      ...stored!,
+      messages: [
+        ...stored!.messages,
+        {
+          messageId: 'legacy-user',
+          role: 'user',
+          content: 'continue',
+          createdAt: summaryUpdatedAt,
+        },
+        {
+          messageId: 'legacy-character',
+          role: 'character',
+          content: 'old response',
+          createdAt: summaryUpdatedAt,
+        },
+      ],
+      conversationSummary: 'newer valid summary',
+      summaryThroughMessageId: stored!.messages[0]!.messageId,
+      summaryUpdatedAt,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['regenerated response'])
+    );
+
+    const result = await collectStream(
+      roleplayService.regenerateRoleplay({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        revision: edited.session.revision,
+      })
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(result.done?.derivedMemoryStatus).toMatchObject({ status: 'fresh' });
+    expect(result.done?.derivedMemoryStatus?.sourcePrefixFingerprint).not.toBe(
+      stored!.derivedMemoryStatus!.sourcePrefixFingerprint
+    );
+  });
+
+  it('does not bless a fresh fingerprint that matches no older conversation prefix', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    const markerUpdatedAt = '2026-07-04T00:00:00.000Z';
+    const summaryUpdatedAt = '2026-07-04T00:00:01.000Z';
+    await storage.writeRoleplaySession({
+      ...stored!,
+      messages: [
+        ...stored!.messages,
+        {
+          messageId: 'untrusted-user',
+          role: 'user',
+          content: 'continue',
+          createdAt: summaryUpdatedAt,
+        },
+        {
+          messageId: 'untrusted-character',
+          role: 'character',
+          content: 'old response',
+          createdAt: summaryUpdatedAt,
+        },
+      ],
+      conversationSummary: 'summary with unproven provenance',
+      summaryThroughMessageId: stored!.messages[0]!.messageId,
+      summaryUpdatedAt,
+      derivedMemoryStatus: {
+        status: 'fresh',
+        sourcePrefixFingerprint: 'not-a-conversation-prefix',
+        updatedAt: markerUpdatedAt,
+      },
+    });
+    const streamSpy = vi
+      .spyOn(GeminiAdapter.prototype, 'generateTextStream')
+      .mockImplementation(() => streamChunks(['must not run']));
+
+    const result = await collectStream(
+      roleplayService.regenerateRoleplay({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        revision: created.revision,
+      })
+    );
+
+    expect(result.errors).toEqual([
+      expect.objectContaining({ code: 'derived_memory_not_fresh' }),
+    ]);
+    expect(streamSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1402,6 +1591,7 @@ describe('roleplaySessionService', () => {
             ],
             unresolvedTopics: ['昨日の言い争い'],
           },
+          sessionCanon: [],
         }),
         finishReason: 'stop',
         retryable: false,
@@ -1499,6 +1689,7 @@ describe('roleplaySessionService', () => {
         text: JSON.stringify({
           summary: '二人は長い話をした。',
           relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+          sessionCanon: [],
         }),
         finishReason: 'stop',
         retryable: false,
@@ -1568,6 +1759,21 @@ describe('roleplaySessionService', () => {
     const storedAfter = await storage.readRoleplaySession(project.projectId, created.sessionId);
     expect(storedAfter?.conversationSummary).toBe('二人は長い話をした。');
     expect(storedAfter?.summaryThroughMessageId).toBeDefined();
+    const cursorIndex = storedAfter!.messages.findIndex(
+      (message) => message.messageId === storedAfter!.summaryThroughMessageId
+    );
+    const expectedMemoryFingerprint = createHash('sha256')
+      .update(
+        storedAfter!.messages
+          .slice(0, cursorIndex + 1)
+          .map((message) => `${message.messageId}:${message.contentRevision ?? 0}`)
+          .join('\n')
+      )
+      .digest('hex');
+    expect(storedAfter?.derivedMemoryStatus).toMatchObject({
+      status: 'fresh',
+      sourcePrefixFingerprint: expectedMemoryFingerprint,
+    });
     // 同期要約のターンでは background summary を追加起動しない。要約モデルの呼び出しは
     // この send 全体で1回のまま（通常ターンの非同期要約が走った場合もここで増える）。
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1620,7 +1826,11 @@ describe('roleplaySessionService', () => {
 
     // 同期要約は1回成功するが、summary が 6,000 字で再構築しても 24,000 字に収まらない。
     const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
-      text: 'う'.repeat(6_000),
+      text: JSON.stringify({
+        summary: 'う'.repeat(6_000),
+        relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+        sessionCanon: [],
+      }),
       finishReason: 'stop',
       retryable: false,
     });
@@ -1878,5 +2088,306 @@ describe('roleplaySessionService', () => {
         fs.rm(settingsDir, { recursive: true, force: true })
       );
     }
+  });
+});
+
+describe('session canon summary fold（設計書 6.3・12.3）', () => {
+  // NOTE: 12.3-17。同期要約成功時、summary、relationship、session canon、両カーソルが
+  // 同じ境界へ進む。
+  it('advances summary, relationship, session canon, and both cursors together on a sync summary', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await seedMessages(project.projectId, created.sessionId, 42, 'sync');
+
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: JSON.stringify({
+        summary: '同期要約のまとめ。',
+        relationshipState: { trust: 60, intimacy: 40, tension: 10 },
+        sessionCanon: [
+          {
+            targetCanonId: undefined,
+            scope: 'relationship',
+            statement: '二人は翌週の約束を交わした',
+            epistemicStatus: 'fact',
+            disclosure: 'revealed',
+            evidenceExcerpt: '約束を交わした',
+          },
+        ],
+      }),
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['わかった。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続けよう',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.conversationSummary).toBe('同期要約のまとめ。');
+    expect(saved?.summaryThroughMessageId).toBeDefined();
+    expect(saved?.relationshipState).toMatchObject({ trust: 60, intimacy: 40, tension: 10 });
+    expect(saved?.sessionCanon).toHaveLength(1);
+    expect(saved?.sessionCanon?.[0]).toMatchObject({
+      statement: '二人は翌週の約束を交わした',
+      status: 'revealed',
+      evidence: [{ kind: 'roleplay-message', disclosure: 'revealed' }],
+    });
+    expect(saved?.sessionCanonThroughMessageId).toBe(saved?.summaryThroughMessageId);
+  });
+
+  // NOTE: 12.3-18。バックグラウンド要約成功時も同じ4要素が保存される。
+  it('saves session canon together with summary in the background summary path', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    // 38件で止めておくと、次のターン後に background summary だけが発火する
+    // （同期要約は user 保存後 40 件を超えた場合のみ走るため）。
+    await seedMessages(project.projectId, created.sessionId, 38, 'bg');
+
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: JSON.stringify({
+        summary: 'バックグラウンド要約のまとめ。',
+        relationshipState: { trust: 55, intimacy: 35, tension: 15 },
+        sessionCanon: [
+          {
+            targetCanonId: undefined,
+            scope: 'character',
+            statement: 'ユイは夜更かしができない体質',
+            epistemicStatus: 'fact',
+            disclosure: 'foreshadowed',
+            evidenceExcerpt: '夜更かしできないと話した',
+          },
+        ],
+      }),
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['うん、そうだね。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '今度は何の話をする？',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+
+    await waitForCondition(async () => {
+      const session = await storage.readRoleplaySession(project.projectId, created.sessionId);
+      return Boolean(session?.summaryThroughMessageId);
+    });
+
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.conversationSummary).toBe('バックグラウンド要約のまとめ。');
+    expect(saved?.sessionCanon).toHaveLength(1);
+    expect(saved?.sessionCanon?.[0]).toMatchObject({
+      statement: 'ユイは夜更かしができない体質',
+      status: 'foreshadowed',
+    });
+    expect(saved?.sessionCanonThroughMessageId).toBe(saved?.summaryThroughMessageId);
+  });
+
+  // NOTE: 12.3-19。バックグラウンド要約の stale ジョブは summary と session canon の
+  // どちらも保存しない。
+  it('does not save summary or session canon for a stale background job', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await seedMessages(project.projectId, created.sessionId, 38, 'stale-bg');
+
+    const gate = deferred<{ text: string; finishReason: 'stop' }>();
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(() => gate.promise);
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['了解。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '新しい話題',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+
+    // 要約モデル呼び出しが開始されたことを確認してから、セッションをアーカイブする。
+    await waitForCondition(() => Promise.resolve(vi.mocked(GeminiAdapter.prototype.generateText).mock.calls.length > 0));
+    const archived = await roleplayService.archiveRoleplaySession(
+      project.projectId,
+      created.sessionId,
+      result.done!.revision
+    );
+    expect(archived.status).toBe('archived');
+
+    gate.resolve({
+      text: JSON.stringify({
+        summary: '古いスナップショットからの要約',
+        relationshipState: { trust: 90, intimacy: 90, tension: 0 },
+        sessionCanon: [
+          {
+            targetCanonId: undefined,
+            scope: 'character',
+            statement: 'staleな設定',
+            epistemicStatus: 'fact',
+            disclosure: 'revealed',
+            evidenceExcerpt: 'stale',
+          },
+        ],
+      }),
+      finishReason: 'stop',
+    });
+    await wait(200);
+
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.conversationSummary).toBeUndefined();
+    expect(saved?.sessionCanon).toBeUndefined();
+    expect(saved?.sessionCanonThroughMessageId).toBeUndefined();
+    expect(saved?.summaryThroughMessageId).toBeUndefined();
+  });
+
+  // NOTE: 12.3-20。要約結果に sessionCanon 配列が無い場合、summary・session canon・
+  // 両カーソルのどれも進めない（設計書 6.3・9）。
+  it('fails the summary and advances nothing when sessionCanon is missing from the output', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await seedMessages(project.projectId, created.sessionId, 42, 'no-canon');
+
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: JSON.stringify({
+        summary: 'sessionCanon の無い要約本文',
+        relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+      }),
+      finishReason: 'stop',
+      retryable: false,
+    });
+    const streamText = vi.spyOn(GeminiAdapter.prototype, 'generateTextStream');
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続ける',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors[0]?.code).toBe('summary_failed');
+    expect(result.errors[0]?.retryable).toBe(true);
+    expect(streamText).not.toHaveBeenCalled();
+
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.conversationSummary).toBeUndefined();
+    expect(saved?.summaryThroughMessageId).toBeUndefined();
+    expect(saved?.sessionCanon).toBeUndefined();
+    expect(saved?.sessionCanonThroughMessageId).toBeUndefined();
+  });
+
+  // NOTE: 12.3-21 の統合版。同期要約で初期 canon ID を target した場合、
+  // 同じ ID の session-local 項目が作られる。
+  it('creates a session-local item with the same id when the fold targets an initial canon id', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    if (!stored) throw new Error('Roleplay session not found');
+    const initialCanon: roleplayService.LatentCanonItem[] = [
+      {
+        canonId: 'can-initial-fold',
+        scope: 'character',
+        statement: 'アリスは家出中である',
+        status: 'provisional',
+        baseStatusWithoutEvidence: 'provisional',
+        epistemicStatus: 'fact',
+        source: 'setup',
+        manualLock: false,
+        evidence: [],
+        createdAt: '2026-07-04T00:00:00.000Z',
+        updatedAt: '2026-07-04T00:00:00.000Z',
+      },
+    ];
+    await storage.writeRoleplaySession({
+      ...stored,
+      contextSnapshot: { ...stored.contextSnapshot, latentCanonSnapshot: initialCanon },
+      messages: [
+        ...stored.messages,
+        ...Array.from({ length: 42 }, (_, i) => ({
+          messageId: `target-${i}`,
+          role: (i % 2 === 0 ? 'user' : 'character') as 'user' | 'character',
+          content: `家出の話 ${i}`,
+          createdAt: `2026-07-04T00:${String(Math.floor(i / 2)).padStart(2, '0')}:00.000Z`,
+        })),
+      ],
+    });
+
+    vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: JSON.stringify({
+        summary: '家出の話をまとめた。',
+        relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+        sessionCanon: [
+          {
+            targetCanonId: 'can-initial-fold',
+            scope: 'character',
+            statement: 'アリスは家出中である',
+            epistemicStatus: 'fact',
+            disclosure: 'revealed',
+            evidenceExcerpt: '家出の話',
+          },
+        ],
+      }),
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['その話は本当だよ。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '家出のことを教えて',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.sessionCanon).toHaveLength(1);
+    expect(saved?.sessionCanon?.[0]).toMatchObject({
+      canonId: 'can-initial-fold',
+      status: 'revealed',
+      source: 'setup',
+    });
+    expect(saved?.sessionCanon?.[0].evidence[0].messageId).toBe(saved?.summaryThroughMessageId);
   });
 });

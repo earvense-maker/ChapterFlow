@@ -44,7 +44,6 @@ export function computeStaticSettingsHash(input: { worldText: string; characters
       description: normalizeHashText(character.description),
       speechStyle: normalizeHashText(character.speechStyle ?? ''),
       relationshipNotes: normalizeHashText(character.relationshipNotes ?? ''),
-      secrets: normalizeHashText(character.secrets ?? ''),
       traits: (character.traits ?? []).map((trait) => ({
         label: normalizeHashText(trait.label),
         text: normalizeHashText(trait.text),

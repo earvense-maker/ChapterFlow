@@ -76,7 +76,6 @@ export interface SetupDraftCharacter {
   speechStyle?: string;
   relationshipNotes?: string;
   traits?: CharacterTrait[];
-  secrets?: string;
   // NOTE: ロールプレイ用途で相談中に組み立てる開幕メッセージと会話例。
   greeting?: string;
   dialogueExamples?: string[];

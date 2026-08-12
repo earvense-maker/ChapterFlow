@@ -387,7 +387,6 @@ function normalizeCharacter(value: unknown, _now: string): Character | null {
 
   const dialogueExamples = normalizeDialogueExamplesForCharacter(value.dialogueExamples);
   const greeting = truncate(asString(value.greeting), ROLEPLAY_LIMITS.greetingChars);
-  const { cleanTraits, secretsFromTraits } = extractSecretsFromTraits(value.traits);
 
   return normalizeCharacterForStorage({
     characterId: normalizeId(value.characterId, 'char'),
@@ -397,36 +396,13 @@ function normalizeCharacter(value: unknown, _now: string): Character | null {
     aliases: normalizeStringList(value.aliases, 8),
     speechStyle: asString(value.speechStyle) || undefined,
     relationshipNotes: asString(value.relationshipNotes) || undefined,
-    secrets: asString(value.secrets) || secretsFromTraits || undefined,
-    traits: normalizeCharacterTraits(cleanTraits),
+    traits: normalizeCharacterTraits(value.traits),
     want: value.want,
     fear: value.fear,
     currentState: asString(value.currentState) || undefined,
     greeting,
     dialogueExamples: dialogueExamples.length > 0 ? dialogueExamples : undefined,
   });
-}
-
-function extractSecretsFromTraits(value: unknown): {
-  cleanTraits: unknown[];
-  secretsFromTraits: string;
-} {
-  if (!Array.isArray(value)) return { cleanTraits: [], secretsFromTraits: '' };
-  const cleanTraits: unknown[] = [];
-  let secretsFromTraits = '';
-  for (const item of value) {
-    if (!isRecord(item)) {
-      cleanTraits.push(item);
-      continue;
-    }
-    const label = asString(item.label);
-    if (label === '見せない面' || label === '秘密') {
-      if (!secretsFromTraits) secretsFromTraits = asString(item.text);
-      continue;
-    }
-    cleanTraits.push(item);
-  }
-  return { cleanTraits, secretsFromTraits };
 }
 
 function normalizeDialogueExamplesForCharacter(value: unknown): string[] {
@@ -457,7 +433,6 @@ function normalizeDraftCharacters(session: SetupSession, _now: string): Characte
         aliases: character.label && character.label !== name ? [character.label] : undefined,
         speechStyle: character.speechStyle,
         relationshipNotes: character.relationshipNotes,
-        secrets: character.secrets,
         traits: character.traits,
         greeting: character.greeting,
         dialogueExamples: character.dialogueExamples,

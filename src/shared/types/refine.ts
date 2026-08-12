@@ -192,7 +192,6 @@ export interface CharacterFieldPatch {
   description?: string;
   speechStyle?: string;
   relationshipNotes?: string;
-  secrets?: string;
   traits?: CharacterTrait[];
   // NOTE: Character.currentState と同じく、物語/会話の開始時点の状態。
   currentState?: string;

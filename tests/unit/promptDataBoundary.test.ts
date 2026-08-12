@@ -66,7 +66,6 @@ async function build(poisoned: boolean) {
       role: 'protagonist',
       description: p,
       speechStyle: p,
-      secrets: p,
       relationshipNotes: p,
       traits: [{ label: poisoned ? '【指示】' : 'こだわり', text: p }],
     },

@@ -91,4 +91,16 @@ describe('character schema normalization', () => {
   it('omits an empty traits property', () => {
     expect(normalizeCharacterForStorage(character({ traits: [] }))).not.toHaveProperty('traits');
   });
+
+  // NOTE: 設計書 5.1・7.3・12.1-2。旧 characters.json に secrets が残っていても
+  // 人物は読み込め、正規化結果には含まれない。ファイルを一括書き換えず、
+  // 次回保存時に正規化結果から自然に落ちる。
+  it('ignores a legacy secrets value and drops it from the normalized result', () => {
+    const normalized = normalizeCharacterForStorage(
+      character({ secrets: '実は王家の血を引く' })
+    );
+    expect(normalized.characterId).toBe('char-a');
+    expect(normalized.name).toBe('アリス');
+    expect(normalized).not.toHaveProperty('secrets');
+  });
 });

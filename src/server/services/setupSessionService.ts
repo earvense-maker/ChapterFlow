@@ -1081,7 +1081,6 @@ export async function createQuickSetupPlan(
               name: '名前',
               description: '概要（2〜3文）',
               speechStyle: '口調（任意）',
-              secrets: '見せない面（任意）',
               greeting: 'ロールプレイの開幕メッセージ（roleplayのみ）',
             },
           ],
@@ -1415,7 +1414,6 @@ function buildQuickSetupDraft(
         label: name,
         description: description || name,
         ...(asString(item.speechStyle) ? { speechStyle: asString(item.speechStyle) } : {}),
-        ...(asString(item.secrets) ? { secrets: asString(item.secrets) } : {}),
         ...(asString(item.greeting) ? { greeting: asString(item.greeting) } : {}),
         source: 'ai-suggested',
         status: 'active',
@@ -1498,7 +1496,6 @@ function normalizeQuickCharacter(value: unknown): Character | null {
     role,
     description: description || name,
     ...(asString(value.speechStyle) ? { speechStyle: asString(value.speechStyle) } : {}),
-    ...(asString(value.secrets) ? { secrets: asString(value.secrets) } : {}),
     ...(asString(value.greeting) ? { greeting: asString(value.greeting) } : {}),
   };
   return character;

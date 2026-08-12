@@ -649,11 +649,6 @@ function charactersBody(characters: Character[]): string {
     if (aliases.length > 0) parts.push(`  呼び名: ${aliases.join(' / ')}`);
     if (c.description) parts.push(`  概要: ${indentContinuation(c.description.trim(), 4)}`);
     if (c.speechStyle) parts.push(`  口調: ${indentContinuation(c.speechStyle.trim(), 4)}`);
-    if (c.secrets) {
-      parts.push(
-        `  見せない面（普段の言動には出さず、ふとした瞬間や限られた相手にだけ滲ませる）: ${indentContinuation(c.secrets.trim(), 4)}`
-      );
-    }
     for (const trait of c.traits ?? []) {
       parts.push(`  ${sanitizePromptLabel(trait.label)}: ${indentContinuation(trait.text, 4)}`);
     }

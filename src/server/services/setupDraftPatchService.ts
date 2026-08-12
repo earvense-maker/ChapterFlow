@@ -393,16 +393,6 @@ function updateCharacters(
         changed = true;
       }
     }
-    if (!lockedFields.has('secrets')) {
-      const secretInput = Object.hasOwn(update, 'secrets') ? update.secrets : update.secret;
-      if (typeof secretInput === 'string') {
-        const nextSecret = secretInput.trim() || undefined;
-        if (current.secrets !== nextSecret) {
-          current.secrets = nextSecret;
-          changed = true;
-        }
-      }
-    }
     const greeting = asString(update.greeting);
     if (greeting && !lockedFields.has('greeting') && current.greeting !== greeting) {
       current.greeting = greeting;
@@ -658,7 +648,6 @@ function normalizeCharacter(
   if (!name && !label && !description) return null;
   const createdAt = asString(value.createdAt) || fallbackNow;
   const traits = normalizeCharacterTraitsWithLegacy(value.traits, value.want, value.fear);
-  const secrets = asString(value.secrets) || asString(value.secret);
   return {
     id: forceNewId ? generateTimestampId('char-draft') : normalizeItemId(value.id, 'char-draft'),
     role,
@@ -668,7 +657,6 @@ function normalizeCharacter(
     speechStyle: asString(value.speechStyle) || undefined,
     relationshipNotes: asString(value.relationshipNotes) || undefined,
     traits: traits.length > 0 ? traits : undefined,
-    secrets: secrets || undefined,
     // NOTE: ロールプレイ用途の追加フィールド。novel 用途では未使用でも保存し、
     // 用途変更（Phase 2 で相互昇格）に備えて情報を残す。
     greeting: asString(value.greeting) || undefined,
@@ -683,11 +671,13 @@ function normalizeCharacter(
 }
 
 function normalizeLockedFields(value: unknown): string[] {
-  const normalized = normalizeStringList(value, 12).map((field) => {
-    if (field === 'want' || field === 'fear') return 'traits';
-    if (field === 'secret') return 'secrets';
-    return field;
-  });
+  const normalized = normalizeStringList(value, 12)
+    .map((field) => {
+      if (field === 'want' || field === 'fear') return 'traits';
+      return field;
+    })
+    // NOTE: 旧 secrets ロックは無視する（設計書 5.2・7.3）。secrets 欄自体が廃止されたため。
+    .filter((field) => field !== 'secret' && field !== 'secrets');
   return [...new Set(normalized)];
 }
 

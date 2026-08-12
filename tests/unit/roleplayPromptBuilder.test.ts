@@ -5,6 +5,7 @@ import {
   ROLEPLAY_SYSTEM_MAX_CHARS,
   ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS,
   ROLEPLAY_WORLD_MAX_CHARS,
+  buildEffectiveRoleplayCanon,
   buildRoleplaySystemInstructions,
   buildRoleplaySystemInstructionsWithReport,
   buildRoleplayUserPrompt,
@@ -15,6 +16,7 @@ import { LEGACY_BASE_INSTRUCTIONS } from '../../src/server/prompts/legacyBaseIns
 import { PROMPT_OMISSION_MARKER } from '../../src/server/prompts/promptBudget';
 import type {
   Character,
+  LatentCanonItem,
   RoleplayContextSnapshot,
   RoleplayMessage,
 } from '../../src/server/types/index';
@@ -30,7 +32,6 @@ function baseCharacter(overrides: Partial<Character> = {}): Character {
       { label: '会話で望むこと', text: '静かに本を読みたい' },
       { label: '苦手なこと', text: '無視されること' },
     ],
-    secrets: '実は父と仲が悪い',
     relationshipNotes: 'ユーザーとは幼馴染',
     currentState: '放課後の教室に一人でいる',
     greeting: 'あ、来てくれたんだ。',
@@ -77,6 +78,23 @@ function legacyBaseText(version: number): string {
   return entry.text;
 }
 
+function canonItem(overrides: Partial<LatentCanonItem> = {}): LatentCanonItem {
+  return {
+    canonId: 'can-1',
+    scope: 'character',
+    statement: 'ユイは王家の血を引く',
+    status: 'provisional',
+    baseStatusWithoutEvidence: 'provisional',
+    epistemicStatus: 'fact',
+    source: 'setup',
+    manualLock: false,
+    evidence: [],
+    createdAt: '2026-07-13T00:00:00.000Z',
+    updatedAt: '2026-07-13T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
 describe('buildRoleplaySystemInstructions', () => {
   it('drops the strict 1〜3 sentence rule in favor of a length hint + parenthesized action guide', () => {
     const system = buildRoleplaySystemInstructions({
@@ -93,14 +111,13 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('250字程度');
   });
 
-  it('includes persona fields (name, traits, secrets, currentState)', () => {
+  it('includes persona fields (name, traits, currentState)', () => {
     const system = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
     expect(system).toContain('アリス');
     expect(system).toContain('静かに本を読みたい');
     expect(system).toContain('無視されること');
     expect(system).toContain('会話で望むこと');
     expect(system).toContain('苦手なこと');
-    expect(system).toContain('実は父と仲が悪い');
     expect(system).toContain('放課後の教室に一人でいる');
   });
 
@@ -119,7 +136,6 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(afterSummary).not.toContain('放課後の教室に一人でいる');
     // 他の persona フィールドは要約後も残る。
     expect(afterSummary).toContain('アリス');
-    expect(afterSummary).toContain('実は父と仲が悪い');
     expect(afterSummary).toContain('静かに本を読みたい');
   });
 
@@ -134,17 +150,19 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('この会話では短い比喩を使う。');
   });
 
-  // NOTE: 秘密の扱いは固定規則から外し、secrets があるときだけ対象キャラ欄の
-  // ラベルへ出す（設計書 5.3）。secrets の無いキャラで無関係な規則を読ませない。
-  it('moves the secrecy rule into the character card label instead of the fixed rules', () => {
-    const withSecrets = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
-    expect(withSecrets).toContain('自分からは明かさず、親密度や状況次第で滲ませる');
-    expect(withSecrets).toContain('実は父と仲が悪い');
-
-    const withoutSecrets = buildRoleplaySystemInstructions({
-      snapshot: baseSnapshot({ character: baseCharacter({ secrets: '' }) }),
+  // NOTE: 「見せない面」は特別な人物設定項目として廃止した（設計書 5.5・7.3）。
+  // 旧 snapshot の character に secrets が残っていても、プロンプトへ本文・ラベルを出さない。
+  it('ignores a legacy character.secrets value stored in an old snapshot', () => {
+    const legacyCharacter = {
+      ...baseCharacter(),
+      secrets: '実は父と仲が悪い',
+    } as Character & { secrets?: string };
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({ character: legacyCharacter }),
     });
-    expect(withoutSecrets).not.toContain('自分からは明かさず');
+    expect(system).not.toContain('実は父と仲が悪い');
+    expect(system).not.toContain('見せない面');
+    expect(system).not.toContain('自分からは明かさず');
   });
 
   it('formats dialogueExamples as quoted lines under the character name', () => {
@@ -454,6 +472,249 @@ describe('buildRoleplaySystemInstructions', () => {
 
     expect(report.overflowByChars).toBeGreaterThan(0);
     expect(report.systemInstructions).toBe('');
+  });
+});
+
+describe('buildEffectiveRoleplayCanon（設計書 6.2・12.2）', () => {
+  it('keeps an initial provisional item and replaces it with the session revealed item of the same id', () => {
+    const initial = [canonItem({ canonId: 'can-a', status: 'provisional' })];
+    const session = [
+      canonItem({
+        canonId: 'can-a',
+        status: 'revealed',
+        statement: 'ユイは王家の血を引く（本人の告白）',
+        source: 'roleplay',
+      }),
+    ];
+    const effective = buildEffectiveRoleplayCanon(initial, session);
+    expect(effective).toHaveLength(1);
+    expect(effective[0]).toMatchObject({
+      canonId: 'can-a',
+      status: 'revealed',
+      origin: 'session',
+      statement: 'ユイは王家の血を引く（本人の告白）',
+    });
+  });
+
+  // NOTE: 12.2-10/11。同じ事実へ「未公開」と「公開済み」を同時に表示しない。
+  // 初期 provisional が session revealed で置き換わるとき、ラベルは session 由来になる。
+  it('renders only one item with the session label when an initial provisional becomes session revealed', () => {
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        latentCanonSnapshot: [canonItem({ canonId: 'can-a', status: 'provisional' })],
+      }),
+      sessionCanon: [
+        canonItem({ canonId: 'can-a', status: 'revealed', source: 'roleplay' }),
+      ],
+    });
+    expect(system).toContain('この会話で公開済み');
+    expect(system).not.toContain('会話開始時点では未公開');
+    // 同じ statement は1回だけ
+    expect(system.match(/王家の血を引く/g)).toHaveLength(1);
+  });
+
+  it('labels a session foreshadowed item as この会話で示唆済み without the initial 未公開 duplicate', () => {
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        latentCanonSnapshot: [canonItem({ canonId: 'can-a', status: 'provisional' })],
+      }),
+      sessionCanon: [
+        canonItem({ canonId: 'can-a', status: 'foreshadowed', source: 'roleplay' }),
+      ],
+    });
+    expect(system).toContain('この会話で示唆済み');
+    expect(system).not.toContain('会話開始時点では未公開');
+    expect(system.match(/王家の血を引く/g)).toHaveLength(1);
+  });
+
+  it('labels initial canon by its own state when no session canon touches it', () => {
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot({
+        latentCanonSnapshot: [
+          canonItem({ canonId: 'can-a', status: 'provisional' }),
+          canonItem({ canonId: 'can-b', status: 'foreshadowed' }),
+          canonItem({ canonId: 'can-c', status: 'revealed' }),
+        ],
+      }),
+    });
+    expect(system).toContain('会話開始時点では未公開');
+    expect(system).toContain('会話開始時点で示唆済み');
+    expect(system).toContain('公開済み');
+  });
+
+  // NOTE: 12.2-12。ID不一致の旧sessionでも、scope・subject・statement一致で重複排除できる。
+  it('deduplicates an ID-mismatched session item via scope/subject/statement fallback', () => {
+    const initial = [
+      canonItem({
+        canonId: 'can-old',
+        scope: 'character',
+        subjectCharacterIds: ['char-a'],
+        statement: 'ユイは王家の血を引く',
+        status: 'provisional',
+      }),
+    ];
+    const session = [
+      canonItem({
+        canonId: 'can-new',
+        scope: 'character',
+        subjectCharacterIds: ['char-a'],
+        statement: 'ユイは王家の血を引く',
+        status: 'revealed',
+        source: 'roleplay',
+      }),
+    ];
+    const effective = buildEffectiveRoleplayCanon(initial, session);
+    expect(effective).toHaveLength(1);
+    expect(effective[0]).toMatchObject({ canonId: 'can-new', origin: 'session', status: 'revealed' });
+  });
+
+  // NOTE: 12.2-13。曖昧な別事実は誤って統合しない。
+  it('keeps a different fact as a separate item when the statement fallback does not match', () => {
+    const initial = [
+      canonItem({
+        canonId: 'can-a',
+        scope: 'character',
+        statement: 'ユイは王家の血を引く',
+        status: 'provisional',
+      }),
+    ];
+    const session = [
+      canonItem({
+        canonId: 'can-b',
+        scope: 'character',
+        statement: 'ユイは船乗りの娘',
+        status: 'revealed',
+        source: 'roleplay',
+      }),
+    ];
+    const effective = buildEffectiveRoleplayCanon(initial, session);
+    expect(effective).toHaveLength(2);
+  });
+
+  // NOTE: 12.2-13 の subject 不一致側。両方に subjectCharacterIds がある場合は一致が要る。
+  it('does not merge same-statement items whose subject characters differ', () => {
+    const initial = [
+      canonItem({
+        canonId: 'can-a',
+        scope: 'character',
+        subjectCharacterIds: ['char-a'],
+        statement: '王家の血を引く',
+        status: 'provisional',
+      }),
+    ];
+    const session = [
+      canonItem({
+        canonId: 'can-b',
+        scope: 'character',
+        subjectCharacterIds: ['char-b'],
+        statement: '王家の血を引く',
+        status: 'revealed',
+        source: 'roleplay',
+      }),
+    ];
+    const effective = buildEffectiveRoleplayCanon(initial, session);
+    expect(effective).toHaveLength(2);
+  });
+
+  // NOTE: 12.2-14。会話由来の新規 session canon は次ターンの system prompt へ入る。
+  it('adds a conversation-derived session canon item to the system prompt', () => {
+    const system = buildRoleplaySystemInstructions({
+      snapshot: baseSnapshot(),
+      sessionCanon: [
+        canonItem({
+          canonId: 'can-new',
+          scope: 'relationship',
+          statement: '二人は次の日曜に図書館へ行く約束をした',
+          status: 'revealed',
+          source: 'roleplay',
+        }),
+      ],
+    });
+    expect(system).toContain('この会話で公開済み');
+    expect(system).toContain('二人は次の日曜に図書館へ行く約束をした');
+  });
+
+  // NOTE: 12.2-15。retired item はプロンプトへ入らない。
+  it('excludes retired items from the effective canon', () => {
+    const effective = buildEffectiveRoleplayCanon(
+      [canonItem({ canonId: 'can-a', status: 'retired' })],
+      [canonItem({ canonId: 'can-b', status: 'retired', source: 'roleplay' })]
+    );
+    expect(effective).toHaveLength(0);
+  });
+
+  // NOTE: 12.2-9。直近会話で秘密が明かされた場合でも、次ターンのプロンプトに
+  // 「すでに知られた事実を未発覚として扱わない」優先規則が入る。
+  it('always carries the recency-priority rule in the fixed rules', () => {
+    const system = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
+    expect(system).toContain('会話開始時点の設定より、時系列的に後の会話履歴・要約・セッション内設定を現在状態として優先する');
+    expect(system).toContain('会話ですでに知られた事実を、未発覚として扱わない');
+  });
+
+  // NOTE: 12.2-16。session canon 追加後も system 上限と budget report が維持される。
+  it('keeps the system prompt within budget and reports the contractCanon section when session canon grows', () => {
+    const manySessionCanon = Array.from({ length: 14 }, (_, i) =>
+      canonItem({
+        canonId: `can-${i}`,
+        scope: 'character',
+        statement: `王家の血を引く秘密その${i}。この設定は会話で公開された。`,
+        status: i % 2 === 0 ? 'revealed' : 'foreshadowed',
+        source: 'roleplay',
+      })
+    );
+    const report = buildRoleplaySystemInstructionsWithReport({
+      snapshot: baseSnapshot(),
+      sessionCanon: manySessionCanon,
+    });
+    expect(report.overflowByChars).toBe(0);
+    expect(report.systemInstructions.length).toBeLessThanOrEqual(ROLEPLAY_SYSTEM_MAX_CHARS);
+    const entry = report.entries.find((item) => item.sectionId === 'roleplay.contractCanon');
+    expect(entry).toBeDefined();
+    expect(entry?.action).toBe('full');
+  });
+
+  // NOTE: レビューP1。canon が contractCanon の hardMax（1,500字）を超えると units 単位で
+  // 切り詰められ、statement や <data>...</data> の途中で切断されない。
+  it('truncates an overflowing contractCanon section per unit without breaking data blocks', () => {
+    // NOTE: 末尾（最下位優先）に置いた改行なしの長文をユニットごと落とす。文字単位の
+    // 切り詰めにフォールバックすると statement が途中で切れ、<data> が閉じない。
+    const hugeStatement = `王家の血を引く秘密。${'あ'.repeat(1800)}`;
+    const overflowingCanon = [
+      ...Array.from({ length: 4 }, (_, i) =>
+        canonItem({
+          canonId: `can-0${i}`,
+          scope: 'character',
+          statement: `短い設定 ${i}`,
+          status: 'provisional',
+        })
+      ),
+      canonItem({
+        canonId: 'can-huge',
+        scope: 'character',
+        statement: hugeStatement,
+        status: 'provisional',
+      }),
+    ];
+    const report = buildRoleplaySystemInstructionsWithReport({
+      snapshot: baseSnapshot({ latentCanonSnapshot: overflowingCanon }),
+    });
+    expect(report.overflowByChars).toBe(0);
+    const entry = report.entries.find((item) => item.sectionId === 'roleplay.contractCanon');
+    expect(entry).toBeDefined();
+    expect(entry?.action).toBe('truncated');
+    expect(entry?.includedChars).toBeLessThan(entry!.originalChars);
+
+    const countLines = (text: string, line: string) =>
+      text.split('\n').filter((l) => l === line).length;
+    const canonSection = report.systemInstructions
+      .split('\n\n---\n\n')
+      .find((section) => section.startsWith('【補助設定'));
+    expect(canonSection).toBeDefined();
+    // units は描画済みブロック単位で落ちるため、開いた data ブロックは必ず閉じている。
+    expect(countLines(canonSection!, '<data>')).toBe(countLines(canonSection!, '</data>'));
+    expect(countLines(canonSection!, '<data>')).toBeGreaterThan(0);
+    // 長文はユニットごと落ちる。文字単位の切断なら「あ」の断片が残る。
+    expect(canonSection).not.toContain('あ'.repeat(500));
   });
 });
 

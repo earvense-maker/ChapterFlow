@@ -1695,7 +1695,6 @@ function renderCharactersForPrompt(characters: Character[]): string {
       if ((c.speechStyle ?? '').trim()) lines.push(`  speechStyle: ${c.speechStyle!.trim()}`);
       if ((c.relationshipNotes ?? '').trim())
         lines.push(`  relationshipNotes: ${c.relationshipNotes!.trim()}`);
-      if ((c.secrets ?? '').trim()) lines.push(`  secrets: ${c.secrets!.trim()}`);
       for (const trait of c.traits ?? []) {
         lines.push(`  ${trait.label}: ${indentContinuation(trait.text, 4)}`);
       }
@@ -2051,7 +2050,6 @@ export function normalizeRefinePatchOperation(
         ...(asString(characterRaw.relationshipNotes)
           ? { relationshipNotes: asString(characterRaw.relationshipNotes) }
           : {}),
-        ...(asString(characterRaw.secrets) ? { secrets: asString(characterRaw.secrets) } : {}),
         ...(traits.length > 0 ? { traits } : {}),
         ...(asString(characterRaw.currentState)
           ? { currentState: asString(characterRaw.currentState) }
@@ -2079,7 +2077,6 @@ function normalizeCharacterFields(raw: unknown): CharacterFieldPatch {
   if (typeof raw.description === 'string') out.description = raw.description;
   if (typeof raw.speechStyle === 'string') out.speechStyle = raw.speechStyle;
   if (typeof raw.relationshipNotes === 'string') out.relationshipNotes = raw.relationshipNotes;
-  if (typeof raw.secrets === 'string') out.secrets = raw.secrets;
   if (Array.isArray(raw.traits)) {
     out.traits = normalizeCharacterTraits(raw.traits);
   }

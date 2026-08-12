@@ -278,7 +278,9 @@ describe('setupDraftPatchService', () => {
     expect(draft.relationshipSeeds).toEqual(['関係']);
   });
 
-  it('migrates legacy character fields and locked field names', () => {
+  // NOTE: 旧 `secret` は受け取らず無視する（設計書 5.2・7.3）。locked の旧名も
+  // want/fear→traits だけを移し、secret 系は draft に残さない。
+  it('migrates legacy character fields and drops the legacy secret', () => {
     const draft = normalizeSetupDraft({
       characters: [
         {
@@ -304,14 +306,13 @@ describe('setupDraftPatchService', () => {
         { label: '望み', text: '自由になりたい' },
         { label: '恐れ', text: '忘れられること' },
       ],
-      secrets: '実は王女',
-      lockedFields: ['traits', 'secrets'],
+      lockedFields: ['traits'],
     });
-    expect(draft.characters[0]).not.toHaveProperty('want');
+    expect(draft.characters[0]).not.toHaveProperty('secrets');
     expect(draft.characters[0]).not.toHaveProperty('secret');
   });
 
-  it('replaces and clears traits/secrets through character updates', () => {
+  it('replaces traits through character updates and ignores unknown secrets keys', () => {
     const draft = normalizeSetupDraft({
       characters: [
         {
@@ -321,7 +322,6 @@ describe('setupDraftPatchService', () => {
           label: '主人公',
           description: '人物',
           traits: [{ label: '癖', text: '緊張すると笑う' }],
-          secrets: '実は王女',
           source: 'manual',
           status: 'active',
           createdAt: now,
@@ -347,7 +347,7 @@ describe('setupDraftPatchService', () => {
     expect(replaced.characters[0].traits).toEqual([
       { label: 'こだわり', text: '紅茶は熱いうちに飲む' },
     ]);
-    expect(replaced.characters[0].secrets).toBeUndefined();
+    expect(replaced.characters[0]).not.toHaveProperty('secrets');
 
     const cleared = applySetupDraftPatch({
       draft: replaced,

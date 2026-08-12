@@ -533,7 +533,6 @@ describe('buildPrompt', () => {
         role: 'protagonist',
         description: '主人公',
         speechStyle: 'くだけた',
-        secrets: '人前では寂しさを見せない',
         traits: [
           { label: 'こだわり', text: '朝は必ず\n同じ店に寄る' },
           { label: '意地の張り方', text: '助けを求めず先に動く' },
@@ -551,12 +550,36 @@ describe('buildPrompt', () => {
     expect(userPrompt).toContain('現代日本の地方都市');
     expect(userPrompt).toContain('太郎');
     expect(userPrompt).toContain('主人公');
-    expect(userPrompt).toContain('見せない面');
-    expect(userPrompt).toContain('人前では寂しさを見せない');
     expect(userPrompt).toContain('こだわり: 朝は必ず');
     expect(userPrompt).toContain('意地の張り方: 助けを求めず先に動く');
     // データは引用行として描画される（設計書 3.3）
     expect(userPrompt).toContain('> - 太郎（主人公）');
+  });
+
+  // NOTE: 「見せない面」は特別な人物設定項目として廃止した（設計書 5.5）。
+  // 旧データに secrets が残っていても小説生成プロンプトへ本文・ラベルを出さない。
+  it('does not leak a legacy character.secrets value into the novel prompt', async () => {
+    const characters: Character[] = [
+      {
+        characterId: 'char-1',
+        name: '太郎',
+        role: 'protagonist',
+        description: '主人公',
+        secrets: '人前では寂しさを見せない',
+        traits: [{ label: 'こだわり', text: '朝は必ず同じ店に寄る' }],
+      } as Character & { secrets?: string },
+    ];
+    const { userPrompt } = await buildPrompt({
+      project: makeProject(),
+      state: makeState(),
+      wish: '',
+      memories: [],
+      characters,
+      worldText: '現代日本の地方都市',
+    });
+    expect(userPrompt).not.toContain('見せない面');
+    expect(userPrompt).not.toContain('人前では寂しさを見せない');
+    expect(userPrompt).toContain('こだわり: 朝は必ず同じ店に寄る');
   });
 
   it('inserts knowledge references after work settings and keeps legacy output unchanged when omitted', async () => {

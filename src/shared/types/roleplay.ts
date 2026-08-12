@@ -31,7 +31,7 @@ export interface RoleplayAppliedPreset {
 }
 
 // NOTE: contextSnapshot のうち UI へ安全に公開できる作風設定だけを保持する。
-// 生の system prompt やキャラクターの secrets は含めない。
+// 生の system prompt や未公開設定の本文は含めない。
 export interface RoleplayAppliedSettings {
   capturedAt: string;
   presets: RoleplayAppliedPreset[];
@@ -95,7 +95,7 @@ export interface RoleplayDerivedMemoryStatus {
 }
 
 // NOTE: 会話開始時に固定するペルソナ・世界観のスナップショット。プロンプト構築の
-// system 部の材料。secrets を含むためAPIレスポンスには含めず、RoleplaySessionView
+// system 部の材料。未公開設定の本文を含むためAPIレスポンスには含めず、RoleplaySessionView
 // で除外する。
 export interface RoleplayContextSnapshot {
   character: Character;

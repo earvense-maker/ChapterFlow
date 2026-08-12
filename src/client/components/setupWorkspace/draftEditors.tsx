@@ -671,7 +671,6 @@ interface EditableCharacterValues {
   speechStyle: string;
   relationshipNotes: string;
   traits: CharacterTrait[];
-  secrets: string;
   greeting?: string;
   dialogueExamples?: string[];
 }
@@ -784,7 +783,6 @@ function EditableCharacterRow({
   const [speechStyle, setSpeechStyle] = useState(character.speechStyle ?? '');
   const [relationshipNotes, setRelationshipNotes] = useState(character.relationshipNotes ?? '');
   const [traits, setTraits] = useState<CharacterTrait[]>(character.traits ?? []);
-  const [secrets, setSecrets] = useState(character.secrets ?? '');
   // NOTE: dialogueExamples は行区切りテキストとして編集 → 保存時に配列へ戻す。
   // greeting は roleplay 用途のみで意味を持つが state は常時保持し UI だけ切替。
   const [greeting, setGreeting] = useState(character.greeting ?? '');
@@ -800,7 +798,6 @@ function EditableCharacterRow({
     setSpeechStyle(character.speechStyle ?? '');
     setRelationshipNotes(character.relationshipNotes ?? '');
     setTraits(character.traits ?? []);
-    setSecrets(character.secrets ?? '');
     setGreeting(character.greeting ?? '');
     setDialogueExamplesText((character.dialogueExamples ?? []).join('\n'));
   }, [
@@ -812,7 +809,6 @@ function EditableCharacterRow({
     character.speechStyle,
     character.relationshipNotes,
     character.traits,
-    character.secrets,
     character.greeting,
     character.dialogueExamples,
   ]);
@@ -845,7 +841,6 @@ function EditableCharacterRow({
     description.trim() !== character.description.trim() ||
     speechStyle.trim() !== (character.speechStyle ?? '').trim() ||
     relationshipNotes.trim() !== (character.relationshipNotes ?? '').trim() ||
-    secrets.trim() !== (character.secrets ?? '').trim() ||
     traitsChanged ||
     (purpose === 'roleplay' &&
       (greeting.trim() !== (character.greeting ?? '').trim() || dialogueExamplesChanged));
@@ -902,13 +897,6 @@ function EditableCharacterRow({
         placeholder="関係性"
         disabled={disabled}
       />
-      <textarea
-        className="setup-draft-textarea compact"
-        value={secrets}
-        onChange={(e) => setSecrets(e.target.value)}
-        placeholder="見せない面（秘密、建前、外では見せない一面など）"
-        disabled={disabled}
-      />
       <CharacterTraitsEditor
         idPrefix={`setup-character-${character.id}`}
         value={traits}
@@ -947,7 +935,6 @@ function EditableCharacterRow({
               speechStyle,
               relationshipNotes,
               traits,
-              secrets,
               ...(purpose === 'roleplay'
                 ? { greeting, dialogueExamples: dialogueExamplesArray }
                 : {}),
@@ -990,7 +977,6 @@ function PendingCharacterRow({
   const [speechStyle, setSpeechStyle] = useState('');
   const [relationshipNotes, setRelationshipNotes] = useState('');
   const [traits, setTraits] = useState<CharacterTrait[]>([]);
-  const [secrets, setSecrets] = useState('');
   const [greeting, setGreeting] = useState('');
   const [dialogueExamplesText, setDialogueExamplesText] = useState('');
 
@@ -1002,7 +988,6 @@ function PendingCharacterRow({
     speechStyle.trim() !== '' ||
     relationshipNotes.trim() !== '' ||
     traits.length > 0 ||
-    secrets.trim() !== '' ||
     (purpose === 'roleplay' &&
       (greeting.trim() !== '' || dialogueExamplesText.trim() !== ''));
 
@@ -1057,13 +1042,6 @@ function PendingCharacterRow({
         placeholder="関係性"
         disabled={disabled}
       />
-      <textarea
-        className="setup-draft-textarea compact"
-        value={secrets}
-        onChange={(e) => setSecrets(e.target.value)}
-        placeholder="見せない面（秘密、建前、外では見せない一面など）"
-        disabled={disabled}
-      />
       <CharacterTraitsEditor
         idPrefix={`setup-pending-character-${dirtyKey}`}
         value={traits}
@@ -1107,7 +1085,6 @@ function PendingCharacterRow({
               speechStyle,
               relationshipNotes,
               traits,
-              secrets,
               ...(purpose === 'roleplay'
                 ? { greeting, dialogueExamples: dialogueExamplesArray }
                 : {}),

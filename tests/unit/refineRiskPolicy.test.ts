@@ -196,11 +196,10 @@ describe('refineRiskPolicy.classifyPatchRisk — always-review rules', () => {
     expect(result.riskLevel).toBe('review');
   });
 
-  it('changing name/role/description/secrets/currentState is review even with confirmed evidence', () => {
+  it('changing name/role/description/currentState is review even with confirmed evidence', () => {
     const fieldPatches: RefinePatchOperation[] = [
       { kind: 'character-update', characterId: 'char-a', fields: { name: '新しい名前' } },
       { kind: 'character-update', characterId: 'char-a', fields: { description: '新しい説明' } },
-      { kind: 'character-update', characterId: 'char-a', fields: { secrets: '新しい秘密' } },
       { kind: 'character-update', characterId: 'char-a', fields: { currentState: '新しい状態' } },
     ];
     for (const op of fieldPatches) {
