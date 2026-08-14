@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as projectService from '../../src/server/services/projectService';
 import * as knowledgeService from '../../src/server/services/knowledgeService';
 import * as storage from '../../src/server/services/storageService';
+import * as appSettingsService from '../../src/server/services/appSettingsService';
+import { writeAppSettings } from '../../src/server/services/appSettingsService';
 import { buildGeneratedSystemPrompt } from '../../src/server/prompts/systemPrompt';
 
 const createdProjectIds: string[] = [];
@@ -200,6 +202,56 @@ describe('project settings validation', () => {
     expect(updated.activeModelName).toBe('gemini-1.5-flash');
     expect(updated.outputLength).toBe(2500);
     expect(updated.streamingEnabled).toBe(true);
+  });
+
+  it('uses the app default model for new projects that omit a provider', async () => {
+    // NOTE: 直接入力やクイックセットアップで provider が渡らない場合、アプリ設定の
+    // 「相談に使うモデル」を引き継ぐ（gemini 固定にしない）。
+    await writeAppSettings({
+      setupModel: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+    });
+    try {
+      const project = await createTrackedProject();
+      expect(project.activeModelProvider).toBe('deepseek');
+      expect(project.activeModelName).toBe('deepseek-v4-flash');
+    } finally {
+      await writeAppSettings({});
+    }
+  });
+
+  it('rejects a modelName without a provider instead of mixing it with the saved one', async () => {
+    await writeAppSettings({
+      setupModel: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+    });
+    try {
+      await expect(
+        projectService.createProject({
+          title: 'Partial Model',
+          activeModelName: 'gemini-3.6-flash',
+        })
+      ).rejects.toThrow(projectService.ProjectValidationError);
+    } finally {
+      await writeAppSettings({});
+    }
+  });
+
+  it('creates with an explicit model pair without reading app settings', async () => {
+    const spy = vi
+      .spyOn(appSettingsService, 'resolveAppDefaultModelSettings')
+      .mockRejectedValue(new Error('settings file locked'));
+    try {
+      const project = await projectService.createProject({
+        title: 'Explicit Model',
+        activeModelProvider: 'deepseek',
+        activeModelName: 'deepseek-v4-flash',
+      });
+      createdProjectIds.push(project.projectId);
+      expect(project.activeModelProvider).toBe('deepseek');
+      expect(project.activeModelName).toBe('deepseek-v4-flash');
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('trims titles and rejects blank title updates', async () => {

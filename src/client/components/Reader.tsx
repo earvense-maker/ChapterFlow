@@ -5,10 +5,14 @@ import { useConfirm } from './ConfirmDialog';
 import { GeneratingLabel } from './GeneratingLabel';
 import { useNotificationCenter } from './NotificationCenter';
 import NgHighlightedText from './NgHighlightedText';
+import AmplifierControls from './AmplifierControls';
 import { findNgMatches, type NgMatch } from '@shared/ngDetection';
 import { formatBudgetNotice } from '@shared/promptBudgetNotice';
 import { GENERATION_WISH_MAX_CHARS, KNOWLEDGE_WARN_CHARS } from '@shared/types';
 import type {
+  AmplifierAnchor,
+  AmplifierDirectionInput,
+  AmplifierTurn,
   ContextUsageEstimate,
   GenerationNotificationSettings,
   GenerationRecord,
@@ -783,6 +787,99 @@ export default function Reader({
     }
   }
 
+  // NOTE: 妄想増幅器の小説進行（設計書 4.4）。方向カード・自由記述・「留まる」のいずれかを
+  // 送ると、表示中の下書きを暗黙に採用し、その方向で次の場面を生成する。サーバー側の
+  // advance が InteractionEvent 保存・アンカー再検証・採用・lease 予約・次場面生成を
+  // オーケストレーションする（設計書 13.2）。
+  const amplifierAdvanceAbortRef = useRef<AbortController | null>(null);
+  const [amplifierAdvancing, setAmplifierAdvancing] = useState(false);
+
+  const handleAmplifierAdvance = (
+    direction: AmplifierDirectionInput,
+    clientEventId: string,
+    turn: AmplifierTurn
+  ) => {
+    if (!generationId || amplifierAdvancing || loading) return;
+    const anchor: AmplifierAnchor = {
+      kind: 'novel',
+      generationId,
+      textRevisionNumber: textRevisionNumber ?? 0,
+    };
+    setAmplifierAdvancing(true);
+    setError(null);
+    setNotice(null);
+    let streamedText = '';
+    const controller = new AbortController();
+    amplifierAdvanceAbortRef.current = controller;
+    void api
+      .novelAdvanceStream(
+        projectId,
+        {
+          clientEventId,
+          turnId: turn.turnId,
+          turnRevision: turn.revision,
+          anchor,
+          ...(direction as object),
+        } as Parameters<typeof api.novelAdvanceStream>[1],
+        {
+          onChunk: (chunk) => {
+            streamedText += chunk;
+            setText(streamedText);
+          },
+          onDone: () => {
+            amplifierAdvanceAbortRef.current = null;
+            setAmplifierAdvancing(false);
+            // NOTE: 次場面の保存後、サーバー側で新しい選択肢の非同期生成が走る。
+            // ここでは正の状態を読み直す（採用済み場面が1つ進む）。
+            void load();
+          },
+          onError: ({ error, code }) => {
+            amplifierAdvanceAbortRef.current = null;
+            setAmplifierAdvancing(false);
+            if (code === 'amplifier_turn_stale' || code === 'amplifier_turn_not_ready') {
+              setNotice('本文が更新されているため、選択肢を作り直しました。');
+              void load();
+              return;
+            }
+            setError(error || '場面生成に失敗しました。');
+            // NOTE: 失敗しても選択済みの現在場面は採用状態のまま。同じ方向で再試行できる。
+            void load();
+          },
+        },
+        controller.signal
+      )
+      .catch(() => {
+        amplifierAdvanceAbortRef.current = null;
+        setAmplifierAdvancing(false);
+      });
+  };
+
+  const stopAmplifierAdvance = () => {
+    amplifierAdvanceAbortRef.current?.abort();
+    amplifierAdvanceAbortRef.current = null;
+    setAmplifierAdvancing(false);
+  };
+
+  const recordSelectionFavorite = async () => {
+    if (!generationId || !selectedText) return;
+    try {
+      await api.recordAmplifierFavorite(projectId, {
+        clientEventId: `amp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        scope: 'selection',
+        anchor: {
+          kind: 'novel',
+          generationId,
+          textRevisionNumber: textRevisionNumber ?? 0,
+        },
+        excerpt: selectedText,
+      });
+      setNotice('「ここ好き」を保存しました。');
+      setSelectionButtonPosition(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'お気に入りの保存に失敗しました。');
+    }
+  };
+
   async function handleNavigateScene(direction: SceneNavigationDirection) {
     const outgoingSceneId = currentScene?.sceneId ?? null;
     if (outgoingSceneId) {
@@ -1185,6 +1282,8 @@ export default function Reader({
   }
 
   const isDraft = status === 'draft';
+  // NOTE: 妄想増幅器モード（設計書 4.3）。通常作品では選択肢UIを出さない。
+  const isAmplifier = project?.experienceMode === 'amplifier';
   const hasText = text.length > 0;
   const storyStateIsPending = storyStateRefresh?.status === 'pending';
   const storyStateAwaitsReview = storyStateRefresh?.status === 'awaiting-review';
@@ -1522,6 +1621,20 @@ export default function Reader({
             共通NGに登録
           </button>
         )}
+        {selectionButtonPosition && isAmplifier && (
+          <button
+            className="ng-expression-float-button amplifier-selection-favorite"
+            style={{
+              position: 'fixed',
+              top: selectionButtonPosition.top,
+              left: selectionButtonPosition.left + 130,
+            }}
+            onClick={() => void recordSelectionFavorite()}
+            disabled={loading}
+          >
+            ここ好き
+          </button>
+        )}
 
         {hasText ? (
           <>
@@ -1553,6 +1666,32 @@ export default function Reader({
                 }
               />
             </article>
+            {isAmplifier && generationId && (
+              <>
+                {amplifierAdvancing && (
+                  <div className="amplifier-advancing">
+                    <span>この方向で続きを生成しています…</span>
+                    <button className="danger" onClick={stopAmplifierAdvance}>
+                      停止
+                    </button>
+                  </div>
+                )}
+                {!amplifierAdvancing && !isGeneratingStream && (
+                  <AmplifierControls
+                    projectId={projectId}
+                    mode="novel"
+                    anchor={{
+                      kind: 'novel',
+                      generationId,
+                      textRevisionNumber: textRevisionNumber ?? 0,
+                    }}
+                    anchorExcerpt={text}
+                    onAdvance={handleAmplifierAdvance}
+                    onError={(message) => setError(message)}
+                  />
+                )}
+              </>
+            )}
           </>
         ) : (
           <div className="reader-empty">

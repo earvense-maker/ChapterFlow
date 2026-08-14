@@ -56,6 +56,8 @@ import type {
   StoryEventRecord,
   StoryState,
 } from '../types/index.js';
+import type { AmplifierPromptContext } from '../services/amplifierService.js';
+import { AMPLIFIER_FIXED_RULES } from '../services/amplifierPromptBuilder.js';
 
 export interface BuildPromptInput {
   project: Project;
@@ -83,6 +85,10 @@ export interface BuildPromptInput {
   // NOTE: 呼び出し側が latentCanonService.selectRelatedCanonItems で選んだ関連潜在設定
   // （最大12件）。revealedが優先され、foreshadowed / provisionalが続く。
   latentCanonItems?: LatentCanonItem[];
+  // NOTE: 妄想増幅器用の optional コンテキスト（設計書 11.1）。通常作品では完全に省略し、
+  // 生成結果を変えない。指定時だけ固定規則・今回方向・current/project/globalメモ・
+  // ハード境界のレイヤーを追加する。
+  amplifierContext?: AmplifierPromptContext;
 }
 
 export interface BuildPromptResult {
@@ -120,6 +126,9 @@ const SECTION = {
   wish: 'user.wish',
   creativeContractHard: 'user.creativeContractHard',
   latentCanon: 'user.latentCanon',
+  // NOTE: 妄想増幅器レイヤー（設計書 11.1）。directionはrequired・メモは単位で縮小。
+  amplifierDirection: 'user.amplifierDirection',
+  amplifierMemos: 'user.amplifierMemos',
 } as const;
 
 // NOTE: hard契約のrequired section定数（設計書 6.1）。
@@ -132,6 +141,10 @@ const SECTION_SEPARATOR = '\n\n---\n\n';
 // NOTE: 縮小順（先に縮めるものから）。設計書 4.2 の順をそのまま写す。
 // 逆順が「拡張順＝守りたい順」になるので、allocateSectionBudget へは reverse して渡す。
 const SHRINK_ORDER: readonly string[] = [
+  // NOTE: 妄想増幅器のメモは current > project > global の順で残すため、セクション全体を
+  // 縮小順の最優先（先に縮める）に置く。direction（固定規則・今回方向・境界）は
+  // required なので縮まない（設計書 11.4）。
+  SECTION.amplifierMemos,
   SECTION.frequentPhrases,
   SECTION.knowledgeState,
   SECTION.preferences,
@@ -368,6 +381,47 @@ export async function buildPrompt(input: BuildPromptInput): Promise<BuildPromptR
   push(SECTION.frequentPhrases, renderFrequentPhraseNotice(frequentPhrases));
   if (variationEnabled) push(SECTION.styleLens, renderStyleLensPrompt(styleProfile));
   push(SECTION.styleSample, styleSampleBody(project), { render: renderStyleSample });
+  // NOTE: 妄想増幅器レイヤー（設計書 11.1）。direction セクションは固定規則・今回方向・
+  // ハード境界を required で載せ、メモは current/project/global の順でユニット化する。
+  // 通常作品では amplifierContext が無いため何も追加しない（従来出力を維持・設計書 11.1）。
+  if (input.amplifierContext) {
+    const amplifier = input.amplifierContext;
+    const boundaries = [
+      amplifier.globalBoundary.trim() ? `【グローバル境界】どの妄想でも避けること: ${amplifier.globalBoundary.trim()}` : '',
+      amplifier.projectBoundary.trim() ? `【作品内境界】この作品では避けること: ${amplifier.projectBoundary.trim()}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const directionParts = [AMPLIFIER_FIXED_RULES];
+    if (amplifier.direction.trim()) {
+      directionParts.push(`今回選ばれた方向（ユーザーの明示的な選択であり最優先）:\n${amplifier.direction.trim()}`);
+    }
+    if (boundaries) directionParts.push(boundaries);
+    push(SECTION.amplifierDirection, directionParts.join('\n\n'), {
+      required: true,
+      minReserve: 3_000,
+      render: (body) => renderDataBlock('【妄想増幅器・今回の方向】', body),
+    });
+    const memoUnits: string[] = [];
+    if (amplifier.currentMemo.trim()) {
+      memoUnits.push(
+        renderDataBlock('【妄想増幅器・current（直近の欲求・仮説）】', amplifier.currentMemo)
+      );
+    }
+    if (amplifier.projectMemo.trim()) {
+      memoUnits.push(
+        renderDataBlock('【妄想増幅器・project（この作品の仮説）】', amplifier.projectMemo)
+      );
+    }
+    if (amplifier.globalMemo.trim()) {
+      memoUnits.push(
+        renderDataBlock('【妄想増幅器・global（作品をまたぐ仮説）】', amplifier.globalMemo)
+      );
+    }
+    pushUnits(SECTION.amplifierMemos, memoUnits, {
+      hardMax: 3_000,
+    });
+  }
   const intimateVocalDirection = buildIntimateVocalDirection({
     intimacyPresetId: project.activePresetIds.intimacy,
     primaryText: wish,

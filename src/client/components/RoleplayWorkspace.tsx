@@ -12,9 +12,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api, type RoleplayStreamHandlers } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import { useNotificationCenter } from './NotificationCenter';
+import AmplifierControls from './AmplifierControls';
 import { DEFAULT_ROLEPLAY_USER_ACTION_POLICY } from '@shared/roleplayPersona';
 import { formatBudgetNotice, ROLEPLAY_TURN_SECTION_IDS } from '@shared/promptBudgetNotice';
 import type {
+  AmplifierAnchor,
+  AmplifierDirectionInput,
+  AmplifierTurn,
   Character,
   CreateRoleplaySessionBody,
   GenerationNotificationSettings,
@@ -78,6 +82,8 @@ export default function RoleplayWorkspace({
   const [isStopping, setIsStopping] = useState(false);
   const [isRegenerate, setIsRegenerate] = useState(false);
   const [pendingReplaceMessageId, setPendingReplaceMessageId] = useState<string | null>(null);
+  // NOTE: 妄想増幅器の方向ターンが進行中か（選択肢カードからの送信中）。
+  const [amplifierAdvancing, setAmplifierAdvancing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showNewModal, setShowNewModal] = useState(false);
@@ -292,6 +298,8 @@ export default function RoleplayWorkspace({
   }, [activeSession]);
 
   const currentCharacterName = activeSession?.characterName ?? '';
+  // NOTE: 妄想増幅器モード（設計書 4.3）。通常プロジェクトでは選択肢UIを出さない。
+  const isAmplifier = project?.experienceMode === 'amplifier';
   const pinnedAppliedSettings =
     activeSession?.appliedSettings?.presets.filter((preset) =>
       PINNED_ROLEPLAY_SETTING_CATEGORIES.has(preset.category)
@@ -303,6 +311,7 @@ export default function RoleplayWorkspace({
     setIsStreaming(false);
     setIsStopping(false);
     setIsRegenerate(false);
+    setAmplifierAdvancing(false);
     abortRef.current = null;
     streamActiveRef.current = false;
     streamStartedAtRef.current = 0;
@@ -813,6 +822,133 @@ export default function RoleplayWorkspace({
     project,
   ]);
 
+  // NOTE: 妄想増幅器のロールプレイ進行（設計書 4.5 / 13.3）。選択や自由記述は通常の
+  // ユーザーメッセージではなく「今回見たい方向」として保存する。メタ方向を「あなた」の
+  // 発言バブルへ混ぜない。サーバー側の amplifier-turn-stream が InteractionEvent 保存から
+  // キャラクター応答までを扱う。
+  const handleAmplifierTurn = useCallback(
+    (direction: AmplifierDirectionInput, clientEventId: string, turn: AmplifierTurn) => {
+      if (!activeSession || isStreaming || amplifierAdvancing) return;
+      const lastMessage = activeSession.messages[activeSession.messages.length - 1];
+      if (!lastMessage || lastMessage.role !== 'character') return;
+      const anchor: AmplifierAnchor = {
+        kind: 'roleplay',
+        sessionId: activeSession.sessionId,
+        messageId: lastMessage.messageId,
+        contentRevision: lastMessage.contentRevision ?? 0,
+      };
+      setAmplifierAdvancing(true);
+      setIsStreaming(true);
+      setIsRegenerate(false);
+      setError(null);
+      setStreamingText('');
+      stopRequestedRef.current = false;
+      autoScrollRef.current = true;
+      const controller = new AbortController();
+      abortRef.current = controller;
+      streamActiveRef.current = true;
+      streamStartedAtRef.current = Date.now();
+      const clientRequestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      let firstChunkFired = false;
+      const notifyClickTarget = {
+        kind: 'project' as const,
+        projectId,
+        projectType: 'roleplay' as const,
+      };
+
+      const handlers: RoleplayStreamHandlers = {
+        onChunk: (chunk) => {
+          if (
+            mountedRef.current &&
+            projectIdRef.current === projectId &&
+            abortRef.current === controller &&
+            !stopRequestedRef.current
+          ) {
+            if (!firstChunkFired && chunk.trim() && notificationSettings) {
+              firstChunkFired = true;
+              notificationCenter.notify(notificationSettings, {
+                eventType: 'firstOutput',
+                dedupeKey: `firstOutput:${clientRequestId}`,
+                title: '応答の生成が始まりました',
+                body: '',
+                clickTarget: notifyClickTarget,
+              });
+            }
+            setStreamingText((prev) => prev + chunk);
+          }
+        },
+        onPostprocessing: () => setPostprocessing(true),
+        onReplace: (text) => setStreamingText(text),
+        onDone: (session) => {
+          if (
+            mountedRef.current &&
+            projectIdRef.current === projectId &&
+            abortRef.current === controller
+          ) {
+            setActiveSession(session);
+            setStreamingText('');
+            setPostprocessing(false);
+            setNotice(null);
+            resetStreamState();
+            void api
+              .listRoleplaySessions(projectId)
+              .catch(() => null)
+              .then((list) => {
+                if (list && mountedRef.current && projectIdRef.current === projectId) {
+                  setSessions(list.sessions);
+                }
+              });
+          }
+        },
+        onError: ({ error, code }) => {
+          if (
+            mountedRef.current &&
+            projectIdRef.current === projectId &&
+            abortRef.current === controller
+          ) {
+            if (code === 'amplifier_turn_stale' || code === 'amplifier_turn_not_ready') {
+              setNotice('本文が更新されているため、選択肢を作り直しました。');
+            } else {
+              setError(error || '応答の取得に失敗しました。');
+            }
+            // NOTE: 生成失敗時はメッセージを変更せず、同じ方向から再試行できる（設計書 4.5）。
+            resetStreamState();
+            void api
+              .listRoleplaySessions(projectId)
+              .catch(() => null)
+              .then((list) => {
+                if (list && mountedRef.current && projectIdRef.current === projectId) {
+                  setSessions(list.sessions);
+                }
+              });
+          }
+        },
+      };
+
+      api
+        .amplifierTurnStream(
+          projectId,
+          activeSession.sessionId,
+          {
+            clientEventId,
+            turnId: turn.turnId,
+            turnRevision: turn.revision,
+            anchor,
+            sessionRevision: activeSession.revision,
+            ...(direction as object),
+          } as Parameters<typeof api.amplifierTurnStream>[2],
+          handlers,
+          controller.signal
+        )
+        .catch(() => {
+          if (mountedRef.current && abortRef.current === controller) {
+            resetStreamState();
+          }
+        });
+    },
+    [activeSession, isStreaming, amplifierAdvancing, projectId, resetStreamState, notificationCenter, notificationSettings]
+  );
+
   const handleStop = useCallback(() => {
     if (!abortRef.current || isStopping) return;
     stopRequestedRef.current = true;
@@ -1040,6 +1176,36 @@ export default function RoleplayWorkspace({
       setError(err instanceof Error ? err.message : '共通NG表現の登録に失敗しました');
     }
   }, [projectId, selectedText, showStopNotice]);
+
+  // NOTE: 妄想増幅器の選択範囲「ここ好き」（設計書 4.3 / 7.4）。一文・台詞・仕草を
+  // お気に入りとして観測事実に残す。
+  const handleSelectionFavorite = useCallback(async () => {
+    if (!selectedText || !activeSession) return;
+    const lastCharacterMessage = [...activeSession.messages]
+      .reverse()
+      .find((m) => m.role === 'character');
+    if (!lastCharacterMessage) return;
+    try {
+      await api.recordAmplifierFavorite(projectId, {
+        clientEventId: `amp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        scope: 'selection',
+        anchor: {
+          kind: 'roleplay',
+          sessionId: activeSession.sessionId,
+          messageId: lastCharacterMessage.messageId,
+          contentRevision: lastCharacterMessage.contentRevision ?? 0,
+        },
+        excerpt: selectedText,
+      });
+      if (!mountedRef.current || projectIdRef.current !== projectId) return;
+      showStopNotice('「ここ好き」を保存しました。');
+      setSelectionButtonPosition(null);
+      setSelectedText('');
+      window.getSelection()?.removeAllRanges();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'お気に入りの保存に失敗しました');
+    }
+  }, [projectId, activeSession, selectedText, showStopNotice]);
 
   // NOTE: selectionchange はドキュメント全体の選択変化を捉える（touch 選択の受け口）。
   // evaluateSelection 側で対象外の場合は早期 return するので副作用は最小限。
@@ -1336,6 +1502,27 @@ export default function RoleplayWorkspace({
                   </div>
                 </div>
               )}
+              {isAmplifier && !isStreaming && !amplifierAdvancing && (() => {
+                const lastMessage = activeSession.messages[activeSession.messages.length - 1];
+                if (!lastMessage || lastMessage.role !== 'character') return null;
+                return (
+                  <div style={styles.amplifierControlsArea}>
+                    <AmplifierControls
+                      projectId={projectId}
+                      mode="roleplay"
+                      anchor={{
+                        kind: 'roleplay',
+                        sessionId: activeSession.sessionId,
+                        messageId: lastMessage.messageId,
+                        contentRevision: lastMessage.contentRevision ?? 0,
+                      }}
+                      anchorExcerpt={lastMessage.content}
+                      onAdvance={handleAmplifierTurn}
+                      onError={(message) => setError(message)}
+                    />
+                  </div>
+                );
+              })()}
             </div>
 
             {messageHistory && (
@@ -1461,6 +1648,7 @@ export default function RoleplayWorkspace({
           characters={characters}
           scenarioSeeds={project?.scenarioSeeds ?? []}
           defaultUserPersona={project?.defaultUserPersona}
+          isAmplifier={isAmplifier}
           onCancel={() => setShowNewModal(false)}
           onStart={handleStartConversation}
           isCreating={isCreatingSession}
@@ -1494,6 +1682,28 @@ export default function RoleplayWorkspace({
           「{selectedText}」を共通NGに登録
         </button>
       )}
+      {selectionButtonPosition && isAmplifier && activeSession && (
+        <button
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => void handleSelectionFavorite()}
+          style={{
+            position: 'fixed',
+            top: selectionButtonPosition.top,
+            left: selectionButtonPosition.left + 190,
+            zIndex: 200,
+            padding: '0.35rem 0.7rem',
+            fontSize: '0.8rem',
+            borderRadius: '6px',
+            background: '#7c3aed',
+            color: '#ffffff',
+            border: '1px solid var(--border)',
+            cursor: 'pointer',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+          }}
+        >
+          ここ好き
+        </button>
+      )}
 
       {notice && (
         <div
@@ -1524,6 +1734,8 @@ interface NewSessionModalProps {
   scenarioSeeds: string[];
   // NOTE: 作品の既定ペルソナ。会話ごとに上書きできるので初期値としてだけ使う。
   defaultUserPersona?: RoleplayUserPersona;
+  // NOTE: 妄想増幅器モードでは「グローバル学習対象外」の選択肢を出す（設計書 14.2）。
+  isAmplifier: boolean;
   onCancel: () => void;
   onStart: (input: StartConversationInput) => Promise<void>;
   isCreating: boolean;
@@ -1622,6 +1834,7 @@ function NewSessionModal({
   characters,
   scenarioSeeds,
   defaultUserPersona,
+  isAmplifier,
   onCancel,
   onStart,
   isCreating,
@@ -1630,6 +1843,8 @@ function NewSessionModal({
     characters[0]?.characterId ?? ''
   );
   const [scenario, setScenario] = useState('');
+  // NOTE: 妄想増幅器の会話枠ごとグローバル学習除外（設計書 14.2）。既定は学習対象。
+  const [excludeFromGlobalLearning, setExcludeFromGlobalLearning] = useState(false);
   // NOTE: 作品の既定ペルソナを初期値にする。ここでの編集はこの会話にだけ効き、
   // 作品側の既定は変わらない（変えたい場合は作品設定から）。
   const [personaName, setPersonaName] = useState(defaultUserPersona?.name ?? '');
@@ -1656,6 +1871,7 @@ function NewSessionModal({
       await onStart({
         characterId,
         scenario: scenario.trim() || undefined,
+        ...(isAmplifier && excludeFromGlobalLearning ? { excludeFromGlobalLearning: true } : {}),
         userPersona: {
           name: personaName.trim() || undefined,
           relationship: relationship.trim() || undefined,
@@ -1784,6 +2000,21 @@ function NewSessionModal({
             </label>
           </div>
         </details>
+        {isAmplifier && (
+          <div style={{ marginBottom: '1rem' }}>
+            <label style={{ ...styles.label, flexDirection: 'row', gap: '0.5rem' }}>
+              <input
+                type="checkbox"
+                checked={excludeFromGlobalLearning}
+                onChange={(e) => setExcludeFromGlobalLearning(e.target.checked)}
+              />
+              <span>この会話をグローバル学習の対象外にする</span>
+            </label>
+            <p style={styles.hint}>
+              チェックすると、この会話の選択や自由記述は作品をまたいだ好みの学習に使われません。
+            </p>
+          </div>
+        )}
         <div style={styles.modalActions}>
           <button onClick={onCancel} disabled={starting || isCreating}>
             キャンセル
@@ -1991,6 +2222,11 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: '0.75rem',
+  },
+  // NOTE: 妄想増幅器の方向カードは本文と別枠で、吹き出しと同列に置く（設計書 4.3）。
+  amplifierControlsArea: {
+    alignSelf: 'stretch',
+    margin: '0.25rem 0 0.5rem',
   },
   bubble: {
     maxWidth: '80%',

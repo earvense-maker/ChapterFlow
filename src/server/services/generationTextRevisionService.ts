@@ -12,6 +12,8 @@ import {
 import {
   rebuildEpisodeMarkdownForAcceptedGeneration,
 } from './generationService.js';
+import { runContentEditedHook } from './amplifierEventHooks.js';
+import { assertNoConflictingAdvance } from './amplifierService.js';
 import type {
   GenerationRecord,
   GenerationStatus,
@@ -78,6 +80,8 @@ export async function updateGenerationText(input: {
   source?: GenerationTextRevisionSource;
   reason?: string;
 }): Promise<GenerationTextEditResult> {
+  // NOTE: pendingAdvance が terminal でない間、採用状態を変える操作は 409（設計書 13.2）。
+  await assertNoConflictingAdvance(input.projectId);
   const result = await withProjectWriteLock(input.projectId, () =>
     updateGenerationTextUnlocked({
       ...input,
@@ -327,6 +331,18 @@ async function updateGenerationTextUnlocked(input: {
   if (!generation) {
     throw new GenerationTextRevisionError('保存した本文を再読込できません。', 'generation_not_found', 404);
   }
+  // NOTE: 妄想増幅器の content_edited イベント（設計書 7.4）。本文保存後に追記し、
+  // 旧turnをsupersedeする。失敗しても編集は成功として返す（設計書 21）。
+  void runContentEditedHook({
+    projectId: input.projectId,
+    anchor: {
+      kind: 'novel',
+      generationId: input.generationId,
+      textRevisionNumber: revisionNumber,
+    },
+    beforeText: record.responseText,
+    afterText: nextText,
+  });
   return {
     result: { generation, revisionNumber, derivationStatus },
     startRefreshGenerationId,

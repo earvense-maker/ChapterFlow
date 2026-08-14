@@ -36,6 +36,7 @@ import {
 import { normalizeActivePresetIds } from '@shared/presetMigration';
 import type {
   ActivePresets,
+  ExperienceMode,
   GenerationNotificationSettings,
   ModelProviderInfo,
   SetupCommitPlan,
@@ -54,6 +55,9 @@ export { collectDraftChanges } from './setupWorkspace/draftChanges';
 
 interface Props {
   purpose?: 'novel' | 'roleplay';
+  // NOTE: 体験モード（妄想増幅器）。クイックセットアップから詳細設定へ移っても失わない
+  // （設計書 4.1）。復元時のセッション照合にも使う。
+  experienceMode?: ExperienceMode;
   onCreated: (projectId: string) => void;
   onCancel: () => void;
   onOpenSettings: () => void;
@@ -169,7 +173,13 @@ const SETUP_COPY: Record<'novel' | 'roleplay', SetupPurposeCopy> = {
 // NOTE: 次の一歩は2往復目以降に出す。1往復目で作品化や草案まとめを勧めても材料が無い。
 const FALLBACK_ACTION_MIN_MESSAGES = 4;
 
-export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel, onOpenSettings }: Props) {
+export default function SetupWorkspace({
+  purpose = 'novel',
+  experienceMode = 'standard',
+  onCreated,
+  onCancel,
+  onOpenSettings,
+}: Props) {
   const copy = SETUP_COPY[purpose];
   const confirmAction = useConfirm();
   const notificationCenter = useNotificationCenter();
@@ -313,7 +323,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       try {
         setLoading(true);
         setError(null);
-        const restored = await findRestorableSetupSession(purpose);
+        const restored = await findRestorableSetupSession(purpose, experienceMode);
         if (ignore) return;
 
         if (restored) {
@@ -322,17 +332,17 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
           setSession(synced.session);
           setDirtyDraftEditKeys(new Set());
           clearDraftChanges();
-          rememberSetupSession(synced.session.sessionId, purpose);
+          rememberSetupSession(synced.session.sessionId, purpose, experienceMode);
           if (synced.error) setError(synced.error);
           return;
         }
 
-        const result = await createDefaultSetupSession(undefined, purpose);
+        const result = await createDefaultSetupSession(undefined, purpose, experienceMode);
         if (ignore) return;
         setSession(result.session);
         setDirtyDraftEditKeys(new Set());
         clearDraftChanges();
-        rememberSetupSession(result.sessionId, purpose);
+        rememberSetupSession(result.sessionId, purpose, experienceMode);
       } catch (err) {
         if (!ignore) setError(err instanceof Error ? err.message : '相談セッションの作成に失敗しました');
       } finally {
@@ -514,7 +524,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       if (session?.status === 'active') {
         await api.abandonSetupSession(session.sessionId).catch(() => undefined);
       }
-      const result = await createDefaultSetupSession(providers, purpose);
+      const result = await createDefaultSetupSession(providers, purpose, experienceMode);
       setSession(result.session);
       setDirtyDraftEditKeys(new Set());
       clearDraftChanges();
@@ -531,7 +541,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         scenarioSeeds: [],
       });
       setSelectedCandidateIds(new Set());
-      rememberSetupSession(result.sessionId, purpose);
+      rememberSetupSession(result.sessionId, purpose, experienceMode);
       setMessage('');
     } catch (err) {
       setError(err instanceof Error ? err.message : '新しい相談を作れませんでした');
@@ -595,7 +605,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
             notifyCompleted(`completed:${response.session.sessionId}:${response.session.revision}`);
             applySessionWithDraftChanges(session, response.session);
             setDirtyDraftEditKeys(new Set());
-            rememberSetupSession(response.session.sessionId, purpose);
+            rememberSetupSession(response.session.sessionId, purpose, experienceMode);
             setMessage('');
             setStreamingMessage('');
             setShowRetry(false);
@@ -641,7 +651,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         notifyCompleted(`completed:${result.session.sessionId}:${result.session.revision}`);
         applySessionWithDraftChanges(session, result.session);
         setDirtyDraftEditKeys(new Set());
-        rememberSetupSession(result.session.sessionId, purpose);
+        rememberSetupSession(result.session.sessionId, purpose, experienceMode);
         setMessage('');
         setShowRetry(false);
         setStreamingMessage('');
@@ -703,7 +713,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       }
       applySessionWithDraftChanges(session, result.session);
       setDirtyDraftEditKeys(new Set());
-      rememberSetupSession(result.session.sessionId, purpose);
+      rememberSetupSession(result.session.sessionId, purpose, experienceMode);
       setShowRetry(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '再試行に失敗しました');
@@ -735,7 +745,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       setError(null);
       const result = await api.previewSetup(session.sessionId, styleHint.trim() || undefined);
       applySessionWithDraftChanges(session, result.session, { preserveSummaryOnRevisionOnly: true });
-      rememberSetupSession(result.session.sessionId, purpose);
+      rememberSetupSession(result.session.sessionId, purpose, experienceMode);
       setPreviewText(result.previewText);
     } catch (err) {
       setError(err instanceof Error ? err.message : `${copy.previewLabel}に失敗しました`);
@@ -848,7 +858,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
         revision: commitRevision,
       });
       setSession(commitResult.session);
-      forgetSetupSession(commitResult.session.sessionId, purpose);
+      forgetSetupSession(commitResult.session.sessionId, purpose, experienceMode);
       onCreated(commitResult.projectId);
     } catch (err) {
       const detail = err instanceof Error ? err.message : '作品化に失敗しました';
@@ -886,7 +896,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       });
       setSession(result.session);
       clearDraftChanges();
-      rememberSetupSession(result.session.sessionId, purpose);
+      rememberSetupSession(result.session.sessionId, purpose, experienceMode);
     } catch (err) {
       setError(err instanceof Error ? err.message : '相談モデルを変更できませんでした');
       await reloadLatestSession(session.sessionId, true);
@@ -906,7 +916,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       });
       setSession(result.session);
       clearDraftChanges();
-      rememberSetupSession(result.session.sessionId, purpose);
+      rememberSetupSession(result.session.sessionId, purpose, experienceMode);
     } catch (err) {
       setError(err instanceof Error ? err.message : '作風設定を変更できませんでした');
       await reloadLatestSession(session.sessionId, true);
@@ -929,10 +939,10 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
           clearDraftChanges();
         }
         setDirtyDraftEditKeys(new Set());
-        rememberSetupSession(latest.sessionId, purpose);
+        rememberSetupSession(latest.sessionId, purpose, experienceMode);
         return latest;
       } else {
-        forgetSetupSession(sessionId, purpose);
+        forgetSetupSession(sessionId, purpose, experienceMode);
         return null;
       }
     } catch {
@@ -960,7 +970,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       });
       setSession(result.session);
       clearDraftChanges();
-      rememberSetupSession(result.session.sessionId, purpose);
+      rememberSetupSession(result.session.sessionId, purpose, experienceMode);
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : '設定草案の保存に失敗しました');
@@ -984,7 +994,7 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
       });
       setSession(result.session);
       clearDraftChanges();
-      rememberSetupSession(result.session.sessionId, purpose);
+      rememberSetupSession(result.session.sessionId, purpose, experienceMode);
     } catch (err) {
       setError(err instanceof Error ? err.message : '固定状態の更新に失敗しました');
       await reloadLatestSession(session.sessionId, true);
@@ -1767,7 +1777,8 @@ export default function SetupWorkspace({ purpose = 'novel', onCreated, onCancel,
 
 async function createDefaultSetupSession(
   knownProviders?: ModelProviderInfo[],
-  purpose: 'novel' | 'roleplay' = 'novel'
+  purpose: 'novel' | 'roleplay' = 'novel',
+  experienceMode: ExperienceMode = 'standard'
 ) {
   const providers =
     knownProviders && knownProviders.length > 0
@@ -1787,6 +1798,7 @@ async function createDefaultSetupSession(
       ? { provider: defaultProvider.name, modelName: modelName ?? defaultProvider.defaultModel }
       : undefined,
     purpose,
+    ...(experienceMode !== 'standard' ? { experienceMode } : {}),
   });
 }
 
@@ -1815,25 +1827,30 @@ async function syncFreshSessionModel(session: SetupSession): Promise<{ session: 
 }
 
 async function findRestorableSetupSession(
-  purpose: 'novel' | 'roleplay' = 'novel'
+  purpose: 'novel' | 'roleplay' = 'novel',
+  experienceMode: ExperienceMode = 'standard'
 ): Promise<SetupSession | null> {
-  const storedId = readStoredSetupSessionId(purpose);
+  const storedId = readStoredSetupSessionId(purpose, experienceMode);
   if (storedId) {
     const stored = await api.getSetupSession(storedId).catch(() => null);
     if (
       stored?.status === 'active' &&
-      (stored.purpose ?? 'novel') === purpose
+      (stored.purpose ?? 'novel') === purpose &&
+      (stored.experienceMode ?? 'standard') === experienceMode
     ) {
       return stored;
     }
-    forgetSetupSession(storedId, purpose);
+    forgetSetupSession(storedId, purpose, experienceMode);
   }
 
   const summaries = await api.listSetupSessions().catch(() => []);
-  // NOTE: サマリーの purpose は必ずサーバーで正規化されている。同じ purpose の
-  // active セッションだけを復元候補にする（設計書 1.5）。
+  // NOTE: サマリーの purpose / experienceMode は必ずサーバーで正規化されている。
+  // 同じ purpose でも体験モードが違う active セッションを誤復元しない（設計書 4.1）。
   const latestActive = summaries.find(
-    (summary) => summary.status === 'active' && summary.purpose === purpose
+    (summary) =>
+      summary.status === 'active' &&
+      summary.purpose === purpose &&
+      summary.experienceMode === experienceMode
   );
   if (!latestActive) return null;
 

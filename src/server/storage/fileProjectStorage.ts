@@ -127,6 +127,32 @@ const localOperations: WithoutUserContext<ProjectStorage> = {
   listRoleplaySessionIds: (projectId) => storage.listRoleplaySessionIds(projectId),
   roleplaySessionExists: (projectId, sessionId) =>
     storage.roleplaySessionExists(projectId, sessionId),
+
+  readAmplifierInteractions: (projectId) => storage.readAmplifierInteractions(projectId),
+  appendAmplifierInteraction: (projectId, event) =>
+    storage.appendAmplifierInteraction(projectId, event),
+  readAmplifierNotebook: (projectId) => storage.readAmplifierNotebook(projectId),
+  writeAmplifierNotebook: (projectId, notebook) =>
+    storage.writeAmplifierNotebook(projectId, notebook),
+  appendAmplifierNotebookRevision: (projectId, record) =>
+    storage.appendAmplifierNotebookRevision(projectId, record),
+  readAmplifierNotebookRevisions: (projectId) =>
+    storage.readAmplifierNotebookRevisions(projectId),
+  readAmplifierTurns: (projectId) => storage.readAmplifierTurns(projectId),
+  readAmplifierTurn: (projectId, turnId) => storage.readAmplifierTurn(projectId, turnId),
+  writeAmplifierTurn: (projectId, turn) => storage.writeAmplifierTurn(projectId, turn),
+
+  readGlobalAmplifierNotebook: () => storage.readGlobalAmplifierNotebook(),
+  writeGlobalAmplifierNotebook: (notebook) => storage.writeGlobalAmplifierNotebook(notebook),
+  appendGlobalAmplifierNotebookRevision: (record) =>
+    storage.appendGlobalAmplifierNotebookRevision(record),
+  readGlobalAmplifierNotebookRevisions: () => storage.readGlobalAmplifierNotebookRevisions(),
+  appendGlobalAmplifierObservation: (observation) =>
+    storage.appendGlobalAmplifierObservation(observation),
+  readGlobalAmplifierObservations: () => storage.readGlobalAmplifierObservations(),
+  clearGlobalAmplifierObservations: () => storage.clearGlobalAmplifierObservations(),
+  clearGlobalAmplifierNotebookRevisions: () =>
+    storage.clearGlobalAmplifierNotebookRevisions(),
 };
 
 export function createFileProjectStorage(): ProjectStorage {

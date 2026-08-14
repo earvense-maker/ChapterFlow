@@ -19,6 +19,10 @@ router.post('/projects/:id/generate', async (req, res, next) => {
       wish: body.wish,
       mode: body.mode,
       viewpointCharacterId: body.viewpointCharacterId ?? null,
+      ...(body.amplifierInteractionId
+        ? { amplifierInteractionId: body.amplifierInteractionId }
+        : {}),
+      ...(body.amplifierOperationId ? { amplifierOperationId: body.amplifierOperationId } : {}),
     });
     res.json(record);
   } catch (err) {
@@ -116,6 +120,13 @@ router.post('/projects/:id/generate-stream', async (req, res) => {
         mode: body.mode,
         viewpointCharacterId: body.viewpointCharacterId ?? null,
         abortSignal: abortController.signal,
+        // NOTE: 妄想増幅器の advance 専用。指定時は保存済み event から方向を解決する。
+        ...(body.amplifierInteractionId
+          ? { amplifierInteractionId: body.amplifierInteractionId }
+          : {}),
+        ...(body.amplifierOperationId
+          ? { amplifierOperationId: body.amplifierOperationId }
+          : {}),
         // NOTE: strictでも本文chunkは即時送信する。検証・修復で確定本文が変わった
         // 場合はreplaceで全文を差し替え、done.recordを最終正とする。
         onPhase: (phase) => send('phase', { phase }),
@@ -597,7 +608,13 @@ function parseGenerateRequest(
     throw new GenerateRequestValidationError('生成リクエストの形式が不正です。');
   }
 
-  const body = value as { wish?: unknown; mode?: unknown; viewpointCharacterId?: unknown };
+  const body = value as {
+    wish?: unknown;
+    mode?: unknown;
+    viewpointCharacterId?: unknown;
+    amplifierInteractionId?: unknown;
+    amplifierOperationId?: unknown;
+  };
   const wish = body.wish === undefined ? '' : body.wish;
   if (typeof wish !== 'string') {
     throw new GenerateRequestValidationError('生成指示は文字列で入力してください。');
@@ -621,7 +638,23 @@ function parseGenerateRequest(
   const viewpointCharacterId =
     typeof rawViewpoint === 'string' && rawViewpoint.trim() ? rawViewpoint.trim() : null;
 
-  return { wish, mode, viewpointCharacterId };
+  // NOTE: 妄想増幅器の advance 専用フィールド。通常の wish だけの既存経路は変更しない。
+  const amplifierInteractionId =
+    typeof body.amplifierInteractionId === 'string' && body.amplifierInteractionId.trim()
+      ? body.amplifierInteractionId.trim()
+      : undefined;
+  const amplifierOperationId =
+    typeof body.amplifierOperationId === 'string' && body.amplifierOperationId.trim()
+      ? body.amplifierOperationId.trim()
+      : undefined;
+
+  return {
+    wish,
+    mode,
+    viewpointCharacterId,
+    ...(amplifierInteractionId ? { amplifierInteractionId } : {}),
+    ...(amplifierOperationId ? { amplifierOperationId } : {}),
+  };
 }
 
 // NOTE: 人物検証専用APIは追加せず、生成 route が既存の readCharacters で確かめる

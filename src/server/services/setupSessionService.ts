@@ -7,6 +7,7 @@ import { nowIso } from '../utils/date.js';
 import { KeyedMutex } from '../utils/keyedMutex.js';
 import * as storage from './storageService.js';
 import * as projectService from './projectService.js';
+import { resolveAppDefaultModelSettings } from './appSettingsService.js';
 import {
   applySetupDraftPatch,
   createEmptySetupDraft,
@@ -24,7 +25,7 @@ import {
   normalizeSetupCommitPlan,
   readPresetIdsByCategory,
 } from './setupCommitService.js';
-import { normalizeSetupPurpose } from '../types/index.js';
+import { normalizeSetupPurpose, normalizeExperienceMode } from '../types/index.js';
 import {
   INTERACTIVE_TASK_MAX_OUTPUT_TOKENS,
   JSON_TASK_MAX_OUTPUT_TOKENS,
@@ -34,6 +35,7 @@ import { normalizeActivePresetIds } from '../../shared/presetMigration.js';
 import { hasSetupDraftContent } from '../../shared/setupContent.js';
 import type { SetupPurpose } from '../types/index.js';
 import type { NormalizedSetupCommitData } from './setupCommitService.js';
+import type { ExperienceMode } from '../types/index.js';
 import type {
   CanonScope,
   Character,
@@ -86,8 +88,8 @@ import {
   assertRevision,
   assertValidCreateSetupSessionBody,
   assertValidRevision,
+  DEFAULT_MODEL_PROVIDER,
   normalizeOutputLength,
-  normalizeProvider,
 } from './setupSessionValidation.js';
 
 const CHAT_OUTPUT_LENGTH = 1800;
@@ -143,7 +145,19 @@ export async function createSetupSession(
 ): Promise<SetupSessionResponse> {
   assertValidCreateSetupSessionBody(body);
   const now = nowIso();
-  const provider = normalizeProvider(body.model?.provider);
+  // NOTE: provider/modelName は同じ優先順位の組として解決する。model が明示指定されていれば
+  // アプリ設定を読まない（設定ファイルの一時的な読み込み失敗に影響されない）。未指定の
+  // ときだけ「相談に使うモデル」を引き継ぎ、それも無ければ gemini に落とす。
+  let provider: string;
+  let modelName: string;
+  if (body.model?.provider) {
+    provider = body.model.provider;
+    modelName = body.model.modelName?.trim() || defaultModelForProvider(provider);
+  } else {
+    const appDefault = await resolveAppDefaultModelSettings();
+    provider = appDefault?.provider ?? DEFAULT_MODEL_PROVIDER;
+    modelName = appDefault?.modelName ?? defaultModelForProvider(provider);
+  }
   // NOTE: 'novel' | 'roleplay' 以外は 400。undefined は 'novel' 扱い。
   if (body.purpose !== undefined && body.purpose !== 'novel' && body.purpose !== 'roleplay') {
     throw new SetupServiceError(
@@ -153,8 +167,22 @@ export async function createSetupSession(
       400
     );
   }
+  // NOTE: 体験モード（妄想増幅器）。undefined は 'standard'。それ以外は 400（設計書 4.1）。
+  if (
+    body.experienceMode !== undefined &&
+    body.experienceMode !== 'standard' &&
+    body.experienceMode !== 'amplifier'
+  ) {
+    throw new SetupServiceError(
+      "experienceMode は 'standard' か 'amplifier' である必要があります。",
+      'invalid_experience_mode',
+      false,
+      400
+    );
+  }
   const purpose: SetupPurpose = normalizeSetupPurpose(body.purpose);
   const setupMode: 'quick' | 'full' = body.setupMode === 'quick' ? 'quick' : 'full';
+  const experienceMode: ExperienceMode = normalizeExperienceMode(body.experienceMode);
   const requestedPresetIds = body.projectSettings?.activePresetIds ?? {};
   const session: SetupSession = {
     schemaVersion: 2,
@@ -164,10 +192,10 @@ export async function createSetupSession(
     revision: 1,
     purpose,
     setupMode,
+    experienceMode,
     model: {
       provider,
-      modelName:
-        body.model?.modelName?.trim() || defaultModelForProvider(provider),
+      modelName,
     },
     projectSettings: {
       title: body.projectSettings?.title?.trim() || '',
@@ -896,6 +924,8 @@ function toSetupSessionSummary(session: SetupSession): SetupSessionSummary {
     committedProjectId: session.committedProjectId,
     // NOTE: サマリーAPI では常に正規化済みの purpose を返し、UI 側は undefined を扱わない。
     purpose: normalizeSetupPurpose(session.purpose),
+    // NOTE: サマリーAPI では常に正規化済みの experienceMode を返す（設計書 4.1）。
+    experienceMode: normalizeExperienceMode(session.experienceMode),
   };
 }
 
@@ -1717,6 +1747,8 @@ function normalizeStoredSession(session: SetupSession): SetupSession {
     schemaVersion: 2,
     // NOTE: 保存ファイルは purpose 無しのまま許容し、境界で 'novel' に正規化する。
     purpose: normalizeSetupPurpose(session.purpose),
+    // NOTE: 保存ファイルは experienceMode 無しのまま許容し、境界で 'standard' に正規化する。
+    experienceMode: normalizeExperienceMode(session.experienceMode),
     projectSettings: {
       ...session.projectSettings,
       activePresetIds: normalizeActivePresetIds(
@@ -1741,6 +1773,8 @@ function normalizedToPlan(normalized: NormalizedSetupCommitData): SetupCommitPla
       outputLength: projectInput.outputLength ?? 3000,
       activePresetIds: projectInput.activePresetIds ?? {},
       projectType,
+      // NOTE: normalizeSetupCommitPlan がセッション値から強制的にセット済み。
+      experienceMode: normalizeExperienceMode(projectInput.experienceMode),
     },
     coreConcept: projectInput.coreConcept ?? '',
     // NOTE: roleplay 用途では firstWishSuggestion を UI・保存対象から外す。

@@ -92,6 +92,19 @@ import {
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
 import { resolveSystemPrompt } from '../prompts/systemPrompt.js';
+// NOTE: 妄想増幅器の方向ターン用。既存 runTurn の send/regenerate へ条件分岐を散らさず、
+// 内部の turn 種別へ amplifier を追加する（設計書 4.5）。
+import * as amplifierService from './amplifierService.js';
+import { createTurnForAnchor } from './amplifierChoiceService.js';
+import { requestProjectInterpretation } from './desireInterpreterService.js';
+import { runContentEditedHook } from './amplifierEventHooks.js';
+import { withProjectWriteLock } from './projectLock.js';
+import type {
+  AmplifierAnchor,
+  AmplifierDirectionInput,
+  AmplifierInteractionEvent,
+} from '../types/index.js';
+import type { AmplifierPromptContext } from './amplifierService.js';
 import type {
   ActivePresets,
   Character,
@@ -520,6 +533,19 @@ export async function editRoleplayMessage(input: {
           },
     };
     await withDataDirWrite(() => storage.writeRoleplaySession(next));
+    // NOTE: 妄想増幅器の content_edited イベント（設計書 7.4）。本文保存後に追記し、
+    // 旧turnをsupersedeする。失敗しても編集は成功として返す（設計書 21）。
+    void runContentEditedHook({
+      projectId: input.projectId,
+      anchor: {
+        kind: 'roleplay',
+        sessionId: input.sessionId,
+        messageId: message.messageId,
+        contentRevision: nextMessageRevision,
+      },
+      beforeText: message.content,
+      afterText: content,
+    });
     return { session: next, rebuild: requiresRebuild };
   });
 
@@ -1036,6 +1062,8 @@ export interface CreateRoleplaySessionInput {
   characterId: string;
   scenario?: string;
   userPersona?: unknown;
+  // NOTE: 妄想増幅器の会話枠ごとグローバル学習除外（設計書 14.2）。省略時は false。
+  excludeFromGlobalLearning?: boolean;
 }
 
 export async function createRoleplaySession(
@@ -1121,6 +1149,7 @@ export async function createRoleplaySession(
       contextSnapshot: snapshot,
       status: 'active',
       messages,
+      ...(input.excludeFromGlobalLearning === true ? { excludeFromGlobalLearning: true } : {}),
       revision: 1,
       model: {
         provider: project.activeModelProvider,
@@ -1131,6 +1160,8 @@ export async function createRoleplaySession(
     };
 
     await storage.writeRoleplaySession(session);
+    // current メモは roleplay:<sessionId> 単位なので、新しい会話枠は自然に空から始まる。
+    // 既存キーを消すとアーカイブ済み会話の観察履歴まで失うため、ここでは変更しない。
     // NOTE: AC13 の「ログから確認できる」。system 側の縮小はセッション作成時に一度だけ
     // ログへ出す。各ターンの結合 report にも system エントリが含まれるため、ターン側の
     // ログはターン固有セクションだけに絞って二重ログを避ける（commitTurn 参照）。
@@ -1270,6 +1301,9 @@ export async function archiveRoleplaySession(
       updatedAt: nowIso(),
     };
     await withDataDirWrite(() => storage.writeRoleplaySession(next));
+    // NOTE: 妄想増幅器: 会話枠のアーカイブは解釈トリガー（設計書 10.2）。失敗しても
+    // アーカイブ自体は成功として返す。
+    void requestProjectInterpretation(projectId);
     return toRoleplaySessionView(next, currentSettingsFingerprint);
   });
 }
@@ -1336,14 +1370,58 @@ export async function* regenerateRoleplay(
   });
 }
 
+// NOTE: 妄想増幅器のロールプレイ進行（設計書 4.5 / 13.3）。選択や自由記述は通常の
+// ユーザーメッセージではなく「今回見たい方向」として保存する。メタ方向を「あなた」の
+// 発言バブルへ混ぜない。user message は保存せず、保存済み方向をプロンプトへ渡して
+// キャラクターメッセージを生成する。
+export interface SendAmplifierTurnInput {
+  projectId: string;
+  sessionId: string;
+  revision: number;
+  clientEventId: string;
+  turnId: string;
+  turnRevision: number;
+  anchor: AmplifierAnchor;
+  direction: AmplifierDirectionInput;
+  abortSignal?: AbortSignal;
+}
+
+export async function* sendAmplifierTurn(
+  input: SendAmplifierTurnInput
+): AsyncGenerator<RoleplayStreamEvent> {
+  yield* runTurn({
+    projectId: input.projectId,
+    sessionId: input.sessionId,
+    revision: input.revision,
+    abortSignal: input.abortSignal,
+    kind: 'amplifier',
+    amplifier: {
+      clientEventId: input.clientEventId,
+      turnId: input.turnId,
+      turnRevision: input.turnRevision,
+      anchor: input.anchor,
+      direction: input.direction,
+    },
+  });
+}
+
+interface AmplifierTurnRequest {
+  clientEventId: string;
+  turnId: string;
+  turnRevision: number;
+  anchor: AmplifierAnchor;
+  direction: AmplifierDirectionInput;
+}
+
 interface RunTurnInput {
   projectId: string;
   sessionId: string;
   revision: number;
   abortSignal?: AbortSignal;
-  kind: 'send' | 'regenerate';
+  kind: 'send' | 'regenerate' | 'amplifier';
   userMessage?: string;
   replacePendingMessageId?: string;
+  amplifier?: AmplifierTurnRequest;
 }
 
 // NOTE: 4段階構成:
@@ -1364,9 +1442,27 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
     modelName,
     expectedRevisionForCommit,
     previousCharacterMessageId,
+    amplifierInteractionId,
+    amplifierReplay,
   } = ticket;
 
+  // NOTE: 同じ clientEventId の再送で保存済み応答が既にあった場合は、生成せずに
+  // 保存済みセッションをそのまま返す（冪等リプレイ・設計書 12.3）。try の内側に置き、
+  // finally の in-flight 解放を必ず通す。
   try {
+    if (amplifierReplay) {
+      const currentSettingsFingerprint = await resolveCurrentSettingsFingerprint(
+        input.projectId,
+        undefined,
+        { characterId: postUserSession.characterId, scenario: postUserSession.scenario }
+      ).catch(() => undefined);
+      yield {
+        type: 'done',
+        session: toRoleplaySessionView(postUserSession, currentSettingsFingerprint),
+      };
+      return;
+    }
+
     // NOTE: NG語は Phase 2 の予算判定にも要る（Phase A 期間は【表現上の注意】が
     // 可変プロンプトに載るため）。要約より前に解決しておく。
     const project = await storage.readProject(input.projectId);
@@ -1419,11 +1515,15 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
     // Phase 3: プロンプトを組み立て、文字数とトークンの両方で上限を検証する。
     let prompt: Awaited<ReturnType<typeof buildTurnPrompt>>;
     try {
+      const amplifier = amplifierInteractionId
+        ? await resolveAmplifierTurnContext(input.projectId, amplifierInteractionId, effectiveSession)
+        : undefined;
       prompt = await buildTurnPrompt({
         session: effectiveSession,
         excludeCharacterMessageId: previousCharacterMessageId,
         outputLength: caps.outputLength,
         bannedExpressions,
+        ...(amplifier ? { amplifier } : {}),
       });
     } catch (err) {
       if (err instanceof RoleplayServiceError) {
@@ -1626,6 +1726,7 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
         previousCharacterMessageId,
         warnings,
         budgetReport: prompt.budgetReport,
+        ...(amplifierInteractionId ? { amplifierInteractionId } : {}),
       });
       // NOTE: 保存に成功してから replace を出す。先に出すと、保存が競合で失敗したときに
       // 画面だけ書き換わって保存本文と食い違う（設計書 5.5 の原子性）。
@@ -1643,6 +1744,30 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
         type: 'done',
         session: toRoleplaySessionView(committed, latestSettingsFingerprint),
       };
+      // NOTE: 妄想増幅器: 保存したキャラクターメッセージへ選択肢を作り、解釈を予約する
+      // （設計書 4.5 / 10.2）。失敗しても本文は失わない。生成中に作品が削除された場合は
+      // 削除済みディレクトリを再作成しないよう入口で確認する。
+      if (input.kind === 'amplifier' && amplifierInteractionId) {
+        const savedMessage = committed.messages[committed.messages.length - 1];
+        if (savedMessage) {
+          void (async () => {
+            if (!(await storage.projectExists(input.projectId))) return;
+            await createTurnForAnchor(input.projectId, {
+              kind: 'roleplay',
+              sessionId: input.sessionId,
+              messageId: savedMessage.messageId,
+              contentRevision: savedMessage.contentRevision ?? 0,
+            }).catch((error) => {
+              console.warn('Failed to create amplifier turn after roleplay response', {
+                projectId: input.projectId,
+                sessionId: input.sessionId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          })();
+        }
+        void requestProjectInterpretation(input.projectId);
+      }
       // NOTE: 応答保存後に非同期要約を走らせる（設計書 3.5）。エラーは無視する。
       // ただし同じ turn で同期要約を実施済みなら起動しない。連続で要約が走ると
       // 同一 turn 中に2回モデルを呼び、要約が要約を上書きする（設計書 5.2）。
@@ -1685,6 +1810,10 @@ interface TurnTicket {
   modelName: string;
   expectedRevisionForCommit: number;
   previousCharacterMessageId: string | null;
+  // NOTE: 妄想増幅器の方向ターン用。commitTurn で character メッセージへ紐付ける。
+  amplifierInteractionId?: string;
+  // NOTE: 同じ clientEventId の再送で既に保存済みの応答があった場合のリプレイ。
+  amplifierReplay?: { messageId: string };
 }
 
 // NOTE: mutex 内で行うのは validate → user 保存 → in-flight set まで。
@@ -1729,8 +1858,24 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
     let workingSession = session;
     let expectedRevisionForCommit: number;
     let previousCharacterMessageId: string | null = null;
+    let amplifierInteractionId: string | undefined;
+    let amplifierReplay: { messageId: string } | undefined;
 
-    if (input.kind === 'send') {
+    if (input.kind === 'amplifier') {
+      const amplifierInput = input.amplifier!;
+      const result = await beginAmplifierTurn({
+        projectId: input.projectId,
+        session,
+        amplifier: amplifierInput,
+      });
+      if (result.replay) {
+        amplifierReplay = { messageId: result.replay.messageId };
+      } else {
+        amplifierInteractionId = result.event.eventId;
+      }
+      workingSession = session;
+      expectedRevisionForCommit = session.revision;
+    } else if (input.kind === 'send') {
       const text = validateUserMessage(input.userMessage);
       const last = session.messages[session.messages.length - 1];
       const pendingMessageId = normalizePendingMessageId(input.replacePendingMessageId);
@@ -1824,8 +1969,214 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
       modelName: workingSession.model.modelName,
       expectedRevisionForCommit,
       previousCharacterMessageId,
+      ...(amplifierInteractionId ? { amplifierInteractionId } : {}),
+      ...(amplifierReplay ? { amplifierReplay } : {}),
     };
   });
+}
+
+// NOTE: 妄想増幅器の beginTurn(kind=amplifier)（設計書 4.5）。session revision・active・
+// in-flight・interactionと最新アンカーを検証する。user message は保存しない。
+// 同じ clientEventId の再送は既存イベントを返し、二重記録・二重進行を防ぐ（設計書 12.3）。
+async function beginAmplifierTurn(input: {
+  projectId: string;
+  session: RoleplaySession;
+  amplifier: AmplifierTurnRequest;
+}): Promise<{ event: AmplifierInteractionEvent; replay: { messageId: string } | null }> {
+  const { projectId, session, amplifier } = input;
+  return withProjectWriteLock(projectId, async () => {
+    await amplifierService.assertAmplifierProject(projectId);
+    const expectedContextKey = amplifierService.buildContextKey('roleplay', session.sessionId);
+
+    // 冪等チェック: 既に同じ clientEventId のイベントがあれば再送。同じIDを別会話・
+    // 別ターンへ使い回す要求は、過去イベントの方向を誤注入しないよう競合として拒否する。
+    const existing = await amplifierService.findEventByClientId(projectId, amplifier.clientEventId);
+    if (existing) {
+      if (
+        existing.mode !== 'roleplay' ||
+        existing.turnId !== amplifier.turnId ||
+        existing.contextKey !== expectedContextKey ||
+        !sameAmplifierAnchor(existing.anchor, amplifier.anchor)
+      ) {
+        throw new RoleplayServiceError(
+          'clientEventId が別の操作ですでに使われています。',
+          'amplifier_event_conflict',
+          false,
+          409,
+          session.revision
+        );
+      }
+      const savedMessage = session.messages.find(
+        (message) => message.amplifierInteractionId === existing.eventId
+      );
+      if (savedMessage) {
+        // 完了済みターンの再送 → 保存済み応答をリプレイ（新規生成しない）
+        return { event: existing, replay: { messageId: savedMessage.messageId } };
+      }
+      if (generationInFlight.has(session.sessionId)) {
+        throw new RoleplayServiceError(
+          'このセッションは既に応答生成中です。',
+          'generation_in_progress',
+          true,
+          409,
+          session.revision
+        );
+      }
+      // 生成に失敗した再送 → 既存イベントを使い回して再試行（messages は未変更）
+      return { event: existing, replay: null };
+    }
+
+    const turn = await amplifierService.readTurn(projectId, amplifier.turnId);
+    if (!turn) {
+      throw new RoleplayServiceError(
+        '選択肢が見つかりません。',
+        'amplifier_turn_not_found',
+        false,
+        409,
+        session.revision
+      );
+    }
+    if (turn.status !== 'ready') {
+      throw new RoleplayServiceError(
+        turn.status === 'consumed'
+          ? 'この選択肢は既に使われています。'
+          : '選択肢がまだ準備できていません。',
+        'amplifier_turn_not_ready',
+        false,
+        409,
+        session.revision
+      );
+    }
+    if (turn.revision !== amplifier.turnRevision) {
+      throw new RoleplayServiceError(
+        '選択肢が別の操作で更新されています。再読み込みしてください。',
+        'amplifier_turn_stale',
+        false,
+        409,
+        session.revision
+      );
+    }
+    // NOTE: アンカーの改訂番号とハッシュを検証する（設計書 8.2）。本文編集・別セッション
+    // への切替後に古いカードが押された場合は 409 amplifier_turn_stale。
+    if (
+      turn.anchor.kind !== 'roleplay' ||
+      turn.anchor.sessionId !== session.sessionId ||
+      turn.contextKey !== expectedContextKey ||
+      !sameAmplifierAnchor(turn.anchor, amplifier.anchor)
+    ) {
+      throw new RoleplayServiceError(
+        'この選択肢は現在の会話に属していません。再読み込みしてください。',
+        'amplifier_turn_stale',
+        false,
+        409,
+        session.revision
+      );
+    }
+    const resolved = await amplifierService.resolveEffectiveAnchorText(projectId, turn.anchor);
+    if (
+      !resolved.ok ||
+      !amplifierService.verifyAnchorAgainstCurrent(turn.anchor, resolved, turn.anchorTextHash)
+    ) {
+      throw new RoleplayServiceError(
+        '本文が更新されているため、この選択肢は使えません。再読み込みしてください。',
+        'amplifier_turn_stale',
+        false,
+        409,
+        session.revision
+      );
+    }
+
+    // NOTE: 方向を検証してからイベント保存・turn消費を行う（レビュー指摘: 不正な方向で
+    // turnをconsumedにすると、その後の解決に失敗してturnだけ再利用不能になる）。
+    const normalized = amplifierService.normalizeAmplifierDirectionInput(
+      amplifier.direction,
+      turn
+    );
+    const notebook = await amplifierService.readNotebook(projectId);
+    const { event } = await amplifierService.recordInteractionUnlocked(projectId, {
+      clientEventId: amplifier.clientEventId,
+      mode: 'roleplay',
+      type: normalized.type,
+      anchor: turn.anchor,
+      turnId: turn.turnId,
+      payload: normalized.payload,
+      excludeFromGlobalLearning:
+        session.excludeFromGlobalLearning === true || !notebook.learningEnabled,
+      contextKey: turn.contextKey,
+    });
+
+    // ターンを consumed にする
+    const consumed: typeof turn = {
+      ...turn,
+      status: 'consumed',
+      consumedByEventId: event.eventId,
+    };
+    await amplifierService.writeTurn(projectId, consumed);
+
+    return { event, replay: null };
+  });
+}
+
+function sameAmplifierAnchor(left: AmplifierAnchor, right: AmplifierAnchor): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === 'novel') {
+    const other = right as Extract<AmplifierAnchor, { kind: 'novel' }>;
+    return (
+      left.generationId === other.generationId &&
+      left.textRevisionNumber === other.textRevisionNumber
+    );
+  }
+  const other = right as Extract<AmplifierAnchor, { kind: 'roleplay' }>;
+  return (
+    left.sessionId === other.sessionId &&
+    left.messageId === other.messageId &&
+    left.contentRevision === other.contentRevision
+  );
+}
+
+// NOTE: 方向入力の検証は amplifierService.normalizeAmplifierDirectionInput に共通化
+// （小説 advance と同一規則・レビュー指摘）。
+
+// NOTE: 保存済み InteractionEvent から今回方向を解決し、嗜好メモ・境界を合成した
+// プロンプト用コンテキストを作る（設計書 11.3 / 13.1）。選択肢のラベル・本文は
+// クライアントから信用せず、turnId からサーバー保存値を解決する。
+async function resolveAmplifierTurnContext(
+  projectId: string,
+  interactionId: string,
+  session: RoleplaySession
+): Promise<AmplifierPromptContext> {
+  const event = await amplifierService.findEventById(projectId, interactionId);
+  if (!event) {
+    throw new RoleplayServiceError(
+      '方向イベントが見つかりません。',
+      'amplifier_direction_invalid',
+      false,
+      409
+    );
+  }
+  try {
+    const direction = await amplifierService.resolveAmplifierDirection(projectId, event);
+    // NOTE: 自由記述内の引用された台詞は分身の台詞として扱い、それ以外は方向指示として
+    // 扱う（設計書 4.5）。文脈をプロンプト側で解釈できるよう、種別を添えて返す。
+    const directionWithNote =
+      event.type === 'free_text'
+        ? `${direction}\n（この自由記述内で「」など引用符でくくられた台詞だけを分身の台詞として扱い、それ以外は方向指示として扱う）`
+        : direction;
+    return amplifierService.collectAmplifierPromptContext(
+      projectId,
+      'roleplay',
+      `roleplay:${session.sessionId}`,
+      directionWithNote
+    );
+  } catch (err) {
+    if (err instanceof RoleplayServiceError) throw err;
+    throw new RoleplayServiceError(
+      '方向を解決できませんでした。',
+      'amplifier_direction_invalid',
+      false,
+      409
+    );
+  }
 }
 
 function validateUserMessage(value: string | undefined): string {
@@ -1876,10 +2227,11 @@ async function commitTurn(input: {
   workingSession: RoleplaySession;
   expectedRevisionForCommit: number;
   characterText: string;
-  kind: 'send' | 'regenerate';
+  kind: 'send' | 'regenerate' | 'amplifier';
   previousCharacterMessageId: string | null;
   warnings?: RoleplayGenerationWarning[];
   budgetReport?: PromptBudgetReport;
+  amplifierInteractionId?: string;
 }): Promise<RoleplaySession> {
   return await withSessionLock(input.sessionId, async () => {
     const latest = await loadRoleplaySessionOrThrow(input.projectId, input.sessionId);
@@ -1916,6 +2268,9 @@ async function commitTurn(input: {
       // NOTE: 予算レポートは原文を含まないため、開発診断に依らず常に記録する（AC13）。
       // 旧セッション・旧メッセージには無いので読み側は optional 扱いにする。
       ...(input.budgetReport ? { promptBudgetReport: input.budgetReport } : {}),
+      ...(input.amplifierInteractionId
+        ? { amplifierInteractionId: input.amplifierInteractionId }
+        : {}),
     };
     let nextMessages: RoleplayMessage[];
     if (input.kind === 'regenerate' && input.previousCharacterMessageId) {
@@ -2109,6 +2464,8 @@ async function buildTurnPrompt(input: {
   excludeCharacterMessageId: string | null;
   outputLength: number;
   bannedExpressions: string[];
+  // NOTE: 妄想増幅器のコンテキスト（設計書 11.3）。標準ロールプレイでは省略する。
+  amplifier?: AmplifierPromptContext;
 }): Promise<{
   systemInstructions: string;
   userPrompt: string;
@@ -2160,6 +2517,7 @@ async function buildTurnPrompt(input: {
       recentMessages: messages,
       relationshipState: session.relationshipState,
       bannedExpressions: input.bannedExpressions,
+      ...(input.amplifier ? { amplifierContext: input.amplifier } : {}),
     });
     if (!built.ok) {
       // 同期要約は Phase 2 で使い切っている。ここでの超過は明示エラー。

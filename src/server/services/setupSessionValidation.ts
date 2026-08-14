@@ -7,7 +7,7 @@ import { isRecord } from './setupSessionParsing.js';
 // リビジョン整合（楽観ロック）の確認、プロバイダ／出力文字数の正規化をまとめる。
 // 依存は setupSessionErrors / setupSessionParsing の葉モジュールのみ（一方向）。
 
-const DEFAULT_MODEL_PROVIDER = 'gemini';
+export const DEFAULT_MODEL_PROVIDER = 'gemini';
 const INITIAL_MESSAGE_MAX_CHARS = 4_000;
 const SETUP_TITLE_MAX_CHARS = 100;
 const MODEL_NAME_MAX_CHARS = 200;
@@ -72,6 +72,14 @@ export function assertValidCreateSetupSessionBody(
         `モデル名は${MODEL_NAME_MAX_CHARS.toLocaleString('ja-JP')}文字以内で指定してください。`
       );
     }
+    // NOTE: モデル名だけの指定は保存済みプロバイダー（アプリ設定）と混在して不正な
+    // 組み合わせになり得るため拒否する。provider 単独は既定モデルを補完できるので可。
+    if (
+      value.model.modelName !== undefined &&
+      (typeof provider !== 'string' || !provider.trim())
+    ) {
+      throw invalidCreateRequest('モデル名だけの指定はできません。プロバイダーとセットで指定してください。');
+    }
   }
 
   if (value.projectSettings !== undefined) {
@@ -110,10 +118,6 @@ export function assertValidCreateSetupSessionBody(
 
 function invalidCreateRequest(message: string): SetupServiceError {
   return new SetupServiceError(message, 'invalid_request', false, 400);
-}
-
-export function normalizeProvider(value: string | undefined): string {
-  return value && isSupportedProvider(value) ? value : DEFAULT_MODEL_PROVIDER;
 }
 
 export function normalizeOutputLength(value: number | undefined): number {

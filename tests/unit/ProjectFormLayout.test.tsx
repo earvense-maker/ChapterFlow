@@ -6,6 +6,7 @@ const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     getPresets: vi.fn(),
     getModelProviders: vi.fn(),
+    getDefaultModelSettings: vi.fn(),
     saveCredential: vi.fn(),
     createProject: vi.fn(),
   },
@@ -39,6 +40,10 @@ describe('ProjectForm layout', () => {
         models: [],
       },
     ]);
+    apiMock.getDefaultModelSettings.mockReset().mockResolvedValue({
+      provider: 'gemini',
+      modelName: 'gemini-test',
+    });
     apiMock.saveCredential.mockReset().mockResolvedValue(undefined);
     apiMock.createProject.mockReset().mockResolvedValue({ projectId: 'proj-created' });
   });
@@ -89,5 +94,36 @@ describe('ProjectForm layout', () => {
 
     completeCreation!({ projectId: 'proj-created' });
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('proj-created'));
+  });
+
+  it('initializes the provider and model from the saved app default settings', async () => {
+    apiMock.getModelProviders.mockReset().mockResolvedValue([
+      {
+        name: 'gemini',
+        label: 'Gemini',
+        defaultModel: 'gemini-test',
+        apiKeyHelp: 'Gemini APIキー',
+        apiKeyPlaceholder: 'AIza...',
+        models: [],
+      },
+      {
+        name: 'deepseek',
+        label: 'DeepSeek',
+        defaultModel: 'deepseek-v4-flash',
+        apiKeyHelp: 'DeepSeek APIキー',
+        apiKeyPlaceholder: 'sk-...',
+        models: [],
+      },
+    ]);
+    apiMock.getDefaultModelSettings.mockReset().mockResolvedValue({
+      provider: 'deepseek',
+      modelName: 'deepseek-v4-flash',
+    });
+
+    render(<ProjectForm onCreated={vi.fn()} onCancel={vi.fn()} />);
+    await screen.findByRole('heading', { name: '設定を直接入力' });
+
+    expect(screen.getByLabelText('プロバイダー')).toHaveValue('deepseek');
+    expect(screen.getByLabelText('モデル名')).toHaveValue('deepseek-v4-flash');
   });
 });

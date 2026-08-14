@@ -124,6 +124,9 @@ export interface GenerationRecord {
   /** 実効本文の改訂番号。旧レコード・原文は 0。 */
   textRevisionNumber?: number;
   editedAt?: string;
+  // NOTE: 妄想増幅器の advance で作られたレコードに付く。リトライと根拠追跡に使う
+  // （設計書 13.2）。旧レコードには無いため optional 扱い。
+  amplifierInteractionId?: string;
 }
 
 export interface GenerationTextRevisionRecord {
@@ -160,4 +163,9 @@ export interface GenerateRequestBody {
   wish: string;
   mode: 'continue' | 'regenerate' | 'variate';
   viewpointCharacterId?: string | null;
+  // NOTE: 妄想増幅器の小説 advance 専用。指定時はサーバーが保存済みInteractionEvent・
+  // 未完了lease・対象generationが現在選択下書きだったことを検証し、今回方向を解決する。
+  // 通常の wish だけの既存経路は変更しない（設計書 13.2）。
+  amplifierInteractionId?: string;
+  amplifierOperationId?: string;
 }

@@ -1,4 +1,20 @@
 import type {
+  AmplifierFavoriteBody,
+  AmplifierGlobalPreferencesResponse,
+  AmplifierGlobalPreferencesUpdateBody,
+  AmplifierInteractionEvent,
+  AmplifierNovelAdvanceBody,
+  AmplifierPreferencesResponse,
+  AmplifierPreferencesUpdateBody,
+  AmplifierRoleplayAdvanceBody,
+  AmplifierSettingsResponse,
+  AmplifierSettingsUpdateBody,
+  AmplifierStateQuery,
+  AmplifierStateResponse,
+  AmplifierTurnCreateResponse,
+  CreateAmplifierTurnBody,
+  RecordDirectionRejectionBody,
+  RequestAmplifierTurnAlternativesBody,
   ArchiveRoleplaySessionBody,
   CanonConflict,
   CanonPatchBody,
@@ -628,6 +644,103 @@ export const api = {
       handlers,
       abortSignal
     ),
+
+  // --- 妄想増幅器 ---
+  getAmplifierState: (projectId: string, query: AmplifierStateQuery) =>
+    request<AmplifierStateResponse>(
+      `/projects/${projectId}/amplifier/state?${new URLSearchParams(
+        query.kind === 'roleplay' && query.sessionId
+          ? { kind: 'roleplay', sessionId: query.sessionId }
+          : { kind: 'novel' }
+      )}`
+    ),
+  createAmplifierTurn: (projectId: string, body: CreateAmplifierTurnBody) =>
+    request<AmplifierTurnCreateResponse>(`/projects/${projectId}/amplifier/turns`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  requestAmplifierTurnAlternatives: (
+    projectId: string,
+    turnId: string,
+    body: RequestAmplifierTurnAlternativesBody
+  ) =>
+    request<AmplifierTurnCreateResponse>(
+      `/projects/${projectId}/amplifier/turns/${turnId}/alternatives`,
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
+  recordAmplifierDirectionRejection: (
+    projectId: string,
+    turnId: string,
+    body: RecordDirectionRejectionBody
+  ) =>
+    request<{ ok: boolean }>(`/projects/${projectId}/amplifier/turns/${turnId}/interactions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  recordAmplifierFavorite: (projectId: string, body: AmplifierFavoriteBody) =>
+    request<{ event: AmplifierInteractionEvent }>(`/projects/${projectId}/amplifier/favorites`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getAmplifierProjectPreferences: (projectId: string) =>
+    request<AmplifierPreferencesResponse>(`/projects/${projectId}/amplifier/preferences`),
+  updateAmplifierProjectPreferences: (projectId: string, body: AmplifierPreferencesUpdateBody) =>
+    request<AmplifierPreferencesResponse>(`/projects/${projectId}/amplifier/preferences`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  retryAmplifierProjectInterpretation: (projectId: string) =>
+    request<{ ok: boolean }>(`/projects/${projectId}/amplifier/preferences/retry`, {
+      method: 'POST',
+    }),
+  // NOTE: 小説 advance（設計書 13.2）。選択・自由記述・留まるのいずれかと clientEventId を
+  // 受け、InteractionEvent 保存から次場面生成までを1リクエストで行う。
+  novelAdvanceStream: (
+    projectId: string,
+    body: AmplifierNovelAdvanceBody,
+    handlers: NovelAdvanceStreamHandlers,
+    abortSignal?: AbortSignal
+  ) =>
+    requestNovelAdvanceStream(`/projects/${projectId}/amplifier/novel/advance-stream`, body, handlers, abortSignal),
+  amplifierTurnStream: (
+    projectId: string,
+    sessionId: string,
+    body: AmplifierRoleplayAdvanceBody,
+    handlers: RoleplayStreamHandlers,
+    abortSignal?: AbortSignal
+  ) =>
+    roleplayStream(
+      `/projects/${projectId}/roleplay/sessions/${sessionId}/amplifier-turn-stream`,
+      body,
+      handlers,
+      abortSignal
+    ),
+  getAmplifierDisclosure: () =>
+    request<{ version: number; acknowledged: boolean }>('/system/amplifier-disclosure'),
+  acknowledgeAmplifierDisclosure: () =>
+    request<{ version: number; acknowledged: boolean }>('/system/amplifier-disclosure', {
+      method: 'PUT',
+    }),
+  getAmplifierSettings: () =>
+    request<AmplifierSettingsResponse>('/system/amplifier-settings'),
+  updateAmplifierSettings: (body: AmplifierSettingsUpdateBody) =>
+    request<AmplifierSettingsResponse>('/system/amplifier-settings', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getAmplifierGlobalPreferences: () =>
+    request<AmplifierGlobalPreferencesResponse>('/system/amplifier-preferences'),
+  updateAmplifierGlobalPreferences: (body: AmplifierGlobalPreferencesUpdateBody) =>
+    request<AmplifierGlobalPreferencesResponse>('/system/amplifier-preferences', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  wipeAmplifierGlobalPreferences: () =>
+    request<AmplifierGlobalPreferencesResponse>('/system/amplifier-preferences', {
+      method: 'DELETE',
+    }),
+  retryAmplifierGlobalInterpretation: () =>
+    request<{ ok: boolean }>('/system/amplifier-preferences/retry', { method: 'POST' }),
 };
 
 export interface RoleplayStreamHandlers {
@@ -791,6 +904,139 @@ async function roleplayStream(
     // どちらも受信しない EOF。UI が isStreaming のまま固まらないよう明示エラーで通知。
     handlers.onError({
       error: '応答が完了せずに切断されました。しばらくしてから再試行してください。',
+      code: 'stream_ended_unexpectedly',
+      retryable: true,
+    });
+  }
+}
+
+// NOTE: 妄想増幅器の小説 advance ストリーム（設計書 13.2）。既存 generate-stream と同じ
+// chunk/done/error 契約だが、done は GenerationRecord を運ぶ。
+export interface NovelAdvanceStreamHandlers {
+  onChunk: (text: string) => void;
+  onDone: (record: GenerationRecord) => void;
+  onError: (error: { error: string; code?: string; retryable?: boolean }) => void;
+}
+
+async function requestNovelAdvanceStream(
+  path: string,
+  body: unknown,
+  handlers: NovelAdvanceStreamHandlers,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abortSignal,
+    });
+  } catch (err) {
+    const aborted = (err as { name?: string })?.name === 'AbortError';
+    handlers.onError({
+      error: aborted
+        ? '応答の受信を中断しました。'
+        : err instanceof Error
+          ? err.message
+          : '応答の受信に失敗しました。',
+      code: aborted ? 'aborted' : 'network_error',
+      retryable: !aborted,
+    });
+    return;
+  }
+  if (!res.ok) {
+    const rawErrorBody = await res.json().catch(() => ({}));
+    const errorBody =
+      typeof rawErrorBody === 'object' && rawErrorBody !== null
+        ? (rawErrorBody as { error?: string; code?: string; retryable?: boolean })
+        : {};
+    handlers.onError({
+      error: errorBody.error || `Request failed: ${res.status}`,
+      code: errorBody.code,
+      retryable: errorBody.retryable,
+    });
+    return;
+  }
+  if (!res.body) {
+    handlers.onError({ error: 'ストリーミング応答を読み取れませんでした', retryable: false });
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let sawTerminal = false;
+  let finalRecord: GenerationRecord | null = null;
+
+  const handleEvent = (event: string, data: string) => {
+    if (sawTerminal) return;
+    if (event === 'chunk') {
+      const payload = parseStreamJson<{ text?: string }>(data);
+      if (payload.text) handlers.onChunk(payload.text);
+    } else if (event === 'done') {
+      const payload = parseStreamJson<{ record?: GenerationRecord }>(data);
+      if (!isRecord(payload?.record) || typeof payload.record.generationId !== 'string') {
+        throw new ApiError(
+          '場面生成の完了データが不正です。',
+          'invalid_stream_event',
+          true
+        );
+      }
+      sawTerminal = true;
+      finalRecord = payload.record;
+      handlers.onDone(finalRecord);
+    } else if (event === 'error') {
+      sawTerminal = true;
+      const payload = parseStreamJson<{ error?: string; code?: string; retryable?: boolean }>(data);
+      handlers.onError({
+        error: payload.error ?? '場面生成に失敗しました',
+        code: payload.code,
+        retryable: payload.retryable,
+      });
+    }
+  };
+
+  let reachedEof = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        reachedEof = true;
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      buffer = drainStreamEvents(buffer, handleEvent);
+      if (sawTerminal) break;
+    }
+    if (!sawTerminal) buffer += decoder.decode();
+    if (!sawTerminal && buffer.trim()) {
+      drainStreamEvents(`${buffer}\n\n`, handleEvent);
+    }
+  } catch (err) {
+    if (err instanceof ApiError) {
+      handlers.onError({ error: err.message, code: err.code, retryable: err.retryable });
+      return;
+    }
+    const aborted = (err as { name?: string })?.name === 'AbortError';
+    handlers.onError({
+      error: aborted
+        ? '応答の受信を中断しました。'
+        : err instanceof Error
+          ? err.message
+          : '応答の読み取りに失敗しました。',
+      code: aborted ? 'aborted' : 'stream_read_failed',
+      retryable: !aborted,
+    });
+    return;
+  } finally {
+    if (!reachedEof) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+
+  if (!sawTerminal) {
+    handlers.onError({
+      error: '場面生成が完了せずに切断されました。しばらくしてから再試行してください。',
       code: 'stream_ended_unexpectedly',
       retryable: true,
     });

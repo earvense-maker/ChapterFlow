@@ -39,18 +39,25 @@ import {
 } from './styleVariationService.js';
 import type {
   AdapterGenerateResult,
-  ContextCompressionResult,
   Character,
+  ContextCompressionResult,
+  CreativeContract,
   EpisodeRecord,
   FinishReason,
   GenerationRecord,
+  GenerationStyleProfile,
   GenerationTelemetry,
+  LatentCanonItem,
+  LatentCanonStore,
+  Memory,
+  PresetsFile,
   Project,
   ProjectState,
   ReaderState,
   SceneNavigationDirection,
   SceneRecord,
 } from '../types/index.js';
+import type { PromptBudgetReport } from '../../shared/types/generation.js';
 export { GenerateError } from './generationErrors.js';
 import {
   GenerateError,
@@ -70,7 +77,6 @@ import {
 } from '../prompts/promptBudget.js';
 import { resolveNovelMaxOutputTokens } from '../utils/outputLength.js';
 import { collectAdjustedBudgetEntries } from '../../shared/promptBudgetNotice.js';
-import type { PromptBudgetReport } from '../../shared/types/generation.js';
 import {
   buildReaderContextUsage,
   buildStoryStateRefreshStatus,
@@ -89,6 +95,11 @@ import {
   verifyGeneratedText,
   type ContractVerificationResult,
 } from './contractVerificationService.js';
+// NOTE: 妄想増幅器の advance 用。guard と方向解決だけを使い、増幅器自体の保存は
+// amplifierService 側に任せる（LLM呼び出し中にプロジェクトロックを保持しない設計書 12.1）。
+import * as amplifierService from './amplifierService.js';
+import type { AmplifierPromptContext } from './amplifierService.js';
+import { runNovelRegenerateHook } from './amplifierEventHooks.js';
 export {
   calculateStoryStateBacklog,
   findGeneration,
@@ -149,6 +160,10 @@ export interface GenerateOptions {
   mode: 'continue' | 'regenerate' | 'variate';
   // NOTE: null / 未指定は「自動」。旧クライアントの request には無いので optional。
   viewpointCharacterId?: string | null;
+  // NOTE: 妄想増幅器の小説 advance 専用（設計書 13.2）。指定時は保存済み event から
+  // 今回方向を解決し、record へ紐付ける。prompt へは amplifierContext が載る。
+  amplifierInteractionId?: string;
+  amplifierOperationId?: string;
 }
 
 export interface GenerateStreamOptions extends GenerateOptions {
@@ -286,11 +301,37 @@ export async function generateScene(
   // 次の withProjectWriteLock 取得時までに blocking phase が復活しても、ロック取得後の
   // 実処理は正常に直列化される（pipeline は自分のロック内で完結してから離す）。
   await assertGenerationNotBlockedByMaintenance(projectId);
+  await amplifierService.assertNoConflictingAdvance(projectId, options.amplifierOperationId);
   const result = await withProjectWriteLock(projectId, () =>
     generateSceneUnlocked(projectId, options, requestClock)
   );
   startReservedPostGenerationMaintenance(projectId, result.record.generationId, result.maintenanceRunId);
   return result.record;
+}
+
+// NOTE: 妄想増幅器の advance では保存済み event から今回方向を解決し、生成プロンプトへ
+// 載せるコンテキストを組み立てる。イベント解決は呼び出し側の lock 内で行う。
+async function resolveAmplifierGenerationContext(
+  projectId: string,
+  interactionId: string
+): Promise<{ context: AmplifierPromptContext; wish: string }> {
+  const event = await amplifierService.findEventById(projectId, interactionId);
+  if (!event) {
+    throw new GenerateError(
+      '方向イベントが見つかりません。',
+      'amplifier_direction_invalid',
+      false
+    );
+  }
+  const direction = await amplifierService.resolveAmplifierDirection(projectId, event);
+  const mode = event.mode === 'roleplay' ? 'roleplay' : 'novel';
+  const context = await amplifierService.collectAmplifierPromptContext(
+    projectId,
+    mode,
+    event.contextKey,
+    direction
+  );
+  return { context, wish: direction };
 }
 
 async function generateSceneUnlocked(
@@ -310,6 +351,11 @@ async function generateSceneUnlocked(
   if (maintenanceBlocksGeneration(state.refineMaintenance?.phase)) {
     throw new MaintenanceInProgressError();
   }
+  await amplifierService.assertNoConflictingAdvance(projectId, options.amplifierOperationId);
+  const amplifier = options.amplifierInteractionId
+    ? await resolveAmplifierGenerationContext(projectId, options.amplifierInteractionId)
+    : undefined;
+  const effectiveWish = amplifier?.wish ?? options.wish;
 
   const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
@@ -323,7 +369,7 @@ async function generateSceneUnlocked(
   const rawStoryState = await storage.readStoryState(projectId);
   const latentCanonItems = selectRelatedCanonItems({
     items: canonStore.items,
-    wish: options.wish,
+    wish: effectiveWish,
     viewpointCharacterId: options.viewpointCharacterId ?? null,
     characters,
     excludeStatements: (rawStoryState?.authorUndecided ?? []).map((item) => item.text),
@@ -351,14 +397,14 @@ async function generateSceneUnlocked(
         );
   const styleProfile = await resolveStyleProfileForGeneration(
     project,
-    options,
+    { ...options, wish: effectiveWish },
     rewriteTargetGenerationId
   );
 
   const built = await buildPrompt({
     project,
     state,
-    wish: options.wish,
+    wish: effectiveWish,
     memories,
     characters,
     worldText,
@@ -371,6 +417,7 @@ async function generateSceneUnlocked(
     viewpointCharacterId: options.viewpointCharacterId ?? null,
     creativeContract: contract,
     latentCanonItems,
+    ...(amplifier ? { amplifierContext: amplifier.context } : {}),
   });
 
   const fitted = await fitPromptToTokenBudget({ project, built });
@@ -509,6 +556,9 @@ async function generateSceneUnlocked(
     // NOTE: 予算の適用結果は原文を含まないため、開発診断に依らず常に記録する（AC13）。
     ...(promptBudgetReport ? { promptBudgetReport } : {}),
     ...(styleProfile ? { styleProfile } : {}),
+    ...(options.amplifierInteractionId
+      ? { amplifierInteractionId: options.amplifierInteractionId }
+      : {}),
   };
 
   await storage.writeGenerationMarkdown(projectId, generationId, record.responseText);
@@ -540,6 +590,16 @@ async function generateSceneUnlocked(
 
   await projectService.updateProject(projectId, { updatedAt: nowIso() });
 
+  // NOTE: 妄想増幅器の scene_regenerated イベント（設計書 7.4）。書き直し・別案の
+  // 成功後に新案保存済みの事実を追記する。失敗しても生成は成功として返す（設計書 21）。
+  if (options.mode !== 'continue' && rewriteTargetGenerationId) {
+    void runNovelRegenerateHook({
+      projectId,
+      beforeGenerationId: rewriteTargetGenerationId,
+      afterGenerationId: generationId,
+    });
+  }
+
   return { record, maintenanceRunId: maintenanceReservation.runId };
 }
 
@@ -553,11 +613,48 @@ export async function generateSceneStream(
   // guard を通す。route 側にも preflight があるが、直接呼び出し（テスト等）でも
   // 同じ挙動を保証する。
   await assertGenerationNotBlockedByMaintenance(projectId);
+  await amplifierService.assertNoConflictingAdvance(projectId, options.amplifierOperationId);
   const result = await withProjectWriteLock(projectId, () =>
     generateSceneStreamUnlocked(projectId, options, onChunk, requestClock)
   );
   startReservedPostGenerationMaintenance(projectId, result.record.generationId, result.maintenanceRunId);
   return result.record;
+}
+
+// NOTE: 妄想増幅器の advance 用に、本編ストリーム生成を prepare / stream / persist の
+// 三段階へ分離した（設計書 12.2 / 13.2）。通常経路（generateSceneStream）は従来どおり
+// 全体を project lock 内で実行する（既存挙動を変えない）。advance 経路だけが prepare と
+// commit を lock 内、本文のモデル呼び出しを lock 外で行う（レビュー指摘: advance 中も
+// LLM呼び出し全体で project lock を保持していた問題の修正）。
+interface PreparedNovelStream {
+  project: Project;
+  state: ProjectState;
+  options: GenerateStreamOptions;
+  requestClock: GenerationRequestClock;
+  adapter: ModelAdapter;
+  memories: Memory[];
+  characters: Character[];
+  worldText: string;
+  presets: PresetsFile | null;
+  contract: CreativeContract;
+  canonStore: LatentCanonStore;
+  latentCanonItems: LatentCanonItem[];
+  target: TargetScene;
+  ngExpressions: Array<{ id: string; text: string; alternatives?: string[] }>;
+  bannedExpressions: string[];
+  rewriteTargetGenerationId: string | null;
+  styleProfile: GenerationStyleProfile | undefined;
+  systemInstructions: string;
+  userPrompt: string;
+  promptBudgetReport: PromptBudgetReport;
+  fittedMaxOutputTokens: number;
+  temperature: number;
+  devDiagnostics: boolean;
+}
+
+interface StreamedNovelResult {
+  record: GenerationRecord;
+  reasoningParts: string[];
 }
 
 async function generateSceneStreamUnlocked(
@@ -566,6 +663,25 @@ async function generateSceneStreamUnlocked(
   onChunk: (chunk: string) => void,
   requestClock: GenerationRequestClock
 ): Promise<GeneratedSceneResult> {
+  // NOTE: 非ストリーミング adapter の従来フォールバックはそのまま残す。
+  const project = await storage.readProject(projectId);
+  const adapter = project ? adapterMap[project.activeModelProvider] : undefined;
+  if (adapter && !adapter.generateTextStream) {
+    const result = await generateSceneUnlocked(projectId, options, requestClock);
+    throwIfAborted(options.abortSignal);
+    onChunk(result.record.responseText);
+    return result;
+  }
+  const prepared = await prepareNovelStreamUnlocked(projectId, options, requestClock);
+  const streamed = await streamNovelPrepared(prepared, onChunk);
+  return persistNovelPreparedUnlocked(projectId, prepared, streamed);
+}
+
+async function prepareNovelStreamUnlocked(
+  projectId: string,
+  options: GenerateStreamOptions,
+  requestClock: GenerationRequestClock
+): Promise<PreparedNovelStream> {
   await reloadCredentials();
   throwIfAborted(options.abortSignal);
 
@@ -579,16 +695,14 @@ async function generateSceneStreamUnlocked(
     throw new MaintenanceInProgressError();
   }
   throwIfAborted(options.abortSignal);
+  await amplifierService.assertNoConflictingAdvance(projectId, options.amplifierOperationId);
+  const amplifier = options.amplifierInteractionId
+    ? await resolveAmplifierGenerationContext(projectId, options.amplifierInteractionId)
+    : undefined;
+  const effectiveWish = amplifier?.wish ?? options.wish;
 
   const adapter = adapterMap[project.activeModelProvider];
   if (!adapter) throw new Error(`Unsupported provider: ${project.activeModelProvider}`);
-
-  if (!adapter.generateTextStream) {
-    const result = await generateSceneUnlocked(projectId, options, requestClock);
-    throwIfAborted(options.abortSignal);
-    onChunk(result.record.responseText);
-    return result;
-  }
 
   const memories = (await storage.readMemories(projectId)).filter((m) => m.status === 'active');
   const characters = await storage.readCharacters(projectId);
@@ -599,7 +713,7 @@ async function generateSceneStreamUnlocked(
   const rawStoryState = await storage.readStoryState(projectId);
   const latentCanonItems = selectRelatedCanonItems({
     items: canonStore.items,
-    wish: options.wish,
+    wish: effectiveWish,
     viewpointCharacterId: options.viewpointCharacterId ?? null,
     characters,
     excludeStatements: (rawStoryState?.authorUndecided ?? []).map((item) => item.text),
@@ -610,7 +724,6 @@ async function generateSceneStreamUnlocked(
   if (strict) options.onPhase?.('generating');
 
   const target = await prepareTargetScene(projectId, state, options.mode);
-  const { episodeId, sceneId } = target;
 
   // NOTE: bannedExpressions はプロンプトへ載せない（promptBuilder のコメント参照）。
   // 頻出フレーズの soft caution からNG語を除外するためだけに使うので、件数を絞らない
@@ -651,15 +764,66 @@ async function generateSceneStreamUnlocked(
     viewpointCharacterId: options.viewpointCharacterId ?? null,
     creativeContract: contract,
     latentCanonItems,
+    ...(amplifier ? { amplifierContext: amplifier.context } : {}),
   });
 
   const fitted = await fitPromptToTokenBudget({ project, built });
   const { systemInstructions, userPrompt } = fitted.built;
   const promptBudgetReport = fitted.report;
 
-  const temperature = resolveTemperature(project.samplingConfig?.temperature, options.mode);
+  return {
+    project,
+    state,
+    options,
+    requestClock,
+    adapter,
+    memories,
+    characters,
+    worldText,
+    presets,
+    contract,
+    canonStore,
+    latentCanonItems,
+    target,
+    ngExpressions,
+    bannedExpressions,
+    rewriteTargetGenerationId,
+    styleProfile,
+    systemInstructions,
+    userPrompt,
+    promptBudgetReport,
+    fittedMaxOutputTokens: fitted.maxOutputTokens,
+    temperature: resolveTemperature(project.samplingConfig?.temperature, options.mode),
+    devDiagnostics: isDevDiagnosticsEnabled(),
+  };
+}
+
+// NOTE: モデルストリーム＋契約検証＋レコード組み立て。ロック外で実行する（設計書 12.1）。
+async function streamNovelPrepared(
+  prepared: PreparedNovelStream,
+  onChunk: (chunk: string) => void
+): Promise<StreamedNovelResult> {
+  const {
+    project,
+    state,
+    options,
+    adapter,
+    requestClock,
+    memories,
+    contract,
+    canonStore,
+    ngExpressions,
+    bannedExpressions,
+    styleProfile,
+    target,
+    systemInstructions,
+    userPrompt,
+    promptBudgetReport,
+  } = prepared;
+  const { episodeId, sceneId } = target;
+  const devDiagnostics = prepared.devDiagnostics;
+  const temperature = prepared.temperature;
   // NOTE: 非ストリーミング側と同じ理由で、無効時は推論本文を集めない。
-  const devDiagnostics = isDevDiagnosticsEnabled();
   const textParts: string[] = [];
   const reasoningParts: string[] = [];
   let finishReason: FinishReason = 'stop';
@@ -682,7 +846,7 @@ async function generateSceneStreamUnlocked(
       temperature,
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
-      maxOutputTokens: fitted.maxOutputTokens,
+      maxOutputTokens: prepared.fittedMaxOutputTokens,
       abortSignal: options.abortSignal,
       frequencyPenalty: project.samplingConfig?.frequencyPenalty,
       presencePenalty: project.samplingConfig?.presencePenalty,
@@ -740,7 +904,7 @@ async function generateSceneStreamUnlocked(
   const streamedText = textParts.join('').trim();
   if (!streamedText) {
     console.warn('Empty streaming generation response', {
-      projectId,
+      projectId: prepared.project.projectId,
       provider: project.activeModelProvider,
       modelName: project.activeModelName,
       finishReason,
@@ -760,8 +924,11 @@ async function generateSceneStreamUnlocked(
   throwIfAborted(options.abortSignal);
 
   const generationId = generateTimestampId('gen');
-  const outputFilePath = storage.generationMdPath(projectId, generationId);
-  const previousContextFilePath = storage.generationPromptPath(projectId, generationId);
+  const outputFilePath = storage.generationMdPath(prepared.project.projectId, generationId);
+  const previousContextFilePath = storage.generationPromptPath(
+    prepared.project.projectId,
+    generationId
+  );
 
   // NOTE: 画面には暫定本文を流しつつ、保存前には従来どおり検証・必要なら修復する。
   const verification = await runNovelContractVerification({
@@ -825,7 +992,32 @@ async function generateSceneStreamUnlocked(
     // NOTE: 予算の適用結果は原文を含まないため、開発診断に依らず常に記録する（AC13）。
     ...(promptBudgetReport ? { promptBudgetReport } : {}),
     ...(styleProfile ? { styleProfile } : {}),
+    ...(options.amplifierInteractionId
+      ? { amplifierInteractionId: options.amplifierInteractionId }
+      : {}),
   };
+
+  return { record, reasoningParts };
+}
+
+// NOTE: 保存処理（マークダウン・生成ログ・シーン・状態・maintenance予約）。ロック内で
+// 実行する。state はロック内で最新を再読込する（advance 経路では、ストリーム中に
+// story state refresh 等の背景ジョブが state.json を更新し得るため、prepare 時の
+// スナップショットで上書きしない・レビュー指摘への対処）。
+async function persistNovelPreparedUnlocked(
+  projectId: string,
+  prepared: PreparedNovelStream,
+  streamed: StreamedNovelResult
+): Promise<GeneratedSceneResult> {
+  const { project, options, target } = prepared;
+  const { record, reasoningParts } = streamed;
+  const { generationId, episodeId, sceneId } = record;
+  const devDiagnostics = prepared.devDiagnostics;
+  const promptBudgetReport = prepared.promptBudgetReport;
+  const userPrompt = prepared.userPrompt;
+
+  const state = await storage.readState(projectId);
+  if (!state) throw new Error(`State not found: ${projectId}`);
 
   await storage.writeGenerationPromptSnapshot(projectId, generationId, userPrompt);
   if (devDiagnostics) {
@@ -843,7 +1035,7 @@ async function generateSceneStreamUnlocked(
     state,
     generation: record,
     worldText: rawWorldText,
-    characters,
+    characters: prepared.characters,
   });
   await storage.writeState(projectId, {
     ...state,
@@ -858,7 +1050,74 @@ async function generateSceneStreamUnlocked(
 
   await projectService.updateProject(projectId, { updatedAt: nowIso() });
 
+  // NOTE: 妄想増幅器の scene_regenerated イベント（設計書 7.4）。書き直し・別案の
+  // 成功後に新案保存済みの事実を追記する。失敗しても生成は成功として返す（設計書 21）。
+  if (options.mode !== 'continue' && prepared.rewriteTargetGenerationId) {
+    void runNovelRegenerateHook({
+      projectId,
+      beforeGenerationId: prepared.rewriteTargetGenerationId,
+      afterGenerationId: generationId,
+    });
+  }
+
   return { record, maintenanceRunId: maintenanceReservation.runId };
+}
+
+// NOTE: 妄想増幅器の advance 専用ストリーム生成（設計書 13.2）。prepare/reserve ->
+// generate -> commit に分け、本文のモデル呼び出し中はプロジェクトロックを保持しない。
+// commit では lease の検証と complete 遷移までを行うため、ルート側の個別 commit は不要。
+export async function generateSceneStreamForAdvance(
+  projectId: string,
+  options: GenerateStreamOptions,
+  onChunk: (chunk: string) => void
+): Promise<GenerationRecord> {
+  const requestClock = startGenerationRequestClock();
+  const prepared = await withProjectWriteLock(projectId, async () => {
+    await assertGenerationNotBlockedByMaintenance(projectId);
+    return prepareNovelStreamUnlocked(projectId, options, requestClock);
+  });
+
+  const streamed = await streamNovelPrepared(prepared, onChunk);
+
+  const { maintenanceRunId } = await withProjectWriteLock(projectId, async () => {
+    await assertAdvanceLeaseForCommit(projectId, options.amplifierOperationId);
+    const result = await persistNovelPreparedUnlocked(projectId, prepared, streamed);
+    await markAdvanceLeaseComplete(
+      projectId,
+      options.amplifierOperationId,
+      streamed.record.generationId
+    );
+    return result;
+  });
+  startReservedPostGenerationMaintenance(projectId, streamed.record.generationId, maintenanceRunId);
+  return streamed.record;
+}
+
+async function assertAdvanceLeaseForCommit(projectId: string, operationId: string | undefined): Promise<void> {
+  const notebook = await amplifierService.readNotebook(projectId);
+  const lease = amplifierService.normalizeExpiredLease(notebook.pendingAdvance);
+  if (!lease || lease.operationId !== operationId) {
+    throw new GenerateError('進行中の advance が見つかりません。', 'amplifier_advance_not_found', true);
+  }
+  if (lease.status === 'complete' || lease.status === 'failed' || lease.status === 'cancelled') {
+    throw new GenerateError('この advance は既に完了しています。', 'amplifier_advance_in_progress', true);
+  }
+}
+
+async function markAdvanceLeaseComplete(
+  projectId: string,
+  operationId: string | undefined,
+  resultGenerationId: string
+): Promise<void> {
+  const notebook = await amplifierService.readNotebook(projectId);
+  const lease = amplifierService.normalizeExpiredLease(notebook.pendingAdvance);
+  if (!lease || lease.operationId !== operationId) return;
+  if (lease.status === 'complete') return;
+  await amplifierService.updateAdvanceLeaseUnlocked(projectId, notebook, {
+    status: 'complete',
+    resultGenerationId,
+    errorCode: undefined,
+  });
 }
 
 // NOTE: 生成後・保存前の契約検証（設計書 6.2）。hard契約が無ければ呼ばず、検証・修復・
@@ -1145,17 +1404,21 @@ async function persistTargetScene(
   await storage.writeEpisodeRecord(projectId, episode);
 }
 
-interface AcceptGenerationResult {
+export interface AcceptGenerationResult {
   record: GenerationRecord;
   refreshStoryState: boolean;
   newlyAccepted: boolean;
   maintenanceContinuationRunId?: string;
 }
 
-export async function acceptGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
-  const result = await withProjectWriteLock(projectId, () =>
-    acceptGenerationUnlocked(projectId, generationId)
-  );
+// NOTE: 採用の派生処理（story state更新・要約・maintenance継続・trace解析）を1箇所に
+// 集約する。acceptGeneration と妄想増幅器の advance 暗黙採用の両方から、ロックを離した
+// 後に呼ぶ（レビュー指摘: advance がこの処理を起動せず story state が pending のまま
+// 残る問題の修正）。
+export async function runAcceptanceDerivedProcessing(
+  projectId: string,
+  result: AcceptGenerationResult
+): Promise<void> {
   if (result.maintenanceContinuationRunId) {
     void import('./postGenerationMaintenanceService.js')
       .then((maintenanceService) =>
@@ -1187,10 +1450,22 @@ export async function acceptGeneration(projectId: string, generationId?: string)
     // accepted generation」も対象に含める必要がある。
     queueAcceptedGenerationStyleAnalysis(project, result.record);
   }
+}
+
+ export async function acceptGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
+  // NOTE: pendingAdvance が terminal でない間、採用状態を変える操作は 409（設計書 13.2）。
+  await amplifierService.assertNoConflictingAdvance(projectId);
+  const result = await withProjectWriteLock(projectId, () =>
+    acceptGenerationUnlocked(projectId, generationId)
+  );
+  await runAcceptanceDerivedProcessing(projectId, result);
   return result.record;
 }
 
-async function acceptGenerationUnlocked(
+// NOTE: 妄想増幅器の advance reserve が project lock を保持したまま採用するために export。
+// 呼び出し側は必ず withProjectWriteLock 内で使うこと。post-accept の派生処理は
+// acceptGeneration（ロック外）側で実行する。
+export async function acceptGenerationUnlocked(
   projectId: string,
   generationId?: string
 ): Promise<AcceptGenerationResult> {
@@ -1321,6 +1596,8 @@ async function writeProjectShortcut(projectId: string): Promise<void> {
 }
 
 export async function unacceptCurrentScene(projectId: string): Promise<GenerationRecord | null> {
+  // NOTE: pendingAdvance が terminal でない間、採用状態を変える操作は 409（設計書 13.2）。
+  await amplifierService.assertNoConflictingAdvance(projectId);
   return withProjectWriteLock(projectId, () => unacceptCurrentSceneUnlocked(projectId));
 }
 
@@ -1425,6 +1702,8 @@ async function unacceptCurrentSceneUnlocked(projectId: string): Promise<Generati
 }
 
 export async function rejectGeneration(projectId: string, generationId?: string): Promise<GenerationRecord> {
+  // NOTE: pendingAdvance が terminal でない間、採用状態を変える操作は 409（設計書 13.2）。
+  await amplifierService.assertNoConflictingAdvance(projectId);
   return withProjectWriteLock(projectId, () => rejectGenerationUnlocked(projectId, generationId));
 }
 
@@ -1504,6 +1783,8 @@ export async function navigateDraft(
   projectId: string,
   direction: SceneNavigationDirection
 ): Promise<GenerationRecord | null> {
+  // NOTE: pendingAdvance が terminal でない間、採用状態を変える操作は 409（設計書 13.2）。
+  await amplifierService.assertNoConflictingAdvance(projectId);
   return withProjectWriteLock(projectId, () => navigateDraftUnlocked(projectId, direction));
 }
 
@@ -1561,6 +1842,8 @@ export async function navigateScene(
   projectId: string,
   direction: SceneNavigationDirection
 ): Promise<ReaderState> {
+  // NOTE: pendingAdvance が terminal でない間、採用状態を変える操作は 409（設計書 13.2）。
+  await amplifierService.assertNoConflictingAdvance(projectId);
   return withProjectWriteLock(projectId, () => navigateSceneUnlocked(projectId, direction));
 }
 

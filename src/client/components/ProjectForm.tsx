@@ -39,9 +39,10 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
   useEffect(() => {
     async function load() {
       try {
-        const [presetData, providerList] = await Promise.all([
+        const [presetData, providerList, savedModel] = await Promise.all([
           api.getPresets(),
           api.getModelProviders(),
+          api.getDefaultModelSettings().catch(() => null),
         ]);
         const typed = presetData as { categories: Record<string, PresetCategory> };
         setCategories(typed.categories);
@@ -49,10 +50,22 @@ export default function ProjectForm({ onCreated, onCancel }: Props) {
 
         setSelection({ ...DEFAULT_ACTIVE_PRESET_IDS });
 
-        const defaultProvider = providerList.find((p) => p.name === 'gemini') ?? providerList[0];
+        // NOTE: アプリ設定の「相談に使うモデル」を初期選択にする。未保存なら gemini に落とす。
+        const savedProvider =
+          savedModel && providerList.some((p) => p.name === savedModel.provider)
+            ? savedModel.provider
+            : undefined;
+        const defaultProvider =
+          providerList.find((p) => p.name === savedProvider) ??
+          providerList.find((p) => p.name === 'gemini') ??
+          providerList[0];
         if (defaultProvider) {
           setProvider(defaultProvider.name);
-          setModelName(defaultProvider.defaultModel);
+          setModelName(
+            savedProvider && savedModel?.modelName?.trim()
+              ? savedModel.modelName.trim()
+              : defaultProvider.defaultModel
+          );
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : '初期設定の読み込みに失敗しました');

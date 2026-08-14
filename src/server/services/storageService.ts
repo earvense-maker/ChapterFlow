@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { PROJECTS_DIR, SETUP_SESSIONS_DIR } from '../config.js';
+import { PROJECTS_DIR, SETUP_SESSIONS_DIR, CONFIG_DIR } from '../config.js';
 import {
   ensureDir,
   readJsonFile,
@@ -48,6 +48,14 @@ import {
   type LegacyCharacterInput,
 } from '../../shared/characterSchema.js';
 import { normalizeGenerationStyleProfile } from '../../shared/defaults.js';
+import type {
+  AmplifierGlobalObservation,
+  AmplifierInteractionEvent,
+  AmplifierNotebookRevisionRecord,
+  AmplifierProjectNotebook,
+  AmplifierTurn,
+  GlobalNotebook,
+} from '../types/index.js';
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
@@ -980,6 +988,190 @@ export async function roleplaySessionExists(
   } catch {
     return false;
   }
+}
+
+// --- 妄想増幅器（設計書 9.1） ---
+
+export function amplifierDir(projectId: string): string {
+  assertSafePathSegment(projectId, 'projectId');
+  return path.join(projectDir(projectId), 'amplifier');
+}
+
+export function amplifierInteractionsPath(projectId: string): string {
+  return path.join(amplifierDir(projectId), 'interactions.jsonl');
+}
+
+export function amplifierNotebookJsonPath(projectId: string): string {
+  return path.join(amplifierDir(projectId), 'notebook.json');
+}
+
+export function amplifierNotebookRevisionsPath(projectId: string): string {
+  return path.join(amplifierDir(projectId), 'notebook-revisions.jsonl');
+}
+
+export function amplifierTurnsDir(projectId: string): string {
+  return path.join(amplifierDir(projectId), 'turns');
+}
+
+export function amplifierTurnJsonPath(projectId: string, turnId: string): string {
+  assertSafePathSegment(turnId, 'turnId');
+  return path.join(amplifierTurnsDir(projectId), `${turnId}.json`);
+}
+
+export function configAmplifierDir(): string {
+  return path.join(CONFIG_DIR, 'amplifier');
+}
+
+export function globalAmplifierNotebookPath(): string {
+  return path.join(configAmplifierDir(), 'global-notebook.json');
+}
+
+export function globalAmplifierNotebookRevisionsPath(): string {
+  return path.join(configAmplifierDir(), 'global-notebook-revisions.jsonl');
+}
+
+export function globalAmplifierObservationsPath(): string {
+  return path.join(configAmplifierDir(), 'global-observations.jsonl');
+}
+
+// NOTE: JSONL は追記型で、最終行の途中書き込みや破損行が生じうる。行単位でパースし、
+// 壊れた行は個別に隔離（スキップ）して正常行を失わない（設計書 9.4）。
+export async function readJsonlFile<T>(filePath: string): Promise<T[]> {
+  const text = await readTextFile(filePath);
+  if (!text) return [];
+  const entries: T[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      entries.push(JSON.parse(line) as T);
+    } catch {
+      // 破損行・途中書き込み行は隔離する
+    }
+  }
+  return entries;
+}
+
+async function appendJsonl(filePath: string, record: unknown): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(path.dirname(filePath));
+    const line = JSON.stringify(record) + '\n';
+    await fs.appendFile(filePath, line, 'utf-8');
+  });
+}
+
+export async function readAmplifierInteractions(
+  projectId: string
+): Promise<AmplifierInteractionEvent[]> {
+  return readJsonlFile<AmplifierInteractionEvent>(amplifierInteractionsPath(projectId));
+}
+
+export async function appendAmplifierInteraction(
+  projectId: string,
+  event: AmplifierInteractionEvent
+): Promise<void> {
+  await appendJsonl(amplifierInteractionsPath(projectId), event);
+}
+
+export async function readAmplifierNotebook(
+  projectId: string
+): Promise<AmplifierProjectNotebook | null> {
+  return readJsonFile<AmplifierProjectNotebook>(amplifierNotebookJsonPath(projectId));
+}
+
+export async function writeAmplifierNotebook(
+  projectId: string,
+  notebook: AmplifierProjectNotebook
+): Promise<void> {
+  await safeWriteJson(amplifierNotebookJsonPath(projectId), notebook);
+}
+
+export async function appendAmplifierNotebookRevision(
+  projectId: string,
+  record: AmplifierNotebookRevisionRecord
+): Promise<void> {
+  await appendJsonl(amplifierNotebookRevisionsPath(projectId), record);
+}
+
+export async function readAmplifierNotebookRevisions(
+  projectId: string
+): Promise<AmplifierNotebookRevisionRecord[]> {
+  return readJsonlFile<AmplifierNotebookRevisionRecord>(amplifierNotebookRevisionsPath(projectId));
+}
+
+export async function readAmplifierTurn(
+  projectId: string,
+  turnId: string
+): Promise<AmplifierTurn | null> {
+  return readJsonFile<AmplifierTurn>(amplifierTurnJsonPath(projectId, turnId));
+}
+
+export async function writeAmplifierTurn(projectId: string, turn: AmplifierTurn): Promise<void> {
+  await safeWriteJson(amplifierTurnJsonPath(projectId, turn.turnId), turn);
+}
+
+export async function readAmplifierTurns(projectId: string): Promise<AmplifierTurn[]> {
+  try {
+    const entries = await fs.readdir(amplifierTurnsDir(projectId), { withFileTypes: true });
+    const turns: AmplifierTurn[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const turnId = entry.name.slice(0, -'.json'.length);
+      if (!SAFE_PATH_SEGMENT.test(turnId)) continue;
+      const turn = await readAmplifierTurn(projectId, turnId);
+      if (turn) turns.push(turn);
+    }
+    return turns;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+// --- 妄想増幅器グローバル（設計書 9.2） ---
+// NOTE: グローバルファイルは DATA_DIR/config 配下に置く。プロジェクト削除と独立し、
+// データ保存先の移動・バックアップには含まれる。
+
+export async function readGlobalAmplifierNotebook(): Promise<GlobalNotebook | null> {
+  return readJsonFile<GlobalNotebook>(globalAmplifierNotebookPath());
+}
+
+export async function writeGlobalAmplifierNotebook(notebook: GlobalNotebook): Promise<void> {
+  await safeWriteJson(globalAmplifierNotebookPath(), notebook);
+}
+
+export async function appendGlobalAmplifierNotebookRevision(
+  record: AmplifierNotebookRevisionRecord
+): Promise<void> {
+  await appendJsonl(globalAmplifierNotebookRevisionsPath(), record);
+}
+
+export async function readGlobalAmplifierNotebookRevisions(): Promise<AmplifierNotebookRevisionRecord[]> {
+  return readJsonlFile<AmplifierNotebookRevisionRecord>(globalAmplifierNotebookRevisionsPath());
+}
+
+export async function appendGlobalAmplifierObservation(
+  observation: AmplifierGlobalObservation
+): Promise<void> {
+  await appendJsonl(globalAmplifierObservationsPath(), observation);
+}
+
+export async function readGlobalAmplifierObservations(): Promise<AmplifierGlobalObservation[]> {
+  return readJsonlFile<AmplifierGlobalObservation>(globalAmplifierObservationsPath());
+}
+
+export async function clearGlobalAmplifierObservations(): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(configAmplifierDir());
+    await safeWriteFile(globalAmplifierObservationsPath(), '');
+  });
+}
+
+export async function clearGlobalAmplifierNotebookRevisions(): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(configAmplifierDir());
+    await safeWriteFile(globalAmplifierNotebookRevisionsPath(), '');
+  });
 }
 
 export async function projectExists(projectId: string): Promise<boolean> {

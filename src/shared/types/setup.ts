@@ -1,5 +1,6 @@
 import type { ProjectId } from './ids.js';
 import type { ActivePresets, ProjectType, WorldContent } from './project.js';
+import type { ExperienceMode } from './amplifier.js';
 import type { Character, CharacterRole, CharacterTrait } from './character.js';
 import type { Memory } from './memory.js';
 import type { RoleplayUserPersona } from './roleplay.js';
@@ -153,6 +154,9 @@ export interface SetupSession {
   purpose?: SetupPurpose;
   // NOTE: クイックセットアップ（短縮モード）か完全相談か。欠損は 'full' と解釈する（設計書 4.1）。
   setupMode?: 'quick' | 'full';
+  // NOTE: 体験モード（妄想増幅器）。クイックセットアップから詳細設定へ移っても失わない。
+  // 欠損は 'standard'。commit 時にモデル出力を信用せず、この値を CreateProjectBody へ強制反映する。
+  experienceMode?: ExperienceMode;
   model: SetupModelSelection;
   projectSettings: SetupProjectSettings;
   messages: SetupMessage[];
@@ -182,6 +186,8 @@ export interface SetupSessionSummary {
   committedProjectId?: ProjectId;
   // NOTE: サマリーでは undefined を返さず 'novel' に正規化して渡す。
   purpose: SetupPurpose;
+  // NOTE: サマリーでは undefined を返さず 'standard' に正規化して渡す。
+  experienceMode: ExperienceMode;
 }
 
 // NOTE: 'draft' は「今の相談を草案にまとめる」。相談ターンが設定草案を更新しなくなったので、
@@ -252,6 +258,8 @@ export interface CreateSetupSessionBody {
   purpose?: SetupPurpose;
   // NOTE: クイックセットアップ（短縮モード）か完全相談か。省略時は 'full'（設計書 4.1）。
   setupMode?: 'quick' | 'full';
+  // NOTE: 体験モード（妄想増幅器）。省略時は 'standard'。'standard' / 'amplifier' 以外は 400。
+  experienceMode?: ExperienceMode;
 }
 
 export interface SendSetupMessageBody {
@@ -334,6 +342,8 @@ export interface SetupCommitPlan {
     activePresetIds: Partial<ActivePresets>;
     // NOTE: roleplay 用途では 'roleplay' を必ず設定。novel 用途/後方互換は 'novel'。
     projectType?: ProjectType;
+    // NOTE: 体験モード。commit 時にセッション値から強制反映される（設計書 4.1）。
+    experienceMode?: ExperienceMode;
   };
   coreConcept?: string;
   // NOTE: roleplay 用途では常に未設定。novel 用途のみ表示・保存する。

@@ -4,6 +4,7 @@ import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import {
   DEFAULT_ACTIVE_PRESET_IDS,
+  normalizeExperienceMode,
   normalizeSetupPurpose,
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
@@ -105,6 +106,9 @@ export function normalizeSetupCommitPlan(input: {
   const characters = normalizeCharacters(raw.characters, now, input.session);
   // NOTE: projectType はモデル出力を信用せず、session.purpose を優先させる（設計書 2.2）。
   const projectType: ProjectType = purpose === 'roleplay' ? 'roleplay' : 'novel';
+  // NOTE: experienceMode もモデル出力を信用せず、セッション値を CreateProjectBody へ強制
+  // 反映する（設計書 4.1）。クイックセットアップから詳細設定へ移っても失われない。
+  const experienceMode = normalizeExperienceMode(input.session.experienceMode);
   const scenarioSeeds =
     purpose === 'roleplay'
       ? normalizeScenarioSeedList(
@@ -144,6 +148,7 @@ export function normalizeSetupCommitPlan(input: {
     customSystemPrompt: asString(raw.customSystemPrompt),
     projectType,
     scenarioSeeds,
+    experienceMode,
     ...(defaultUserPersona ? { defaultUserPersona } : {}),
     // NOTE: クイックセットアップの初期創作契約・潜在設定を同一作成列で作る（設計書 7.3）。
     ...(buildInitialCreativeContract(raw, now) ? { initialCreativeContract: buildInitialCreativeContract(raw, now) } : {}),

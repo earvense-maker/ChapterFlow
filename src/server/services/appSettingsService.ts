@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { readJsonFile, safeWriteJson } from '../utils/safeWrite.js';
 import { readEnvWithLegacyFallback } from '../utils/env.js';
 import { withDataDirWrite } from './dataDirLock.js';
+import { isSupportedProvider } from './modelInfoService.js';
 import {
   normalizeGenerationNotificationSettings,
   normalizeNgAutoRewriteSettings,
@@ -22,6 +23,26 @@ export interface AppSettings {
   };
   generationNotifications?: GenerationNotificationSettings;
   ngAutoRewrite?: NgAutoRewriteSettings;
+  // NOTE: 妄想増幅器の初回説明を確認した版。説明文が重要変更されたときだけ再表示する
+  // （設計書 4.2）。グローバル学習のオン・オフはここに保存しない（設計書 9.2）。
+  amplifierDisclosureVersion?: number;
+}
+
+export const AMPLIFIER_DISCLOSURE_VERSION = 1;
+
+export interface AppDefaultModelSettings {
+  provider: string;
+  modelName?: string;
+}
+
+// NOTE: アプリ設定の「相談に使うモデル」を新規作成時の既定として解決する。
+// 保存値が未対応プロバイダの場合は undefined を返し、呼び出し側で gemini 等へ落とす。
+export async function resolveAppDefaultModelSettings(): Promise<AppDefaultModelSettings | undefined> {
+  const settings = await readAppSettings();
+  const provider = settings.setupModel?.provider?.trim();
+  if (!provider || !isSupportedProvider(provider)) return undefined;
+  const modelName = settings.setupModel?.modelName?.trim();
+  return { provider, modelName: modelName || undefined };
 }
 
 export function getAppSettingsPath(): string {
@@ -138,6 +159,9 @@ function normalizeAppSettings(settings: AppSettings | null): AppSettings {
   }
   if (settings.ngAutoRewrite !== undefined) {
     normalized.ngAutoRewrite = normalizeNgAutoRewriteSettings(settings.ngAutoRewrite);
+  }
+  if (typeof settings.amplifierDisclosureVersion === 'number' && settings.amplifierDisclosureVersion > 0) {
+    normalized.amplifierDisclosureVersion = settings.amplifierDisclosureVersion;
   }
   return normalized;
 }

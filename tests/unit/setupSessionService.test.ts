@@ -5,6 +5,8 @@ import { resolveSystemPrompt } from '../../src/server/prompts/systemPrompt';
 import * as setupSessionParsing from '../../src/server/services/setupSessionParsing';
 import * as setupSessionService from '../../src/server/services/setupSessionService';
 import * as storage from '../../src/server/services/storageService';
+import * as appSettingsService from '../../src/server/services/appSettingsService';
+import { writeAppSettings } from '../../src/server/services/appSettingsService';
 import type { MemoryImportance, SetupCommitPlan, SetupDraft } from '../../src/server/types/index';
 
 const now = '2026-07-04T12:00:00.000Z';
@@ -216,6 +218,103 @@ describe('setupSessionService', () => {
       // @ts-expect-error 意図的に不正値を渡してエラー系を確認
       setupSessionService.createSetupSession({ purpose: 'other' })
     ).rejects.toMatchObject({ code: 'invalid_purpose', status: 400 });
+  });
+
+  it('uses the app default model for quick setup sessions that omit a model', async () => {
+    // NOTE: クイックセットアップは model を渡さないため、アプリ設定の「相談に使うモデル」を
+    // 引き継がないと gemini に固定されてしまう（設計書 2.1 の既定モデル方針）。
+    await writeAppSettings({
+      setupModel: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+    });
+    try {
+      const roleplay = await setupSessionService.createSetupSession({
+        purpose: 'roleplay',
+        setupMode: 'quick',
+      });
+      createdSessionIds.push(roleplay.sessionId);
+      expect(roleplay.session.model).toEqual({
+        provider: 'deepseek',
+        modelName: 'deepseek-v4-flash',
+      });
+
+      const novel = await setupSessionService.createSetupSession({ setupMode: 'quick' });
+      createdSessionIds.push(novel.sessionId);
+      expect(novel.session.model).toEqual({
+        provider: 'deepseek',
+        modelName: 'deepseek-v4-flash',
+      });
+    } finally {
+      await writeAppSettings({});
+    }
+  });
+
+  it('keeps gemini as the fallback when no app default model is saved', async () => {
+    await writeAppSettings({});
+    const result = await setupSessionService.createSetupSession({});
+    createdSessionIds.push(result.sessionId);
+    expect(result.session.model.provider).toBe('gemini');
+  });
+
+  it('rejects a modelName without a provider instead of mixing it with the saved one', async () => {
+    await writeAppSettings({
+      setupModel: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+    });
+    try {
+      await expect(
+        setupSessionService.createSetupSession({ model: { modelName: 'gemini-3.6-flash' } })
+      ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    } finally {
+      await writeAppSettings({});
+    }
+  });
+
+  it('prefers an explicit model pair over the app default', async () => {
+    await writeAppSettings({
+      setupModel: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+    });
+    try {
+      const result = await setupSessionService.createSetupSession({
+        model: { provider: 'gemini', modelName: 'gemini-3.6-flash' },
+      });
+      createdSessionIds.push(result.sessionId);
+      expect(result.session.model).toEqual({ provider: 'gemini', modelName: 'gemini-3.6-flash' });
+    } finally {
+      await writeAppSettings({});
+    }
+  });
+
+  it('fills the provider default model when only the provider is given', async () => {
+    await writeAppSettings({
+      setupModel: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+    });
+    try {
+      const result = await setupSessionService.createSetupSession({
+        model: { provider: 'gemini' },
+      });
+      createdSessionIds.push(result.sessionId);
+      expect(result.session.model).toEqual({ provider: 'gemini', modelName: 'gemini-3.6-flash' });
+    } finally {
+      await writeAppSettings({});
+    }
+  });
+
+  it('creates with an explicit model without reading app settings', async () => {
+    const spy = vi
+      .spyOn(appSettingsService, 'resolveAppDefaultModelSettings')
+      .mockRejectedValue(new Error('settings file locked'));
+    try {
+      const result = await setupSessionService.createSetupSession({
+        model: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+      });
+      createdSessionIds.push(result.sessionId);
+      expect(result.session.model).toEqual({
+        provider: 'deepseek',
+        modelName: 'deepseek-v4-flash',
+      });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('rejects malformed nested create settings instead of persisting them', async () => {

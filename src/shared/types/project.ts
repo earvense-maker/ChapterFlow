@@ -5,6 +5,7 @@ import type { RefineAutomationSettings, RefineMaintenanceStatus } from './refine
 import type { CreativeContract, LatentCanonStore } from './canon.js';
 // NOTE: roleplay.ts も project.ts を型参照するが、型のみの相互参照なので実行時の循環はない。
 import type { RoleplayUserPersona } from './roleplay.js';
+import type { ExperienceMode } from './amplifier.js';
 
 // NOTE: 小説用（narration〜intimacy）とロールプレイ用（rp*）で語彙が別物なため、
 // 同じ Record に同居させつつカテゴリ順（presetMigration の *_PRESET_CATEGORY_ORDER）で
@@ -71,6 +72,8 @@ export interface Project {
   // NOTE: 既存作品では undefined を disabled と解釈する。本文生成の互換性を守るため、
   // 明示的に有効化されるまでpromptへ文体レンズを追加しない。
   styleVariation?: StyleVariationSettings;
+  // NOTE: 体験モード。欠損は 'standard'。API 境界では必ず正規化して返す（設計書 15.1）。
+  experienceMode?: ExperienceMode;
 }
 
 export interface WorldContent {
@@ -130,6 +133,8 @@ export interface ProjectSummary {
   lastExcerpt: string;
   // NOTE: サマリーでは undefined を返さず 'novel' に正規化。UI 一覧のバッジ・遷移振分けに使う。
   projectType: ProjectType;
+  // NOTE: サマリーでは undefined を返さず 'standard' に正規化。一覧の入口バッジに使う。
+  experienceMode: ExperienceMode;
 }
 
 export interface CreateProjectBody {
@@ -161,6 +166,9 @@ export interface CreateProjectBody {
   // createProject の書き込み列で一緒に作る。
   initialCreativeContract?: CreativeContract;
   initialLatentCanon?: LatentCanonStore;
+  // NOTE: 体験モード。server内部入力（setup commit）で強制反映される（設計書 4.1）。
+  // 公開の Update 経路では変更不可。
+  experienceMode?: ExperienceMode;
 }
 
 export interface UpdateProjectBody {

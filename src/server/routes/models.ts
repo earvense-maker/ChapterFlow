@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import { adapterList as adapters } from '../adapters/index.js';
 import * as credentialService from '../services/credentialService.js';
-import { readAppSettings, updateAppSettings } from '../services/appSettingsService.js';
+import {
+  resolveAppDefaultModelSettings,
+  updateAppSettings,
+} from '../services/appSettingsService.js';
 import {
   defaultModelForProvider,
   isSupportedProvider,
@@ -88,18 +91,10 @@ router.post('/models/credentials', async (req, res, next) => {
 export default router;
 
 async function readDefaultModelSettings(): Promise<AppModelSettings> {
-  const settings = await readAppSettings();
-  const savedProvider = settings.setupModel?.provider;
-  const provider =
-    savedProvider && isSupportedProvider(savedProvider)
-      ? savedProvider
-      : 'gemini';
-  const modelName =
-    savedProvider === provider
-      ? settings.setupModel?.modelName?.trim()
-      : undefined;
+  const appDefault = await resolveAppDefaultModelSettings();
+  const provider = appDefault?.provider ?? 'gemini';
   return {
     provider,
-    modelName: modelName || defaultModelForProvider(provider),
+    modelName: appDefault?.modelName || defaultModelForProvider(provider),
   };
 }

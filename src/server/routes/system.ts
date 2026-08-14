@@ -17,6 +17,15 @@ import {
   normalizeGenerationNotificationSettings,
   normalizeNgAutoRewriteSettings,
 } from '../types/index.js';
+// NOTE: 妄想増幅器のグローバル設定・メモ（設計書 13.4）。オン・オフは app-settings でなく
+// global-notebook.json に保存する（設計書 9.2）。
+import * as amplifierGlobalService from '../services/amplifierGlobalService.js';
+import { retryGlobalInterpretation } from '../services/desireInterpreterService.js';
+import {
+  AMPLIFIER_DISCLOSURE_VERSION,
+  readAppSettings as readAppSettingsForDisclosure,
+  updateAppSettings as updateAppSettingsForDisclosure,
+} from '../services/appSettingsService.js';
 
 export interface SystemRouterOptions {
   onShutdownRequest?: () => void;
@@ -72,6 +81,115 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
       const normalized = normalizeNgAutoRewriteSettings(req.body);
       await updateAppSettings((settings) => ({ ...settings, ngAutoRewrite: normalized }));
       res.json(normalized);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // --- 妄想増幅器（設計書 13.4） ---
+
+  router.get('/system/amplifier-disclosure', async (_req, res, next) => {
+    try {
+      const settings = await readAppSettingsForDisclosure();
+      res.json({
+        version: AMPLIFIER_DISCLOSURE_VERSION,
+        acknowledged: (settings.amplifierDisclosureVersion ?? 0) >= AMPLIFIER_DISCLOSURE_VERSION,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.put('/system/amplifier-disclosure', async (_req, res, next) => {
+    try {
+      await updateAppSettingsForDisclosure((settings) => ({
+        ...settings,
+        amplifierDisclosureVersion: AMPLIFIER_DISCLOSURE_VERSION,
+      }));
+      res.json({ version: AMPLIFIER_DISCLOSURE_VERSION, acknowledged: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/system/amplifier-settings', async (_req, res, next) => {
+    try {
+      res.json(await amplifierGlobalService.getAmplifierSettings());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.put('/system/amplifier-settings', async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { globalLearningEnabled?: unknown };
+      if (
+        body.globalLearningEnabled !== undefined &&
+        typeof body.globalLearningEnabled !== 'boolean'
+      ) {
+        return res.status(400).json({ error: 'globalLearningEnabled must be a boolean', code: 'invalid_settings' });
+      }
+      res.json(
+        await amplifierGlobalService.updateAmplifierSettings({
+          globalLearningEnabled: body.globalLearningEnabled as boolean | undefined,
+        })
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/system/amplifier-preferences', async (_req, res, next) => {
+    try {
+      res.json(await amplifierGlobalService.getGlobalPreferences());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.put('/system/amplifier-preferences', async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as {
+        addCorrections?: unknown;
+        withdrawCorrectionIds?: unknown;
+        deleteMemoIds?: unknown;
+        globalBoundary?: unknown;
+      };
+      res.json(
+        await amplifierGlobalService.updateGlobalPreferences({
+          addCorrections: body.addCorrections as never,
+          withdrawCorrectionIds: Array.isArray(body.withdrawCorrectionIds)
+            ? (body.withdrawCorrectionIds as string[])
+            : undefined,
+          deleteMemoIds: Array.isArray(body.deleteMemoIds)
+            ? (body.deleteMemoIds as string[])
+            : undefined,
+          globalBoundary:
+            body.globalBoundary === undefined ? undefined : typeof body.globalBoundary === 'string' ? body.globalBoundary : null,
+        })
+      );
+    } catch (err) {
+      if (err instanceof amplifierGlobalService.AmplifierGlobalError) {
+        return res
+          .status(err.status)
+          .json({ error: err.message, code: err.code, retryable: err.retryable });
+      }
+      next(err);
+    }
+  });
+
+  router.delete('/system/amplifier-preferences', async (_req, res, next) => {
+    try {
+      res.json(await amplifierGlobalService.wipeGlobalPreferences());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/system/amplifier-preferences/retry', async (_req, res, next) => {
+    try {
+      await retryGlobalInterpretation();
+      res.json({ ok: true });
     } catch (err) {
       next(err);
     }

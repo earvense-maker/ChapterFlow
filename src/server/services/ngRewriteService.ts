@@ -9,6 +9,7 @@ import * as storage from './storageService.js';
 import * as expressionService from './expressionService.js';
 import { reloadCredentials } from './credentialService.js';
 import { withProjectWriteLock } from './projectLock.js';
+import { assertNoConflictingAdvance } from './amplifierService.js';
 import {
   rebuildEpisodeMarkdownForAcceptedGeneration,
   startContextSummaryAfterAcceptance,
@@ -45,6 +46,8 @@ export interface RewriteNgOccurrenceInput {
 export async function rewriteNgOccurrence(
   input: RewriteNgOccurrenceInput
 ): Promise<NgRewriteResult> {
+  // NOTE: pendingAdvance が terminal でない間、本文を変える操作は 409（設計書 13.2）。
+  await assertNoConflictingAdvance(input.projectId);
   return withProjectWriteLock(input.projectId, () => rewriteNgOccurrenceUnlocked(input));
 }
 

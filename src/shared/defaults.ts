@@ -5,6 +5,7 @@ import {
 } from './types/index.js';
 import type {
   ActivePresets,
+  ExperienceMode,
   GenerationStyleProfile,
   GenerationNotificationEvents,
   GenerationNotificationSettings,
@@ -18,7 +19,6 @@ import type {
   StyleAxis,
   StyleVariationSettings,
 } from './types/index.js';
-
 // NOTE: 必須2カテゴリだけを既定で埋める。narration は小説生成、rpResponseStyle は
 // ロールプレイ応答の形式で、どちらも「未選択」だと出力の形が定まらないため。
 // 種別と無関係に両方入るが、レンダリングはカテゴリ順で振り分けるので混ざらない。
@@ -52,6 +52,14 @@ export function normalizeProjectType(value: unknown): ProjectType {
 
 export function normalizeSetupPurpose(value: unknown): SetupPurpose {
   return value === 'roleplay' ? 'roleplay' : DEFAULT_SETUP_PURPOSE;
+}
+
+// NOTE: 体験モードの正規化（設計書 15.1）。欠損は 'standard' と解釈し、
+// 既存プロジェクトへ妄想増幅器UIやプロンプトを出さない。
+export const DEFAULT_EXPERIENCE_MODE: ExperienceMode = 'standard';
+
+export function normalizeExperienceMode(value: unknown): ExperienceMode {
+  return value === 'amplifier' ? 'amplifier' : DEFAULT_EXPERIENCE_MODE;
 }
 
 // NOTE: ロールプレイモードのキャラ・プロジェクト用の上限。projectService の

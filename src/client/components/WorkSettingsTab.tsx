@@ -24,6 +24,7 @@ import { useStoryStatePanel } from './workSettings/useStoryStatePanel';
 import { useSystemPromptPresetManager } from './workSettings/useSystemPromptPresetManager';
 import SystemPromptPresetLibrary from './workSettings/SystemPromptPresetLibrary';
 import CanonSettingsSection from './CanonSettingsSection';
+import AmplifierProjectSettingsCard from './AmplifierProjectSettingsCard';
 import { DEFAULT_ROLEPLAY_USER_ACTION_POLICY } from '@shared/roleplayPersona';
 import type {
   Character,
@@ -81,7 +82,8 @@ export type DetailSettingsTab =
   | 'world'
   | 'characters'
   | 'story'
-  | 'knowledge';
+  | 'knowledge'
+  | 'amplifier';
 type WorldArea = keyof WorldContent;
 
 const roleOptions: { value: Character['role']; label: string }[] = [
@@ -601,6 +603,8 @@ export default function WorkSettingsTab({
   const activeWorldExpanded =
     worldSubTab === 'foundation' ? foundationExpanded : initialSituationExpanded;
   const isRoleplay = project.projectType === 'roleplay';
+  // NOTE: 妄想増幅器モードの作品だけに作品内ノートタブを出す（設計書 14.2）。
+  const isAmplifier = project.experienceMode === 'amplifier';
   const presetMode = isRoleplay ? 'roleplay' : 'novel';
   const styleTags = deriveStyleTags(project.activePresetIds, categories, presetMode);
   const isSystemPromptDraftCustomized = systemPromptDraft.trim().length > 0;
@@ -692,6 +696,17 @@ export default function WorkSettingsTab({
           >
             物語状態
           </button>
+          {isAmplifier && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={detailSettingsTab === 'amplifier'}
+              className={detailSettingsTab === 'amplifier' ? 'active' : ''}
+              onClick={() => setDetailSettingsTab('amplifier')}
+            >
+              妄想増幅器
+            </button>
+          )}
         </div>
         {detailSettingsTab === 'basic' && (
           <div className="detail-settings-panel" role="tabpanel">
@@ -1647,6 +1662,15 @@ export default function WorkSettingsTab({
           </div>
         )}
       </section>
+      )}
+
+      {detailSettingsTab === 'amplifier' && isAmplifier && (
+        <AmplifierProjectSettingsCard
+          projectId={projectId}
+          isRoleplay={isRoleplay}
+          onError={onError}
+          onFlashMessage={onFlashMessage}
+        />
       )}
 
     </div>

@@ -26,6 +26,12 @@ import type {
   CreativeContract,
   LatentCanonStore,
   AcceptedNarrativeDerivation,
+  AmplifierInteractionEvent,
+  AmplifierNotebookRevisionRecord,
+  AmplifierProjectNotebook,
+  AmplifierTurn,
+  AmplifierGlobalObservation,
+  GlobalNotebook,
 } from '../types/index.js';
 
 /**
@@ -307,6 +313,64 @@ export interface ProjectStorage {
     projectId: string,
     sessionId: string
   ): Promise<boolean>;
+
+  // --- 妄想増幅器（設計書 9.1） ---
+  readAmplifierInteractions(
+    context: UserContext,
+    projectId: string
+  ): Promise<AmplifierInteractionEvent[]>;
+  appendAmplifierInteraction(
+    context: UserContext,
+    projectId: string,
+    event: AmplifierInteractionEvent
+  ): Promise<void>;
+  readAmplifierNotebook(
+    context: UserContext,
+    projectId: string
+  ): Promise<AmplifierProjectNotebook | null>;
+  writeAmplifierNotebook(
+    context: UserContext,
+    projectId: string,
+    notebook: AmplifierProjectNotebook
+  ): Promise<void>;
+  appendAmplifierNotebookRevision(
+    context: UserContext,
+    projectId: string,
+    record: AmplifierNotebookRevisionRecord
+  ): Promise<void>;
+  readAmplifierNotebookRevisions(
+    context: UserContext,
+    projectId: string
+  ): Promise<AmplifierNotebookRevisionRecord[]>;
+  readAmplifierTurns(context: UserContext, projectId: string): Promise<AmplifierTurn[]>;
+  readAmplifierTurn(
+    context: UserContext,
+    projectId: string,
+    turnId: string
+  ): Promise<AmplifierTurn | null>;
+  writeAmplifierTurn(context: UserContext, projectId: string, turn: AmplifierTurn): Promise<void>;
+
+  // --- 妄想増幅器グローバル（設計書 9.2 / 9.3） ---
+  // NOTE: グローバル保存も UserContext に属する。Electron はローカル固定利用者だが、
+  // 将来のWeb版で全利用者が同じグローバルファイルを共有しない契約にする。
+  readGlobalAmplifierNotebook(context: UserContext): Promise<GlobalNotebook | null>;
+  writeGlobalAmplifierNotebook(context: UserContext, notebook: GlobalNotebook): Promise<void>;
+  appendGlobalAmplifierNotebookRevision(
+    context: UserContext,
+    record: AmplifierNotebookRevisionRecord
+  ): Promise<void>;
+  readGlobalAmplifierNotebookRevisions(
+    context: UserContext
+  ): Promise<AmplifierNotebookRevisionRecord[]>;
+  appendGlobalAmplifierObservation(
+    context: UserContext,
+    observation: AmplifierGlobalObservation
+  ): Promise<void>;
+  readGlobalAmplifierObservations(
+    context: UserContext
+  ): Promise<AmplifierGlobalObservation[]>;
+  clearGlobalAmplifierObservations(context: UserContext): Promise<void>;
+  clearGlobalAmplifierNotebookRevisions(context: UserContext): Promise<void>;
 }
 
 /**
@@ -392,6 +456,23 @@ export const PROJECT_STORAGE_METHODS = [
   'writeRoleplaySession',
   'listRoleplaySessionIds',
   'roleplaySessionExists',
+  'readAmplifierInteractions',
+  'appendAmplifierInteraction',
+  'readAmplifierNotebook',
+  'writeAmplifierNotebook',
+  'appendAmplifierNotebookRevision',
+  'readAmplifierNotebookRevisions',
+  'readAmplifierTurns',
+  'readAmplifierTurn',
+  'writeAmplifierTurn',
+  'readGlobalAmplifierNotebook',
+  'writeGlobalAmplifierNotebook',
+  'appendGlobalAmplifierNotebookRevision',
+  'readGlobalAmplifierNotebookRevisions',
+  'appendGlobalAmplifierObservation',
+  'readGlobalAmplifierObservations',
+  'clearGlobalAmplifierObservations',
+  'clearGlobalAmplifierNotebookRevisions',
 ] as const satisfies readonly (keyof ProjectStorage)[];
 
 // NOTE: 契約へメソッドを足して PROJECT_STORAGE_METHODS への追加を忘れると、

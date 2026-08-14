@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   readAppSettings,
   readAppSettingsStrict,
+  resolveAppDefaultModelSettings,
   updateAppSettings,
   writeAppSettings,
 } from '../../src/server/services/appSettingsService';
@@ -182,5 +183,28 @@ describe('appSettingsService', () => {
     }));
     expect(afterNotificationUpdate.setupModel).toEqual({ provider: 'gemini', modelName: 'gemini-3.6-flash' });
     expect(afterNotificationUpdate.generationNotifications?.soundEnabled).toBe(true);
+  });
+
+  it('resolves the saved setupModel as the app default model settings', async () => {
+    await updateAppSettings((settings) => ({
+      ...settings,
+      setupModel: { provider: 'deepseek', modelName: 'deepseek-v4-flash' },
+    }));
+
+    expect(await resolveAppDefaultModelSettings()).toEqual({
+      provider: 'deepseek',
+      modelName: 'deepseek-v4-flash',
+    });
+  });
+
+  it('returns undefined when no supported setupModel provider is saved', async () => {
+    await writeAppSettings({});
+    expect(await resolveAppDefaultModelSettings()).toBeUndefined();
+
+    await updateAppSettings((settings) => ({
+      ...settings,
+      setupModel: { provider: 'unsupported-provider', modelName: 'x' },
+    }));
+    expect(await resolveAppDefaultModelSettings()).toBeUndefined();
   });
 });

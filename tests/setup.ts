@@ -11,6 +11,14 @@ import os from 'node:os';
 const workerId = process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? 'main';
 process.env.CHAPTERFLOW_DATA_DIR = path.join(os.tmpdir(), 'chapterflow-vitest', workerId);
 
+// NOTE: アプリ設定（app-settings.json）もテスト用の一時ファイルへ向ける。開発マシンに
+// 実ユーザーの app-settings.json があると、新規作成の既定プロバイダー解決などで
+// テストが実データに左右され非決定的になるため。
+process.env.CHAPTERFLOW_APP_SETTINGS_PATH = path.join(
+  process.env.CHAPTERFLOW_DATA_DIR,
+  'app-settings.json'
+);
+
 // NOTE: 開発診断は既定オフがリリース版の前提。シェルに残った値でテストが
 // 「オフのはずの経路」を検証できなくなるのを防ぐため、明示的に消してから始める。
 // 有効時の挙動を見るテストは自分で立てて afterEach で戻す。

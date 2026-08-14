@@ -6,6 +6,7 @@ import {
   defaultModelForProvider,
   isSupportedProvider,
 } from './modelInfoService.js';
+import { resolveAppDefaultModelSettings } from './appSettingsService.js';
 import { createEmptyStoryState } from './storyStateService.js';
 import {
   normalizeCreativeContract,
@@ -36,6 +37,7 @@ import {
   NEW_PROJECT_REFINE_AUTOMATION_SETTINGS,
   ROLEPLAY_LIMITS,
   SYSTEM_PROMPT_PRESET_PROMPT_MAX_CHARS,
+  normalizeExperienceMode,
   normalizeProjectType,
   normalizeRefineAutomationSettings,
   normalizeStyleVariationSettings,
@@ -164,6 +166,26 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   ) {
     throw new ProjectValidationError("projectType must be 'novel' or 'roleplay'");
   }
+  if (
+    body.experienceMode !== undefined &&
+    body.experienceMode !== 'standard' &&
+    body.experienceMode !== 'amplifier'
+  ) {
+    throw new ProjectValidationError("experienceMode must be 'standard' or 'amplifier'");
+  }
+  // NOTE: 妄想増幅器は高速な反復を優先するため、生成後の自動設定レビューを初期値 off で
+  // 作る（設計書 4.1）。ユーザーが作品設定から明示的に有効化した場合だけ既存処理を使う。
+  // 複製時は従来どおり refineAutomation を引き継がない（実効 off）。
+  const refineAutomationInitial = body.duplicateFrom
+    ? undefined
+    : body.experienceMode === 'amplifier'
+      ? { mode: 'off' as const, scanPolicy: 'when-needed' as const }
+      : NEW_PROJECT_REFINE_AUTOMATION_SETTINGS;
+  // NOTE: modelName だけの指定は保存済みプロバイダー（アプリ設定・複製元）と混在して
+  // 不正な組み合わせになり得るため拒否する。provider は既定モデルを補完できるので単独可。
+  if (body.activeModelName !== undefined && body.activeModelProvider === undefined) {
+    throw new ProjectValidationError('activeModelName requires activeModelProvider');
+  }
   const projectId = generateTimestampId('proj');
   try {
   await storage.createProjectContainer(projectId);
@@ -197,10 +219,22 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     });
   }
 
-  const provider =
-    body.activeModelProvider ?? sourceProject?.activeModelProvider ?? DEFAULT_MODEL_PROVIDER;
-  const modelName =
-    body.activeModelName ?? sourceProject?.activeModelName ?? defaultModelForProvider(provider);
+  // NOTE: provider/modelName は同じ優先順位の組として解決する。本文・複製元に明示指定が
+  // あればアプリ設定を読まない（設定ファイルの一時的な読み込み失敗に影響されない）。
+  // 両方とも未指定のときだけアプリ設定の「相談に使うモデル」を引き継ぎ、それも無ければ gemini。
+  let provider: string;
+  let modelName: string;
+  if (body.activeModelProvider) {
+    provider = body.activeModelProvider;
+    modelName = body.activeModelName ?? defaultModelForProvider(provider);
+  } else if (sourceProject?.activeModelProvider) {
+    provider = sourceProject.activeModelProvider;
+    modelName = sourceProject.activeModelName ?? defaultModelForProvider(provider);
+  } else {
+    const appDefault = await resolveAppDefaultModelSettings();
+    provider = appDefault?.provider ?? DEFAULT_MODEL_PROVIDER;
+    modelName = appDefault?.modelName ?? defaultModelForProvider(provider);
+  }
   const normalizedSettings = validateProjectUpdates({
     outputLength: body.outputLength ?? sourceProject?.outputLength ?? DEFAULT_OUTPUT_LENGTH,
     streamingEnabled:
@@ -249,6 +283,11 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     projectType: roleplayFields.projectType,
     scenarioSeeds: roleplayFields.scenarioSeeds,
     roleplayOutputChars: roleplayFields.roleplayOutputChars,
+    // NOTE: 体験モード。複製時は複製元を引き継ぐ（設計書 15.3）。通常は作成bodyの値を
+    // 正規化して保存（API境界では必ず standard に正規化して返す・設計書 15.1）。
+    experienceMode: normalizeExperienceMode(
+      body.experienceMode ?? sourceProject?.experienceMode
+    ),
     // NOTE: 相談からの作品化と複製で引き継ぐ。会話ごとの値ではなく「新しい会話の初期値」。
     defaultUserPersona: normalizeUserPersonaFields(
       body.defaultUserPersona ?? sourceProject?.defaultUserPersona
@@ -256,7 +295,7 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
     // NOTE: 複製時は複製元の自動レビュー設定を引き継がず、既存作品同様「未保存」
     // （実効的に off）として扱う。新規作成時だけ safe/when-needed を既定保存する
     // （設計書 5.2 の移行方針）。
-    refineAutomation: body.duplicateFrom ? undefined : NEW_PROJECT_REFINE_AUTOMATION_SETTINGS,
+    refineAutomation: refineAutomationInitial,
     styleVariation: body.duplicateFrom
       ? normalizeStyleVariationSettings(sourceProject?.styleVariation)
       : validatedInput.styleVariation ?? {
@@ -342,6 +381,8 @@ export async function getProject(projectId: string): Promise<Project | null> {
     ...project,
     activePresetIds: normalizeActivePresetIds(project.activePresetIds),
     projectType: normalizeProjectType(project.projectType),
+    // NOTE: 体験モードは API 境界で必ず正規化して返す（設計書 15.1）。欠損は standard。
+    experienceMode: normalizeExperienceMode(project.experienceMode),
     refineAutomation: normalizeRefineAutomationSettings(project.refineAutomation),
     styleVariation: normalizeStyleVariationSettings(project.styleVariation),
     defaultUserPersona: normalizeUserPersonaFields(project.defaultUserPersona),
@@ -375,6 +416,8 @@ export async function updateProject(projectId: string, updates: ProjectUpdateInp
   // 既存の値で上書きする。scenarioSeeds は編集可能で、validateProjectUpdates で
   // 上限が適用されている。
   if ('projectType' in rest) delete (rest as Record<string, unknown>).projectType;
+  // NOTE: experienceMode は作成後変更不可（設計書 16.1）。Update 経路では変更しない。
+  if ('experienceMode' in rest) delete (rest as Record<string, unknown>).experienceMode;
 
   const updated: Project = {
     ...project,
@@ -714,6 +757,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
         activePresetIds: normalizeActivePresetIds(project.activePresetIds),
         lastExcerpt: await buildLastExcerpt(id, state.currentEpisodeId),
         projectType: normalizeProjectType(project.projectType),
+        experienceMode: normalizeExperienceMode(project.experienceMode),
       });
     } catch (err) {
       // NOTE: 1作品のJSON破損で一覧全体が開けなくなると、正常な作品まで利用不能になる。

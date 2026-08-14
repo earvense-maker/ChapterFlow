@@ -9,7 +9,9 @@
 
 import { Router } from 'express';
 import * as roleplayService from '../services/roleplaySessionService.js';
+import { AmplifierServiceError, normalizeAnchor } from '../services/amplifierService.js';
 import type {
+  AmplifierRoleplayAdvanceBody,
   ArchiveRoleplaySessionBody,
   CreateRoleplaySessionBody,
   EditRoleplayMessageBody,
@@ -34,6 +36,7 @@ router.post('/projects/:id/roleplay/sessions', async (req, res, next) => {
       characterId: body.characterId,
       scenario: body.scenario,
       userPersona: body.userPersona,
+      excludeFromGlobalLearning: body.excludeFromGlobalLearning === true,
     });
     res.status(201).json({ session: view });
   } catch (err) {
@@ -171,14 +174,27 @@ router.post(
   }
 );
 
+// NOTE: 妄想増幅器のロールプレイ進行（設計書 13.3）。turn、選択内容、clientEventId を
+// 受け、InteractionEvent 保存からキャラクター応答までを扱う専用ストリーム経路。
+// メタ方向は通常ユーザー発言として保存しない（設計書 4.5）。
+router.post(
+  '/projects/:id/roleplay/sessions/:sessionId/amplifier-turn-stream',
+  async (req, res) => {
+    await runStreamRoute(req, res, 'amplifier');
+  }
+);
+
 async function runStreamRoute(
   req: import('express').Request,
   res: import('express').Response,
-  kind: 'send' | 'regenerate'
+  kind: 'send' | 'regenerate' | 'amplifier'
 ): Promise<void> {
   const projectId = req.params.id;
   const sessionId = req.params.sessionId;
-  const body = (req.body ?? {}) as SendRoleplayMessageBody | RegenerateRoleplayBody;
+  const body = (req.body ?? {}) as
+    | SendRoleplayMessageBody
+    | RegenerateRoleplayBody
+    | AmplifierRoleplayAdvanceBody;
 
   const abortController = new AbortController();
   let headersSent = false;
@@ -210,12 +226,41 @@ async function runStreamRoute(
         replacePendingMessageId: sendBody.replacePendingMessageId,
         abortSignal: abortController.signal,
       });
-    } else {
+    } else if (kind === 'regenerate') {
       const regenBody = body as RegenerateRoleplayBody;
       generator = roleplayService.regenerateRoleplay({
         projectId,
         sessionId,
         revision: regenBody.revision,
+        abortSignal: abortController.signal,
+      });
+    } else {
+      const amplifierBody = body as AmplifierRoleplayAdvanceBody;
+      if (
+        typeof amplifierBody.clientEventId !== 'string' ||
+        !amplifierBody.clientEventId.trim() ||
+        typeof amplifierBody.turnId !== 'string' ||
+        !amplifierBody.turnId ||
+        typeof amplifierBody.turnRevision !== 'number' ||
+        typeof amplifierBody.sessionRevision !== 'number' ||
+        typeof amplifierBody.anchor !== 'object' ||
+        amplifierBody.anchor === null
+      ) {
+        res
+          .status(400)
+          .json({ error: 'Invalid amplifier turn request', code: 'invalid_request' });
+        return;
+      }
+      const anchor = normalizeAnchor(amplifierBody.anchor);
+      generator = roleplayService.sendAmplifierTurn({
+        projectId,
+        sessionId,
+        revision: amplifierBody.sessionRevision,
+        clientEventId: amplifierBody.clientEventId,
+        turnId: amplifierBody.turnId,
+        turnRevision: amplifierBody.turnRevision,
+        anchor,
+        direction: amplifierBody as unknown as import('../types/index.js').AmplifierDirectionInput,
         abortSignal: abortController.signal,
       });
     }
@@ -249,6 +294,14 @@ async function runStreamRoute(
       if (err instanceof roleplayService.RoleplayServiceError) {
         return handleRoleplayError(err, res);
       }
+      if (err instanceof AmplifierServiceError) {
+        res.status(err.status).json({
+          error: err.message,
+          code: err.code,
+          retryable: err.retryable,
+        });
+        return;
+      }
       res.status(500).json({
         error: err instanceof Error ? err.message : 'ロールプレイ応答に失敗しました。',
         code: 'roleplay_failed',
@@ -262,6 +315,12 @@ async function runStreamRoute(
         code: err.code,
         retryable: err.retryable,
         revision: err.revision,
+      });
+    } else if (err instanceof AmplifierServiceError) {
+      send('error', {
+        error: err.message,
+        code: err.code,
+        retryable: err.retryable,
       });
     } else {
       send('error', {

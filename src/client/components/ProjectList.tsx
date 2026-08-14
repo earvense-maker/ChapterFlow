@@ -10,6 +10,7 @@ interface Props {
   onSetupRoleplay: () => void;
   onQuickSetupNovel: () => void;
   onQuickSetupRoleplay: () => void;
+  onAmplifierStart: () => void;
   onOpenAppSettings: () => void;
 }
 
@@ -20,6 +21,7 @@ export default function ProjectList({
   onSetupRoleplay,
   onQuickSetupNovel,
   onQuickSetupRoleplay,
+  onAmplifierStart,
   onOpenAppSettings,
 }: Props) {
   const confirmAction = useConfirm();
@@ -69,13 +71,17 @@ export default function ProjectList({
     }
   }
 
-  async function handleDelete(e: React.MouseEvent, projectId: string) {
+  async function handleDelete(e: React.MouseEvent, project: ProjectSummary) {
     e.stopPropagation();
-    if (!(await confirmAction('この作品を削除しますか？', { confirmLabel: '削除', danger: true }))) {
+    const message =
+      project.experienceMode === 'amplifier'
+        ? 'この作品を削除しますか？\n作品内の本文・行動ログ・作品内メモは削除されます。すでに抽象化されたグローバル理解は残ります。グローバル理解はアプリ設定から確認・全消去できます。'
+        : 'この作品を削除しますか？';
+    if (!(await confirmAction(message, { confirmLabel: '削除', danger: true }))) {
       return;
     }
     try {
-      await api.deleteProject(projectId);
+      await api.deleteProject(project.projectId);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : '削除に失敗しました');
@@ -113,6 +119,9 @@ export default function ProjectList({
           </button>
           <button className="primary" onClick={onQuickSetupRoleplay}>
             一文からキャラ会話を始める
+          </button>
+          <button className="amplifier-entry-button" onClick={onAmplifierStart}>
+            妄想増幅器を始める
           </button>
           <button onClick={onNew}>設定を直接入力</button>
           <button onClick={onOpenAppSettings}>アプリ設定</button>
@@ -166,6 +175,23 @@ export default function ProjectList({
                       ロールプレイ
                     </span>
                   )}
+                  {p.experienceMode === 'amplifier' && (
+                    <span
+                      className="project-type-badge project-type-badge--amplifier"
+                      title="妄想増幅器モード"
+                      style={{
+                        marginLeft: '0.5rem',
+                        padding: '0.1rem 0.5rem',
+                        fontSize: '0.7rem',
+                        borderRadius: '999px',
+                        background: '#f3e8ff',
+                        color: '#7c3aed',
+                        fontWeight: 500,
+                      }}
+                    >
+                      妄想増幅器
+                    </span>
+                  )}
                 </h2>
                 <p className="excerpt">{p.lastExcerpt || 'まだ本文がありません'}</p>
                 <p className="meta">
@@ -181,7 +207,7 @@ export default function ProjectList({
                 </button>
                 <button
                   className="danger"
-                  onClick={(e) => handleDelete(e, p.projectId)}
+                  onClick={(e) => handleDelete(e, p)}
                   title="削除"
                 >
                   削除

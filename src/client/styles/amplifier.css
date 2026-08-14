@@ -1,0 +1,238 @@
+/* 妄想増幅器（設計書 4.3 / 14） */
+
+/* --- 入口画面 --- */
+.amplifier-entry {
+  max-width: var(--max-width, 800px);
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.amplifier-entry-header {
+  margin-bottom: 1.5rem;
+}
+
+.amplifier-disclosure {
+  border-left: 3px solid #7c3aed;
+  padding-left: 1rem;
+}
+
+.amplifier-mode-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.amplifier-mode-card {
+  text-align: left;
+  padding: 1rem;
+  border-radius: var(--radius, 8px);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.amplifier-mode-card:hover {
+  background: var(--surface-hover);
+}
+
+.amplifier-mode-card h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.amplifier-mode-card p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 0.25rem;
+  font-size: inherit;
+  text-decoration: underline;
+}
+
+.amplifier-entry-button {
+  background: #7c3aed;
+  color: #ffffff;
+  border: 1px solid #7c3aed;
+}
+
+/* --- 場面後共通UI --- */
+.amplifier-controls {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.amplifier-status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.amplifier-status--failed {
+  color: var(--danger);
+}
+
+.amplifier-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.5rem;
+}
+
+.amplifier-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.amplifier-choice:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+}
+
+.amplifier-choice-label {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.amplifier-choice-description {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.amplifier-free-text {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.amplifier-free-text input {
+  flex: 1;
+  min-width: 0;
+}
+
+.amplifier-stay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.amplifier-reject {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+  margin-left: auto;
+}
+
+.amplifier-reject input {
+  width: 12rem;
+  font-size: 0.8rem;
+}
+
+.amplifier-advancing {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.amplifier-selection-favorite {
+  background: #7c3aed;
+  color: #ffffff;
+  border-color: #7c3aed;
+}
+
+/* --- 設定画面のノート表示 --- */
+.amplifier-memo-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.amplifier-memo {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--bg);
+}
+
+.amplifier-memo--correction {
+  border-left: 3px solid var(--accent);
+}
+
+.amplifier-memo-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.amplifier-memo-main p {
+  margin: 0.2rem 0 0;
+  font-size: 0.88rem;
+  white-space: pre-wrap;
+}
+
+.amplifier-memo-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.amplifier-correction-form {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+  flex-wrap: wrap;
+}
+
+.amplifier-correction-form input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+.amplifier-controls textarea,
+.amplifier-controls input,
+.amplifier-entry textarea,
+.amplifier-entry input,
+.amplifier-correction-form textarea,
+.amplifier-correction-form input {
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.88rem;
+}

@@ -72,6 +72,8 @@ export interface RoleplayMessage {
   promptBudgetReport?: PromptBudgetReport;
   contentRevision?: number;
   editedAt?: string;
+  // NOTE: 妄想増幅器の方向で生成されたキャラクターメッセージに付く（設計書 13.3）。
+  amplifierInteractionId?: string;
 }
 
 export type RoleplayMessageRevisionSource = 'manual-edit' | 'history-restore';
@@ -152,6 +154,9 @@ export interface RoleplaySession {
   sessionCanonThroughMessageId?: string;
   messageRevisions?: RoleplayMessageRevision[];
   derivedMemoryStatus?: RoleplayDerivedMemoryStatus;
+  // NOTE: この会話枠をグローバル学習の対象外にする（設計書 14.2）。current は新会話で
+  // 空から始めるが、global/project メモは引き継ぐ。
+  excludeFromGlobalLearning?: boolean;
 }
 
 // NOTE: APIレスポンス用。contextSnapshot と sessionCanon 本文を型レベルで除外して
@@ -196,6 +201,8 @@ export interface CreateRoleplaySessionBody {
   characterId: string;
   scenario?: string;
   userPersona?: RoleplayUserPersona;
+  // NOTE: 妄想増幅器の会話枠ごとグローバル学習除外（設計書 14.2）。
+  excludeFromGlobalLearning?: boolean;
 }
 
 export interface SendRoleplayMessageBody {

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api } from '../clientApi';
 import { rememberSetupSession } from './setupWorkspace/sessionStorage';
 import type {
+  ExperienceMode,
   QuickContractCandidate,
   SetupCommitPlan,
   SetupPurpose,
@@ -10,8 +11,10 @@ import type {
 
 // NOTE: クイックセットアップ画面（設計書 4.1）。一文の自由記述から最小計画を作り、
 // hard候補の確認カード → commit の流れで作品を作る。詳細設定は既存の相談画面へ逃げる。
+// experienceMode（妄想増幅器）はセッションへ保持し、詳細設定へ移っても失わない（設計書 4.1）。
 interface Props {
   purpose: SetupPurpose;
+  experienceMode?: ExperienceMode;
   onCreated: (projectId: string, projectType: SetupPurpose) => void;
   onCancel: () => void;
   onOpenFullSetup: () => void;
@@ -19,6 +22,7 @@ interface Props {
 
 export default function QuickSetupWorkspace({
   purpose,
+  experienceMode = 'standard',
   onCreated,
   onCancel,
   onOpenFullSetup,
@@ -42,9 +46,12 @@ export default function QuickSetupWorkspace({
       const created = await api.createSetupSession({
         purpose,
         setupMode: 'quick',
+        ...(experienceMode !== 'standard' ? { experienceMode } : {}),
       });
       // 詳細設定へ移るときは、このクイック設定セッションを復元する。
-      rememberSetupSession(created.sessionId, purpose);
+      // NOTE: amplifier は専用の復元キーへ保存する（設計書 4.1）。standard 用キーへ保存
+      // すると、通常作品の相談として誤復元される。
+      rememberSetupSession(created.sessionId, purpose, experienceMode);
       const result = await api.createQuickSetupPlan(created.sessionId, {
         wish: wish.trim(),
         hardContracts: hardContracts

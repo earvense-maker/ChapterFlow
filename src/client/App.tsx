@@ -7,11 +7,13 @@ import SetupWorkspace from './components/SetupWorkspace';
 import QuickSetupWorkspace from './components/QuickSetupWorkspace';
 import AppSettingsPanel from './components/AppSettingsPanel';
 import RoleplayWorkspace from './components/RoleplayWorkspace';
+import AmplifierEntry from './components/AmplifierEntry';
 import ErrorBoundary from './components/ErrorBoundary';
 import { useNotificationCenter } from './components/NotificationCenter';
 import { useMaintenanceNotifications } from './hooks/useMaintenanceNotifications';
 import { api } from './clientApi';
 import type {
+  ExperienceMode,
   ProjectType,
   SettingsFocusTarget,
   SetupPurpose,
@@ -22,6 +24,7 @@ type View =
   | 'new'
   | 'setup'
   | 'quick-setup'
+  | 'amplifier-entry'
   | 'read'
   | 'roleplay'
   | 'app-settings'
@@ -38,6 +41,9 @@ export default function App() {
   const [appSettingsInitialProvider, setAppSettingsInitialProvider] = useState<string | undefined>();
   // NOTE: 相談セッションの用途。setup 画面遷移・設定往復・再読込で同じ値を渡す。
   const [setupPurpose, setSetupPurpose] = useState<SetupPurpose>('novel');
+  // NOTE: 体験モード（妄想増幅器）。クイックセットアップから詳細設定へ移っても失わない
+  // （設計書 4.1）。SetupWorkspace 側でもセッション値から復元される。
+  const [setupExperienceMode, setSetupExperienceMode] = useState<ExperienceMode>('standard');
   // NOTE: 設定画面から戻る先を「Reader / RoleplayWorkspace」で分けるための保持。
   const [projectMainView, setProjectMainView] = useState<'read' | 'roleplay'>('read');
   // NOTE: 通知クリックで「作品設定相談の該当run/patch」へフォーカスするための一時state。
@@ -82,6 +88,8 @@ export default function App() {
 
   const handleBackToList = () => {
     setActiveProjectId(null);
+    // 妄想増幅器の作成フローを離れた後、通常作成へモードを持ち越さない。
+    setSetupExperienceMode('standard');
     setView('list');
   };
 
@@ -99,6 +107,17 @@ export default function App() {
   const openSettings = (nextView: 'settings-work' | 'settings-tech' | 'settings-memory') => {
     setView(nextView);
   };
+
+  // SPA 内の画面切替では一覧側のスクロール位置が残る。妄想増幅器の入口や作成画面を
+  // 見出しの途中から表示しないよう、対象ビューへ入った時だけ先頭へ戻す。
+  useEffect(() => {
+    if (
+      view === 'amplifier-entry' ||
+      (setupExperienceMode === 'amplifier' && (view === 'quick-setup' || view === 'setup'))
+    ) {
+      window.scrollTo(0, 0);
+    }
+  }, [setupExperienceMode, view]);
 
   // NOTE: 生成通知のクリック時遷移。対象作品が既に削除されている場合は一覧へ戻し、
   // 理由を短く表示する（設計書 12.1）。
@@ -148,32 +167,55 @@ export default function App() {
             onNew={() => setView('new')}
             onSetupNew={() => {
               setSetupPurpose('novel');
+              setSetupExperienceMode('standard');
               setView('setup');
             }}
             onSetupRoleplay={() => {
               setSetupPurpose('roleplay');
+              setSetupExperienceMode('standard');
               setView('setup');
             }}
             onQuickSetupNovel={() => {
               setSetupPurpose('novel');
+              setSetupExperienceMode('standard');
               setView('quick-setup');
             }}
             onQuickSetupRoleplay={() => {
               setSetupPurpose('roleplay');
+              setSetupExperienceMode('standard');
               setView('quick-setup');
+            }}
+            onAmplifierStart={() => {
+              setView('amplifier-entry');
             }}
             onOpenAppSettings={() => openAppSettings('list')}
           />
         </>
       )}
       {view === 'new' && <ProjectForm onCreated={handleCreateProject} onCancel={handleBackToList} />}
+      {view === 'amplifier-entry' && (
+        <AmplifierEntry
+          onChoose={(purpose) => {
+            setSetupPurpose(purpose);
+            setSetupExperienceMode('amplifier');
+            setView('quick-setup');
+          }}
+          onOpenFullSetup={(purpose) => {
+            setSetupPurpose(purpose);
+            setSetupExperienceMode('amplifier');
+            setView('setup');
+          }}
+          onCancel={handleBackToList}
+        />
+      )}
       {view === 'setup' && (
         // NOTE: SetupWorkspace は購読中セッションを purpose 別に一度だけ読み込む。key を
         // 付けて用途が変わったら必ず作り直し、小説の相談状態が残ったまま roleplay 表示に
         // なる事故を防ぐ。
         <SetupWorkspace
-          key={setupPurpose}
+          key={`${setupPurpose}:${setupExperienceMode}`}
           purpose={setupPurpose}
+          experienceMode={setupExperienceMode}
           onCreated={handleCreateProject}
           onCancel={handleBackToList}
           onOpenSettings={() => openAppSettings('setup')}
@@ -182,6 +224,7 @@ export default function App() {
       {view === 'quick-setup' && (
         <QuickSetupWorkspace
           purpose={setupPurpose}
+          experienceMode={setupExperienceMode}
           onCreated={handleCreateProject}
           onCancel={handleBackToList}
           onOpenFullSetup={() => {

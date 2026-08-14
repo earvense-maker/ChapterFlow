@@ -20,6 +20,7 @@ import {
 } from '../prompts/promptBudget.js';
 import { renderDataBlock, sanitizePromptLabel } from '../prompts/promptData.js';
 import { normalizeComparableCanonStatement } from './roleplayCanonFoldService.js';
+import { AMPLIFIER_FIXED_RULES } from './amplifierPromptBuilder.js';
 import type {
   CanonEpistemicStatus,
   CanonLifecycle,
@@ -33,6 +34,7 @@ import type {
   RoleplayUserActionPolicy,
   RoleplayUserPersona,
 } from '../types/index.js';
+import type { AmplifierPromptContext } from './amplifierService.js';
 import type { PromptBudgetEntry } from '../../shared/types/generation.js';
 import {
   normalizeLegacyRoleplayPromptLayers,
@@ -195,6 +197,11 @@ export interface RoleplayUserPromptInput {
   // NOTE: Phase D 以降は使わない。登録NG語はプロンプトへ載せず、出力後に検出する。
   // Phase A 期間の互換のため受け取りは残す（設計書 9 Phase A の注記）。
   bannedExpressions?: string[];
+  // NOTE: 妄想増幅器のコンテキスト（設計書 11.3）。標準ロールプレイでは省略する。
+  // 今回の方向・current/project/globalメモ・ハード境界をデータブロックで引用する。
+  // 既存のユーザー行動保護規則を維持し、今回の方向で明示された範囲だけを例外として
+  // 許可する。選択肢にない分身の重要な決断を補完しない。
+  amplifierContext?: AmplifierPromptContext;
 }
 
 export interface RoleplaySystemPromptResult {
@@ -459,6 +466,42 @@ function composeRoleplayUserPrompt(input: RoleplayUserPromptInput): string {
   });
   if (intimateVocalDirection) {
     parts.push(intimateVocalDirection);
+  }
+  // NOTE: 妄想増幅器のレイヤー（設計書 11.3）。メタ方向を「あなた」の発言として混ぜず、
+  // データブロックで引用する。分身の行動・台詞として明示された範囲だけを生成してよい
+  // という許可として載せる。メモは current/project/global の順、境界は最後に載せる。
+  if (input.amplifierContext) {
+    const context = input.amplifierContext;
+    if (context.direction.trim()) {
+      parts.push(
+        renderDataBlock(
+          '【今回の方向（この方向に沿って応答する）】',
+          `${AMPLIFIER_FIXED_RULES}\n\n${context.direction.trim()}`
+        )
+      );
+    }
+    if (context.currentMemo.trim()) {
+      parts.push(renderDataBlock('【妄想増幅器・current（直近の欲求・仮説）】', context.currentMemo));
+    }
+    if (context.projectMemo.trim()) {
+      parts.push(renderDataBlock('【妄想増幅器・project（この作品の仮説）】', context.projectMemo));
+    }
+    if (context.globalMemo.trim()) {
+      parts.push(renderDataBlock('【妄想増幅器・global（作品をまたぐ仮説）】', context.globalMemo));
+    }
+    const boundaries = [
+      context.globalBoundary.trim()
+        ? `【グローバル境界】どの妄想でも避けること: ${context.globalBoundary.trim()}`
+        : '',
+      context.projectBoundary.trim()
+        ? `【作品内境界】この作品では避けること: ${context.projectBoundary.trim()}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    if (boundaries) {
+      parts.push(renderDataBlock('【ハード境界（これだけは絶対に守る）】', boundaries));
+    }
   }
   // NOTE: 登録NG語は main prompt へ列挙しない（設計書 5.5）。語をモデルへ見せると、
   // 指示に従おうとして「〇〇ではなく」の否定形で本文へ出してしまう。長文生成では
