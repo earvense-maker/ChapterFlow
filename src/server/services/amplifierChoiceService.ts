@@ -15,6 +15,7 @@ import { buildChoiceGenerationPrompt } from './amplifierPromptBuilder.js';
 import { runNonStreaming, ModelClientError } from './modelGenerationService.js';
 import * as globalService from './amplifierGlobalService.js';
 import { localProjectStorage } from '../storage/boundProjectStorage.js';
+import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
 import type {
   AmplifierAnchor,
   AmplifierChoice,
@@ -228,6 +229,10 @@ async function generateChoicesFromModel(input: {
       userPrompt: userPromptText,
       outputLength: 1200,
       temperature: 0.9,
+      // NOTE: 方向候補は JSON 専用タスク。DeepSeek V4 ではこの指定により thinking を
+      // 無効化し、最終 JSON が reasoning_content 側だけに出て本文が空になるのを防ぐ。
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
+      responseMimeType: 'application/json',
       timeoutMs: CHOICE_TIMEOUT_MS,
       modelName,
     });
@@ -317,8 +322,21 @@ export async function createTurnForAnchor(
     );
     const existing = await amplifier.findTurnByAnchor(projectId, anchor, contextKey);
     if (existing) {
-      if (existing.status === 'ready' || existing.status === 'failed') {
+      if (existing.status === 'ready') {
         return { turn: existing, stale: false };
+      }
+      if (existing.status === 'failed') {
+        // NOTE: failed の再取得はロック内で pending へ戻してから LLM 呼び出しへ進む。
+        // 同時リトライは下の in_progress へ入り、同じターンの二重生成を防げる。
+        const retrying: AmplifierTurn = {
+          ...existing,
+          status: 'choices_pending',
+          choices: [],
+          errorCode: undefined,
+          updatedAt: nowIso(),
+        };
+        const saved = await amplifier.writeTurn(projectId, retrying);
+        return { turn: saved, stale: false };
       }
       if (existing.status === 'choices_pending') {
         throw new AmplifierChoiceError(
@@ -341,10 +359,6 @@ export async function createTurnForAnchor(
   });
 
   if (prepared.turn.status === 'ready') return prepared;
-  if (prepared.turn.status === 'failed') {
-    // 失敗したターンは同じアンカーで作り直す
-    return regenerateTurnChoices(projectId, prepared.turn, anchor, mode);
-  }
 
   const resolved = await amplifier.resolveEffectiveAnchorText(projectId, anchor);
   const characterName =
@@ -371,7 +385,7 @@ export async function createTurnForAnchor(
   // --- commit（プロジェクトロック内・アンカー再検証） ---
   return withProjectWriteLock(projectId, async () => {
     const current = await amplifier.readTurn(projectId, prepared.turn.turnId);
-    if (!current || current.status === 'superseded' || current.status === 'consumed') {
+    if (!current || current.status !== 'choices_pending') {
       return { turn: current ?? prepared.turn, stale: true };
     }
     const nowResolved = await amplifier.resolveEffectiveAnchorText(projectId, anchor);
@@ -394,55 +408,6 @@ export async function createTurnForAnchor(
       status: choices && choices.length >= 3 ? 'ready' : 'failed',
       ...(choices ? { choices } : {}),
       ...(errorCode ? { errorCode } : {}),
-      updatedAt: nowIso(),
-    };
-    const saved = await amplifier.writeTurn(projectId, next);
-    return { turn: saved, stale: false };
-  });
-}
-
-async function regenerateTurnChoices(
-  projectId: string,
-  turn: AmplifierTurn,
-  anchor: AmplifierAnchor,
-  mode: 'novel' | 'roleplay'
-): Promise<CreateTurnResult> {
-  const resolved = await amplifier.resolveEffectiveAnchorText(projectId, anchor);
-  if (!resolved.ok) {
-    throw new AmplifierChoiceError(
-      'アンカーの本文が見つかりません。',
-      'amplifier_anchor_invalid',
-      false,
-      404
-    );
-  }
-  const characterName =
-    mode === 'roleplay' && anchor.kind === 'roleplay'
-      ? await resolveCharacterName(projectId, anchor.sessionId)
-      : undefined;
-  let choices: AmplifierChoice[] | null = null;
-  try {
-    choices = await generateChoicesFromModel({
-      projectId,
-      mode,
-      contextKey: turn.contextKey,
-      sessionId: anchor.kind === 'roleplay' ? anchor.sessionId : undefined,
-      excerpt: resolved.text,
-      characterName,
-    });
-  } catch {
-    // 再生成失敗時は failed のまま
-  }
-  return withProjectWriteLock(projectId, async () => {
-    const current = await amplifier.readTurn(projectId, turn.turnId);
-    if (!current || current.status === 'superseded' || current.status === 'consumed') {
-      return { turn: current ?? turn, stale: true };
-    }
-    const next: AmplifierTurn = {
-      ...current,
-      status: choices && choices.length >= 3 ? 'ready' : 'failed',
-      ...(choices ? { choices } : {}),
-      ...(choices ? { errorCode: undefined } : {}),
       updatedAt: nowIso(),
     };
     const saved = await amplifier.writeTurn(projectId, next);
@@ -481,7 +446,7 @@ export async function createTurnAlternatives(input: {
       if (created) {
         if (created.status === 'ready') return { turn: created, stale: false };
         if (created.status === 'failed') {
-          return regenerateTurnChoices(input.projectId, created, created.anchor, mode);
+          return createTurnForAnchor(input.projectId, created.anchor);
         }
       }
     }

@@ -1,11 +1,13 @@
 // 妄想増幅器のAPI統合テスト（設計書 18.2）
 import type { Server } from 'node:http';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/server/app';
 import { adapterMap } from '../../src/server/adapters/index';
 import * as projectService from '../../src/server/services/projectService';
 import * as storage from '../../src/server/services/storageService';
 import type {
+  AdapterGenerateRequest,
+  AdapterGenerateResult,
   AmplifierChoice,
   AmplifierTurn,
   GenerationRecord,
@@ -14,6 +16,10 @@ import type {
 
 let server: Server;
 let baseUrl = '';
+const amplifierChoiceRequests: AdapterGenerateRequest[] = [];
+let amplifierChoiceOverride:
+  | ((request: AdapterGenerateRequest) => Promise<AdapterGenerateResult>)
+  | undefined;
 
 function choicePromptResponse(): { text: string; finishReason: 'stop'; retryable: boolean } {
   const make = (strategy: 'exploit' | 'variation' | 'explore', label: string, description: string): AmplifierChoice => ({
@@ -36,6 +42,8 @@ function choicePromptResponse(): { text: string; finishReason: 'stop'; retryable
 beforeAll(async () => {
   vi.spyOn(adapterMap.gemini, 'generateText').mockImplementation(async (request) => {
     if (request.debugLabel === 'amplifier.choices') {
+      amplifierChoiceRequests.push(request);
+      if (amplifierChoiceOverride) return amplifierChoiceOverride(request);
       return choicePromptResponse();
     }
     return {
@@ -68,6 +76,10 @@ afterAll(async () => {
     server.close((err) => (err ? reject(err) : resolve()));
   });
   vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  amplifierChoiceOverride = undefined;
 });
 
 async function createProject(body: Record<string, unknown>): Promise<Project> {
@@ -162,6 +174,9 @@ describe('妄想増幅器 novel の選択ループ', () => {
       });
       expect(turn.status).toBe('ready');
       expect(turn.choices.length).toBe(3);
+      const choiceRequest = amplifierChoiceRequests.at(-1);
+      expect(choiceRequest?.responseMimeType).toBe('application/json');
+      expect(choiceRequest?.maxOutputTokens).toBeGreaterThanOrEqual(16_384);
       // choiceId はサーバー採番（モデル入力を信用しない・設計書 5.4）
       expect(turn.choices[0].choiceId).toMatch(/^amp-choice-/);
 
@@ -256,6 +271,140 @@ describe('妄想増幅器 novel の選択ループ', () => {
       await waitForBackgroundSettled(projectId);
     } finally {
       if (projectId)       await storage.deleteProjectDir(projectId);
+    }
+  });
+});
+
+describe('妄想増幅器 failed ターンの再取得', () => {
+  it('同じ failed ターンへの同時リトライを1回のモデル呼び出しにまとめる', async () => {
+    let projectId: string | undefined;
+    let releaseRetry!: () => void;
+    let markRetryStarted!: () => void;
+    const retryGate = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
+    const retryStarted = new Promise<void>((resolve) => {
+      markRetryStarted = resolve;
+    });
+    try {
+      const project = await createProject({
+        title: 'Amplifier Retry Concurrency',
+        projectType: 'novel',
+        experienceMode: 'amplifier',
+      });
+      projectId = project.projectId;
+      const generation = await generateScene(projectId);
+      const anchor = {
+        kind: 'novel' as const,
+        generationId: generation.generationId,
+        textRevisionNumber: 0,
+      };
+
+      amplifierChoiceOverride = async () => ({
+        text: '{}',
+        finishReason: 'stop',
+        retryable: false,
+      });
+      const failed = await createTurn(projectId, anchor);
+      expect(failed.status).toBe('failed');
+
+      let retryCalls = 0;
+      amplifierChoiceOverride = async () => {
+        retryCalls += 1;
+        markRetryStarted();
+        await retryGate;
+        return choicePromptResponse();
+      };
+      const retry = fetch(`${baseUrl}/api/projects/${projectId}/amplifier/turns`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ anchor }),
+      });
+      await retryStarted;
+
+      const duplicate = await fetch(`${baseUrl}/api/projects/${projectId}/amplifier/turns`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ anchor }),
+      });
+      expect(duplicate.status).toBe(409);
+      expect((await duplicate.json()) as { code?: string }).toMatchObject({
+        code: 'amplifier_turn_in_progress',
+      });
+
+      releaseRetry();
+      const retried = await retry;
+      expect(retried.status).toBe(201);
+      expect(((await retried.json()) as { turn: AmplifierTurn }).turn.status).toBe('ready');
+      expect(retryCalls).toBe(1);
+      await waitForBackgroundSettled(projectId);
+    } finally {
+      releaseRetry?.();
+      if (projectId) await deleteProjectDirResilient(projectId);
+    }
+  });
+
+  it('再取得中に本文が改訂されたら古い選択肢を superseded にする', async () => {
+    let projectId: string | undefined;
+    let releaseRetry!: () => void;
+    let markRetryStarted!: () => void;
+    const retryGate = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
+    const retryStarted = new Promise<void>((resolve) => {
+      markRetryStarted = resolve;
+    });
+    try {
+      const project = await createProject({
+        title: 'Amplifier Retry Stale Anchor',
+        projectType: 'novel',
+        experienceMode: 'amplifier',
+      });
+      projectId = project.projectId;
+      const generation = await generateScene(projectId);
+      const anchor = {
+        kind: 'novel' as const,
+        generationId: generation.generationId,
+        textRevisionNumber: 0,
+      };
+
+      amplifierChoiceOverride = async () => ({
+        text: '{}',
+        finishReason: 'stop',
+        retryable: false,
+      });
+      expect((await createTurn(projectId, anchor)).status).toBe('failed');
+
+      amplifierChoiceOverride = async () => {
+        markRetryStarted();
+        await retryGate;
+        return choicePromptResponse();
+      };
+      const retry = fetch(`${baseUrl}/api/projects/${projectId}/amplifier/turns`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ anchor }),
+      });
+      await retryStarted;
+      const editedText = `${generation.responseText}\n本文改訂`;
+      await storage.appendGenerationTextRevisionLog(projectId, generation.generationId, editedText, {
+        reason: 'retry-stale-test',
+        before: generation.responseText,
+        after: editedText,
+        source: 'manual-edit',
+        revisionNumber: 1,
+      });
+      releaseRetry();
+
+      const response = await retry;
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as { turn: AmplifierTurn };
+      expect(body.turn.status).toBe('superseded');
+      expect(body.turn.errorCode).toBe('stale_anchor');
+      await waitForBackgroundSettled(projectId);
+    } finally {
+      releaseRetry?.();
+      if (projectId) await deleteProjectDirResilient(projectId);
     }
   });
 });

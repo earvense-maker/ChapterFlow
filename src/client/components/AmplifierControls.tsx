@@ -10,7 +10,7 @@
 // 方向カードには自然な見出しと短い説明だけを表示する。「鉄板」「変奏」「冒険」や
 // 分析語は表示しない（設計書 5.2）。strategy は生成制御と評価用の非表示メタデータ。
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../clientApi';
 import type {
   AmplifierAnchor,
@@ -46,6 +46,12 @@ function newClientEventId(): string {
   return `amp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function anchorIdentity(anchor: AmplifierAnchor): string {
+  return anchor.kind === 'novel'
+    ? `novel\0${anchor.generationId}\0${anchor.textRevisionNumber}`
+    : `roleplay\0${anchor.sessionId}\0${anchor.messageId}\0${anchor.contentRevision}`;
+}
+
 export default function AmplifierControls({
   projectId,
   mode,
@@ -62,29 +68,48 @@ export default function AmplifierControls({
   const [busyChoiceId, setBusyChoiceId] = useState<string | null>(null);
   const [favoriting, setFavoriting] = useState(false);
   const loadRequestRef = useRef(0);
+  const anchorKey = anchorIdentity(anchor);
+  // Reader / RoleplayWorkspace はレンダーごとに同内容の anchor リテラルを渡す。
+  // 意味上同じアンカーなら参照も維持し、親のポーリング再描画で選択肢と入力欄を
+  // 一度消して再取得する effect が走らないようにする。
+  const stableAnchor = useMemo(() => anchor, [anchorKey]);
 
   // NOTE: アンカーが変わったら（本文編集・別案・再生成・別セッション）古いターンを捨て、
   // 現在の実効本文へ選択肢を作り直す（設計書 4.3）。
-  const ensureTurn = useCallback(async () => {
+  const ensureTurn = useCallback(async (retryFailed = false) => {
     const requestId = ++loadRequestRef.current;
+    // 再取得操作は state GET より前に busy にして、連打で複数リクエストが走る窓を塞ぐ。
+    if (retryFailed) setCreating(true);
     const query =
-      mode === 'roleplay' && anchor.kind === 'roleplay'
-        ? { kind: 'roleplay' as const, sessionId: anchor.sessionId }
+      mode === 'roleplay' && stableAnchor.kind === 'roleplay'
+        ? { kind: 'roleplay' as const, sessionId: stableAnchor.sessionId }
         : { kind: 'novel' as const };
-    const stateResult = await api.getAmplifierState(projectId, query);
+    let stateResult;
+    try {
+      stateResult = await api.getAmplifierState(projectId, query);
+    } catch {
+      if (requestId === loadRequestRef.current) {
+        setCreating(false);
+      }
+      return;
+    }
     if (requestId !== loadRequestRef.current) return;
     const existing = stateResult.turn;
-    if (existing && anchorEquals(existing.anchor, anchor)) {
+    if (
+      existing &&
+      anchorEquals(existing.anchor, stableAnchor) &&
+      !(retryFailed && existing.status === 'failed')
+    ) {
       setTurn(existing);
       return;
     }
     setTurn(null);
     setCreating(true);
     try {
-      const result = await api.createAmplifierTurn(projectId, { anchor });
+      const result = await api.createAmplifierTurn(projectId, { anchor: stableAnchor });
       if (requestId !== loadRequestRef.current) return;
       // NOTE: 生成中に本文が変わって stale になった場合は表示せず、次回アンカー変更時に作り直す
-      setTurn(anchorEquals(result.turn.anchor, anchor) ? result.turn : null);
+      setTurn(anchorEquals(result.turn.anchor, stableAnchor) ? result.turn : null);
     } catch (err) {
       if (requestId !== loadRequestRef.current) return;
       const code = (err as { code?: string }).code;
@@ -93,7 +118,7 @@ export default function AmplifierControls({
     } finally {
       if (requestId === loadRequestRef.current) setCreating(false);
     }
-  }, [projectId, mode, anchor, anchorExcerpt]);
+  }, [projectId, mode, stableAnchor]);
 
   useEffect(() => {
     setTurn(null);
@@ -193,7 +218,7 @@ export default function AmplifierControls({
       {status === 'failed' && (
         <div className="amplifier-status amplifier-status--failed">
           <span>方向の取得に失敗しました。本文はそのまま残っています。</span>
-          <button onClick={() => void ensureTurn()} disabled={creating}>
+          <button onClick={() => void ensureTurn(true)} disabled={creating}>
             方向を再取得
           </button>
         </div>
