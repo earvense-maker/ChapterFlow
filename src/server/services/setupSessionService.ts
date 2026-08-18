@@ -167,14 +167,15 @@ export async function createSetupSession(
       400
     );
   }
-  // NOTE: 体験モード（妄想増幅器）。undefined は 'standard'。それ以外は 400（設計書 4.1）。
+  // NOTE: 体験モード（妄想増幅器・夢見るモード）。undefined は 'standard'。それ以外は 400（設計書 4.1）。
   if (
     body.experienceMode !== undefined &&
     body.experienceMode !== 'standard' &&
-    body.experienceMode !== 'amplifier'
+    body.experienceMode !== 'amplifier' &&
+    body.experienceMode !== 'dream'
   ) {
     throw new SetupServiceError(
-      "experienceMode は 'standard' か 'amplifier' である必要があります。",
+      "experienceMode は 'standard' か 'amplifier' か 'dream' である必要があります。",
       'invalid_experience_mode',
       false,
       400

@@ -472,6 +472,36 @@ describe('roleplaySessionService', () => {
     ).rejects.toMatchObject({ code: 'project_type_mismatch', status: 409 });
   });
 
+  // NOTE: 夢見るモードの後方互換ケース（設計書 §10）。通常 roleplay は従来どおり動き、
+  // 空メッセージは拒否される（AC10）。sessionMode 欠損は 'roleplay' と解釈される。
+  it('keeps rejecting an empty message for normal roleplay sessions (AC10)', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    expect(created.sessionMode).toBeUndefined();
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '',
+        revision: created.revision,
+      })
+    );
+    expect(result.errors[0]?.code).toBe('invalid_message');
+    expect(result.done).toBeUndefined();
+  });
+
+  it('does not treat a missing sessionMode as dream (design: 欠損は roleplay)', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    expect(created.sessionMode).toBeUndefined();
+  });
+
   it('inserts greeting as the first character message without calling the model', async () => {
     const project = await makeRoleplayProject();
     const spy = vi.spyOn(GeminiAdapter.prototype, 'generateText');

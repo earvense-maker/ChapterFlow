@@ -44,6 +44,20 @@
 /* NOTE: PC 前提だった画面をスマホ幅で使えるように、ヘッダーを縦積みにし、
    ボタン群のパディング/フォントを詰め、iOS の入力欄自動ズームを防ぐ。 */
 @media (max-width: 640px) {
+  /* NOTE: 夢見るモードは 390×844 でも本文と入力が同時に見えるよう、余白を詰める（AC11）。 */
+  .dream-workspace {
+    padding: 0.4rem 0.75rem max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .dream-text {
+    font-size: 0.95rem;
+    padding: 0.75rem 0.1rem;
+  }
+
+  .dream-input {
+    font-size: 16px;
+  }
+
   .character-trait-row {
     grid-template-columns: 1fr;
   }

@@ -169,9 +169,10 @@ export async function createProject(body: CreateProjectBody): Promise<Project> {
   if (
     body.experienceMode !== undefined &&
     body.experienceMode !== 'standard' &&
-    body.experienceMode !== 'amplifier'
+    body.experienceMode !== 'amplifier' &&
+    body.experienceMode !== 'dream'
   ) {
-    throw new ProjectValidationError("experienceMode must be 'standard' or 'amplifier'");
+    throw new ProjectValidationError("experienceMode must be 'standard', 'amplifier' or 'dream'");
   }
   // NOTE: 妄想増幅器は高速な反復を優先するため、生成後の自動設定レビューを初期値 off で
   // 作る（設計書 4.1）。ユーザーが作品設定から明示的に有効化した場合だけ既存処理を使う。

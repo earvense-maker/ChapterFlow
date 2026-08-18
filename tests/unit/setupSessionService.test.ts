@@ -152,6 +152,26 @@ describe('setupSessionService', () => {
     });
   });
 
+  // NOTE: 夢見るモードの後方互換ケース（設計書 §10）。experienceMode 'dream' が setup
+  // セッションへ保持され、不正値は 400 のまま。
+  it('keeps the dream experience mode in the setup session', async () => {
+    const result = await setupSessionService.createSetupSession({
+      purpose: 'roleplay',
+      experienceMode: 'dream',
+    });
+    createdSessionIds.push(result.sessionId);
+    expect(result.session.experienceMode).toBe('dream');
+  });
+
+  it('rejects an unknown experienceMode value', async () => {
+    await expect(
+      setupSessionService.createSetupSession({
+        // @ts-expect-error 意図的に不正値を渡してエラー系を確認
+        experienceMode: 'matrix',
+      })
+    ).rejects.toMatchObject({ code: 'invalid_experience_mode', status: 400 });
+  });
+
   it('keeps roleplay-only preset selections when creating a setup session', async () => {
     const result = await setupSessionService.createSetupSession({
       purpose: 'roleplay',

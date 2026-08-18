@@ -1,0 +1,279 @@
+/* NOTE: 夢見るモードの画面（docs/design/夢見るモード_MVP設計書.md §2）。
+   本文・入力欄・最小限の状態と停止・画面端の「目覚める」・エラーのみで、吹き出しや
+   発言者名は出さない。1280×720 と 390×844 で本文と入力が同時に見え、操作が画面外へ
+   はみ出さないこと（AC11）。 */
+
+.dream-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0.5rem 1rem 1rem;
+  box-sizing: border-box;
+}
+
+.dream-workspace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex: none;
+}
+
+.dream-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 画面端の小さな「目覚める」。 */
+.dream-wake-button {
+  flex: none;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  opacity: 0.75;
+}
+
+.dream-wake-button:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.dream-workspace-settings {
+  display: flex;
+  gap: 0.75rem;
+  flex: none;
+  justify-content: center;
+}
+
+.dream-link {
+  background: none;
+  border: none;
+  color: var(--text-soft, #666);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0.15rem 0.3rem;
+}
+
+.dream-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.dream-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex: none;
+  padding: 0.4rem 0.7rem;
+  margin: 0.25rem 0;
+  border-radius: 8px;
+  background: var(--danger-bg, rgba(217, 48, 37, 0.1));
+  border: 1px solid var(--danger, #d93025);
+  color: var(--danger, #b3261e);
+  font-size: 0.85rem;
+}
+
+.dream-error button {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.dream-disclosure {
+  flex: none;
+  margin: 0.25rem 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 10px;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border, #d9d9d9);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.dream-disclosure p {
+  margin: 0;
+}
+
+.dream-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 夢の本文。吹き出しや発言者名を出さず、ユーザー入力も再表示しない（設計書 §2）。 */
+.dream-text {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 0.25rem;
+  line-height: 1.9;
+  font-size: 0.98rem;
+}
+
+.dream-paragraph {
+  margin: 0 0 1rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dream-placeholder {
+  color: var(--text-soft, #999);
+  font-style: italic;
+}
+
+.dream-streaming {
+  white-space: pre-wrap;
+  word-break: break-word;
+  opacity: 0.85;
+}
+
+.dream-input-area {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--border, #d9d9d9);
+}
+
+.dream-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  min-height: 2.2rem;
+  max-height: 6rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border, #ccc);
+  background: var(--surface, #fff);
+  color: var(--text, #1a1a1a);
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.dream-input:focus {
+  outline: none;
+  border-color: var(--accent, #2952a3);
+}
+
+.dream-streaming-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 2.2rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border, #ccc);
+  background: var(--surface, #fff);
+  font-size: 0.85rem;
+  color: var(--text-soft, #666);
+}
+
+.dream-stop-button {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+}
+
+.dream-notice {
+  font-size: 0.78rem;
+  color: var(--text-soft, #666);
+}
+
+.dream-empty,
+.dream-ended {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: var(--text-soft, #666);
+}
+
+.dream-ended p {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.dream-ended > div {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.dream-workspace-loading {
+  padding: 2rem;
+}
+
+/* --- アプリ設定の夢の記憶 --- */
+
+.settings-toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  cursor: pointer;
+}
+
+.settings-toggle-row input {
+  margin-top: 0.25rem;
+}
+
+.settings-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+
+.dream-memory-browse {
+  margin-top: 0.5rem;
+  border: 1px solid var(--border, #d9d9d9);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.dream-memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.dream-memory-item {
+  border-bottom: 1px solid var(--border-soft, #eee);
+  padding-bottom: 0.5rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.dream-memory-item strong {
+  margin-left: 0.35rem;
+}
+
+.dream-memory-context {
+  margin: 0.25rem 0 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border, #d9d9d9);
+  color: var(--text-soft, #666);
+  font-style: italic;
+}

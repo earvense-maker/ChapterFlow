@@ -25,7 +25,19 @@ const router = Router();
 router.post('/projects/:id/roleplay/sessions', async (req, res, next) => {
   try {
     const body = (req.body ?? {}) as CreateRoleplaySessionBody;
-    if (typeof body.characterId !== 'string' || !body.characterId.trim()) {
+    if (body.sessionMode !== undefined && body.sessionMode !== 'roleplay' && body.sessionMode !== 'dream') {
+      return res
+        .status(400)
+        .json({ error: "sessionMode must be 'roleplay' or 'dream'", code: 'invalid_request' });
+    }
+    // NOTE: 夢見るモードはキャラクター選択を出さないため characterId 省略を許し、サーバー
+    // 側で先頭キャラクターを視点アンカーとして解決する（設計書 §5）。通常 roleplay は
+    // 従来どおり必須。
+    const isDream = body.sessionMode === 'dream';
+    if (
+      (!isDream && (typeof body.characterId !== 'string' || !body.characterId.trim())) ||
+      (isDream && body.characterId !== undefined && typeof body.characterId !== 'string')
+    ) {
       return res.status(400).json({ error: 'characterId is required', code: 'invalid_request' });
     }
     if (body.scenario !== undefined && typeof body.scenario !== 'string') {
@@ -33,10 +45,11 @@ router.post('/projects/:id/roleplay/sessions', async (req, res, next) => {
     }
     const view = await roleplayService.createRoleplaySession({
       projectId: req.params.id,
-      characterId: body.characterId,
+      characterId: body.characterId ?? '',
       scenario: body.scenario,
       userPersona: body.userPersona,
       excludeFromGlobalLearning: body.excludeFromGlobalLearning === true,
+      sessionMode: body.sessionMode,
     });
     res.status(201).json({ session: view });
   } catch (err) {
@@ -218,10 +231,23 @@ async function runStreamRoute(
     let generator: AsyncGenerator<roleplayService.RoleplayStreamEvent>;
     if (kind === 'send') {
       const sendBody = body as SendRoleplayMessageBody;
+      // NOTE: 夢の入力種別（設計書 §5）。欠損は 'text'。'observe' は dream セッションだけで
+      // 受理される（service 側で検証）。
+      if (
+        sendBody.inputKind !== undefined &&
+        sendBody.inputKind !== 'text' &&
+        sendBody.inputKind !== 'observe'
+      ) {
+        res
+          .status(400)
+          .json({ error: "inputKind must be 'text' or 'observe'", code: 'invalid_request' });
+        return;
+      }
       generator = roleplayService.sendRoleplayMessage({
         projectId,
         sessionId,
         message: sendBody.message,
+        inputKind: sendBody.inputKind,
         revision: sendBody.revision,
         replacePendingMessageId: sendBody.replacePendingMessageId,
         abortSignal: abortController.signal,

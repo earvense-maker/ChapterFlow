@@ -36,7 +36,12 @@ export default function QuickSetupWorkspace({
   const [plan, setPlan] = useState<SetupCommitPlan | null>(null);
   const [confirmations, setConfirmations] = useState<Map<string, boolean>>(new Map());
 
-  const copy = purpose === 'roleplay' ? ROLEPLAY_COPY : NOVEL_COPY;
+  const copy =
+    experienceMode === 'dream'
+      ? DREAM_COPY
+      : purpose === 'roleplay'
+        ? ROLEPLAY_COPY
+        : NOVEL_COPY;
 
   const start = async () => {
     if (!wish.trim() || busy) return;
@@ -286,4 +291,18 @@ const ROLEPLAY_COPY = {
   openingPlaceholder: '例: 雨の夜の宿屋の暖炉の前',
   submitLabel: 'この一文で作品を作る',
   commitLabel: 'この内容で作品を作る',
+};
+
+// NOTE: 夢見るモードの最小文言（設計書 §9）。見出しとプレースホルダーだけを変え、詳細
+// 設定全体の語彙変更は MVP 外とする。
+const DREAM_COPY = {
+  heading: '夢の入り口を作る',
+  description:
+    'どんな夢の入り口が欲しいですか？一文で書いてください。言葉はそのまま保存され、未来の夢の奥で形を変えて戻ってきます。',
+  wishLabel: 'どんな夢の入り口が欲しいですか',
+  wishPlaceholder: '例: 雨の降る街で、行き先の決まらない足音を追う夢。',
+  openingLabel: '最初に見たい情景',
+  openingPlaceholder: '例: 夜の海岸。遠くの灯りがひとつずつ消えていく。',
+  submitLabel: 'この一文で夢を作る',
+  commitLabel: 'この内容で夢を作る',
 };

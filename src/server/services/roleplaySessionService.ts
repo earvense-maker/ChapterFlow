@@ -80,6 +80,24 @@ import {
   DEFAULT_NG_AUTO_REWRITE_SETTINGS,
   normalizeNgAutoRewriteSettings,
 } from '../../shared/defaults.js';
+// NOTE: 夢見るモード（設計書 §4 / §6 / §8）。ターン実行基盤は共用し、プロンプト組み立てと
+// 入力正規化だけを sessionMode で切り替える。生の選択記憶の追記・想起は dreamMemoryService。
+import {
+  appendDreamTrace,
+  buildDreamResonancePack,
+  deriveDreamClientEventId,
+  findDreamTraceByClientEventId,
+  readDreamMemorySettings,
+  recordDreamWake,
+  rewriteDreamTraceText,
+  validateDreamResonancePack,
+} from './dreamMemoryService.js';
+import {
+  buildDreamSystemInstructionsWithReport,
+  buildDreamUserPrompt,
+  measureDreamVariablePrompt,
+  DREAM_VARIABLE_PROMPT_MAX_CHARS,
+} from './dreamPromptBuilder.js';
 import {
   normalizeActivePresetIds,
   ROLEPLAY_PRESET_CATEGORY_ORDER,
@@ -88,6 +106,7 @@ import {
 import { loadPresetCategories, renderPresets } from '../prompts/presetParts.js';
 import {
   DEFAULT_ROLEPLAY_OUTPUT_CHARS,
+  normalizeExperienceMode,
   normalizeProjectType,
   ROLEPLAY_LIMITS,
 } from '../types/index.js';
@@ -109,7 +128,10 @@ import type {
   ActivePresets,
   Character,
   CreativeContractItem,
+  DreamInputKind,
+  DreamResonancePack,
   FinishReason,
+  InteractiveSessionMode,
   LatentCanonItem,
   NgAutoRewriteSettings,
   NgExpression,
@@ -139,6 +161,11 @@ const ROLEPLAY_RELATIONSHIP_ITEM_MAX_CHARS = 160;
 const ROLEPLAY_RELATIONSHIP_MAX_STEP = 15;
 const ROLEPLAY_DEEPSEEK_V4_FLASH_MAX_OUTPUT_TOKENS = INTERACTIVE_TASK_MAX_OUTPUT_TOKENS;
 const ROLEPLAY_MESSAGE_EDIT_MAX_CHARS = 20_000;
+
+// NOTE: 夢見るモードの入力正規化（設計書 §5）。observe は空入力を意味あるターンとして
+// 受理し、内部で「しばらく眺める」という user message に正規化する。履歴・再試行・要約の
+// 順序契約を保つため、ユーザー入力の空文字発言は通さない。
+export const DREAM_OBSERVE_NORMALIZED_TEXT = 'しばらく眺める';
 
 // NOTE: 上限と既定方針は作品既定ペルソナ・相談draftと共有する（shared/roleplayPersona）。
 // ここでは「壊れた入力は 400 で知らせる」ため、共有の非throw正規化ではなく独自検証を使う。
@@ -190,6 +217,9 @@ let sessionMutex = new KeyedMutex();
 const generationInFlight = new Set<string>();
 // NOTE: 要約ジョブの二重発火抑止。派生データのため保持しなくても正しさに影響しない。
 const summaryInFlight = new Set<string>();
+// NOTE: 夢セッションごとの残響 pack メモ（設計書 §5: 各セッション開始時に決定的に選ぶ）。
+// プロセス再起動後は journal の cooldown と同一アルゴリズムで再構築され、収束する。
+const dreamResonancePackCache = new Map<string, DreamResonancePack>();
 
 export class RoleplayServiceError extends Error {
   constructor(
@@ -201,6 +231,18 @@ export class RoleplayServiceError extends Error {
   ) {
     super(message);
     this.name = 'RoleplayServiceError';
+  }
+}
+
+async function assertDreamDisclosureAcknowledged(): Promise<void> {
+  const settings = await readDreamMemorySettings();
+  if (!settings.disclosureAcknowledged) {
+    throw new RoleplayServiceError(
+      '夢の記録についての説明を確認してから始めてください。',
+      'dream_disclosure_required',
+      false,
+      409
+    );
   }
 }
 
@@ -1064,6 +1106,10 @@ export interface CreateRoleplaySessionInput {
   userPersona?: unknown;
   // NOTE: 妄想増幅器の会話枠ごとグローバル学習除外（設計書 14.2）。省略時は false。
   excludeFromGlobalLearning?: boolean;
+  // NOTE: 夢見るモード（設計書 §8）。'dream' 指定時は先頭キャラクターを視点アンカーとし、
+  // キャラクター 0 件なら回復可能な開始エラーにする。欠損はプロジェクトの experienceMode
+  // から解決し、通常 roleplay は 'roleplay'。
+  sessionMode?: InteractiveSessionMode;
 }
 
 export async function createRoleplaySession(
@@ -1081,8 +1127,42 @@ export async function createRoleplaySession(
     }
     assertRoleplayProjectType(project.projectType);
 
+    // NOTE: 夢見るモード（設計書 §4 / §5）。プロジェクトの experienceMode は入口と表示、
+    // セッションの sessionMode は保存済み履歴の解釈契約。夢プロジェクトは常に dream
+    // セッションを作る（明示指定が無くても experienceMode から解決する）。逆に非 dream
+    // プロジェクトへの dream セッション明示指定は拒否する。
+    const projectIsDream = normalizeExperienceMode(project.experienceMode) === 'dream';
+    if (input.sessionMode === 'dream' && !projectIsDream) {
+      throw new RoleplayServiceError(
+        'このプロジェクトは夢見るモードではありません。',
+        'dream_session_not_allowed',
+        false,
+        409
+      );
+    }
+    const sessionMode: InteractiveSessionMode = projectIsDream ? 'dream' : 'roleplay';
+    if (sessionMode === 'dream') {
+      await assertDreamDisclosureAcknowledged();
+    }
+
     const characters = await storage.readCharacters(input.projectId);
-    const character = characters.find((c) => c.characterId === input.characterId);
+    // NOTE: 夢 UI ではキャラクター選択を出さないため、先頭キャラクター ID を内部の視点
+    // アンカーとして使う（設計書 §5）。キャラクター 0 件は回復可能な開始エラーとして返す。
+    const characterId =
+      sessionMode === 'dream'
+        ? (input.characterId?.trim() || characters[0]?.characterId)
+        : input.characterId;
+    if (!characterId) {
+      throw new RoleplayServiceError(
+        sessionMode === 'dream'
+          ? '夢を見るには作品にキャラクターが1人以上必要です。作品設定から追加してください。'
+          : 'キャラクターが見つかりません。',
+        sessionMode === 'dream' ? 'dream_requires_character' : 'character_not_found',
+        sessionMode === 'dream',
+        409
+      );
+    }
+    const character = characters.find((c) => c.characterId === characterId);
     if (!character) {
       throw new RoleplayServiceError(
         'キャラクターが見つかりません。',
@@ -1092,12 +1172,17 @@ export async function createRoleplaySession(
       );
     }
 
-    const scenario = normalizeScenario(input.scenario);
-    // NOTE: 会話ごとの指定がなければ作品の既定ペルソナを使う。ここで解決した値は
-    // contextSnapshot に固定されるので、後から作品設定を変えても進行中の会話は変わらない。
-    const userPersona = normalizeUserPersona(
-      input.userPersona ?? project.defaultUserPersona
-    );
+    // NOTE: 夢セッションの scenario は「夢の種」。未指定なら作品の coreConcept（クイック
+    // セットアップの一文）を入り口として使う（設計書 §6 可変プロンプト 1）。
+    const scenario =
+      sessionMode === 'dream'
+        ? normalizeScenario(input.scenario || project.coreConcept)
+        : normalizeScenario(input.scenario);
+    // NOTE: 夢では「会話相手としてのユーザー像」を使わない。内部の視点はユーザー自身。
+    const userPersona =
+      sessionMode === 'dream'
+        ? undefined
+        : normalizeUserPersona(input.userPersona ?? project.defaultUserPersona);
     const worldText = await storage.readWorldPromptText(input.projectId);
     const presets = await storage.readPresets(input.projectId);
 
@@ -1114,12 +1199,12 @@ export async function createRoleplaySession(
 
     const snapshot = await buildContextSnapshot({
       character,
-      otherCharacters: characters.filter((c) => c.characterId !== input.characterId),
+      otherCharacters: characters.filter((c) => c.characterId !== characterId),
       worldText,
       baseSystemPrompt: presets?.baseSystemPrompt,
       customSystemPrompt: presets?.customSystemPrompt ?? '',
       activePresetIds: project.activePresetIds,
-      userPersona,
+      ...(userPersona ? { userPersona } : {}),
       creativeContract: contract.items,
       latentCanonSnapshot,
     });
@@ -1127,8 +1212,9 @@ export async function createRoleplaySession(
     const now = nowIso();
     const sessionId = generateTimestampId('rp');
     // NOTE: greeting があれば LLM を呼ばずに最初のキャラメッセージとして入れる
-    //（会話開始の体感速度と一貫性のため）。
-    const greeting = character.greeting?.trim();
+    //（会話開始の体感速度と一貫性のため）。夢セッションは会話相手の挨拶ではなく、最初の
+    // observe ターンで世界の情景が立ち上がるため、greeting は入れない（設計書 §5 / §8）。
+    const greeting = sessionMode === 'dream' ? '' : character.greeting?.trim();
     const messages: RoleplayMessage[] = greeting
       ? [
           {
@@ -1144,11 +1230,12 @@ export async function createRoleplaySession(
       schemaVersion: 1,
       sessionId,
       projectId: input.projectId,
-      characterId: input.characterId,
+      characterId,
       scenario: scenario || undefined,
       contextSnapshot: snapshot,
       status: 'active',
       messages,
+      ...(sessionMode === 'dream' ? { sessionMode } : {}),
       ...(input.excludeFromGlobalLearning === true ? { excludeFromGlobalLearning: true } : {}),
       revision: 1,
       model: {
@@ -1301,9 +1388,36 @@ export async function archiveRoleplaySession(
       updatedAt: nowIso(),
     };
     await withDataDirWrite(() => storage.writeRoleplaySession(next));
-    // NOTE: 妄想増幅器: 会話枠のアーカイブは解釈トリガー（設計書 10.2）。失敗しても
-    // アーカイブ自体は成功として返す。
-    void requestProjectInterpretation(projectId);
+    // NOTE: 夢見るモード: どの情景で夢を終えたかを wake の行動記録として残す（設計書 §5）。
+    // clientEventId は archive 前の revision から導出し、同じ archive の再送では重複しない。
+    // 失敗してもアーカイブ自体は成功として返す。追記の完了までは待ち、直後の終了や全消去と
+    // 入れ違って wake が欠落・復活しないようにする。
+    if (session.sessionMode === 'dream') {
+      const lastCharacter = [...session.messages]
+        .reverse()
+        .find((message) => message.role === 'character');
+      try {
+        await recordDreamWake({
+          projectId,
+          sessionId,
+          revision: session.revision,
+          contextText: lastCharacter?.content ?? '',
+          messageId: lastCharacter?.messageId,
+          actionCreatedAt: next.updatedAt,
+        });
+      } catch (err) {
+        console.warn('Dream wake trace failed', {
+          projectId,
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    // NOTE: 妄想増幅器: 会話枠のアーカイブは解釈トリガー（設計書 10.2）。夢は独立した
+    // 生記憶契約を持つため、妄想増幅器の解釈キューへ混ぜない。
+    if (session.sessionMode !== 'dream') {
+      void requestProjectInterpretation(projectId);
+    }
     return toRoleplaySessionView(next, currentSettingsFingerprint);
   });
 }
@@ -1331,7 +1445,8 @@ export type RoleplayStreamEvent =
 export interface SendRoleplayMessageInput {
   projectId: string;
   sessionId: string;
-  message: string;
+  message?: string;
+  inputKind?: DreamInputKind;
   revision: number;
   replacePendingMessageId?: string;
   abortSignal?: AbortSignal;
@@ -1347,6 +1462,7 @@ export async function* sendRoleplayMessage(
     abortSignal: input.abortSignal,
     kind: 'send',
     userMessage: input.message,
+    inputKind: input.inputKind,
     replacePendingMessageId: input.replacePendingMessageId,
   });
 }
@@ -1420,6 +1536,7 @@ interface RunTurnInput {
   abortSignal?: AbortSignal;
   kind: 'send' | 'regenerate' | 'amplifier';
   userMessage?: string;
+  inputKind?: DreamInputKind;
   replacePendingMessageId?: string;
   amplifier?: AmplifierTurnRequest;
 }
@@ -1515,16 +1632,27 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
     // Phase 3: プロンプトを組み立て、文字数とトークンの両方で上限を検証する。
     let prompt: Awaited<ReturnType<typeof buildTurnPrompt>>;
     try {
-      const amplifier = amplifierInteractionId
-        ? await resolveAmplifierTurnContext(input.projectId, amplifierInteractionId, effectiveSession)
-        : undefined;
-      prompt = await buildTurnPrompt({
-        session: effectiveSession,
-        excludeCharacterMessageId: previousCharacterMessageId,
-        outputLength: caps.outputLength,
-        bannedExpressions,
-        ...(amplifier ? { amplifier } : {}),
-      });
+      if (effectiveSession.sessionMode === 'dream') {
+        // NOTE: 夢見るモード（設計書 §6）。ターン実行基盤は共用し、プロンプト組み立てだけを
+        // sessionMode で切り替える。残響 pack は dreamPromptBuilder 内で決定論的に選ばれる。
+        prompt = await buildDreamTurnPrompt({
+          session: effectiveSession,
+          excludeCharacterMessageId: previousCharacterMessageId,
+          outputLength: caps.outputLength,
+          bannedExpressions,
+        });
+      } else {
+        const amplifier = amplifierInteractionId
+          ? await resolveAmplifierTurnContext(input.projectId, amplifierInteractionId, effectiveSession)
+          : undefined;
+        prompt = await buildTurnPrompt({
+          session: effectiveSession,
+          excludeCharacterMessageId: previousCharacterMessageId,
+          outputLength: caps.outputLength,
+          bannedExpressions,
+          ...(amplifier ? { amplifier } : {}),
+        });
+      }
     } catch (err) {
       if (err instanceof RoleplayServiceError) {
         yield {
@@ -1825,6 +1953,9 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
     assertValidRevision(input.revision);
     assertRevision(session, input.revision);
     assertActiveSession(session);
+    if (session.sessionMode === 'dream') {
+      await assertDreamDisclosureAcknowledged();
+    }
     const repairedSession = repairFreshMemoryFingerprintAfterSummary(session);
     if (repairedSession !== session) {
       session = repairedSession;
@@ -1876,7 +2007,12 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
       workingSession = session;
       expectedRevisionForCommit = session.revision;
     } else if (input.kind === 'send') {
-      const text = validateUserMessage(input.userMessage);
+      // NOTE: 夢セッションは observe を空入力の意味あるターンとして受理し、入力原文を
+      // そのまま保存する（設計書 §5）。通常 roleplay は従来どおり trim 後空文字を 400。
+      const isDream = session.sessionMode === 'dream';
+      const normalized = isDream
+        ? normalizeDreamTurnInput(input.userMessage, input.inputKind)
+        : { content: validateUserMessage(input.userMessage), inputKind: undefined as undefined };
       const last = session.messages[session.messages.length - 1];
       const pendingMessageId = normalizePendingMessageId(input.replacePendingMessageId);
       if (pendingMessageId) {
@@ -1896,7 +2032,11 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
           ...session,
           messages: session.messages.map((message) =>
             message.messageId === pendingMessageId
-              ? { ...message, content: text }
+              ? {
+                  ...message,
+                  content: normalized.content,
+                  ...(normalized.inputKind ? { inputKind: normalized.inputKind } : {}),
+                }
               : message
           ),
           revision: session.revision + 1,
@@ -1919,8 +2059,9 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
         const userMessage: RoleplayMessage = {
           messageId: generateTimestampId('rm'),
           role: 'user',
-          content: text,
+          content: normalized.content,
           createdAt: now,
+          ...(normalized.inputKind ? { inputKind: normalized.inputKind } : {}),
         };
         workingSession = {
           ...session,
@@ -1930,6 +2071,14 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
         };
         await withDataDirWrite(() => storage.writeRoleplaySession(workingSession));
         expectedRevisionForCommit = workingSession.revision;
+      }
+      // NOTE: 夢の生の選択記憶（設計書 §5）。user 先行保存の直後に冪等追記し、失敗しても
+      // ターンは続行する。中途失敗は regenerate 時の backfill で収束させる。
+      if (isDream) {
+        const savedMessage = workingSession.messages[workingSession.messages.length - 1];
+        if (savedMessage?.role === 'user') {
+          await ensureDreamTraceForMessage(session, workingSession, savedMessage);
+        }
       }
     } else {
       // NOTE: regenerate: 末尾が character の場合は直前 user への再応答。
@@ -1957,6 +2106,14 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
           );
         }
         previousCharacterMessageId = last.messageId;
+      }
+      // NOTE: 夢セッション: 中断・失敗後の再試行。保存済み末尾 user 発言の trace が
+      // 未追記なら冪等に backfill し、同じ選択を二重記録しない（設計書 §5 / §14）。
+      if (session.sessionMode === 'dream') {
+        const lastMessage = session.messages[session.messages.length - 1];
+        if (lastMessage?.role === 'user') {
+          await ensureDreamTraceForMessage(session, session, lastMessage);
+        }
       }
       expectedRevisionForCommit = session.revision;
     }
@@ -2206,6 +2363,133 @@ function validateUserMessage(value: string | undefined): string {
     );
   }
   return text;
+}
+
+// NOTE: 夢セッションの入力正規化（設計書 §5）。
+//  - inputKind 欠損は 'text'（既存互換）。'observe' は dream セッションだけで受理する。
+//  - 'text' は trim 後空文字を拒否し、内容は「クライアントが送った文字列」のまま保存する。
+//  - 'observe' は擬似文字列を作らず、内部で「しばらく眺める」に正規化して履歴契約を保つ。
+function normalizeDreamTurnInput(
+  message: string | undefined,
+  inputKind: DreamInputKind | undefined
+): { content: string; inputKind: DreamInputKind } {
+  const kind: DreamInputKind = inputKind ?? 'text';
+  if (kind === 'observe') {
+    if (message !== undefined && typeof message !== 'string') {
+      throw new RoleplayServiceError(
+        'リクエストの形式が不正です。',
+        'invalid_request',
+        false,
+        400
+      );
+    }
+    return { content: DREAM_OBSERVE_NORMALIZED_TEXT, inputKind: 'observe' };
+  }
+  if (typeof message !== 'string') {
+    throw new RoleplayServiceError(
+      'メッセージを入力してください。',
+      'invalid_message',
+      false,
+      400
+    );
+  }
+  // NOTE: 空白判定だけ trim で行い、長さは保存する原文に対して制限する。改行コードを含め
+  // クライアントが送った文字列を変形せず保存する（設計書 §5）。
+  const trimmed = message.trim();
+  if (!trimmed) {
+    throw new RoleplayServiceError(
+      'メッセージを入力してください。',
+      'invalid_message',
+      false,
+      400
+    );
+  }
+  if (message.length > 2000) {
+    throw new RoleplayServiceError(
+      'メッセージが長すぎます（2000字以内）。',
+      'invalid_message',
+      false,
+      400
+    );
+  }
+  return { content: message, inputKind: 'text' };
+}
+
+// NOTE: 夢の生の選択記憶の冪等追記（設計書 §5）。同じ messageId から導出される
+// clientEventId で二重追記を防ぐ。roleplay session の user message 保存（運用コピー）と
+// trace-events.jsonl（正本）は別ファイルのため、失敗時は backfill 経路で収束させる。
+//  - 既存 trace がある場合: 訂正（replacePendingMessageId）や再試行後の type / rawText へ
+//    更新する（P1: 失敗後の訂正を生記憶へ反映）。内容が同じなら何もしない。
+//  - 既存 trace が無い場合: 追記する。ただし全消去（wipedAt）より前に作られた入力は
+//    復活させない（AC17 / P1）。
+async function ensureDreamTraceForMessage(
+  session: RoleplaySession,
+  workingSession: RoleplaySession,
+  message: RoleplayMessage
+): Promise<void> {
+  try {
+    const clientEventId = deriveDreamClientEventId(session.sessionId, message.messageId);
+    const existing = await findDreamTraceByClientEventId(clientEventId);
+    if (existing) {
+      const nextRawText = message.inputKind === 'observe' ? undefined : message.content;
+      const nextType = message.inputKind === 'observe' ? 'observe' : 'text';
+      const nextContentRevision = message.contentRevision ?? 0;
+      if (
+        existing.type !== nextType ||
+        existing.rawText !== nextRawText ||
+        (existing.anchor.contentRevision ?? 0) !== nextContentRevision
+      ) {
+        await rewriteDreamTraceText({
+          sessionId: session.sessionId,
+          messageId: message.messageId,
+          type: nextType,
+          rawText: nextRawText,
+          contentRevision: nextContentRevision,
+        });
+      }
+      return;
+    }
+    // NOTE: 「鍵」のような短い入力にも後から意味のある文脈を戻せるよう、直前の夢本文を
+    // contextText として保存する（設計書 §5）。生テキストのまま、解釈文へ置き換えない。
+    const previousCharacter = [...workingSession.messages]
+      .reverse()
+      .find((candidate) => candidate.role === 'character');
+    const contextText = previousCharacter?.content ?? '';
+    const event = await appendDreamTrace({
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      type: message.inputKind === 'observe' ? 'observe' : 'text',
+      inputKind: message.inputKind ?? 'text',
+      rawText: message.inputKind === 'observe' ? undefined : message.content,
+      anchor: {
+        messageId: message.messageId,
+        contentRevision: message.contentRevision ?? 0,
+        contextText,
+      },
+      messageCreatedAt: message.createdAt,
+    });
+    // NOTE: 追記に成功したら traceEventId で紐づけ直す（設計書 §5）。revision は進めず、
+    // 運用コピー側のリンクだけを補う。
+    if (event && !message.traceEventId) {
+      const patched = {
+        ...workingSession,
+        messages: workingSession.messages.map((candidate) =>
+          candidate.messageId === message.messageId
+            ? { ...candidate, traceEventId: event.eventId }
+            : candidate
+        ),
+      };
+      await withDataDirWrite(() => storage.writeRoleplaySession(patched));
+    }
+  } catch (err) {
+    // NOTE: trace 追記の失敗でターンを失敗させない。次回の regenerate / backfill で収束する。
+    console.warn('Dream trace append failed; will backfill on retry', {
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      messageId: message.messageId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 function normalizePendingMessageId(value: string | undefined): string | undefined {
@@ -2594,6 +2878,149 @@ async function buildTurnPrompt(input: {
   );
 }
 
+// NOTE: 夢見るモードのターン prompt 構築（設計書 §6）。system は夢専用の固定規則、
+// user prompt は夢の種 / 残響 pack / 要約 / 直近の夢と反応 / 今回の反応。予算超過時の
+// メッセージ縮小ループは roleplay と同型で、最近メッセージだけを対象にする。
+async function buildDreamTurnPrompt(input: {
+  session: RoleplaySession;
+  excludeCharacterMessageId: string | null;
+  outputLength: number;
+  bannedExpressions: string[];
+}): Promise<{
+  systemInstructions: string;
+  userPrompt: string;
+  maxOutputTokens: number;
+  budgetReport: PromptBudgetReport;
+}> {
+  const { session } = input;
+  const system = buildDreamSystemInstructionsWithReport({
+    snapshot: session.contextSnapshot,
+    outputLength: input.outputLength,
+    hasConversationSummary: Boolean(session.conversationSummary?.trim()),
+  });
+  if (system.overflowByChars > 0) {
+    throw new RoleplayServiceError(
+      `夢の固定規則だけでシステム上限を${system.overflowByChars}字超えています。舞台設定を短くしてください。`,
+      'dream_system_prompt_too_large',
+      false,
+      400,
+      session.revision
+    );
+  }
+
+  const allMessages = selectPromptMessagesForGeneration(session, {
+    excludeCharacterMessageId: input.excludeCharacterMessageId,
+  });
+  const last = allMessages[allMessages.length - 1];
+  // NOTE: 今回の入力は末尾 user 発言（observe は「しばらく眺める」に正規化済み）。直近の
+  // 夢の描写 / ユーザーの反応（設計書 §6-4）からは除き、§6-5 の「今回の反応」として渡す。
+  const currentInput =
+    last?.role === 'user'
+      ? { kind: last.inputKind ?? ('text' as const), text: last.content }
+      : { kind: 'observe' as const, text: undefined };
+  const recentMessages = last?.role === 'user' ? allMessages.slice(0, -1) : allMessages;
+
+  // NOTE: 残響 pack（設計書 §5）。セッション開始時に一度だけ選び、セッション中は固定する。
+  // ただし一時停止・全消去の後はキャッシュを使わない（AC17 / AC19 / P1）。検証に失敗した
+  // ら再構築し、停止中・全消去後は空 pack になる。
+  let resonancePack = dreamResonancePackCache.get(session.sessionId);
+  if (!resonancePack || !(await validateDreamResonancePack(resonancePack))) {
+    resonancePack = await buildDreamResonancePack({
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      currentTexts: [session.scenario ?? '', last?.role === 'user' ? last.content : ''],
+    });
+    dreamResonancePackCache.set(session.sessionId, resonancePack);
+  }
+
+  const limits = await resolveModelTokenLimits(session.model.provider, session.model.modelName);
+  const maxOutputTokens = resolveRoleplayTurnMaxOutputTokens(
+    session.model.provider,
+    session.model.modelName,
+    input.outputLength,
+    limits
+  );
+
+  let messages = recentMessages;
+  let providerMeasurements = 0;
+  for (;;) {
+    const built = buildDreamUserPrompt({
+      snapshot: session.contextSnapshot,
+      scenario: session.scenario,
+      conversationSummary: session.conversationSummary,
+      recentMessages: messages,
+      resonancePack,
+      currentInput,
+    });
+    if (!built.ok) {
+      throw new RoleplayServiceError(
+        `夢のプロンプトが上限を${built.overByChars}字超えています。長い入力を短くしてから再送信してください。`,
+        'dream_prompt_budget_exceeded',
+        true,
+        503,
+        session.revision
+      );
+    }
+
+    const providerTokens =
+      providerMeasurements < ROLEPLAY_TOKEN_MEASUREMENTS_MAX
+        ? await countPromptTokens(
+            session.model.provider,
+            session.model.modelName,
+            system.systemInstructions,
+            built.prompt
+          )
+        : null;
+    if (providerTokens) providerMeasurements += 1;
+    const check = checkPromptTokenBudget({
+      systemInstructions: system.systemInstructions,
+      userPrompt: built.prompt,
+      contextWindowTokens: limits.contextWindowTokens,
+      ...(limits.inputTokenLimit === undefined
+        ? {}
+        : { inputTokenLimit: limits.inputTokenLimit }),
+      estimatedMaxOutputTokens: maxOutputTokens,
+      providerTokens: providerTokens?.tokens ?? null,
+    });
+    if (check.ok) {
+      return {
+        systemInstructions: system.systemInstructions,
+        userPrompt: built.prompt,
+        maxOutputTokens,
+        budgetReport: {
+          maxChars: DREAM_VARIABLE_PROMPT_MAX_CHARS,
+          assembledChars: system.systemInstructions.length + built.prompt.length,
+          tokenCheck: check.tokenCheck,
+          entries: [
+            ...system.entries,
+            ...built.entries,
+            {
+              sectionId: 'dream.recentMessages',
+              originalChars: recentMessages.length,
+              includedChars: messages.length,
+              action: messages.length === recentMessages.length ? 'full' : 'truncated',
+            },
+          ],
+        },
+      };
+    }
+
+    if (messages.length <= 1) break;
+    const reducible = tokensToReducibleChars(check.overByTokens, built.prompt);
+    const next = dropOldestMessagesByChars(messages, reducible);
+    if (next.length >= messages.length) break;
+    messages = next;
+  }
+
+  throw new RoleplayServiceError(
+    'この夢は選択中のモデルの文脈上限に収まりません。より上限の大きいモデルへ切り替えるか、舞台設定を短くしてください。',
+    'dream_context_budget_exceeded',
+    false,
+    400,
+    session.revision
+  );
+}
+
 // NOTE: 少なくとも最新1件（今回のユーザー発言）は必ず残す。全部落とすと
 // 「何に応答するのか」が消えて、モデルが直前の文脈だけで無関係な返答を作る。
 function dropOldestMessagesByChars(
@@ -2642,6 +3069,8 @@ interface BudgetJudgement {
  * 予算超過の判定は、会話履歴だけの合計ではなく「完成予定の user prompt 全体」で行う
  * （設計書 5.2）。scenario・関係性・要約・全見出し・区切り・最終指示を含めないと、
  * 履歴の合計は上限内なのに完成プロンプトが 24,000 字を超える組み合わせを見逃す。
+ * 夢セッションは夢専用 builder の測尺を使う（残響 pack は同期判定に含めず、実組み立ての
+ * buildDreamTurnPrompt 側で真の上限検証を行う）。
  */
 function judgeBudget(
   session: RoleplaySession,
@@ -2649,20 +3078,39 @@ function judgeBudget(
   bannedExpressions: string[]
 ): BudgetJudgement {
   const totalChars = afterCursor.reduce((sum, m) => sum + m.content.length, 0);
-  const promptChars = measureRoleplayVariablePrompt({
-    snapshot: session.contextSnapshot,
-    scenario: session.scenario,
-    conversationSummary: session.conversationSummary,
-    recentMessages: afterCursor.slice(-ROLEPLAY_SUMMARY_THRESHOLD),
-    relationshipState: session.relationshipState,
-    bannedExpressions,
-  });
+  const isDream = session.sessionMode === 'dream';
+  let promptChars: number;
+  if (isDream) {
+    const last = afterCursor[afterCursor.length - 1];
+    const currentInput =
+      last?.role === 'user'
+        ? { kind: last.inputKind ?? ('text' as const), text: last.content }
+        : { kind: 'observe' as const, text: undefined };
+    const recent = last?.role === 'user' ? afterCursor.slice(0, -1) : afterCursor;
+    promptChars = measureDreamVariablePrompt({
+      snapshot: session.contextSnapshot,
+      scenario: session.scenario,
+      conversationSummary: session.conversationSummary,
+      recentMessages: recent.slice(-ROLEPLAY_SUMMARY_THRESHOLD),
+      resonancePack: { schemaVersion: 1, events: [], createdAt: '' },
+      currentInput,
+    });
+  } else {
+    promptChars = measureRoleplayVariablePrompt({
+      snapshot: session.contextSnapshot,
+      scenario: session.scenario,
+      conversationSummary: session.conversationSummary,
+      recentMessages: afterCursor.slice(-ROLEPLAY_SUMMARY_THRESHOLD),
+      relationshipState: session.relationshipState,
+      bannedExpressions,
+    });
+  }
   return {
     overCount: afterCursor.length > ROLEPLAY_SUMMARY_THRESHOLD,
     overChars: totalChars > ROLEPLAY_RECENT_MESSAGES_MAX_CHARS,
     totalChars,
     promptChars,
-    overPromptBudget: promptChars > ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS,
+    overPromptBudget: promptChars > (isDream ? DREAM_VARIABLE_PROMPT_MAX_CHARS : ROLEPLAY_VARIABLE_PROMPT_MAX_CHARS),
   };
 }
 
@@ -3125,5 +3573,6 @@ async function runBackgroundSummary(projectId: string, sessionId: string): Promi
 export function __resetInFlightForTesting(): void {
   generationInFlight.clear();
   summaryInFlight.clear();
+  dreamResonancePackCache.clear();
   sessionMutex = new KeyedMutex();
 }

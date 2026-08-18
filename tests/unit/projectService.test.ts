@@ -518,4 +518,47 @@ describe('project settings validation', () => {
       })
     ).rejects.toThrow(projectService.ProjectValidationError);
   });
+
+  // NOTE: 夢見るモードの後方互換ケース（設計書 §10 / AC2）。experienceMode 'dream' が作成・
+  // 再読み込み・複製で保持され、欠損は 'standard' のまま。
+  it('creates and reloads a dream-mode project (AC2)', async () => {
+    const project = await projectService.createProject({
+      title: 'Dream',
+      projectType: 'roleplay',
+      experienceMode: 'dream',
+      characters: [],
+      worldText: '',
+    });
+    createdProjectIds.push(project.projectId);
+    expect(project.experienceMode).toBe('dream');
+    const reloaded = await projectService.getProject(project.projectId);
+    expect(reloaded?.experienceMode).toBe('dream');
+  });
+
+  it('preserves the dream experience mode when duplicating (AC2)', async () => {
+    const project = await projectService.createProject({
+      title: 'Dream original',
+      projectType: 'roleplay',
+      experienceMode: 'dream',
+      characters: [],
+      worldText: '',
+    });
+    createdProjectIds.push(project.projectId);
+    const duplicate = await projectService.createProject({
+      title: 'Dream copy',
+      duplicateFrom: project.projectId,
+    });
+    createdProjectIds.push(duplicate.projectId);
+    expect(duplicate.experienceMode).toBe('dream');
+  });
+
+  it('rejects an unknown experienceMode value', async () => {
+    await expect(
+      projectService.createProject({
+        title: 'Bad mode',
+        // @ts-expect-error 意図的に不正値を渡してエラー系を確認
+        experienceMode: 'matrix',
+      })
+    ).rejects.toThrow(projectService.ProjectValidationError);
+  });
 });

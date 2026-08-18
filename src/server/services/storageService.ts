@@ -1167,6 +1167,95 @@ export async function clearGlobalAmplifierObservations(): Promise<void> {
   });
 }
 
+// --- 夢見るモードの生の選択記憶（設計書 §5） ---
+// NOTE: DATA_DIR/config/dream 配下に置き、プロジェクト削除と独立させる。データ保存先の
+// 移動・バックアップ・復元に含まれる。生ログ（trace-events.jsonl）が正本で、recall-journal
+// と settings は補助・設定データ。
+
+export function configDreamDir(): string {
+  return path.join(CONFIG_DIR, 'dream');
+}
+
+export function dreamTraceEventsPath(): string {
+  return path.join(configDreamDir(), 'trace-events.jsonl');
+}
+
+export function dreamRecallJournalPath(): string {
+  return path.join(configDreamDir(), 'recall-journal.jsonl');
+}
+
+export function dreamMemorySettingsJsonPath(): string {
+  return path.join(configDreamDir(), 'settings.json');
+}
+
+export async function readDreamTraceEvents(): Promise<import('../types/index.js').DreamTraceEvent[]> {
+  return readJsonlFile<import('../types/index.js').DreamTraceEvent>(dreamTraceEventsPath());
+}
+
+export async function appendDreamTraceEvent(
+  event: import('../types/index.js').DreamTraceEvent
+): Promise<void> {
+  await appendJsonl(dreamTraceEventsPath(), event);
+}
+
+export async function clearDreamTraceEvents(): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(configDreamDir());
+    await safeWriteFile(dreamTraceEventsPath(), '');
+  });
+}
+
+// NOTE: 訂正反映（P1: 失敗後の訂正を生記憶へ反映）用の全件書き換え。追記型 JSONL には
+// 行の差し替えが無いため、置換済みの全イベントを一度の atomic write で書き直す。訂正は
+// 稀な操作なので全件書き換えコストは許容する。
+export async function rewriteDreamTraceEvents(
+  events: import('../types/index.js').DreamTraceEvent[]
+): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(configDreamDir());
+    const lines = events.map((event) => JSON.stringify(event)).join('\n');
+    await safeWriteFile(dreamTraceEventsPath(), lines ? `${lines}\n` : '');
+  });
+}
+
+export async function readDreamRecallJournal(): Promise<
+  import('../types/index.js').DreamRecallJournalEntry[]
+> {
+  return readJsonlFile<import('../types/index.js').DreamRecallJournalEntry>(
+    dreamRecallJournalPath()
+  );
+}
+
+export async function appendDreamRecallJournalEntry(
+  entry: import('../types/index.js').DreamRecallJournalEntry
+): Promise<void> {
+  await appendJsonl(dreamRecallJournalPath(), entry);
+}
+
+export async function clearDreamRecallJournal(): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(configDreamDir());
+    await safeWriteFile(dreamRecallJournalPath(), '');
+  });
+}
+
+export async function readDreamMemorySettings(): Promise<
+  import('../types/index.js').DreamMemorySettings | null
+> {
+  return readJsonFile<import('../types/index.js').DreamMemorySettings>(
+    dreamMemorySettingsJsonPath()
+  );
+}
+
+export async function writeDreamMemorySettings(
+  settings: import('../types/index.js').DreamMemorySettings
+): Promise<void> {
+  await withDataDirWrite(async () => {
+    await ensureDir(configDreamDir());
+    await safeWriteJson(dreamMemorySettingsJsonPath(), settings);
+  });
+}
+
 export async function clearGlobalAmplifierNotebookRevisions(): Promise<void> {
   await withDataDirWrite(async () => {
     await ensureDir(configAmplifierDir());

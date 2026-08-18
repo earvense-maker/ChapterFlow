@@ -20,6 +20,9 @@ import {
 // NOTE: 妄想増幅器のグローバル設定・メモ（設計書 13.4）。オン・オフは app-settings でなく
 // global-notebook.json に保存する（設計書 9.2）。
 import * as amplifierGlobalService from '../services/amplifierGlobalService.js';
+// NOTE: 夢見るモードの生の選択記憶（設計書 §5 / §11）。閲覧・書き出し・一時停止・全消去。
+import * as dreamMemoryService from '../services/dreamMemoryService.js';
+import type { DreamMemoryUpdateBody } from '../types/index.js';
 import { retryGlobalInterpretation } from '../services/desireInterpreterService.js';
 import {
   AMPLIFIER_DISCLOSURE_VERSION,
@@ -189,6 +192,77 @@ export function createSystemRouter(options: SystemRouterOptions = {}): Router {
   router.post('/system/amplifier-preferences/retry', async (_req, res, next) => {
     try {
       await retryGlobalInterpretation();
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // --- 夢見るモードの生の選択記憶（設計書 §5 / §11） ---
+
+  router.get('/system/dream-memory', async (_req, res, next) => {
+    try {
+      res.json(await dreamMemoryService.getDreamMemoryStatus());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.put('/system/dream-memory', async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as DreamMemoryUpdateBody;
+      if (
+        body.recordingEnabled !== undefined &&
+        typeof body.recordingEnabled !== 'boolean'
+      ) {
+        return res.status(400).json({
+          error: 'recordingEnabled must be a boolean',
+          code: 'invalid_settings',
+        });
+      }
+      if (
+        body.disclosureAcknowledged !== undefined &&
+        typeof body.disclosureAcknowledged !== 'boolean'
+      ) {
+        return res.status(400).json({
+          error: 'disclosureAcknowledged must be a boolean',
+          code: 'invalid_settings',
+        });
+      }
+      const settings = await dreamMemoryService.updateDreamMemorySettings(body);
+      res.json({ settings, eventCount: (await dreamMemoryService.getDreamMemoryStatus()).eventCount });
+    } catch (err) {
+      if (err instanceof dreamMemoryService.DreamMemoryError) {
+        return res
+          .status(err.status)
+          .json({ error: err.message, code: err.code, retryable: err.retryable });
+      }
+      next(err);
+    }
+  });
+
+  // NOTE: 閲覧（最新200件）と書き出し（全件）は分ける。閲覧は画面表示、書き出しは
+  // データの退避・移行を想定する（設計書 §5）。
+  router.get('/system/dream-memory/events', async (_req, res, next) => {
+    try {
+      res.json(await dreamMemoryService.browseDreamTraceEvents());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/system/dream-memory/export', async (_req, res, next) => {
+    try {
+      const events = await dreamMemoryService.readAllDreamTraceEvents();
+      res.json({ events });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.delete('/system/dream-memory', async (_req, res, next) => {
+    try {
+      await dreamMemoryService.wipeDreamMemory();
       res.json({ ok: true });
     } catch (err) {
       next(err);

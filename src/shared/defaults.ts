@@ -55,11 +55,13 @@ export function normalizeSetupPurpose(value: unknown): SetupPurpose {
 }
 
 // NOTE: 体験モードの正規化（設計書 15.1）。欠損は 'standard' と解釈し、
-// 既存プロジェクトへ妄想増幅器UIやプロンプトを出さない。
+// 既存プロジェクトへ妄想増幅器UIやプロンプトを出さない。夢見るモードは 'dream'。
 export const DEFAULT_EXPERIENCE_MODE: ExperienceMode = 'standard';
 
 export function normalizeExperienceMode(value: unknown): ExperienceMode {
-  return value === 'amplifier' ? 'amplifier' : DEFAULT_EXPERIENCE_MODE;
+  if (value === 'amplifier') return 'amplifier';
+  if (value === 'dream') return 'dream';
+  return DEFAULT_EXPERIENCE_MODE;
 }
 
 // NOTE: ロールプレイモードのキャラ・プロジェクト用の上限。projectService の

@@ -12,6 +12,14 @@ export type RoleplaySessionId = string;
 export type RoleplayMessageRole = 'user' | 'character';
 export type RoleplaySessionStatus = 'active' | 'archived';
 
+// NOTE: セッション保存済み履歴の解釈契約（夢見るモード MVP設計書 §5）。欠損は 'roleplay'。
+// プロジェクトの experienceMode は入口と表示、こちらは保存済み履歴の解釈を担う。
+export type InteractiveSessionMode = 'roleplay' | 'dream';
+
+// NOTE: 夢の入力種別（設計書 §5）。空 Enter を空文字の発言として通さず、API 契約で意味を
+// 持たせる。欠損は既存互換のため 'text'。'observe' は sessionMode === 'dream' だけで受理。
+export type DreamInputKind = 'text' | 'observe';
+
 export type RoleplayUserActionPolicy = 'strict' | 'conservative' | 'collaborative';
 
 // NOTE: 会話相手としてのユーザー像。セッション開始時に contextSnapshot へ固定し、
@@ -74,6 +82,12 @@ export interface RoleplayMessage {
   editedAt?: string;
   // NOTE: 妄想増幅器の方向で生成されたキャラクターメッセージに付く（設計書 13.3）。
   amplifierInteractionId?: string;
+  // NOTE: 夢の入力種別（設計書 §5）。'observe' は「しばらく眺める」に正規化した user 発言。
+  // 既存セッションには無いため optional。
+  inputKind?: DreamInputKind;
+  // NOTE: 夢をまたぐ生の選択記憶（trace-events.jsonl）とこの運用コピーを紐づける
+  // （設計書 §5）。中途失敗時の再試行で冪等に収束させるために使う。
+  traceEventId?: string;
 }
 
 export type RoleplayMessageRevisionSource = 'manual-edit' | 'history-restore';
@@ -157,6 +171,8 @@ export interface RoleplaySession {
   // NOTE: この会話枠をグローバル学習の対象外にする（設計書 14.2）。current は新会話で
   // 空から始めるが、global/project メモは引き継ぐ。
   excludeFromGlobalLearning?: boolean;
+  // NOTE: 保存済み履歴の解釈契約（設計書 §5）。欠損は 'roleplay' と解釈する。
+  sessionMode?: InteractiveSessionMode;
 }
 
 // NOTE: APIレスポンス用。contextSnapshot と sessionCanon 本文を型レベルで除外して
@@ -203,10 +219,16 @@ export interface CreateRoleplaySessionBody {
   userPersona?: RoleplayUserPersona;
   // NOTE: 妄想増幅器の会話枠ごとグローバル学習除外（設計書 14.2）。
   excludeFromGlobalLearning?: boolean;
+  // NOTE: 夢見るモード（設計書 §8）。'dream' 指定時はサーバー側で先頭キャラクターを
+  // 視点アンカーとして解決する。欠損は 'roleplay'。
+  sessionMode?: InteractiveSessionMode;
 }
 
 export interface SendRoleplayMessageBody {
-  message: string;
+  // NOTE: 夢の observe では省略可。'text' は trim 後空文字を拒否する（設計書 §5）。
+  message?: string;
+  // NOTE: 夢の入力種別（設計書 §5）。欠損は 'text'。
+  inputKind?: DreamInputKind;
   revision: number;
   // NOTE: 停止後の訂正送信用。指定時は、現在末尾にある未応答の user 発言と
   // messageId が一致する場合だけ内容を置き換えて応答生成を再開する。

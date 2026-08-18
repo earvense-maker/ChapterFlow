@@ -6,6 +6,7 @@ import GenerationNotificationSection from './GenerationNotificationSection';
 import NgAutoRewriteSection from './NgAutoRewriteSection';
 import NgExpressionList from './NgExpressionList';
 import AmplifierGlobalSettingsSection from './AmplifierGlobalSettingsSection';
+import DreamMemorySettingsSection from './DreamMemorySettingsSection';
 import type { ModelProviderInfo, NgExpression } from '@shared/types';
 
 interface Props {
@@ -350,6 +351,11 @@ export default function AppSettingsPanel({ onBack, initialProvider }: Props) {
       </section>
       <GenerationNotificationSection onError={setError} onFlashMessage={showMessage} />
       <AmplifierGlobalSettingsSection onError={setError} onFlashMessage={showMessage} />
+      <DreamMemorySettingsSection
+        onError={setError}
+        onFlashMessage={showMessage}
+        disabled={dataDirBusy}
+      />
       <DataDirSettingsSection onBusyChange={setDataDirBusy} />
       {appVersion && (
         <section className="settings-section">

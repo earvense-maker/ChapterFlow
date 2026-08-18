@@ -18,6 +18,22 @@ describe('setup session storage', () => {
     expect(readStoredSetupSessionId('roleplay')).toBe('roleplay-session');
   });
 
+  // NOTE: 夢見るモード（設計書 §10）。setup session の localStorage キーは
+  // standard / amplifier / dream ごとに分ける。
+  it('keeps dream setup sessions separate from roleplay and amplifier', () => {
+    rememberSetupSession('roleplay-session', 'roleplay');
+    rememberSetupSession('dream-session', 'roleplay', 'dream');
+    rememberSetupSession('amplifier-session', 'roleplay', 'amplifier');
+
+    expect(readStoredSetupSessionId('roleplay')).toBe('roleplay-session');
+    expect(readStoredSetupSessionId('roleplay', 'dream')).toBe('dream-session');
+    expect(readStoredSetupSessionId('roleplay', 'amplifier')).toBe('amplifier-session');
+
+    forgetSetupSession(undefined, 'roleplay', 'dream');
+    expect(readStoredSetupSessionId('roleplay', 'dream')).toBeNull();
+    expect(readStoredSetupSessionId('roleplay')).toBe('roleplay-session');
+  });
+
   it('migrates a legacy session id when it is read', () => {
     window.localStorage.setItem('yumeweaving:lastSetupSessionId:novel', 'legacy-session');
 

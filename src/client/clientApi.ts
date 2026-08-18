@@ -34,6 +34,10 @@ import type {
   DataDirSwitchPreview,
   DataDirSwitchResponse,
   AppModelSettings,
+  DreamMemoryEventsResponse,
+  DreamMemoryExportResponse,
+  DreamMemorySettingsResponse,
+  DreamMemoryUpdateBody,
   GenerateRequestBody,
   GenerationNotificationSettings,
   GenerationRecord,
@@ -741,6 +745,20 @@ export const api = {
     }),
   retryAmplifierGlobalInterpretation: () =>
     request<{ ok: boolean }>('/system/amplifier-preferences/retry', { method: 'POST' }),
+
+  // ===== 夢見るモードの生の選択記憶（設計書 §5 / §11） =====
+  getDreamMemorySettings: () => request<DreamMemorySettingsResponse>('/system/dream-memory'),
+  updateDreamMemorySettings: (body: DreamMemoryUpdateBody) =>
+    request<DreamMemorySettingsResponse>('/system/dream-memory', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  getDreamMemoryEvents: () =>
+    request<DreamMemoryEventsResponse>('/system/dream-memory/events'),
+  exportDreamMemory: () =>
+    request<DreamMemoryExportResponse>('/system/dream-memory/export'),
+  wipeDreamMemory: () =>
+    request<{ ok: boolean }>('/system/dream-memory', { method: 'DELETE' }),
 };
 
 export interface RoleplayStreamHandlers {

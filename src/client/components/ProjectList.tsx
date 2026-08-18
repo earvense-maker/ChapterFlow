@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
-import type { ProjectSummary, ProjectType } from '@shared/types';
+import type { ExperienceMode, ProjectSummary, ProjectType } from '@shared/types';
 
 interface Props {
-  onOpen: (projectId: string, projectType?: ProjectType) => void;
+  onOpen: (projectId: string, projectType?: ProjectType, experienceMode?: ExperienceMode) => void;
   onNew: () => void;
   onSetupNew: () => void;
   onSetupRoleplay: () => void;
   onQuickSetupNovel: () => void;
   onQuickSetupRoleplay: () => void;
+  onQuickSetupDream: () => void;
   onAmplifierStart: () => void;
   onOpenAppSettings: () => void;
 }
@@ -21,6 +22,7 @@ export default function ProjectList({
   onSetupRoleplay,
   onQuickSetupNovel,
   onQuickSetupRoleplay,
+  onQuickSetupDream,
   onAmplifierStart,
   onOpenAppSettings,
 }: Props) {
@@ -73,10 +75,18 @@ export default function ProjectList({
 
   async function handleDelete(e: React.MouseEvent, project: ProjectSummary) {
     e.stopPropagation();
-    const message =
-      project.experienceMode === 'amplifier'
-        ? 'この作品を削除しますか？\n作品内の本文・行動ログ・作品内メモは削除されます。すでに抽象化されたグローバル理解は残ります。グローバル理解はアプリ設定から確認・全消去できます。'
-        : 'この作品を削除しますか？';
+    let message: string;
+    if (project.experienceMode === 'amplifier') {
+      message =
+        'この作品を削除しますか？\n作品内の本文・行動ログ・作品内メモは削除されます。すでに抽象化されたグローバル理解は残ります。グローバル理解はアプリ設定から確認・全消去できます。';
+    } else if (project.experienceMode === 'dream') {
+      // NOTE: 夢の生記憶はプロジェクト外（DATA_DIR/config/dream）にあるため、プロジェクトを
+      // 削除しても残る。削除前にその事実を表示する（AC16）。
+      message =
+        'この作品を削除しますか？\n夢の中で書かれた言葉とそのときの夢本文は、プロジェクトを削除しても保存先に残ります。残したくない場合はアプリ設定から全消去してください。';
+    } else {
+      message = 'この作品を削除しますか？';
+    }
     if (!(await confirmAction(message, { confirmLabel: '削除', danger: true }))) {
       return;
     }
@@ -120,6 +130,9 @@ export default function ProjectList({
           <button className="primary" onClick={onQuickSetupRoleplay}>
             一文からキャラ会話を始める
           </button>
+          <button className="primary" onClick={onQuickSetupDream}>
+            夢を見る
+          </button>
           <button className="amplifier-entry-button" onClick={onAmplifierStart}>
             妄想増幅器を始める
           </button>
@@ -144,6 +157,9 @@ export default function ProjectList({
             <button className="primary" onClick={onSetupRoleplay}>
               キャラと話す作品を作る
             </button>
+            <button className="primary" onClick={onQuickSetupDream}>
+              夢を見る
+            </button>
             <button onClick={onNew}>設定を直接入力して作る</button>
           </div>
         </div>
@@ -153,7 +169,7 @@ export default function ProjectList({
             <li
               key={p.projectId}
               className="project-card"
-              onClick={() => onOpen(p.projectId, p.projectType)}
+              onClick={() => onOpen(p.projectId, p.projectType, p.experienceMode)}
             >
               <div className="project-card-main">
                 <h2>
@@ -190,6 +206,23 @@ export default function ProjectList({
                       }}
                     >
                       妄想増幅器
+                    </span>
+                  )}
+                  {p.experienceMode === 'dream' && (
+                    <span
+                      className="project-type-badge project-type-badge--dream"
+                      title="夢見るモード"
+                      style={{
+                        marginLeft: '0.5rem',
+                        padding: '0.1rem 0.5rem',
+                        fontSize: '0.7rem',
+                        borderRadius: '999px',
+                        background: '#e0f7f4',
+                        color: '#0e7a6e',
+                        fontWeight: 500,
+                      }}
+                    >
+                      夢
                     </span>
                   )}
                 </h2>

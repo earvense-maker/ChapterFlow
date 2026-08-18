@@ -24,3 +24,4 @@ export * from './refine.js';
 export * from './refineAutomation.js';
 export * from './roleplay.js';
 export * from './amplifier.js';
+export * from './dream.js';

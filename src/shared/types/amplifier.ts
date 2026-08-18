@@ -6,7 +6,9 @@
 
 import type { ProjectId } from './ids.js';
 
-export type ExperienceMode = 'standard' | 'amplifier';
+// NOTE: dream は夢見るモード（docs/design/夢見るモード_MVP設計書.md §4）。ProjectType は
+// 増やさず、この別軸で体験を切り替える。名前上の不自然さは既存のままとする（設計書 §4）。
+export type ExperienceMode = 'standard' | 'amplifier' | 'dream';
 
 // --- 嗜好理解（設計書 6.2） ---
 

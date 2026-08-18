@@ -5,10 +5,13 @@ const LEGACY_SETUP_SESSION_STORAGE_KEY_BASE = 'yumeweaving:lastSetupSessionId';
 
 // NOTE: purpose 別に localStorage キーを分ける。roleplay 入口から novel の未commit
 // セッションを誤復元しないための境界（設計書 1.5）。
-// さらに妄想増幅器は experienceMode もキーに含める。同じ purpose=novel でも、通常作品の
-// 相談を妄想増幅器の入口から誤復元してはならない（設計書 4.1）。
+// さらに体験モードは experienceMode もキーに含める。同じ purpose=novel でも、通常作品の
+// 相談を妄想増幅器の入口から誤復元してはならない（設計書 4.1）。夢見るモードも同じ理由で
+// 分離する（設計書 §10: standard / amplifier / dream ごとに分ける）。
 function setupSessionStorageKey(purpose: SetupPurpose, experienceMode: ExperienceMode = 'standard'): string {
-  return `${SETUP_SESSION_STORAGE_KEY_BASE}:${purpose}${experienceMode === 'amplifier' ? ':amplifier' : ''}`;
+  const modeSuffix =
+    experienceMode === 'amplifier' ? ':amplifier' : experienceMode === 'dream' ? ':dream' : '';
+  return `${SETUP_SESSION_STORAGE_KEY_BASE}:${purpose}${modeSuffix}`;
 }
 
 function legacySetupSessionStorageKey(purpose: SetupPurpose): string {

@@ -7,6 +7,7 @@ import SetupWorkspace from './components/SetupWorkspace';
 import QuickSetupWorkspace from './components/QuickSetupWorkspace';
 import AppSettingsPanel from './components/AppSettingsPanel';
 import RoleplayWorkspace from './components/RoleplayWorkspace';
+import DreamWorkspace from './components/DreamWorkspace';
 import AmplifierEntry from './components/AmplifierEntry';
 import ErrorBoundary from './components/ErrorBoundary';
 import { useNotificationCenter } from './components/NotificationCenter';
@@ -27,6 +28,7 @@ type View =
   | 'amplifier-entry'
   | 'read'
   | 'roleplay'
+  | 'dream'
   | 'app-settings'
   | 'settings-work'
   | 'settings-tech'
@@ -44,16 +46,25 @@ export default function App() {
   // NOTE: 体験モード（妄想増幅器）。クイックセットアップから詳細設定へ移っても失わない
   // （設計書 4.1）。SetupWorkspace 側でもセッション値から復元される。
   const [setupExperienceMode, setSetupExperienceMode] = useState<ExperienceMode>('standard');
-  // NOTE: 設定画面から戻る先を「Reader / RoleplayWorkspace」で分けるための保持。
-  const [projectMainView, setProjectMainView] = useState<'read' | 'roleplay'>('read');
+  // NOTE: 設定画面から戻る先を「Reader / RoleplayWorkspace / DreamWorkspace」で分けるための保持。
+  const [projectMainView, setProjectMainView] = useState<'read' | 'roleplay' | 'dream'>('read');
   // NOTE: 通知クリックで「作品設定相談の該当run/patch」へフォーカスするための一時state。
   // SettingPanel -> WorkSettingsTab -> RefineChatPanel まで受け渡し、消費後にクリアする。
   const [settingsFocusTarget, setSettingsFocusTarget] = useState<SettingsFocusTarget | null>(null);
   const [listNotice, setListNotice] = useState<string | null>(null);
 
-  const openProjectByType = (projectId: string, projectType: ProjectType) => {
+  // NOTE: 夢見るモード（設計書 §9）。experienceMode === 'dream' を最優先で振り分け、
+  // 次に projectType === 'roleplay'、それ以外は Reader。
+  const openProjectByType = (
+    projectId: string,
+    projectType?: ProjectType,
+    experienceMode?: ExperienceMode
+  ) => {
     setActiveProjectId(projectId);
-    if (projectType === 'roleplay') {
+    if (experienceMode === 'dream') {
+      setProjectMainView('dream');
+      setView('dream');
+    } else if (projectType === 'roleplay') {
       setProjectMainView('roleplay');
       setView('roleplay');
     } else {
@@ -62,25 +73,30 @@ export default function App() {
     }
   };
 
-  const handleOpenProject = async (projectId: string, projectType?: ProjectType) => {
+  const handleOpenProject = async (
+    projectId: string,
+    projectType?: ProjectType,
+    experienceMode?: ExperienceMode
+  ) => {
     if (projectType) {
-      openProjectByType(projectId, projectType);
+      openProjectByType(projectId, projectType, experienceMode);
       return;
     }
     // NOTE: サマリーから projectType が渡らなかった場合は API で確認してから遷移する。
     try {
       const project = await api.getProject(projectId);
-      openProjectByType(projectId, project.projectType ?? 'novel');
+      openProjectByType(projectId, project.projectType ?? 'novel', project.experienceMode);
     } catch {
       openProjectByType(projectId, 'novel');
     }
   };
 
   const handleCreateProject = async (projectId: string) => {
-    // NOTE: setup コミットから戻ってきたときは projectType を再確認して振り分ける。
+    // NOTE: setup コミットから戻ってきたときは projectType / experienceMode を再確認して
+    // 振り分ける（設計書 §9: 作成完了や通知からの遷移も取得した project 本体で判定）。
     try {
       const project = await api.getProject(projectId);
-      openProjectByType(projectId, project.projectType ?? 'novel');
+      openProjectByType(projectId, project.projectType ?? 'novel', project.experienceMode);
     } catch {
       openProjectByType(projectId, 'novel');
     }
@@ -113,7 +129,7 @@ export default function App() {
   useEffect(() => {
     if (
       view === 'amplifier-entry' ||
-      (setupExperienceMode === 'amplifier' && (view === 'quick-setup' || view === 'setup'))
+      (setupExperienceMode !== 'standard' && (view === 'quick-setup' || view === 'setup'))
     ) {
       window.scrollTo(0, 0);
     }
@@ -136,10 +152,16 @@ export default function App() {
           if (target.kind === 'settingsFocus') {
             setSettingsFocusTarget(target.focus ?? null);
             setActiveProjectId(projectId);
-            setProjectMainView(projectType === 'roleplay' ? 'roleplay' : 'read');
+            setProjectMainView(
+              project.experienceMode === 'dream'
+                ? 'dream'
+                : projectType === 'roleplay'
+                  ? 'roleplay'
+                  : 'read'
+            );
             setView('settings-work');
           } else {
-            openProjectByType(projectId, projectType);
+            openProjectByType(projectId, projectType, project.experienceMode);
           }
         })
         .catch(() => {
@@ -183,6 +205,11 @@ export default function App() {
             onQuickSetupRoleplay={() => {
               setSetupPurpose('roleplay');
               setSetupExperienceMode('standard');
+              setView('quick-setup');
+            }}
+            onQuickSetupDream={() => {
+              setSetupPurpose('roleplay');
+              setSetupExperienceMode('dream');
               setView('quick-setup');
             }}
             onAmplifierStart={() => {
@@ -243,6 +270,14 @@ export default function App() {
       )}
       {view === 'roleplay' && activeProjectId && (
         <RoleplayWorkspace
+          projectId={activeProjectId}
+          onBack={handleBackToList}
+          onOpenWorkSettings={() => openSettings('settings-work')}
+          onOpenTechSettings={() => openSettings('settings-tech')}
+        />
+      )}
+      {view === 'dream' && activeProjectId && (
+        <DreamWorkspace
           projectId={activeProjectId}
           onBack={handleBackToList}
           onOpenWorkSettings={() => openSettings('settings-work')}

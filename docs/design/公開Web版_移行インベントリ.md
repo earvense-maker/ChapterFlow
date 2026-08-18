@@ -12,7 +12,7 @@
 
 - `src/server/storage/fileProjectStorage.ts`
 
-## 1. ストレージ契約へ未移行（データ操作のみ・21件）
+## 1. ストレージ契約へ未移行（データ操作のみ・22件）
 
 Phase 2 で `WebStorage` へ差し替えるだけで済む見込みの呼び出し元。
 
@@ -23,6 +23,7 @@ Phase 2 で `WebStorage` へ差し替えるだけで済む見込みの呼び出�
 - `src/server/services/acceptedNarrativeDerivationService.ts`
 - `src/server/services/acceptedTextDerivations.ts`
 - `src/server/services/creativeContractService.ts`
+- `src/server/services/dreamMemoryService.ts`
 - `src/server/services/expressionService.ts`
 - `src/server/services/generationReaderState.ts`
 - `src/server/services/generationTextRevisionService.ts`
