@@ -1,11 +1,11 @@
-// NOTE: 夢見るモードの生の選択記憶の設定（docs/design/夢見るモード_MVP設計書.md §5 / §11）。
+// NOTE: 明晰夢モードの生の選択記憶の設定（docs/design/明晰夢モード_世界自己反転_改修設計書.md §12）。
 //
-// - 初回説明（入力原文と直前の夢本文を作品を越えて保存すること）
+// - 初回説明（入力原文と直前の明晰夢の本文を作品を越えて保存すること）
 // - 記録・想起の一時停止（オフにしても既存記憶は自動削除しない）
 // - 生記憶の閲覧・書き出し
 // - 全消去（プロジェクト削除後も残ることを明示）
 //
-// 「ずっと記憶する」は明示的な削除権より優先しない（設計書 §5）。
+// 「ずっと記憶する」は明示的な削除権より優先しない（設計書 §5）。保存契約は変更しない。
 
 import { useEffect, useState } from 'react';
 import { api } from '../clientApi';
@@ -40,7 +40,7 @@ export default function DreamMemorySettingsSection({
       setEventCount(status.eventCount);
       setEvents(browse.events);
     } catch (err) {
-      onError(err instanceof Error ? err.message : '夢の記憶の設定を読み込めませんでした');
+      onError(err instanceof Error ? err.message : '明晰夢の記憶の設定を読み込めませんでした');
     }
   };
 
@@ -57,7 +57,9 @@ export default function DreamMemorySettingsSection({
       setSettings(result.settings);
       setEventCount(result.eventCount);
       onFlashMessage(
-        enabled ? '夢の記憶の記録と想起を再開しました。' : '夢の記憶の記録と想起を一時停止しました。'
+        enabled
+          ? '明晰夢の記憶の記録と想起を再開しました。'
+          : '明晰夢の記憶の記録と想起を一時停止しました。'
       );
     } catch (err) {
       onError(err instanceof Error ? err.message : '設定の保存に失敗しました');
@@ -73,7 +75,7 @@ export default function DreamMemorySettingsSection({
       const browse = await api.getDreamMemoryEvents();
       setEvents(browse.events);
     } catch (err) {
-      onError(err instanceof Error ? err.message : '夢の記憶を読み込めませんでした');
+      onError(err instanceof Error ? err.message : '明晰夢の記憶を読み込めませんでした');
     } finally {
       setBusy(false);
     }
@@ -93,7 +95,7 @@ export default function DreamMemorySettingsSection({
       anchor.download = `dream-memory-${new Date().toISOString().slice(0, 10)}.json`;
       anchor.click();
       URL.revokeObjectURL(url);
-      onFlashMessage(`夢の記憶を書き出しました（${result.events.length}件）。`);
+      onFlashMessage(`明晰夢の記憶を書き出しました（${result.events.length}件）。`);
     } catch (err) {
       onError(err instanceof Error ? err.message : '書き出しに失敗しました');
     } finally {
@@ -104,7 +106,7 @@ export default function DreamMemorySettingsSection({
   const wipeAll = async () => {
     if (
       !(await confirmAction(
-        '夢の記憶（作品を越えて保存された、あなたが書いた言葉とそのときの夢本文）をすべて削除します。作品の本文やロールプレイの履歴は残ります。プロジェクトを削除しても残っていた生記憶もここで完全に消えます。よろしいですか？',
+        '明晰夢の記憶（作品を越えて保存された、あなたが書いた言葉とそのときの明晰夢の本文）をすべて削除します。作品の本文やロールプレイの履歴は残ります。プロジェクトを削除しても残っていた生記憶もここで完全に消えます。よろしいですか？',
         { confirmLabel: 'すべて消去', danger: true }
       ))
     ) {
@@ -116,7 +118,7 @@ export default function DreamMemorySettingsSection({
       await api.wipeDreamMemory();
       setEventCount(0);
       setEvents([]);
-      onFlashMessage('夢の記憶をすべて消去しました。古い作品やセッションから自動復活はしません。');
+      onFlashMessage('明晰夢の記憶をすべて消去しました。古い作品やセッションから自動復活はしません。');
     } catch (err) {
       onError(err instanceof Error ? err.message : '全消去に失敗しました');
     } finally {
@@ -126,10 +128,10 @@ export default function DreamMemorySettingsSection({
 
   return (
     <section className="settings-section">
-      <h2>夢の記憶</h2>
+      <h2>明晰夢の記憶</h2>
       <p className="settings-help">
-        夢の中で書かれた言葉（入力原文）と、その直前の夢本文は、作品を越えてこのアプリの保存先に記録されます。
-        記録された言葉は、未来の夢の本文として現在選択中のモデル提供者へ送信されることがあります。
+        明晰夢の中で書かれた言葉（入力原文）と、その直前の明晰夢の本文は、作品を越えてこのアプリの保存先に記録されます。
+        記録された言葉は、未来の明晰夢の本文として現在選択中のモデル提供者へ送信されることがあります。
       </p>
       <p className="settings-help">
         この記憶は「あなたの理解」ではありません。何を好むか、なぜ選んだかは保存されず、
@@ -146,7 +148,7 @@ export default function DreamMemorySettingsSection({
             disabled={busy || disabled}
           />
           <span>
-            夢の記憶を記録し、未来の夢へ残響として使う
+            明晰夢の記憶を記録し、未来の明晰夢へ残響として使う
             {!settings.recordingEnabled && (
               <span className="settings-meta">（一時停止中。既存の記憶は自動削除されません）</span>
             )}
@@ -176,7 +178,7 @@ export default function DreamMemorySettingsSection({
       {open && (
         <div className="dream-memory-browse">
           {!events || events.length === 0 ? (
-            <p className="settings-meta">記録された夢の記憶はありません。</p>
+            <p className="settings-meta">記録された明晰夢の記憶はありません。</p>
           ) : (
             <ul className="dream-memory-list">
               {[...events].reverse().map((event) => (
@@ -184,7 +186,7 @@ export default function DreamMemorySettingsSection({
                   <div className="settings-meta">
                     {new Date(event.createdAt).toLocaleString('ja-JP')} ／
                     {event.type === 'observe'
-                      ? '何も書かず眺めた'
+                      ? '何も書かず観察した'
                       : event.type === 'wake'
                         ? '目覚めた'
                         : '書いた言葉'}

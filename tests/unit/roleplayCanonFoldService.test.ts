@@ -384,6 +384,162 @@ describe('roleplayCanonFoldService（設計書 8.2・12.3）', () => {
     expect(next[0].evidence[0].disclosure).toBe('foreshadowed');
   });
 
+  // NOTE: 改修問題2。モデルが誤った targetCanonId を返しても、ID一致だけで元の文を
+  // 上書きしない。無関係な statement は既存項目を壊さず新規項目として追加する。
+  it('誤ったtargetCanonId＋無関係なstatementは既存session項目を上書きせず新規項目にする', () => {
+    const existing = [
+      {
+        canonId: 'can-1',
+        scope: 'world',
+        statement: '笑うと花びらが舞う',
+        status: 'foreshadowed',
+        baseStatusWithoutEvidence: 'retired',
+        epistemicStatus: 'fact',
+        source: 'roleplay',
+        manualLock: false,
+        evidence: [],
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    ];
+    const next = applySessionCanonPatch(
+      existing,
+      [
+        {
+          canonId: 'can-1',
+          scope: 'world',
+          statement: '花が風で音を立てる',
+          epistemicStatus: 'fact',
+          disclosure: 'revealed',
+          evidenceExcerpt: '花が風で音を立てた。',
+        },
+      ],
+      'rm-100'
+    );
+    // 既存項目は上書きされず、無関係な文は新規項目になる
+    expect(next).toHaveLength(2);
+    expect(next.find((item) => item.canonId === 'can-1')!.statement).toBe('笑うと花びらが舞う');
+    const added = next.find((item) => item.canonId !== 'can-1')!;
+    expect(added.statement).toBe('花が風で音を立てる');
+    expect(added.status).toBe('revealed');
+  });
+
+  // NOTE: 改修問題2。初期 canon を target する場合も ID 一致だけでは採用せず、
+  // 文の意味的一致を要求する。無関係な文は初期 canon へ上書きせず新規項目になる。
+  it('誤ったtargetCanonId＋無関係なstatementは初期canonへ上書きせず新規項目にする', () => {
+    const initial = [
+      {
+        canonId: 'can-initial-1',
+        scope: 'world',
+        statement: '雲の上に国を守る精霊がいる',
+        status: 'provisional',
+        baseStatusWithoutEvidence: 'provisional',
+        epistemicStatus: 'fact',
+        source: 'setup',
+        manualLock: false,
+        evidence: [],
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    ];
+    const next = applySessionCanonPatch(
+      [],
+      [
+        {
+          canonId: 'can-initial-1',
+          scope: 'world',
+          statement: '綿あめの島に乗ると酔う',
+          epistemicStatus: 'fact',
+          disclosure: 'revealed',
+          evidenceExcerpt: '綿あめの島に乗ると酔うと言った。',
+        },
+      ],
+      'rm-101',
+      { initialCanonCandidates: initial, foldTargetText: '綿あめの島に乗ると酔うと言った。' }
+    );
+    expect(next).toHaveLength(1);
+    expect(next[0].canonId).not.toBe('can-initial-1');
+    expect(next[0].statement).toBe('綿あめの島に乗ると酔う');
+  });
+
+  // NOTE: 改修問題2。意味が一致する場合のID指定更新は従来どおり働く。
+  it('意味が一致するtargetCanonIdの更新は従来どおり上書きする', () => {
+    const existing = [
+      {
+        canonId: 'can-1',
+        scope: 'character',
+        statement: '護衛の過去は傭兵だった',
+        status: 'foreshadowed',
+        baseStatusWithoutEvidence: 'retired',
+        epistemicStatus: 'unknown',
+        source: 'roleplay',
+        manualLock: false,
+        evidence: [],
+        createdAt: '2026-07-02T00:00:00Z',
+        updatedAt: '2026-07-02T00:00:00Z',
+      },
+    ];
+    const next = applySessionCanonPatch(
+      existing,
+      [
+        {
+          canonId: 'can-1',
+          scope: 'character',
+          statement: '護衛の過去は傭兵だった（決定的な告白）',
+          epistemicStatus: 'fact',
+          disclosure: 'revealed',
+          evidenceExcerpt: '護衛は自ら告白した。',
+        },
+      ],
+      'rm-102'
+    );
+    expect(next).toHaveLength(1);
+    expect(next[0].canonId).toBe('can-1');
+    expect(next[0].statement).toBe('護衛の過去は傭兵だった（決定的な告白）');
+    expect(next[0].status).toBe('revealed');
+  });
+
+  // NOTE: 改修問題2。evidence の messageId は fold 境界ではなく、抜粋を含む実際の
+  // 引用元メッセージへ解決される。どこにも含まれない場合は境界へ落ちる。
+  it('evidenceのmessageIdを実際の引用元メッセージへ解決する', () => {
+    const foldTargetMessages = [
+      { messageId: 'rm-fold-1', content: 'ユイは王家の血を引くと言った。' },
+      { messageId: 'rm-fold-2', content: 'ユイはこれから城へ帰る。' },
+    ];
+    const next = applySessionCanonPatch(
+      [],
+      [
+        {
+          scope: 'character',
+          statement: 'ユイは王家の血を引く',
+          epistemicStatus: 'fact',
+          disclosure: 'revealed',
+          evidenceExcerpt: '王家の血を引くと言った',
+        },
+      ],
+      'rm-boundary',
+      { foldTargetMessages }
+    );
+    expect(next).toHaveLength(1);
+    expect(next[0].evidence[0].messageId).toBe('rm-fold-1');
+
+    const unresolvable = applySessionCanonPatch(
+      [],
+      [
+        {
+          scope: 'character',
+          statement: 'ユイは王家の血を引く',
+          epistemicStatus: 'fact',
+          disclosure: 'revealed',
+          evidenceExcerpt: '会話に無い抜粋',
+        },
+      ],
+      'rm-boundary',
+      { foldTargetMessages }
+    );
+    expect(unresolvable[0].evidence[0].messageId).toBe('rm-boundary');
+  });
+
   // NOTE: 設計書 6.3・12.3-24。knownBy / explicitlyUnknownBy は fold で新規推定・更新しない。
   // 既存値は維持され、新規追加項目には付かない。
   it('knownBy / explicitlyUnknownBy はfoldで新規推定・更新されない', () => {

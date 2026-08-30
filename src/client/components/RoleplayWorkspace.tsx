@@ -13,7 +13,10 @@ import { api, type RoleplayStreamHandlers } from '../clientApi';
 import { useConfirm } from './ConfirmDialog';
 import { useNotificationCenter } from './NotificationCenter';
 import AmplifierControls from './AmplifierControls';
-import { DEFAULT_ROLEPLAY_USER_ACTION_POLICY } from '@shared/roleplayPersona';
+import {
+  DEFAULT_ROLEPLAY_USER_ACTION_POLICY,
+  normalizeRoleplayUserActionPolicy,
+} from '@shared/roleplayPersona';
 import { formatBudgetNotice, ROLEPLAY_TURN_SECTION_IDS } from '@shared/promptBudgetNotice';
 import type {
   AmplifierAnchor,
@@ -54,8 +57,9 @@ const RESOLVED_ROLEPLAY_MEMORY_ERRORS = new Set([
 
 const ACTION_POLICY_LABELS: Record<RoleplayUserPersona['actionPolicy'], string> = {
   strict: '補完しない',
-  conservative: '控えめに補完',
   collaborative: '自然に補完',
+  // NOTE: 旧セッションの表示互換。新規選択肢には出さない。
+  conservative: '自然に補完',
 };
 
 export default function RoleplayWorkspace({
@@ -1854,7 +1858,9 @@ function NewSessionModal({
   );
   const [knownFacts, setKnownFacts] = useState(defaultUserPersona?.knownFacts ?? '');
   const [actionPolicy, setActionPolicy] = useState<RoleplayUserPersona['actionPolicy']>(
-    defaultUserPersona?.actionPolicy ?? DEFAULT_ROLEPLAY_USER_ACTION_POLICY
+    normalizeRoleplayUserActionPolicy(
+      defaultUserPersona?.actionPolicy ?? DEFAULT_ROLEPLAY_USER_ACTION_POLICY
+    )
   );
   const [starting, setStarting] = useState(false);
   const hasDefaultPersona = Boolean(
@@ -1994,10 +2000,12 @@ function NewSessionModal({
                 style={styles.select}
               >
                 <option value="strict">補完しない</option>
-                <option value="conservative">控えめに補完</option>
                 <option value="collaborative">自然に補完</option>
               </select>
             </label>
+            <p style={styles.hint}>
+              「自然に補完」では、あなたが明示した行動を、意図を変えない範囲で成立まで自然に描写します。セリフ・心情・新しい重要な決断は追加しません。
+            </p>
           </div>
         </details>
         {isAmplifier && (

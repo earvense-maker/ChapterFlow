@@ -502,6 +502,60 @@ describe('roleplaySessionService', () => {
     expect(created.sessionMode).toBeUndefined();
   });
 
+  it('rejects a dream-marked session stored under a normal project before recalling dream memory', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    if (!stored) throw new Error('Roleplay session not found');
+    await storage.writeRoleplaySession({ ...stored, sessionMode: 'dream' });
+    const streamSpy = vi
+      .spyOn(GeminiAdapter.prototype, 'generateTextStream')
+      .mockImplementation(() => streamChunks(['must not run']));
+
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '話そう',
+        revision: created.revision,
+      })
+    );
+
+    expect(result.errors).toEqual([
+      expect.objectContaining({ code: 'session_mode_mismatch' }),
+    ]);
+    expect(result.done).toBeUndefined();
+    expect(streamSpy).not.toHaveBeenCalled();
+    const after = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(after?.messages).toEqual(stored.messages);
+  });
+
+  it('rejects archiving a dream-marked session under a normal project before recording wake memory', async () => {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    if (!stored) throw new Error('Roleplay session not found');
+    await storage.writeRoleplaySession({ ...stored, sessionMode: 'dream' });
+
+    await expect(
+      roleplayService.archiveRoleplaySession(
+        project.projectId,
+        created.sessionId,
+        created.revision
+      )
+    ).rejects.toMatchObject({ code: 'session_mode_mismatch' });
+
+    const after = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(after?.status).toBe('active');
+    expect(after?.revision).toBe(created.revision);
+  });
+
   it('inserts greeting as the first character message without calling the model', async () => {
     const project = await makeRoleplayProject();
     const spy = vi.spyOn(GeminiAdapter.prototype, 'generateText');
@@ -621,8 +675,8 @@ describe('roleplaySessionService', () => {
     expect(turnLogs).toHaveLength(0);
   });
 
-  // NOTE: 初期状態は会話が始まったばかりの足場。要約が「今」を語り始めたら落とす。
-  it('stops sending the conversation-start state once the session has a summary', async () => {
+  // NOTE: 初期状態は最初の生成応答だけの足場。以後は履歴を現在状態の正本にする。
+  it('stops sending the conversation-start state after the first generated response', async () => {
     const project = await makeRoleplayProject(
       baseCharacter({ currentState: '放課後の教室に一人でいる' })
     );
@@ -636,7 +690,7 @@ describe('roleplaySessionService', () => {
       projectId: project.projectId,
       characterId: 'char-a',
     });
-    await collectStream(
+    const first = await collectStream(
       roleplayService.sendRoleplayMessage({
         projectId: project.projectId,
         sessionId: created.sessionId,
@@ -647,20 +701,13 @@ describe('roleplaySessionService', () => {
     expect(capturedSystemInstructions).toContain('会話開始時点の状態');
     expect(capturedSystemInstructions).toContain('放課後の教室に一人でいる');
 
-    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
-    if (!stored) throw new Error('Roleplay session not found');
-    await storage.writeRoleplaySession({
-      ...stored,
-      conversationSummary: '二人は放課後に何度も話し、打ち解けた。',
-    });
-
-    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    if (!first.done) throw new Error('First turn did not complete');
     await collectStream(
       roleplayService.sendRoleplayMessage({
         projectId: project.projectId,
         sessionId: created.sessionId,
         message: 'また話そう',
-        revision: latest.revision,
+        revision: first.done.revision,
       })
     );
     expect(capturedSystemInstructions).not.toContain('会話開始時点の状態');
@@ -677,6 +724,43 @@ describe('roleplaySessionService', () => {
       characterId: 'char-a',
     });
     expect(view.messages).toEqual([]);
+  });
+
+  it('uses the conversation-start state only for the first response without a greeting', async () => {
+    const project = await makeRoleplayProject(
+      baseCharacter({ greeting: undefined, currentState: '校門の前で待っている' })
+    );
+    const capturedSystems: string[] = [];
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
+      capturedSystems.push(request.systemInstructions);
+      return streamChunks(['わかったよ。']);
+    });
+
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    const first = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '行こう',
+        revision: created.revision,
+      })
+    );
+    if (!first.done) throw new Error('First turn did not complete');
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '着いたね',
+        revision: first.done.revision,
+      })
+    );
+
+    expect(capturedSystems).toHaveLength(2);
+    expect(capturedSystems[0]).toContain('校門の前で待っている');
+    expect(capturedSystems[1]).not.toContain('校門の前で待っている');
   });
 
   it('persists the user persona and uses it as prompt data with its action policy', async () => {
@@ -718,7 +802,7 @@ describe('roleplaySessionService', () => {
     });
     expect(result.done?.userPersona).toEqual(created.userPersona);
     expect(capturedSystemInstructions).toContain('図書委員をしている');
-    expect(capturedSystemInstructions).toContain('自然な結果を補ってよい');
+    expect(capturedSystemInstructions).toContain('開始から成立までを自然な一連の動作として描写する');
     expect(capturedUserPrompt).toContain('ユウ: 僕のこと、覚えてる？');
   });
 
@@ -762,7 +846,7 @@ describe('roleplaySessionService', () => {
     expect(capturedSystemInstructions).toContain('毎週金曜に当番が一緒');
   });
 
-  it('keeps an explicitly cleared persona instead of the project default', async () => {
+  it('keeps an explicitly cleared persona and migrates the legacy completion policy', async () => {
     const project = await makeRoleplayProject();
     await projectService.updateProject(project.projectId, {
       defaultUserPersona: { name: '結衣', actionPolicy: 'conservative' },
@@ -777,6 +861,22 @@ describe('roleplaySessionService', () => {
     });
 
     expect(created.userPersona?.name).toBeUndefined();
+    expect(created.userPersona?.actionPolicy).toBe('collaborative');
+
+    const stored = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    if (!stored?.contextSnapshot.userPersona) throw new Error('User persona not found');
+    await storage.writeRoleplaySession({
+      ...stored,
+      contextSnapshot: {
+        ...stored.contextSnapshot,
+        userPersona: { ...stored.contextSnapshot.userPersona, actionPolicy: 'conservative' },
+      },
+    });
+    const migratedView = await roleplayService.getRoleplaySession(
+      project.projectId,
+      created.sessionId
+    );
+    expect(migratedView.userPersona?.actionPolicy).toBe('collaborative');
   });
 
   it('exposes captured settings and flags sessions after roleplay settings change', async () => {
@@ -1120,10 +1220,16 @@ describe('roleplaySessionService', () => {
   });
 
   it('regenerates the last character message without incrementing user revision', async () => {
-    const project = await makeRoleplayProject();
+    const project = await makeRoleplayProject(
+      baseCharacter({ currentState: '放課後の教室に一人でいる' })
+    );
+    const capturedSystems: string[] = [];
     const streamSpy = vi
       .spyOn(GeminiAdapter.prototype, 'generateTextStream')
-      .mockImplementation(() => streamChunks(['最初の応答']));
+      .mockImplementation((request) => {
+        capturedSystems.push(request.systemInstructions);
+        return streamChunks(['最初の応答']);
+      });
 
     const created = await roleplayService.createRoleplaySession({
       projectId: project.projectId,
@@ -1140,7 +1246,10 @@ describe('roleplaySessionService', () => {
     expect(send.done?.messages[send.done!.messages.length - 1].content).toBe('最初の応答');
     const revisionAfterSend = send.done!.revision;
 
-    streamSpy.mockImplementation(() => streamChunks(['別の応答']));
+    streamSpy.mockImplementation((request) => {
+      capturedSystems.push(request.systemInstructions);
+      return streamChunks(['別の応答']);
+    });
     const regen = await collectStream(
       roleplayService.regenerateRoleplay({
         projectId: project.projectId,
@@ -1154,6 +1263,10 @@ describe('roleplaySessionService', () => {
     const messages = regen.done!.messages;
     expect(messages[messages.length - 1].content).toBe('別の応答');
     expect(messages.find((m) => m.content === '最初の応答')).toBeUndefined();
+    // 最初の生成応答を置き換える再生成では、開始時点の初期条件を維持する。
+    expect(capturedSystems).toHaveLength(2);
+    expect(capturedSystems[0]).toContain('放課後の教室に一人でいる');
+    expect(capturedSystems[1]).toContain('放課後の教室に一人でいる');
   });
 
   it('refuses regenerate when the tail is the greeting (no previous user)', async () => {
@@ -1946,14 +2059,20 @@ describe('roleplaySessionService', () => {
       // 前後の文はサーバー側がそのまま繋ぎ直す。
       const rewrittenSentence = '彼は言葉を失った。';
       const expectedFinal = '彼は言葉を失った。静かに続けた。';
-      vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
-        streamChunks([generated])
-      );
+      let generationSystem = '';
+      let rewriteSystem = '';
+      vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
+        generationSystem = request.systemInstructions;
+        return streamChunks([generated]);
+      });
       // 局所リライトのモデル応答。verifyRewrite で再検証して通る文字列。
-      vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
-        text: rewrittenSentence,
-        finishReason: 'stop',
-        retryable: false,
+      vi.spyOn(GeminiAdapter.prototype, 'generateText').mockImplementation(async (request) => {
+        rewriteSystem = request.systemInstructions;
+        return {
+          text: rewrittenSentence,
+          finishReason: 'stop',
+          retryable: false,
+        };
       });
 
       const created = await roleplayService.createRoleplaySession({
@@ -1972,6 +2091,7 @@ describe('roleplaySessionService', () => {
       expect(result.errors).toEqual([]);
       expect(result.postprocessingCount).toBe(1);
       expect(result.replacements).toEqual([expectedFinal]);
+      expect(rewriteSystem).toBe(generationSystem);
       const saved = result.done!.messages[result.done!.messages.length - 1];
       expect(saved.content).toBe(expectedFinal);
       // 自動書き換えが成功したターンには警告を残さない。
@@ -2419,5 +2539,25 @@ describe('session canon summary fold（設計書 6.3・12.3）', () => {
       source: 'setup',
     });
     expect(saved?.sessionCanon?.[0].evidence[0].messageId).toBe(saved?.summaryThroughMessageId);
+  });
+
+  // NOTE: 改修問題1。要約失敗の切り分け種別を正しく返す。
+  describe('classifySummaryParseFailure', () => {
+    it('空応答・JSON区切りなし・不正JSON・構造不正を区別する', () => {
+      expect(roleplayService.classifySummaryParseFailure('')).toBe('empty_text');
+      expect(roleplayService.classifySummaryParseFailure('   \n  ')).toBe('empty_text');
+      expect(roleplayService.classifySummaryParseFailure('説明文だけ')).toBe('missing_json');
+      expect(roleplayService.classifySummaryParseFailure('{"summary": 不正}')).toBe('json_parse_failed');
+      expect(roleplayService.classifySummaryParseFailure('{"summary": 不正')).toBe('missing_json');
+      expect(roleplayService.classifySummaryParseFailure('```json\n{"summary":"ok","sessionCanon":[]}\n```')).not.toBe('empty_text');
+    });
+
+    it('JSONとして読めるがsummaryやsessionCanonが欠ける場合は invalid_shape', () => {
+      expect(roleplayService.classifySummaryParseFailure('{"summary":"要約"}')).toBe('invalid_shape');
+      expect(roleplayService.classifySummaryParseFailure('{"other":1}')).toBe('invalid_shape');
+      expect(
+        roleplayService.classifySummaryParseFailure('{"summary":"要約","sessionCanon":"not-array"}')
+      ).toBe('invalid_shape');
+    });
   });
 });

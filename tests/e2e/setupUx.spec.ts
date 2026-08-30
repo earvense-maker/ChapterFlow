@@ -591,7 +591,7 @@ test('ロールプレイ入口はキャラ向けの案内で始まり、初回�
           defaultUserPersona: {
             name: '結衣',
             relationship: '同じ図書委員',
-            actionPolicy: 'conservative',
+            actionPolicy: 'collaborative',
           },
         },
       },
@@ -677,7 +677,7 @@ test('ロールプレイ入口はキャラ向けの案内で始まり、初回�
     name: '結衣',
     relationship: '同じ図書委員',
     preferredAddress: '結衣先輩',
-    actionPolicy: 'conservative',
+    actionPolicy: 'collaborative',
   });
 });
 

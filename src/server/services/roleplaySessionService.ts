@@ -71,6 +71,7 @@ import {
 import {
   DEFAULT_ROLEPLAY_USER_ACTION_POLICY,
   isRoleplayUserActionPolicy,
+  normalizeRoleplayUserActionPolicy,
   ROLEPLAY_USER_PERSONA_LIMITS,
 } from '../../shared/roleplayPersona.js';
 import type { PromptBudgetReport } from '../../shared/types/generation.js';
@@ -238,10 +239,29 @@ async function assertDreamDisclosureAcknowledged(): Promise<void> {
   const settings = await readDreamMemorySettings();
   if (!settings.disclosureAcknowledged) {
     throw new RoleplayServiceError(
-      '夢の記録についての説明を確認してから始めてください。',
+      '明晰夢の記録についての説明を確認してから始めてください。',
       'dream_disclosure_required',
       false,
       409
+    );
+  }
+}
+
+// NOTE: sessionMode は保存済みセッションの解釈契約だが、それ単独を信用して明晰夢の
+// 全作品共有記憶へ接続しない。壊れた旧データや誤った移行で通常作品のセッションに
+// sessionMode='dream' が付いても、プロジェクト側も dream でなければ記録・想起を拒否する。
+async function assertDreamSessionBelongsToDreamProject(
+  session: RoleplaySession
+): Promise<void> {
+  if (session.sessionMode !== 'dream') return;
+  const project = await storage.readProject(session.projectId);
+  if (!project || normalizeExperienceMode(project.experienceMode) !== 'dream') {
+    throw new RoleplayServiceError(
+      '通常作品のセッションを明晰夢として実行できません。新しい会話を作成してください。',
+      'session_mode_mismatch',
+      false,
+      409,
+      session.revision
     );
   }
 }
@@ -353,10 +373,18 @@ export function toRoleplaySessionView(
   currentSettingsFingerprint?: string
 ): RoleplaySessionView {
   const { contextSnapshot, sessionCanon, messageRevisions: _messageRevisions, ...rest } = session;
+  const userPersona = contextSnapshot.userPersona
+    ? {
+        ...contextSnapshot.userPersona,
+        actionPolicy: normalizeRoleplayUserActionPolicy(
+          contextSnapshot.userPersona.actionPolicy
+        ),
+      }
+    : undefined;
   return {
     ...rest,
     characterName: contextSnapshot.character.name ?? '',
-    userPersona: contextSnapshot.userPersona,
+    userPersona,
     appliedSettings: contextSnapshot.appliedSettings,
     settingsChanged: settingsFingerprintChanged(
       contextSnapshot.settingsFingerprint,
@@ -1134,7 +1162,7 @@ export async function createRoleplaySession(
     const projectIsDream = normalizeExperienceMode(project.experienceMode) === 'dream';
     if (input.sessionMode === 'dream' && !projectIsDream) {
       throw new RoleplayServiceError(
-        'このプロジェクトは夢見るモードではありません。',
+        'このプロジェクトは明晰夢モードではありません。',
         'dream_session_not_allowed',
         false,
         409
@@ -1155,7 +1183,7 @@ export async function createRoleplaySession(
     if (!characterId) {
       throw new RoleplayServiceError(
         sessionMode === 'dream'
-          ? '夢を見るには作品にキャラクターが1人以上必要です。作品設定から追加してください。'
+          ? '明晰夢を見るには作品にキャラクターが1人以上必要です。作品設定から追加してください。'
           : 'キャラクターが見つかりません。',
         sessionMode === 'dream' ? 'dream_requires_character' : 'character_not_found',
         sessionMode === 'dream',
@@ -1289,8 +1317,8 @@ function normalizeUserPersona(value: unknown): RoleplayUserPersona {
     );
   }
   const source = isRecord(value) ? value : {};
-  const actionPolicy = source.actionPolicy ?? DEFAULT_ROLEPLAY_USER_ACTION_POLICY;
-  if (!isRoleplayUserActionPolicy(actionPolicy)) {
+  const rawActionPolicy = source.actionPolicy ?? DEFAULT_ROLEPLAY_USER_ACTION_POLICY;
+  if (!isRoleplayUserActionPolicy(rawActionPolicy)) {
     throw new RoleplayServiceError(
       'ユーザー行動の補完方針が不正です。',
       'invalid_user_persona',
@@ -1298,6 +1326,7 @@ function normalizeUserPersona(value: unknown): RoleplayUserPersona {
       400
     );
   }
+  const actionPolicy = normalizeRoleplayUserActionPolicy(rawActionPolicy);
   return {
     name: normalizePersonaText(source.name, '名前', ROLEPLAY_USER_PERSONA_LIMITS.name),
     relationship: normalizePersonaText(
@@ -1372,6 +1401,11 @@ export async function archiveRoleplaySession(
     const session = await loadRoleplaySessionOrThrow(projectId, sessionId);
     assertValidRevision(revision);
     assertRevision(session, revision);
+    if (session.sessionMode === 'dream') {
+      // 通常作品へ誤って dream フラグが付いたセッションから、共有の夢記憶へ wake を
+      // 書き込ませない。送信時と同じ所属検証をアーカイブ前にも行う。
+      await assertDreamSessionBelongsToDreamProject(session);
+    }
     if (generationInFlight.has(sessionId)) {
       throw new RoleplayServiceError(
         '応答生成中はアーカイブできません。',
@@ -1817,9 +1851,9 @@ async function* runTurn(input: RunTurnInput): AsyncGenerator<RoleplayStreamEvent
       yield { type: 'postprocessing' };
       const result = await runNgPostprocess({
         session: effectiveSession,
+        systemInstructions: prompt.systemInstructions,
         text: finalText,
         expressions: ngExpressions,
-        outputLength: caps.outputLength,
         abortSignal: input.abortSignal ?? null,
       });
       postprocessed = result.text;
@@ -1954,6 +1988,7 @@ async function beginTurn(input: RunTurnInput): Promise<TurnTicket | null> {
     assertRevision(session, input.revision);
     assertActiveSession(session);
     if (session.sessionMode === 'dream') {
+      await assertDreamSessionBelongsToDreamProject(session);
       await assertDreamDisclosureAcknowledged();
     }
     const repairedSession = repairFreshMemoryFingerprintAfterSummary(session);
@@ -2661,10 +2696,9 @@ function selectPromptMessagesForGeneration(
  */
 async function runNgPostprocess(input: {
   session: RoleplaySession;
+  systemInstructions: string;
   text: string;
   expressions: NgExpression[];
-  /** 通常生成と同じ目安字数。既定値を使うと本文とリライトで長さ指示が食い違う。 */
-  outputLength: number;
   abortSignal: AbortSignal | null;
 }): Promise<{ text: string; warnings: RoleplayGenerationWarning[] }> {
   const settings = await readNgAutoRewriteSettings();
@@ -2679,20 +2713,13 @@ async function runNgPostprocess(input: {
     };
   }
 
-  // NOTE: NGリライトもそのターンの system prompt と同一にする。ここだけ条件が
-  // ずれると、演じる前提が変わるうえプロバイダーのプロンプトキャッシュも共有できない。
-  const systemInstructions = buildRoleplaySystemInstructionsWithReport({
-    snapshot: input.session.contextSnapshot,
-    sessionCanon: input.session.sessionCanon,
-    outputLength: input.outputLength,
-    hasConversationSummary: Boolean(input.session.conversationSummary?.trim()),
-  }).systemInstructions;
-
   try {
     const result = await rewriteAllNgOccurrences({
       provider: input.session.model.provider,
       modelName: input.session.model.modelName,
-      systemInstructions,
+      // NOTE: 通常ロールプレイ・夢・再生成のどれでも、生成時に組み立てた同じ system
+      // prompt を使う。ここで再構築するとターン種別や除外対象の判定がずれる。
+      systemInstructions: input.systemInstructions,
       text: input.text,
       expressions: input.expressions,
       maxRewrites: settings.maxRewritesPerGeneration,
@@ -2757,14 +2784,23 @@ async function buildTurnPrompt(input: {
   budgetReport: PromptBudgetReport;
 }> {
   const { session } = input;
-  // NOTE: 会話要約が出来た時点で persona card の「会話開始時点の状態」を落とす。
-  // 要約は【これまでの会話の要約】として user prompt に入り「今」を語るので、
-  // 初期状態を並べて送り続けると序盤の状態へ引き戻す圧力になる。
+  const allMessages = selectPromptMessagesForGeneration(session, {
+    excludeCharacterMessageId: input.excludeCharacterMessageId,
+  });
+  // NOTE: currentState は最初の生成応答の足場だけに使う。保存済み greeting はモデル生成
+  // ではないため数えず、通常応答（先行 user がある）か amplifier 応答が履歴に1件でも
+  // あれば、以後は会話履歴・要約を現在状態の正本にする。再生成対象を判定用履歴から
+  // 除外するので、最初の応答を再生成するときは初期状態が維持される。
+  const generationHistory = session.messages.filter(
+    (message) => message.messageId !== input.excludeCharacterMessageId
+  );
+  const includeInitialState =
+    !session.conversationSummary?.trim() && !hasGeneratedCharacterResponse(generationHistory);
   const system = buildRoleplaySystemInstructionsWithReport({
     snapshot: session.contextSnapshot,
     sessionCanon: session.sessionCanon,
     outputLength: input.outputLength,
-    hasConversationSummary: Boolean(session.conversationSummary?.trim()),
+    includeInitialState,
   });
   if (system.overflowByChars > 0) {
     throw new RoleplayServiceError(
@@ -2775,10 +2811,6 @@ async function buildTurnPrompt(input: {
       session.revision
     );
   }
-
-  const allMessages = selectPromptMessagesForGeneration(session, {
-    excludeCharacterMessageId: input.excludeCharacterMessageId,
-  });
 
   const limits = await resolveModelTokenLimits(session.model.provider, session.model.modelName);
   const maxOutputTokens = resolveRoleplayTurnMaxOutputTokens(
@@ -2878,6 +2910,18 @@ async function buildTurnPrompt(input: {
   );
 }
 
+function hasGeneratedCharacterResponse(messages: RoleplayMessage[]): boolean {
+  let hasUserMessage = false;
+  for (const message of messages) {
+    if (message.role === 'user') {
+      hasUserMessage = true;
+      continue;
+    }
+    if (message.amplifierInteractionId || hasUserMessage) return true;
+  }
+  return false;
+}
+
 // NOTE: 夢見るモードのターン prompt 構築（設計書 §6）。system は夢専用の固定規則、
 // user prompt は夢の種 / 残響 pack / 要約 / 直近の夢と反応 / 今回の反応。予算超過時の
 // メッセージ縮小ループは roleplay と同型で、最近メッセージだけを対象にする。
@@ -2900,7 +2944,7 @@ async function buildDreamTurnPrompt(input: {
   });
   if (system.overflowByChars > 0) {
     throw new RoleplayServiceError(
-      `夢の固定規則だけでシステム上限を${system.overflowByChars}字超えています。舞台設定を短くしてください。`,
+      `明晰夢の固定規則だけでシステム上限を${system.overflowByChars}字超えています。舞台設定を短くしてください。`,
       'dream_system_prompt_too_large',
       false,
       400,
@@ -2954,7 +2998,7 @@ async function buildDreamTurnPrompt(input: {
     });
     if (!built.ok) {
       throw new RoleplayServiceError(
-        `夢のプロンプトが上限を${built.overByChars}字超えています。長い入力を短くしてから再送信してください。`,
+        `明晰夢のプロンプトが上限を${built.overByChars}字超えています。長い入力を短くしてから再送信してください。`,
         'dream_prompt_budget_exceeded',
         true,
         503,
@@ -3013,7 +3057,7 @@ async function buildDreamTurnPrompt(input: {
   }
 
   throw new RoleplayServiceError(
-    'この夢は選択中のモデルの文脈上限に収まりません。より上限の大きいモデルへ切り替えるか、舞台設定を短くしてください。',
+    'この明晰夢は選択中のモデルの文脈上限に収まりません。より上限の大きいモデルへ切り替えるか、舞台設定を短くしてください。',
     'dream_context_budget_exceeded',
     false,
     400,
@@ -3353,13 +3397,50 @@ async function performSummary(
       modelName: session.model.modelName,
     });
   } catch (err) {
-    return { kind: 'llm_failed', reason: err instanceof Error ? err.message : String(err) };
+    // NOTE: 要約失敗の切り分け（改修問題1）。モデル/API 呼び出しが例外になった経路。
+    // プロンプトダンプ（debugLabel のみ）ではタイムアウト・JSON不正・キャンセルの
+    // 区別が付かないため、finishReason とエラー種別をここで記録する。
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn('Roleplay summary LLM call failed', {
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      sessionMode: session.sessionMode,
+      model: session.model.modelName,
+      label: 'roleplay.summaryFold',
+      reason,
+      ...(err instanceof ModelClientError ? { code: err.code, retryable: err.retryable } : {}),
+    });
+    return { kind: 'llm_failed', reason };
   }
   if (result.finishReason === 'error' || result.finishReason === 'timeout') {
+    // NOTE: 要約失敗の切り分け（改修問題1）。タイムアウトとモデルエラーを finishReason で区別。
+    console.warn('Roleplay summary LLM finish failed', {
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      sessionMode: session.sessionMode,
+      model: session.model.modelName,
+      label: 'roleplay.summaryFold',
+      finishReason: result.finishReason,
+      ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+      ...(result.debugInfo ? { debugInfo: result.debugInfo } : {}),
+    });
     return { kind: 'llm_failed', reason: result.finishReason };
   }
   const parsed = parseSummaryOutput(result.text, session.relationshipState);
-  if (!parsed) return { kind: 'empty_result' };
+  if (!parsed) {
+    // NOTE: 要約失敗の切り分け（改修問題1）。JSON 不正・構造不正を種別で区別する。
+    console.warn('Roleplay summary output parse failed', {
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      sessionMode: session.sessionMode,
+      model: session.model.modelName,
+      label: 'roleplay.summaryFold',
+      finishReason: result.finishReason,
+      parseFailure: classifySummaryParseFailure(result.text),
+    });
+    return { kind: 'empty_result' };
+  }
   return {
     kind: 'ok',
     conversationSummary: parsed.conversationSummary,
@@ -3369,7 +3450,12 @@ async function performSummary(
       session.sessionCanon ?? [],
       parsed.sessionCanonEntries,
       lastFolded.messageId,
-      { initialCanonCandidates, foldTargetText: foldedText }
+      {
+        initialCanonCandidates,
+        foldTargetText: foldedText,
+        // NOTE: evidence の messageId を実際の引用元へ解決する材料（改修問題2）。
+        foldTargetMessages: foldTarget,
+      }
     ),
   };
 }
@@ -3413,6 +3499,32 @@ function parseSummaryOutput(
     ),
     sessionCanonEntries: parseSessionCanonEntries(value.sessionCanon),
   };
+}
+
+// NOTE: 要約出力の解析失敗の切り分け種別（改修問題1）。ログ用で、解析結果には影響しない。
+export type SummaryParseFailureKind =
+  | 'empty_text' // 空応答
+  | 'missing_json' // { } の区切りが見つからない
+  | 'json_parse_failed' // JSON として不正
+  | 'invalid_shape'; // JSON だが summary 非 string / sessionCanon 非配列 など
+
+// NOTE: parseSummaryOutput と同じ正規化で失敗種別を判定する（改修問題1）。
+export function classifySummaryParseFailure(raw: string): SummaryParseFailureKind {
+  const text = raw.trim();
+  if (!text) return 'empty_text';
+  const withoutFence = text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+  const objectStart = withoutFence.indexOf('{');
+  const objectEnd = withoutFence.lastIndexOf('}');
+  if (objectStart < 0 || objectEnd <= objectStart) return 'missing_json';
+  try {
+    JSON.parse(withoutFence.slice(objectStart, objectEnd + 1));
+  } catch {
+    return 'json_parse_failed';
+  }
+  return 'invalid_shape';
 }
 
 function normalizeRelationshipState(

@@ -1,11 +1,11 @@
-// NOTE: 夢見るモードの主画面（docs/design/夢見るモード_MVP設計書.md §2 / §8 / §9）。
+// NOTE: 明晰夢モードの主画面（docs/design/明晰夢モード_世界自己反転_改修設計書.md §12）。
 //
-// 表示するものは、夢の本文、末尾の一行入力欄、生成中の最小限の状態と停止、画面端の小さな
+// 表示するものは、明晰夢の本文、末尾の一行入力欄、生成中の最小限の状態と停止、画面端の小さな
 // 「目覚める」、回復に必要なエラーだけ。吹き出し、発言者名、セッション一覧、設定ピル、
-// 再生成ボタン、選択肢は出さない。ユーザー入力も本文中には再表示しない（設計書 §2）。
+// 再生成ボタン、選択肢は出さない。ユーザー入力も本文中には再表示しない（設計書 §12）。
 //
-// キーボード（設計書 §2）:
-//  - Enter: 送信。空入力なら observe（しばらく眺める）。
+// キーボード（設計書 §9 / §12）:
+//  - Enter: 送信。空入力なら observe（観察）。
 //  - Shift+Enter: 改行。IME 変換中の Enter は送信にしない。
 //  - Escape: 生成中だけ停止。
 //  - /wake + Enter: 目覚める。
@@ -115,7 +115,7 @@ export default function DreamWorkspace({
       if (isStreaming || streamActiveRef.current) return;
       // NOTE: 初回の明示（設計書 §5）を確認するまで、記録が始まる送信は行わない。
       if (!disclosureAcknowledgedRef.current) {
-        setError('夢の記録についての説明を確認してから始めてください。');
+        setError('明晰夢の記録についての説明を確認してから始めてください。');
         setShouldFocusInput(true);
         return;
       }
@@ -225,7 +225,7 @@ export default function DreamWorkspace({
         );
       } catch (err) {
         await handlers.onError({
-          error: err instanceof Error ? err.message : '夢の取得に失敗しました。',
+          error: err instanceof Error ? err.message : '明晰夢の取得に失敗しました。',
           code: 'unexpected_client_error',
           retryable: true,
         });
@@ -258,7 +258,7 @@ export default function DreamWorkspace({
       await sendTurnForSession(res.session, { kind: 'observe' });
     } catch (err) {
       if (mountedRef.current && projectIdRef.current === expectedProjectId) {
-        setError(err instanceof Error ? err.message : '夢を始められませんでした');
+        setError(err instanceof Error ? err.message : '明晰夢を始められませんでした');
       }
     } finally {
       if (mountedRef.current && projectIdRef.current === expectedProjectId) {
@@ -305,7 +305,7 @@ export default function DreamWorkspace({
       }
     } catch (err) {
       if (mountedRef.current && projectIdRef.current === expectedProjectId) {
-        setError(err instanceof Error ? err.message : '夢の読み込みに失敗しました');
+        setError(err instanceof Error ? err.message : '明晰夢の読み込みに失敗しました');
       }
     } finally {
       if (mountedRef.current && projectIdRef.current === expectedProjectId) {
@@ -371,10 +371,20 @@ export default function DreamWorkspace({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleStop, isStreaming]);
 
+  // NOTE: IME 変換確定の Enter を送信へ変換するためのフラグ。変換中の Enter はその場では送らず、
+  // compositionend（変換確定）で一度だけ送る。変換キャンセル（Escape 等）では送らない（設計書 §2）。
+  const commitEnterDuringCompositionRef = useRef(false);
+
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      // NOTE: IME 変換中の Enter は送信にしない（設計書 §2）。
-      if (event.nativeEvent.isComposing) return;
+      // NOTE: IME 変換中の Enter は送信しない。変換確定の Enter（isComposing が true）は
+      // フラグを立てて compositionend 側で送る。これにより日本語 IME で Enter 一回で送信できる。
+      if (event.nativeEvent.isComposing) {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          commitEnterDuringCompositionRef.current = true;
+        }
+        return;
+      }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         if (isStreaming) return;
@@ -392,6 +402,33 @@ export default function DreamWorkspace({
       }
     },
     [handleStop, handleWake, isStreaming, message, sendTurn]
+  );
+
+  const handleCompositionStart = useCallback(() => {
+    // 直前の変換で未消費のフラグが残っていても、新しい変換の開始で無効化する。
+    commitEnterDuringCompositionRef.current = false;
+  }, []);
+
+  const handleCompositionEnd = useCallback(
+    (event: React.CompositionEvent<HTMLTextAreaElement>) => {
+      if (!commitEnterDuringCompositionRef.current) return;
+      commitEnterDuringCompositionRef.current = false;
+      // NOTE: 変換キャンセル（Escape 等）では compositionend の data が空になり、送信しない。
+      if ((event.nativeEvent.data ?? '') === '') return;
+      if (isStreaming) return;
+      // compositionend は確定文字列の onChange より先に届く環境があるため、React state
+      // ではなく textarea の確定済み value を正として送る。
+      const committedMessage = event.currentTarget.value;
+      const trimmed = committedMessage.trim();
+      if (trimmed === '/wake') {
+        void handleWake();
+        return;
+      }
+      void sendTurn(
+        trimmed ? { kind: 'text', text: committedMessage } : { kind: 'observe', text: undefined }
+      );
+    },
+    [handleWake, isStreaming, sendTurn]
   );
 
   const acknowledgeDisclosure = useCallback(async () => {
@@ -432,7 +469,7 @@ export default function DreamWorkspace({
     activeSession && activeSession.messages[activeSession.messages.length - 1]?.role === 'user';
 
   if (loading) {
-    return <div className="loading dream-workspace-loading">夢を開いています…</div>;
+    return <div className="loading dream-workspace-loading">明晰夢を開いています…</div>;
   }
 
   return (
@@ -467,8 +504,8 @@ export default function DreamWorkspace({
       {!disclosure?.disclosureAcknowledged && (
         <div className="dream-disclosure" role="note">
           <p>
-            夢の中であなたが書いた言葉と、その直前の夢の本文は、作品を越えてこのアプリの
-            保存先に記録されます。記録された言葉は未来の夢の本文として、現在選択中のモデル
+            明晰夢の中であなたが書いた言葉と、その直前の明晰夢の本文は、作品を越えてこのアプリの
+            保存先に記録されます。記録された言葉は未来の明晰夢の本文として、現在選択中のモデル
             提供者へ送信されることがあります。アプリ設定から閲覧・書き出し・全消去・一時停止
             できます。
           </p>
@@ -490,7 +527,7 @@ export default function DreamWorkspace({
                 void startFirstDream();
               }}
             >
-              もう一度夢を見る
+              もう一度明晰夢を見る
             </button>
             <button onClick={onBack}>一覧へ戻る</button>
           </div>
@@ -521,14 +558,14 @@ export default function DreamWorkspace({
                   <p className="dream-streaming">{streamingText}</p>
                 )}
                 {isStreaming && !streamingText && (
-                  <p className="dream-placeholder">夢が立ち上がるのを待っています…</p>
+                  <p className="dream-placeholder">明晰夢が立ち上がるのを待っています…</p>
                 )}
               </div>
 
               <div className="dream-input-area">
                 {isStreaming ? (
                   <div className="dream-streaming-status">
-                    <span>{isStopping ? '止めています…' : '夢が続いています…'}</span>
+                    <span>{isStopping ? '止めています…' : '明晰夢が続いています…'}</span>
                     {!isStopping && (
                       <button className="dream-stop-button" onClick={handleStop}>
                         停止 (Esc)
@@ -542,14 +579,16 @@ export default function DreamWorkspace({
                     value={message}
                     onChange={(event) => setMessage(event.target.value)}
                     onKeyDown={handleKeyDown}
+                    onCompositionStart={handleCompositionStart}
+                    onCompositionEnd={handleCompositionEnd}
                     disabled={!activeSession || activeSession.status !== 'active' || isCreatingSession}
                     rows={Math.min(4, Math.max(1, message.split('\n').length))}
                     placeholder={
                       activeSession.status === 'archived'
-                        ? 'この夢は終わっています'
+                        ? 'この明晰夢は終わっています'
                         : isPendingUserMessage
-                          ? 'Enter で夢を続ける（同じ言葉で再試行）'
-                          : '浮かんだ言葉を書いて Enter。空のまま Enter でしばらく眺める'
+                          ? 'Enter で明晰夢を続ける（同じ言葉で再試行）'
+                          : '浮かんだ言葉を書いて Enter。空のまま Enter で世界の出方を観察する'
                     }
                   />
                 )}
@@ -560,10 +599,10 @@ export default function DreamWorkspace({
             <div className="dream-empty">
               <p>
                 {isCreatingSession
-                  ? '夢の入り口を開いています…'
+                  ? '明晰夢の入り口を開いています…'
                   : disclosure?.disclosureAcknowledged
-                    ? '夢がありません。'
-                    : '始める前に、夢の記録についてひとことだけ確認させてください。'}
+                    ? '明晰夢がありません。'
+                    : '始める前に、明晰夢の記録についてひとことだけ確認させてください。'}
               </p>
             </div>
           )}

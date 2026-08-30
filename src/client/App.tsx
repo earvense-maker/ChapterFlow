@@ -34,6 +34,8 @@ type View =
   | 'settings-tech'
   | 'settings-memory';
 
+type SetupSessionEntry = 'fresh' | 'resume';
+
 export default function App() {
   const notificationCenter = useNotificationCenter();
   useMaintenanceNotifications();
@@ -46,6 +48,9 @@ export default function App() {
   // NOTE: 体験モード（妄想増幅器）。クイックセットアップから詳細設定へ移っても失わない
   // （設計書 4.1）。SetupWorkspace 側でもセッション値から復元される。
   const [setupExperienceMode, setSetupExperienceMode] = useState<ExperienceMode>('standard');
+  // NOTE: 一覧の作成入口は別作品の古い相談を引き継がず、設定画面との往復や
+  // クイック設定で作成済みの相談だけを再開する。
+  const [setupSessionEntry, setSetupSessionEntry] = useState<SetupSessionEntry>('resume');
   // NOTE: 設定画面から戻る先を「Reader / RoleplayWorkspace / DreamWorkspace」で分けるための保持。
   const [projectMainView, setProjectMainView] = useState<'read' | 'roleplay' | 'dream'>('read');
   // NOTE: 通知クリックで「作品設定相談の該当run/patch」へフォーカスするための一時state。
@@ -115,6 +120,10 @@ export default function App() {
     view === 'settings-memory' ? 'memory' : undefined;
 
   const openAppSettings = (backView: View, initialProvider?: string) => {
+    if (backView === 'setup') {
+      // 設定画面から戻ったときは、いま開いている相談を作り直さず再開する。
+      setSetupSessionEntry('resume');
+    }
     setAppSettingsBackView(backView);
     setAppSettingsInitialProvider(initialProvider);
     setView('app-settings');
@@ -140,6 +149,7 @@ export default function App() {
   useEffect(() => {
     return notificationCenter.registerClickHandler((target) => {
       if (target.kind === 'setup') {
+        setSetupSessionEntry('resume');
         setView('setup');
         return;
       }
@@ -190,11 +200,13 @@ export default function App() {
             onSetupNew={() => {
               setSetupPurpose('novel');
               setSetupExperienceMode('standard');
+              setSetupSessionEntry('fresh');
               setView('setup');
             }}
             onSetupRoleplay={() => {
               setSetupPurpose('roleplay');
               setSetupExperienceMode('standard');
+              setSetupSessionEntry('fresh');
               setView('setup');
             }}
             onQuickSetupNovel={() => {
@@ -230,6 +242,7 @@ export default function App() {
           onOpenFullSetup={(purpose) => {
             setSetupPurpose(purpose);
             setSetupExperienceMode('amplifier');
+            setSetupSessionEntry('fresh');
             setView('setup');
           }}
           onCancel={handleBackToList}
@@ -240,9 +253,10 @@ export default function App() {
         // 付けて用途が変わったら必ず作り直し、小説の相談状態が残ったまま roleplay 表示に
         // なる事故を防ぐ。
         <SetupWorkspace
-          key={`${setupPurpose}:${setupExperienceMode}`}
+          key={`${setupPurpose}:${setupExperienceMode}:${setupSessionEntry}`}
           purpose={setupPurpose}
           experienceMode={setupExperienceMode}
+          resumeExistingSession={setupSessionEntry === 'resume'}
           onCreated={handleCreateProject}
           onCancel={handleBackToList}
           onOpenSettings={() => openAppSettings('setup')}
@@ -254,7 +268,8 @@ export default function App() {
           experienceMode={setupExperienceMode}
           onCreated={handleCreateProject}
           onCancel={handleBackToList}
-          onOpenFullSetup={() => {
+          onOpenFullSetup={(hasCurrentSession) => {
+            setSetupSessionEntry(hasCurrentSession ? 'resume' : 'fresh');
             setView('setup');
           }}
         />

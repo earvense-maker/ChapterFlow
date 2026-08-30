@@ -83,7 +83,7 @@ export default function ProjectList({
       // NOTE: 夢の生記憶はプロジェクト外（DATA_DIR/config/dream）にあるため、プロジェクトを
       // 削除しても残る。削除前にその事実を表示する（AC16）。
       message =
-        'この作品を削除しますか？\n夢の中で書かれた言葉とそのときの夢本文は、プロジェクトを削除しても保存先に残ります。残したくない場合はアプリ設定から全消去してください。';
+        'この作品を削除しますか？\n明晰夢の中で書かれた言葉とそのときの明晰夢の本文は、プロジェクトを削除しても保存先に残ります。残したくない場合はアプリ設定から全消去してください。';
     } else {
       message = 'この作品を削除しますか？';
     }
@@ -131,7 +131,7 @@ export default function ProjectList({
             一文からキャラ会話を始める
           </button>
           <button className="primary" onClick={onQuickSetupDream}>
-            夢を見る
+            明晰夢を見る
           </button>
           <button className="amplifier-entry-button" onClick={onAmplifierStart}>
             妄想増幅器を始める
@@ -158,7 +158,7 @@ export default function ProjectList({
               キャラと話す作品を作る
             </button>
             <button className="primary" onClick={onQuickSetupDream}>
-              夢を見る
+              明晰夢を見る
             </button>
             <button onClick={onNew}>設定を直接入力して作る</button>
           </div>
@@ -211,7 +211,7 @@ export default function ProjectList({
                   {p.experienceMode === 'dream' && (
                     <span
                       className="project-type-badge project-type-badge--dream"
-                      title="夢見るモード"
+                      title="明晰夢モード"
                       style={{
                         marginLeft: '0.5rem',
                         padding: '0.1rem 0.5rem',
@@ -222,7 +222,7 @@ export default function ProjectList({
                         fontWeight: 500,
                       }}
                     >
-                      夢
+                      明晰夢
                     </span>
                   )}
                 </h2>

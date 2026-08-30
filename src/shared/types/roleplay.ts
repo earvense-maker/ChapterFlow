@@ -20,7 +20,9 @@ export type InteractiveSessionMode = 'roleplay' | 'dream';
 // 持たせる。欠損は既存互換のため 'text'。'observe' は sessionMode === 'dream' だけで受理。
 export type DreamInputKind = 'text' | 'observe';
 
-export type RoleplayUserActionPolicy = 'strict' | 'conservative' | 'collaborative';
+// NOTE: UI上の現行選択肢は strict / collaborative の二択。conservative は旧保存データを
+// 壊さず読み、collaborative へ移行するためだけに型へ残す互換値。
+export type RoleplayUserActionPolicy = 'strict' | 'collaborative' | 'conservative';
 
 // NOTE: 会話相手としてのユーザー像。セッション開始時に contextSnapshot へ固定し、
 // 後から同名の作品設定が変わっても進行中の会話を変質させない。

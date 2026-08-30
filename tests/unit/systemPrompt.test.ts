@@ -50,6 +50,8 @@ describe('resolveSystemPrompt', () => {
     expect(result.systemPrompt.indexOf(immutableNovelContract())).toBeLessThan(
       result.systemPrompt.indexOf('この作品専用の基本プロンプト')
     );
+    expect(result.immutableContract).toContain('別作品・ロールプレイ・明晰夢の内容を');
+    expect(result.immutableContract).toContain('共有記憶として持ち込まない');
   });
 
   it('uses an editable base prompt while keeping preset and additional layers separate', async () => {

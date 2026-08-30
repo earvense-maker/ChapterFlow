@@ -59,7 +59,8 @@ describe('project settings validation', () => {
     expect(updated.defaultUserPersona).toEqual({
       name: '結衣',
       preferredAddress: '結衣先輩',
-      actionPolicy: 'conservative',
+      // NOTE: 旧「控えめに補完」は現行の「自然に補完」へ移行する。
+      actionPolicy: 'collaborative',
     });
 
     // NOTE: null は「未設定へ戻す」。保存後の読み出しでも消えていること。

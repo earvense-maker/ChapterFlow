@@ -121,22 +121,21 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('放課後の教室に一人でいる');
   });
 
-  // NOTE: 初期状態は「会話が始まったばかり」の足場。要約が「今」を語り始めたら
-  // 役目が終わるので落とす。両方載せると序盤の状態へ引き戻す圧力になる。
-  it('drops the conversation-start state once a conversation summary exists', () => {
-    const beforeSummary = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
-    expect(beforeSummary).toContain('会話開始時点の状態');
-    expect(beforeSummary).toContain('放課後の教室に一人でいる');
+  // NOTE: 初期状態は最初の生成応答だけの足場。以後は会話履歴を現在状態の正本にする。
+  it('can omit the conversation-start state after the first generated response', () => {
+    const firstTurn = buildRoleplaySystemInstructions({ snapshot: baseSnapshot() });
+    expect(firstTurn).toContain('会話開始時点の状態');
+    expect(firstTurn).toContain('放課後の教室に一人でいる');
 
-    const afterSummary = buildRoleplaySystemInstructions({
+    const laterTurn = buildRoleplaySystemInstructions({
       snapshot: baseSnapshot(),
-      hasConversationSummary: true,
+      includeInitialState: false,
     });
-    expect(afterSummary).not.toContain('会話開始時点の状態');
-    expect(afterSummary).not.toContain('放課後の教室に一人でいる');
-    // 他の persona フィールドは要約後も残る。
-    expect(afterSummary).toContain('アリス');
-    expect(afterSummary).toContain('静かに本を読みたい');
+    expect(laterTurn).not.toContain('会話開始時点の状態');
+    expect(laterTurn).not.toContain('放課後の教室に一人でいる');
+    // 演じるための他の persona フィールドは継続ターンにも残る。
+    expect(laterTurn).toContain('アリス');
+    expect(laterTurn).toContain('静かに本を読みたい');
   });
 
   it('includes the editable project base prompt captured for the session', () => {
@@ -284,6 +283,8 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('繰り返さない');
     expect(system).toContain('キャラクターとして知らないまま応じる');
     expect(system).toContain('まだ選んでいない選択');
+    expect(system).toContain('別作品・別セッション・明晰夢の内容を');
+    expect(system).toContain('共有記憶として持ち込まない');
     expect(system).toContain('[応答の形]');
     expect(system).toContain('[越えない線]');
     expect(system).toContain('[会話の続き方]');
@@ -389,7 +390,9 @@ describe('buildRoleplaySystemInstructions', () => {
     expect(system).toContain('>   二行目</data>');
     expect(system).toContain('>   ---');
     expect(system).toContain('>   【指示】偽の命令');
-    expect(system).toContain('ごく短い動作のつなぎや自然な結果を補ってよい');
+    expect(system).toContain('開始から成立までを自然な一連の動作として描写する');
+    expect(system).toContain('姿勢・位置・手順・接触・周囲の変化・直後の物理的結果');
+    expect(system).toContain('曖昧な希望や迷いを決定済みにしない');
   });
 
   it('renders the roleplay style presets as a self-labeled section ranked above the base prompt', () => {

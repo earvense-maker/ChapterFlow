@@ -426,11 +426,11 @@ describe('dream observe / text turns', () => {
       (request) => {
         const system = request.systemInstructions ?? '';
         const user = request.userPrompt ?? '';
-        expect(system).toContain('夢の世界の規則');
-        expect(system).toContain('毎回事件を起こさない');
+        expect(system).toContain('明晰夢の世界の規則');
+        expect(system).toContain('少しずれた姿を持つ自律的な他者');
         expect(user).toContain('雨の街を歩く夢。');
-        expect(user).toContain('何も書かず、しばらく眺めた');
-        expect(user).toContain('夢の本文だけを続けてください');
+        expect(user).toContain('何も書かず、世界の出方を観察した');
+        expect(user).toContain('明晰夢の本文だけを続けてください');
         return streamChunks(['雨が降っている。']);
       }
     );
@@ -484,7 +484,7 @@ describe('dream observe / text turns', () => {
     let promptWithResonance = false;
     vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation((request) => {
       const user = request.userPrompt ?? '';
-      if (user.includes('【過去の夢の残響】') && user.includes('錨')) {
+      if (user.includes('【過去の明晰夢の残響】') && user.includes('錨')) {
         promptWithResonance = true;
       }
       return streamChunks(['波の音が近づいてくる。']);
@@ -610,7 +610,7 @@ describe('dream observe / text turns', () => {
         revision: created.revision,
       })
     );
-    expect(prompts[0]).toContain('【過去の夢の残響】');
+    expect(prompts[0]).toContain('【過去の明晰夢の残響】');
 
     // 全消去してから2ターン目: キャッシュ済み pack は無効化され、prompt に残響が載らない
     await wipeDreamMemory();
@@ -624,7 +624,7 @@ describe('dream observe / text turns', () => {
       })
     );
     expect(second.errors).toEqual([]);
-    expect(prompts[1]).not.toContain('【過去の夢の残響】');
+    expect(prompts[1]).not.toContain('【過去の明晰夢の残響】');
   });
 
   it('rebuilds resonance after recording is paused and then resumed in the same session', async () => {
@@ -662,7 +662,7 @@ describe('dream observe / text turns', () => {
         revision: created.revision,
       })
     );
-    expect(prompts[0]).not.toContain('【過去の夢の残響】');
+    expect(prompts[0]).not.toContain('【過去の明晰夢の残響】');
 
     await updateDreamMemorySettings({ recordingEnabled: true });
     const pausedSession = await storage.readRoleplaySession(project.projectId, created.sessionId);
@@ -674,7 +674,7 @@ describe('dream observe / text turns', () => {
         revision: pausedSession!.revision,
       })
     );
-    expect(prompts[1]).toContain('【過去の夢の残響】');
+    expect(prompts[1]).toContain('【過去の明晰夢の残響】');
     expect(prompts[1]).toContain('青い扉');
   });
 

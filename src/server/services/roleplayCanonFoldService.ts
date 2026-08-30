@@ -121,6 +121,9 @@ export function parseSessionCanonEntries(value: unknown): SessionCanonEntry[] {
 // roleplay-message evidence を付ける。プロジェクト側の canon store は変更しない。
 // ただし初期 canon の状態変更は、fold対象会話本文内に根拠の抜粋が部分文字列として
 // 存在する場合だけ採用する（候補一覧だけでは公開・示唆済みにしない）。
+// NOTE: 改修問題2。targetCanonId が一致しても、元の文との意味的な一致（scope +
+// statement の包含）が無ければ ID 指定の上書きを認めない。モデルが誤った ID を返して
+// 無関係な内容で初期設定を潰す事故を防ぐ。
 export function applySessionCanonPatch(
   sessionCanon: LatentCanonItem[],
   entries: SessionCanonEntry[],
@@ -128,6 +131,9 @@ export function applySessionCanonPatch(
   options: {
     initialCanonCandidates?: LatentCanonItem[];
     foldTargetText?: string;
+    // NOTE: evidence の messageId を実際の引用元メッセージへ解決するための材料（改修問題2）。
+    // 省略時は従来どおり fold 境界の messageId を使う。
+    foldTargetMessages?: ReadonlyArray<{ messageId: string; content: string }>;
     fallbackNow?: string;
   } = {}
 ): LatentCanonItem[] {
@@ -137,14 +143,24 @@ export function applySessionCanonPatch(
     (item) => item.status !== 'retired'
   );
   for (const entry of entries) {
+    // NOTE: 改修問題2。ID一致だけでは採用せず、同じ scope+statement の意味的一致を要求する。
+    // ID が誤っていても意味が一致する別項目があれば、そちらへ正しく merge する。
     const byId = entry.canonId
       ? next.find((item) => item.canonId === entry.canonId)
       : undefined;
-    const matched = byId ?? findSessionMergeCandidate(next, entry);
+    const matched =
+      byId && matchesSessionMerge(entry, byId)
+        ? byId
+        : findSessionMergeCandidate(next, entry);
+    const evidenceMessageId = resolveEvidenceMessageId(
+      entry.evidenceExcerpt,
+      options.foldTargetMessages,
+      messageId
+    );
     const evidence = {
       kind: 'roleplay-message' as const,
       disclosure: entry.disclosure,
-      ...(messageId ? { messageId } : {}),
+      ...(evidenceMessageId ? { messageId: evidenceMessageId } : {}),
       excerpt: entry.evidenceExcerpt,
       createdAt: fallbackNow,
     };
@@ -163,13 +179,15 @@ export function applySessionCanonPatch(
       };
       continue;
     }
-    // NOTE: ID明示だけでなく、ID省略で同じ statement を返してきた場合も初期 canon の
-    // 照合対象にする。そうしないと evidence 検証を迂回して「未公開→公開済み」へ
-    // 無条件昇格できる（設計書 6.3・レビューP1）。
+    // NOTE: ID明示で初期 canon を target する場合も、意味的な一致を検証する（改修問題2）。
+    // ID が一致しても文が食い違う場合は初期 canon 候補とみなさず、新規項目として扱う。
+    const initialCandidateById = entry.canonId
+      ? initialCandidates.find((item) => item.canonId === entry.canonId)
+      : undefined;
     const initialCandidate =
-      (entry.canonId
-        ? initialCandidates.find((item) => item.canonId === entry.canonId)
-        : undefined) ?? findInitialCanonFallbackMatch(initialCandidates, entry);
+      initialCandidateById && matchesInitialCanon(entry, initialCandidateById)
+        ? initialCandidateById
+        : findInitialCanonFallbackMatch(initialCandidates, entry);
     if (initialCandidate) {
       if (
         !options.foldTargetText ||
@@ -201,6 +219,25 @@ export function applySessionCanonPatch(
   return next.slice(-60);
 }
 
+// NOTE: evidence の messageId を、抜粋を含む実際の引用元メッセージへ解決する（改修問題2）。
+// 抜粋がどのメッセージにも含まれない場合だけ fold 境界の messageId へ落とす。
+function resolveEvidenceMessageId(
+  excerpt: string,
+  messages: ReadonlyArray<{ messageId: string; content: string }> | undefined,
+  boundaryMessageId: string
+): string {
+  const normalizedExcerpt = normalizeComparableCanonStatement(excerpt);
+  if (!normalizedExcerpt || !messages || messages.length === 0) return boundaryMessageId;
+  // 新しい方から探し、最後に抜粋を含む発言を引用元とみなす。
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const content = normalizeComparableCanonStatement(messages[i].content);
+    if (content && content.includes(normalizedExcerpt)) {
+      return messages[i].messageId;
+    }
+  }
+  return boundaryMessageId;
+}
+
 // NOTE: 初期 canon の session-local コピー。同じ canonId のまま新しい status と
 // evidence を付ける。初期状態より後退させない（初期 revealed を後続の foreshadowed で
 // 上書きしない・レビューP1）。promotedToProjectAt は作品側のフラグなのでコピーしない。
@@ -226,33 +263,37 @@ function copyInitialCandidateToSession(
 
 // NOTE: ID不一致でも初期 canon の照合候補とみなすフォールバック。scope と正規化
 // statement の一致・包含に加え、両方に subjectCharacterIds がある場合は対象人物の
-// 一致も要求する（設計書 6.2-3 と同規則）。
+// 一致も要求する（設計書 6.2-3 と同規則）。ID が一致する場合も同じ検証を通す
+// （改修問題2）。
 function findInitialCanonFallbackMatch(
   items: LatentCanonItem[],
   entry: SessionCanonEntry
 ): LatentCanonItem | undefined {
-  return items.find((item) => {
-    if (item.scope !== entry.scope) return false;
-    const statementA = normalizeComparableCanonStatement(entry.statement);
-    const statementB = normalizeComparableCanonStatement(item.statement);
-    if (!statementA || !statementB) return false;
-    const statementsMatch =
-      statementA === statementB ||
-      statementA.includes(statementB) ||
-      statementB.includes(statementA);
-    if (!statementsMatch) return false;
-    if (item.subjectCharacterIds && entry.subjectCharacterIds) {
-      const left = [...item.subjectCharacterIds].sort();
-      const right = [...entry.subjectCharacterIds].sort();
-      if (
-        left.length !== right.length ||
-        left.some((id, index) => id !== right[index])
-      ) {
-        return false;
-      }
+  return items.find((item) => matchesInitialCanon(entry, item));
+}
+
+// NOTE: 初期 canon 候補との意味的一致（scope + statement + subjectCharacterIds）。
+function matchesInitialCanon(entry: SessionCanonEntry, item: LatentCanonItem): boolean {
+  if (item.scope !== entry.scope) return false;
+  const statementA = normalizeComparableCanonStatement(entry.statement);
+  const statementB = normalizeComparableCanonStatement(item.statement);
+  if (!statementA || !statementB) return false;
+  const statementsMatch =
+    statementA === statementB ||
+    statementA.includes(statementB) ||
+    statementB.includes(statementA);
+  if (!statementsMatch) return false;
+  if (item.subjectCharacterIds && entry.subjectCharacterIds) {
+    const left = [...item.subjectCharacterIds].sort();
+    const right = [...entry.subjectCharacterIds].sort();
+    if (
+      left.length !== right.length ||
+      left.some((id, index) => id !== right[index])
+    ) {
+      return false;
     }
-    return true;
-  });
+  }
+  return true;
 }
 
 // NOTE: 公開状態の前進だけを許す。revealed > foreshadowed > provisional。
@@ -281,18 +322,22 @@ export function evidenceFoundInFoldTarget(excerpt: string, foldTargetText: strin
   return Boolean(normalizedExcerpt && normalizedText.includes(normalizedExcerpt));
 }
 
+// NOTE: 既存 session canon との意味的一致（scope + statement の包含）。ID 指定の更新にも
+// この一致を要求する（改修問題2）。
+function matchesSessionMerge(entry: SessionCanonEntry, item: LatentCanonItem): boolean {
+  if (item.status === 'retired') return false;
+  if (item.scope !== entry.scope) return false;
+  const statementA = normalizeComparableCanonStatement(entry.statement);
+  const statementB = normalizeComparableCanonStatement(item.statement);
+  if (!statementA || !statementB) return false;
+  return statementA === statementB || statementA.includes(statementB) || statementB.includes(statementA);
+}
+
 function findSessionMergeCandidate(
   items: LatentCanonItem[],
   entry: SessionCanonEntry
 ): LatentCanonItem | undefined {
-  return items.find((item) => {
-    if (item.status === 'retired') return false;
-    if (item.scope !== entry.scope) return false;
-    const statementA = normalizeComparableCanonStatement(entry.statement);
-    const statementB = normalizeComparableCanonStatement(item.statement);
-    if (!statementA || !statementB) return false;
-    return statementA === statementB || statementA.includes(statementB) || statementB.includes(statementA);
-  });
+  return items.find((item) => matchesSessionMerge(entry, item));
 }
 
 function normalizeScope(value: unknown): CanonScope | undefined {

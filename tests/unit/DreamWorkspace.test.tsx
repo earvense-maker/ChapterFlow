@@ -230,6 +230,43 @@ describe('DreamWorkspace', () => {
     expect(apiMock.sendRoleplayMessageStream).not.toHaveBeenCalled();
   });
 
+  it('sends once when Enter confirms IME composition (変換確定の Enter で1回送信)', async () => {
+    apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [summary('rp-dream-1')] });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: dreamSessionWithProse() });
+
+    render(<DreamWorkspace projectId="project-dream" onBack={() => {}} onOpenWorkSettings={() => {}} onOpenTechSettings={() => {}} />);
+
+    const input = await screen.findByPlaceholderText(/浮かんだ言葉を書いて Enter/);
+    fireEvent.change(input, { target: { value: '鍵を拾う' } });
+    // 変換確定の Enter（isComposing=true）ではまだ送信しない
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(apiMock.sendRoleplayMessageStream).not.toHaveBeenCalled();
+    // compositionend（変換確定）で一度だけ送信する
+    fireEvent.compositionEnd(input, { data: '鍵を拾う' });
+    expect(apiMock.sendRoleplayMessageStream).toHaveBeenCalledTimes(1);
+    expect(apiMock.sendRoleplayMessageStream).toHaveBeenCalledWith(
+      'project-dream',
+      'rp-dream-1',
+      expect.objectContaining({ message: '鍵を拾う', revision: 3 }),
+      expect.anything(),
+      expect.anything()
+    );
+  });
+
+  it('does not send when IME composition is cancelled (Escape) even after a composing Enter', async () => {
+    apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [summary('rp-dream-1')] });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: dreamSessionWithProse() });
+
+    render(<DreamWorkspace projectId="project-dream" onBack={() => {}} onOpenWorkSettings={() => {}} onOpenTechSettings={() => {}} />);
+
+    const input = await screen.findByPlaceholderText(/浮かんだ言葉を書いて Enter/);
+    fireEvent.change(input, { target: { value: 'かぎ' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    // 変換キャンセルでは compositionend の data が空になる
+    fireEvent.compositionEnd(input, { data: '' });
+    expect(apiMock.sendRoleplayMessageStream).not.toHaveBeenCalled();
+  });
+
   it('restores the pending user message after an error and retries via replace (AC8/AC10)', async () => {
     apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [summary('rp-dream-1')] });
     apiMock.getRoleplaySession
@@ -247,7 +284,7 @@ describe('DreamWorkspace', () => {
     capturedHandlers!.onError({ error: '接続が切れました', code: 'network_error', retryable: true });
 
     // 再同期後、末尾が未応答 user なら訂正送信（replacePendingMessageId）で再試行できる
-    const input2 = await screen.findByPlaceholderText(/Enter で夢を続ける/);
+    const input2 = await screen.findByPlaceholderText(/Enter で明晰夢を続ける/);
     // 送信した言葉が入力欄へ戻り、同じ入力を追加せず訂正送信できる（AC8/設計書 §10）
     expect(input2).toHaveValue('鍵を拾う');
     fireEvent.keyDown(input2, { key: 'Enter' });
@@ -366,5 +403,32 @@ describe('DreamWorkspace', () => {
     // 生成中は「目覚める」が無効になる
     expect(screen.getByRole('button', { name: '目覚める' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '停止 (Esc)' })).toBeInTheDocument();
+  });
+
+  it('shows the lucid dream name and the observe guide in the input placeholder (改修設計書 §12 / §16)', async () => {
+    apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [summary('rp-dream-1')] });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: dreamSessionWithProse() });
+
+    render(<DreamWorkspace projectId="project-dream" onBack={() => {}} onOpenWorkSettings={() => {}} onOpenTechSettings={() => {}} />);
+
+    // 空 Enter の案内が「世界の出方を観察する」に変わる（旧「しばらく眺める」は出さない）
+    const input = await screen.findByPlaceholderText(/浮かんだ言葉を書いて Enter/);
+    expect(input.getAttribute('placeholder')).toContain('世界の出方を観察する');
+    expect(input.getAttribute('placeholder')).not.toContain('しばらく眺める');
+  });
+
+  it('shows 明晰夢 in the ended screen and restarts a lucid dream (改修設計書 §12)', async () => {
+    apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [summary('rp-dream-1')] });
+    apiMock.getRoleplaySession.mockResolvedValue({ session: dreamSessionWithProse() });
+    apiMock.archiveRoleplaySession.mockResolvedValue({ session: { ...dreamSessionWithProse(), status: 'archived' } });
+
+    render(<DreamWorkspace projectId="project-dream" onBack={() => {}} onOpenWorkSettings={() => {}} onOpenTechSettings={() => {}} />);
+
+    const input = await screen.findByPlaceholderText(/浮かんだ言葉を書いて Enter/);
+    fireEvent.change(input, { target: { value: '/wake' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(screen.getByText('目が覚めました。')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'もう一度明晰夢を見る' })).toBeInTheDocument();
   });
 });

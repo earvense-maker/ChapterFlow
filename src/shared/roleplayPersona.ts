@@ -12,17 +12,28 @@ export const ROLEPLAY_USER_PERSONA_LIMITS = {
 
 export const ROLEPLAY_USER_ACTION_POLICY_VALUES: readonly RoleplayUserActionPolicy[] = [
   'strict',
-  'conservative',
   'collaborative',
+  // NOTE: 旧「控えめに補完」。新規UIでは選べず、正規化時に collaborative へ移行する。
+  'conservative',
 ];
 
-export const DEFAULT_ROLEPLAY_USER_ACTION_POLICY: RoleplayUserActionPolicy = 'conservative';
+export const DEFAULT_ROLEPLAY_USER_ACTION_POLICY: RoleplayUserActionPolicy = 'collaborative';
 
 export function isRoleplayUserActionPolicy(value: unknown): value is RoleplayUserActionPolicy {
   return (
     typeof value === 'string' &&
     ROLEPLAY_USER_ACTION_POLICY_VALUES.includes(value as RoleplayUserActionPolicy)
   );
+}
+
+export function normalizeRoleplayUserActionPolicy(
+  value: unknown
+): RoleplayUserActionPolicy {
+  if (value === 'strict') return 'strict';
+  // NOTE: 旧「控えめに補完」は補完を許可していた利用者意図を保ち、強化後の
+  // 「自然に補完」へ寄せる。未知値・欠損も現行既定へ落とす。
+  if (value === 'collaborative' || value === 'conservative') return 'collaborative';
+  return DEFAULT_ROLEPLAY_USER_ACTION_POLICY;
 }
 
 /**
@@ -43,9 +54,7 @@ export function normalizeUserPersonaFields(value: unknown): RoleplayUserPersona 
       ROLEPLAY_USER_PERSONA_LIMITS.preferredAddress
     ),
     knownFacts: normalizePersonaText(source.knownFacts, ROLEPLAY_USER_PERSONA_LIMITS.knownFacts),
-    actionPolicy: isRoleplayUserActionPolicy(source.actionPolicy)
-      ? source.actionPolicy
-      : DEFAULT_ROLEPLAY_USER_ACTION_POLICY,
+    actionPolicy: normalizeRoleplayUserActionPolicy(source.actionPolicy),
   };
   // NOTE: actionPolicy だけの既定値ペルソナは「未設定」と同じ意味なので保存しない。
   return isEmptyUserPersona(persona) ? undefined : persona;
@@ -58,7 +67,8 @@ export function isEmptyUserPersona(persona: RoleplayUserPersona | undefined): bo
     !persona.relationship?.trim() &&
     !persona.preferredAddress?.trim() &&
     !persona.knownFacts?.trim() &&
-    persona.actionPolicy === DEFAULT_ROLEPLAY_USER_ACTION_POLICY
+    normalizeRoleplayUserActionPolicy(persona.actionPolicy) ===
+      DEFAULT_ROLEPLAY_USER_ACTION_POLICY
   );
 }
 

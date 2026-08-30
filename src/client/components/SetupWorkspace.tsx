@@ -58,6 +58,9 @@ interface Props {
   // NOTE: 体験モード（妄想増幅器）。クイックセットアップから詳細設定へ移っても失わない
   // （設計書 4.1）。復元時のセッション照合にも使う。
   experienceMode?: ExperienceMode;
+  // 一覧の「作品を作る」入口では false。設定画面との往復や、すでに作成した
+  // クイック設定セッションから移る場合だけ true にする。
+  resumeExistingSession?: boolean;
   onCreated: (projectId: string) => void;
   onCancel: () => void;
   onOpenSettings: () => void;
@@ -176,6 +179,7 @@ const FALLBACK_ACTION_MIN_MESSAGES = 4;
 export default function SetupWorkspace({
   purpose = 'novel',
   experienceMode = 'standard',
+  resumeExistingSession = true,
   onCreated,
   onCancel,
   onOpenSettings,
@@ -323,7 +327,9 @@ export default function SetupWorkspace({
       try {
         setLoading(true);
         setError(null);
-        const restored = await findRestorableSetupSession(purpose, experienceMode);
+        const restored = resumeExistingSession
+          ? await findRestorableSetupSession(purpose, experienceMode)
+          : null;
         if (ignore) return;
 
         if (restored) {

@@ -74,12 +74,15 @@ describe('RoleplayWorkspace session settings', () => {
     });
   });
 
-  it('sends the conservative action policy even when persona text is blank', async () => {
+  it('offers two action policies and sends natural completion by default', async () => {
     apiMock.listRoleplaySessions.mockResolvedValue({ sessions: [] });
     apiMock.createRoleplaySession.mockResolvedValue({ session: session() });
 
     renderWorkspace();
     const dialog = await screen.findByRole('dialog', { name: '新しい会話を始める' });
+    const actionPolicy = within(dialog).getByLabelText('あなたの行動の補完');
+    expect(within(actionPolicy).getAllByRole('option')).toHaveLength(2);
+    expect(within(actionPolicy).queryByRole('option', { name: '控えめに補完' })).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: '会話を始める' }));
 
     await waitFor(() => {
@@ -91,7 +94,7 @@ describe('RoleplayWorkspace session settings', () => {
           relationship: undefined,
           preferredAddress: undefined,
           knownFacts: undefined,
-          actionPolicy: 'conservative',
+          actionPolicy: 'collaborative',
         },
       });
     });
@@ -193,7 +196,7 @@ function session(overrides: Partial<RoleplaySessionView> = {}): RoleplaySessionV
       relationship: '幼なじみ',
       preferredAddress: 'ユウくん',
       knownFacts: '雨の日が好き。',
-      actionPolicy: 'conservative',
+      actionPolicy: 'collaborative',
     },
     appliedSettings: {
       capturedAt: '2026-07-28T00:00:00.000Z',

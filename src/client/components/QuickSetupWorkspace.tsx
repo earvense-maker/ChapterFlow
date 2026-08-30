@@ -17,7 +17,7 @@ interface Props {
   experienceMode?: ExperienceMode;
   onCreated: (projectId: string, projectType: SetupPurpose) => void;
   onCancel: () => void;
-  onOpenFullSetup: () => void;
+  onOpenFullSetup: (hasCurrentSession: boolean) => void;
 }
 
 export default function QuickSetupWorkspace({
@@ -129,7 +129,7 @@ export default function QuickSetupWorkspace({
         </div>
         <div className="project-list-actions">
           <button onClick={onCancel}>キャンセル</button>
-          <button onClick={onOpenFullSetup}>詳細を自分で決める</button>
+          <button onClick={() => onOpenFullSetup(Boolean(session))}>詳細を自分で決める</button>
         </div>
       </header>
 
@@ -293,16 +293,16 @@ const ROLEPLAY_COPY = {
   commitLabel: 'この内容で作品を作る',
 };
 
-// NOTE: 夢見るモードの最小文言（設計書 §9）。見出しとプレースホルダーだけを変え、詳細
-// 設定全体の語彙変更は MVP 外とする。
+// NOTE: 明晰夢モードの最小文言（改修設計書 §12）。見出しとプレースホルダーだけを変え、詳細
+// 設定全体の語彙変更は Phase 1 の対象外とする。
 const DREAM_COPY = {
-  heading: '夢の入り口を作る',
+  heading: '明晰夢の入り口を作る',
   description:
-    'どんな夢の入り口が欲しいですか？一文で書いてください。言葉はそのまま保存され、未来の夢の奥で形を変えて戻ってきます。',
-  wishLabel: 'どんな夢の入り口が欲しいですか',
+    'どんな明晰夢の入り口が欲しいですか？一文で書いてください。言葉はそのまま保存され、未来の明晰夢の奥で形を変えて戻ってきます。',
+  wishLabel: 'どんな明晰夢の入り口が欲しいですか',
   wishPlaceholder: '例: 雨の降る街で、行き先の決まらない足音を追う夢。',
   openingLabel: '最初に見たい情景',
   openingPlaceholder: '例: 夜の海岸。遠くの灯りがひとつずつ消えていく。',
-  submitLabel: 'この一文で夢を作る',
-  commitLabel: 'この内容で夢を作る',
+  submitLabel: 'この一文で明晰夢を作る',
+  commitLabel: 'この内容で明晰夢を作る',
 };

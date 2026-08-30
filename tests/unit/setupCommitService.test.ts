@@ -706,7 +706,7 @@ describe('setupCommitService', () => {
       relationship: '幼馴染',
       preferredAddress: '結衣',
       knownFacts: '同じ高校の3年生であることを知っている',
-      actionPolicy: 'conservative',
+      actionPolicy: 'collaborative',
     });
 
     // NOTE: モデル出力があればそちらを優先する。
