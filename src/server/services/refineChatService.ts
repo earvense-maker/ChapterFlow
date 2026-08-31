@@ -1,6 +1,6 @@
 import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
-import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
 import { KeyedMutex } from '../utils/keyedMutex.js';
 import * as storage from './storageService.js';
 import { normalizeCharactersForStorage } from './projectService.js';
@@ -384,9 +384,6 @@ async function sendRefineMessageUnlocked(
       temperature: TEMPERATURE,
       timeoutMs: TIMEOUT_MS,
       modelName: project.activeModelName,
-      // NOTE: 応答は JSON 前提。Structured Output で前置き文混入や思考モードでの
-      // 空応答を減らす。
-      responseMimeType: 'application/json',
     },
     project.activeModelProvider,
     project.activeModelName
@@ -722,28 +719,24 @@ async function applyChatResult(params: ApplyChatResultParams): Promise<RefineCha
 
 // ---------- DeepSeek 再試行（設計書 5.3 / 5.5 / 5.7） ----------
 
-// NOTE: DeepSeek V4 の AI 相談だけ JSON 出力を維持したまま thinking を有効にする。
-// それ以外のプロバイダー・モデルへは reasoningMode を付けず、リクエストを変えない。
+// NOTE: DeepSeek V4 の AI 相談は JSON 出力を維持したまま thinking を有効にする。
+// それ以外のプロバイダー・モデルは thinking を無効化して JSON 生成を安定させる。
 function buildRefineChatAdapterRequest(
   base: Omit<
     AdapterGenerateRequest,
-    'reasoningMode' | 'reasoningEffort' | 'maxOutputTokens'
+    'reasoningMode' | 'reasoningEffort' | 'maxOutputTokens' | 'responseMimeType'
   >,
   provider: string,
   modelName: string
 ): AdapterGenerateRequest {
   if (provider === 'deepseek' && isDeepSeekV4Model(modelName)) {
+    const applied = applyJsonTaskPolicy(base as AdapterGenerateRequest, { reasoningMode: 'enabled' });
     return {
-      ...base,
-      // NOTE: JSON のまま thinking を有効化し、本文 + 内部 JSON に加えて思考の余地を
-      // 確保する（設計書 5.3）。reasoning_effort は V4 では low/medium も high と
-      // 扱われるため high を明示する。
-      reasoningMode: 'enabled',
+      ...applied,
       reasoningEffort: 'high',
-      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
     };
   }
-  return { ...base };
+  return applyJsonTaskPolicy(base as AdapterGenerateRequest, { reasoningMode: 'disabled' });
 }
 
 type RetryReason =

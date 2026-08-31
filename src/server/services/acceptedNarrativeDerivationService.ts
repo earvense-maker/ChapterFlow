@@ -19,6 +19,7 @@ import {
   withStoryStateLock,
 } from './storyStateService.js';
 import { withProjectWriteLock } from './projectLock.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
 import type { ModelAdapter } from '../adapters/modelAdapter.js';
 import type {
   AcceptedNarrativeDerivation,
@@ -67,18 +68,16 @@ export async function extractNarrativeObservations(input: {
     },
   ];
   for (const [attemptIndex, attempt] of attempts.entries()) {
-    const result = await input.adapter.generateText({
+    const result = await input.adapter.generateText(applyJsonTaskPolicy({
       debugLabel: `acceptedDerivation.extract.attempt${attemptIndex + 1}`,
       systemInstructions: buildSystemInstructions(),
       userPrompt,
       outputLength: attempt.outputLength,
-      maxOutputTokens: attempt.maxOutputTokens,
       temperature: DERIVATION_TEMPERATURE,
       timeoutMs:
         attemptIndex === 0 ? input.timeoutMs : Math.max(5_000, Math.floor(input.timeoutMs / 2)),
       modelName: input.project.activeModelName,
-      responseMimeType: 'application/json',
-    });
+    }, { reasoningMode: 'disabled', maxOutputTokens: attempt.maxOutputTokens }));
 
     if (result.finishReason === 'timeout') {
       throw new Error('物語の状態抽出がタイムアウトしました。少し待ってから再抽出してください。');

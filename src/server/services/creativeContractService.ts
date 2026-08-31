@@ -3,6 +3,7 @@ import { generateTimestampId } from '../utils/id.js';
 import { nowIso } from '../utils/date.js';
 import { normalizeComparableText } from '../utils/characterStateMatching.js';
 import * as storage from './storageService.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
 import type { ModelAdapter } from '../adapters/modelAdapter.js';
 import type {
   CreativeContract,
@@ -272,17 +273,15 @@ export async function detectHardContractConflicts(input: {
   ].join('\n');
 
   try {
-    const result = await input.adapter.generateText({
+    const result = await input.adapter.generateText(applyJsonTaskPolicy({
       debugLabel: 'creativeContract.conflictDetect',
       systemInstructions: 'あなたは設定整合性の検査係です。JSONだけを出力してください。',
       userPrompt,
       outputLength: CONFLICT_DETECT_OUTPUT_LENGTH,
-      maxOutputTokens: 4_096,
       temperature: 0.1,
       timeoutMs: CONFLICT_DETECT_TIMEOUT_MS,
       modelName: input.project.activeModelName,
-      responseMimeType: 'application/json',
-    });
+    }, { reasoningMode: 'disabled', maxOutputTokens: 4_096 }));
     if (result.finishReason !== 'stop' || !result.text.trim()) return [];
     const parsed = parseConflictCandidates(result.text);
     const byId = new Map(hardTexts.map((item) => [item.contractId, item]));

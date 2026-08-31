@@ -764,8 +764,9 @@ export async function generateSetupDraft(
       userPrompt,
       outputLength: DRAFT_EXTRACT_OUTPUT_LENGTH,
       temperature: DRAFT_EXTRACT_TEMPERATURE,
-      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
+      reasoningMode: 'disabled',
       responseMimeType: 'application/json',
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
     }).catch(async (err) => {
       const nextSession = await writeSessionError(session, err);
       throw toSetupServiceError(err, nextSession);
@@ -1145,9 +1146,9 @@ export async function createQuickSetupPlan(
       userPrompt,
       outputLength: QUICK_PLAN_OUTPUT_LENGTH,
       temperature: QUICK_PLAN_TEMPERATURE,
-      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
-      reasoningEffort: 'medium',
+      reasoningMode: 'disabled',
       responseMimeType: 'application/json',
+      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
     }).catch(async (err) => {
       const nextSession = await writeSessionError(session, err);
       throw toSetupServiceError(err, nextSession);
@@ -1856,6 +1857,7 @@ async function generateWithSessionModel(
     // 思考ゼロ前提の値なので、相談経路はここで明示的に枠と熟考量を指定する。
     maxOutputTokens?: number;
     reasoningEffort?: 'low' | 'medium' | 'high';
+    reasoningMode?: 'enabled' | 'disabled';
     responseMimeType?: 'application/json';
     abortSignal?: AbortSignal;
   }

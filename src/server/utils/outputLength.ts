@@ -27,7 +27,8 @@ export function getApproximateOutputRange(outputLength: number): ApproximateOutp
   };
 }
 
-// NOTE: JSON を返させるタスク共通の出力枠。本文向けの estimateMaxOutputTokens は
+// NOTE: JSON を返させるタスク共通の出力枠。jsonTaskPolicy.applyJsonTaskPolicy の
+// 既定 maxOutputTokens として使われる。本文向けの estimateMaxOutputTokens は
 // 「目標字数 × 3 + 2048」で、+2048 の思考マージンは Gemini 2.5 世代を想定した値。
 // 実測では deepseek-v4-flash が本文ゼロのまま思考だけで 12,248 トークン使い切り、
 // 走査の枠（約10,898）を上回って finishReason=length の空応答になった。JSON 自体は

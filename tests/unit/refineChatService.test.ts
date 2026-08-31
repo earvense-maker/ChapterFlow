@@ -1103,8 +1103,8 @@ describe('refineChatService DeepSeek reasoning retry flow', () => {
     });
     await refineChatService.sendRefineMessage(geminiProjectId, { content: '相談' });
     expect(geminiSpy).toHaveBeenCalledTimes(1);
-    expect(geminiSpy.mock.calls[0][0].reasoningMode).toBeUndefined();
-    expect(geminiSpy.mock.calls[0][0].maxOutputTokens).toBeUndefined();
+    expect(geminiSpy.mock.calls[0][0].reasoningMode).toBe('disabled');
+    expect(geminiSpy.mock.calls[0][0].maxOutputTokens).toBe(40_000);
 
     const openaiProjectId = await createTrackedProject();
     await projectService.updateProject(openaiProjectId, {
@@ -1118,8 +1118,8 @@ describe('refineChatService DeepSeek reasoning retry flow', () => {
     });
     await refineChatService.sendRefineMessage(openaiProjectId, { content: '相談' });
     expect(openaiSpy).toHaveBeenCalledTimes(1);
-    expect(openaiSpy.mock.calls[0][0].reasoningMode).toBeUndefined();
-    expect(openaiSpy.mock.calls[0][0].maxOutputTokens).toBeUndefined();
+    expect(openaiSpy.mock.calls[0][0].reasoningMode).toBe('disabled');
+    expect(openaiSpy.mock.calls[0][0].maxOutputTokens).toBe(40_000);
   });
 
   it('does not duplicate messages, notes, or patches across the retry', async () => {
@@ -1163,7 +1163,7 @@ describe('refineChatService DeepSeek reasoning retry flow', () => {
     expect(result.session.patches).toHaveLength(1);
   });
 
-  it('sends no reasoning fields on non-V4 DeepSeek models', async () => {
+  it('sends reasoningMode disabled on non-V4 DeepSeek models', async () => {
     const projectId = await createTrackedProject();
     await useDeepSeekProject(projectId, 'deepseek-chat');
     const spy = mockDeepSeekTurns([{ text: structuredReply() }]);
@@ -1172,8 +1172,8 @@ describe('refineChatService DeepSeek reasoning retry flow', () => {
 
     expect(spy).toHaveBeenCalledTimes(1);
     const request = spy.mock.calls[0][0];
-    expect(request.reasoningMode).toBeUndefined();
+    expect(request.reasoningMode).toBe('disabled');
     expect(request.reasoningEffort).toBeUndefined();
-    expect(request.maxOutputTokens).toBeUndefined();
+    expect(request.maxOutputTokens).toBe(40_000);
   });
 });

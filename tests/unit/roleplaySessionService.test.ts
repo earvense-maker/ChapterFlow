@@ -2561,3 +2561,568 @@ describe('session canon summary fold（設計書 6.3・12.3）', () => {
     });
   });
 });
+
+describe('summary retry and stability（設計書 4.1〜4.5）', () => {
+  const validSummaryJson = JSON.stringify({
+    summary: '要約の本文です。',
+    relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+    sessionCanon: [],
+  });
+
+  async function setupSessionWithMessages(count: number) {
+    const project = await makeRoleplayProject();
+    const created = await roleplayService.createRoleplaySession({
+      projectId: project.projectId,
+      characterId: 'char-a',
+    });
+    await seedMessages(project.projectId, created.sessionId, count, 'retry');
+    return { project, created };
+  }
+
+  it('succeeds with a single call when the initial result is valid (stop + parseable JSON)', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: validSummaryJson,
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['了解。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続ける',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries on finishReason=length even if JSON is parseable', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: validSummaryJson,
+        finishReason: 'length',
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        text: validSummaryJson,
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['わかった。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続ける',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    expect(generateText).toHaveBeenCalledTimes(2);
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.conversationSummary).toBe('要約の本文です。');
+  });
+
+  it('retries on empty text', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: '',
+        finishReason: 'stop',
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        text: validSummaryJson,
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['うん。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続ける',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries on JSON parse failure', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: '{"summary": invalid json',
+        finishReason: 'stop',
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        text: validSummaryJson,
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['うん。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続ける',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries when summary is empty string', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          summary: '',
+          relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+          sessionCanon: [],
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        text: validSummaryJson,
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['うん。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続ける',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries when sessionCanon is missing from the output', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          summary: '要約あり',
+          relationshipState: { trust: 50, intimacy: 30, tension: 20 },
+        }),
+        finishReason: 'stop',
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        text: validSummaryJson,
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['うん。'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: '続ける',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT retry on finishReason=error', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '',
+      finishReason: 'error',
+      retryable: true,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['never used'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'trigger error',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors[0]?.code).toBe('summary_failed');
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT retry on finishReason=timeout', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '',
+      finishReason: 'timeout',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['never used'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'trigger timeout',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors[0]?.code).toBe('summary_failed');
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT retry on content_filter', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '',
+      finishReason: 'content_filter',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['never used'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'trigger filter',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors[0]?.code).toBe('summary_failed');
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not adopt the initial result when retry also fails', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: validSummaryJson,
+        finishReason: 'length',
+        retryable: false,
+      })
+      .mockResolvedValueOnce({
+        text: '',
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['never used'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'double fail',
+        revision: latest.revision,
+      })
+    );
+    expect(result.errors[0]?.code).toBe('summary_failed');
+    expect(generateText).toHaveBeenCalledTimes(2);
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.conversationSummary).toBeUndefined();
+    expect(saved?.summaryThroughMessageId).toBeUndefined();
+  });
+
+  it('limits model calls to at most 2 per performSummary', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: '{"summary": broken',
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['never used'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'max calls',
+        revision: latest.revision,
+      })
+    );
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends responseMimeType=application/json and reasoningMode=disabled for summary', async () => {
+    const { project, created } = await setupSessionWithMessages(42);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: validSummaryJson,
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['ok'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'check params',
+        revision: latest.revision,
+      })
+    );
+
+    const summaryCall = generateText.mock.calls[0];
+    expect(summaryCall).toBeDefined();
+    const request = summaryCall![0];
+    expect(request.responseMimeType).toBe('application/json');
+    expect(request.reasoningMode).toBe('disabled');
+    expect(request.maxOutputTokens).toBe(40_000);
+    expect(request.outputLength).toBe(12_000);
+  });
+
+  it('starts background summary at 30 messages (not 40)', async () => {
+    const { project, created } = await setupSessionWithMessages(28);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: validSummaryJson,
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['ok'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'background early',
+        revision: latest.revision,
+      })
+    );
+
+    // 28 seeded + 1 greeting + 1 user + 1 character = 31 messages after cursor
+    // This exceeds the 30-message background threshold
+    await waitForCondition(async () => {
+      const session = await storage.readRoleplaySession(project.projectId, created.sessionId);
+      return Boolean(session?.summaryThroughMessageId);
+    });
+    expect(generateText).toHaveBeenCalled();
+  });
+
+  it('does not start background summary when messages are below 30', async () => {
+    const { project, created } = await setupSessionWithMessages(10);
+    const generateText = vi.spyOn(GeminiAdapter.prototype, 'generateText').mockResolvedValue({
+      text: validSummaryJson,
+      finishReason: 'stop',
+      retryable: false,
+    });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['ok'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'no background',
+        revision: latest.revision,
+      })
+    );
+
+    // 10 seeded + 1 greeting + 1 user + 1 character = 13, below 30 threshold
+    await wait(200);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it('suppresses the next background call for 60s after a background failure', async () => {
+    const { project, created } = await setupSessionWithMessages(28);
+    // 28 seeded + 1 greeting = 29. After send: +1 user +1 character = 31 → triggers background.
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValue({
+        text: '',
+        finishReason: 'error',
+        retryable: true,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['ok'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'trigger bg failure',
+        revision: latest.revision,
+      })
+    );
+    // Wait for the background summary to fire and fail.
+    await waitForCondition(() =>
+      Promise.resolve(generateText.mock.calls.length > 0)
+    );
+    const callsAfterFailure = generateText.mock.calls.length;
+
+    // Second send: 31 + 2 = 33, still above 30, but cooldown should suppress background.
+    const afterFirst = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'second send during cooldown',
+        revision: afterFirst.revision,
+      })
+    );
+    await wait(300);
+    // No additional background call should have been made.
+    expect(generateText.mock.calls.length).toBe(callsAfterFailure);
+  });
+
+  it('clears the background cooldown on reset so the next background call runs', async () => {
+    const { project, created } = await setupSessionWithMessages(28);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: '',
+        finishReason: 'error',
+        retryable: true,
+      })
+      .mockResolvedValue({
+        text: validSummaryJson,
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['ok'])
+    );
+
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'trigger bg failure',
+        revision: latest.revision,
+      })
+    );
+    await waitForCondition(() =>
+      Promise.resolve(generateText.mock.calls.length > 0)
+    );
+    const callsAfterFailure = generateText.mock.calls.length;
+
+    roleplayService.__resetInFlightForTesting();
+
+    // Second send: cooldown cleared, background should fire again.
+    const afterReset = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'after reset',
+        revision: afterReset.revision,
+      })
+    );
+    await waitForCondition(() =>
+      Promise.resolve(generateText.mock.calls.length > callsAfterFailure)
+    );
+    expect(generateText.mock.calls.length).toBeGreaterThan(callsAfterFailure);
+  });
+
+  it('runs sync summary even when the background cooldown is active', async () => {
+    // Seed 38 so background fires on first send (38+1+2=41 ≥ 30), but also exceeds sync threshold
+    // after a second send (41+2=43 > 40).
+    const { project, created } = await setupSessionWithMessages(38);
+    const generateText = vi
+      .spyOn(GeminiAdapter.prototype, 'generateText')
+      .mockResolvedValueOnce({
+        text: '',
+        finishReason: 'error',
+        retryable: true,
+      })
+      .mockResolvedValue({
+        text: validSummaryJson,
+        finishReason: 'stop',
+        retryable: false,
+      });
+    vi.spyOn(GeminiAdapter.prototype, 'generateTextStream').mockImplementation(() =>
+      streamChunks(['ok'])
+    );
+
+    // First send: background fires and fails, setting cooldown.
+    const latest = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'first',
+        revision: latest.revision,
+      })
+    );
+    await waitForCondition(() =>
+      Promise.resolve(generateText.mock.calls.length > 0)
+    );
+
+    // Second send: 41 messages > 40 sync threshold → sync summary runs despite cooldown.
+    const second = await roleplayService.getRoleplaySession(project.projectId, created.sessionId);
+    const result = await collectStream(
+      roleplayService.sendRoleplayMessage({
+        projectId: project.projectId,
+        sessionId: created.sessionId,
+        message: 'second triggers sync',
+        revision: second.revision,
+      })
+    );
+    expect(result.errors).toEqual([]);
+    // Sync summary succeeded, so conversationSummary should be set.
+    const saved = await storage.readRoleplaySession(project.projectId, created.sessionId);
+    expect(saved?.conversationSummary).toBe('要約の本文です。');
+  });
+});

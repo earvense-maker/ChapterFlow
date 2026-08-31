@@ -2,6 +2,7 @@
 // 検証の入力は契約・必要な正史・生成本文だけ。未関連の潜在設定は渡さない。
 // verifier / 再検証は active model・30秒、局所修復は active model・120秒に固定する。
 import { findNgMatches, type NgExpressionLike } from '../../shared/ngDetection.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
 import type { ModelAdapter } from '../adapters/modelAdapter.js';
 import type {
   CreativeContract,
@@ -202,18 +203,16 @@ async function runSemanticCheck(
   ].join('\n\n---\n\n');
 
   try {
-    const result = await input.adapter.generateText({
+    const result = await input.adapter.generateText(applyJsonTaskPolicy({
       debugLabel: 'contractVerification.semanticCheck',
       systemInstructions: 'あなたは小説本文の整合性検査係です。JSONオブジェクトだけを出力してください。',
       userPrompt,
       outputLength: CONTRACT_VERIFICATION_LIMITS.verifierOutputLength,
-      maxOutputTokens: 6_000,
       temperature: 0.1,
       timeoutMs: CONTRACT_VERIFICATION_LIMITS.verifierTimeoutMs,
       modelName: input.project.activeModelName,
-      responseMimeType: 'application/json',
       abortSignal: input.abortSignal,
-    });
+    }, { reasoningMode: 'disabled', maxOutputTokens: 6_000 }));
 
     if (result.finishReason === 'timeout' || result.finishReason === 'error' || result.finishReason === 'content_filter') {
       return {

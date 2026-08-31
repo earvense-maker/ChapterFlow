@@ -49,6 +49,8 @@ import {
   estimateMaxOutputTokens,
   INTERACTIVE_TASK_MAX_OUTPUT_TOKENS,
 } from '../utils/outputLength.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
+import type { AdapterGenerateRequest } from '../../shared/types/model.js';
 import { findNgMatches } from '../../shared/ngDetection.js';
 import {
   collectAdjustedBudgetEntries,
@@ -156,7 +158,11 @@ const ROLEPLAY_OUTPUT_HARD_MIN_CAP = 600;
 const ROLEPLAY_TEMPERATURE = 0.8;
 const ROLEPLAY_TIMEOUT_MS = 60_000;
 const ROLEPLAY_SUMMARY_TIMEOUT_MS = 45_000;
-const ROLEPLAY_SUMMARY_THRESHOLD = 40;
+const ROLEPLAY_SYNC_SUMMARY_THRESHOLD = 40;
+const ROLEPLAY_BACKGROUND_SUMMARY_THRESHOLD = 30;
+const ROLEPLAY_SUMMARY_TARGET_OUTPUT_CHARS = 12_000;
+const ROLEPLAY_SUMMARY_RETRY_TEMPERATURE = 0.1;
+const ROLEPLAY_BACKGROUND_SUMMARY_FAILURE_COOLDOWN_MS = 60_000;
 const ROLEPLAY_RELATIONSHIP_LIST_MAX = 8;
 const ROLEPLAY_RELATIONSHIP_ITEM_MAX_CHARS = 160;
 const ROLEPLAY_RELATIONSHIP_MAX_STEP = 15;
@@ -218,6 +224,9 @@ let sessionMutex = new KeyedMutex();
 const generationInFlight = new Set<string>();
 // NOTE: 要約ジョブの二重発火抑止。派生データのため保持しなくても正しさに影響しない。
 const summaryInFlight = new Set<string>();
+// NOTE: バックグラウンド要約失敗クールダウン。LLM/解析失敗時に60秒間次回の起動を抑制する。
+// stale 結果は失敗ではないため cooldown を設定しない。アプリ再起動で消える。
+const backgroundSummaryRetryNotBefore = new Map<string, number>();
 // NOTE: 夢セッションごとの残響 pack メモ（設計書 §5: 各セッション開始時に決定的に選ぶ）。
 // プロセス再起動後は journal の cooldown と同一アルゴリズムで再構築され、収束する。
 const dreamResonancePackCache = new Map<string, DreamResonancePack>();
@@ -2682,7 +2691,7 @@ function selectPromptMessagesForGeneration(
 ): RoleplayMessage[] {
   const afterCursor = messagesAfterCursor(session, options.excludeCharacterMessageId);
   // NOTE: 通常は afterCursor 全件を渡す。要約直後は最大 ROLEPLAY_RECENT_MESSAGES 件。
-  return afterCursor.slice(-ROLEPLAY_SUMMARY_THRESHOLD);
+  return afterCursor.slice(-ROLEPLAY_SYNC_SUMMARY_THRESHOLD);
 }
 
 // ===== NG後処理（設計書 5.5） =====
@@ -3135,7 +3144,7 @@ function judgeBudget(
       snapshot: session.contextSnapshot,
       scenario: session.scenario,
       conversationSummary: session.conversationSummary,
-      recentMessages: recent.slice(-ROLEPLAY_SUMMARY_THRESHOLD),
+      recentMessages: recent.slice(-ROLEPLAY_SYNC_SUMMARY_THRESHOLD),
       resonancePack: { schemaVersion: 1, events: [], createdAt: '' },
       currentInput,
     });
@@ -3144,13 +3153,13 @@ function judgeBudget(
       snapshot: session.contextSnapshot,
       scenario: session.scenario,
       conversationSummary: session.conversationSummary,
-      recentMessages: afterCursor.slice(-ROLEPLAY_SUMMARY_THRESHOLD),
+      recentMessages: afterCursor.slice(-ROLEPLAY_SYNC_SUMMARY_THRESHOLD),
       relationshipState: session.relationshipState,
       bannedExpressions,
     });
   }
   return {
-    overCount: afterCursor.length > ROLEPLAY_SUMMARY_THRESHOLD,
+    overCount: afterCursor.length > ROLEPLAY_SYNC_SUMMARY_THRESHOLD,
     overChars: totalChars > ROLEPLAY_RECENT_MESSAGES_MAX_CHARS,
     totalChars,
     promptChars,
@@ -3316,6 +3325,7 @@ function buildMergedSessionAfterSummary(
 // NOTE: 実際の要約生成。afterCursor の古い方を conversationSummary へ畳む。
 // 直近を残す件数は「20 件かつ 16000 字以内」を両方満たすラインで動的に決める。
 // 20件以下でも文字数が超過する場合は no_fold_target（呼び元で summary_failed）。
+// 設計書 4.1/4.2: JSON タスクとして呼び出し、最大1回の自動再試行を行う。
 async function performSummary(
   session: RoleplaySession,
   afterCursor: RoleplayMessage[]
@@ -3368,6 +3378,8 @@ async function performSummary(
     `数値は0〜100で、既存値から一度に${ROLEPLAY_RELATIONSHIP_MAX_STEP}を超えて変化させないでください。`,
     'promises は未達成の約束、unresolvedTopics は会話に残っている未解決事項だけにしてください。',
     `summary は${ROLEPLAY_SUMMARY_MAX_CHARS}字以内にしてください。`,
+    'sessionCanon は今回追加・更新する差分だけで、既存項目の言い換え重複を作らないでください。',
+    'sessionCanon は最大20件にしてください。該当項目がなければ空配列にしてください。',
     '出力は説明やMarkdownを付けず、次の形のJSONオブジェクトだけにしてください。',
     buildSessionCanonInstruction(),
     `{"summary":"統合後の要約","relationshipState":{"trust":50,"intimacy":30,"tension":20,"currentAddress":"現在の呼び方","promises":[],"unresolvedTopics":[]},"sessionCanon":[${SESSION_CANON_JSON_FORMAT}]}`,
@@ -3385,41 +3397,128 @@ async function performSummary(
     .filter(Boolean)
     .join('\n\n---\n\n');
 
-  let result;
-  try {
-    result = await runNonStreaming(session.model.provider, {
-      debugLabel: 'roleplay.summaryFold',
+  // NOTE: 設計書 4.1 — 要約は明示的な JSON タスクとして呼ぶ。thinking を無効化し、
+  // reasoning が出力枠を使い切って本文が空になるのを防ぐ。
+  const baseRequest = applyJsonTaskPolicy(
+    {
       systemInstructions,
       userPrompt,
-      outputLength: 1600,
+      outputLength: ROLEPLAY_SUMMARY_TARGET_OUTPUT_CHARS,
       temperature: 0.25,
       timeoutMs: ROLEPLAY_SUMMARY_TIMEOUT_MS,
       modelName: session.model.modelName,
-    });
+    },
+    { reasoningMode: 'disabled' }
+  );
+
+  const result = await callSummaryModel(session, {
+    ...baseRequest,
+    debugLabel: 'roleplay.summaryFold',
+  });
+  if (result.kind !== 'raw') {
+    return { kind: 'llm_failed', reason: result.reason };
+  }
+
+  // NOTE: 設計書 4.2.3 — finishReason === 'stop' かつ parseSummaryOutput が成功かつ
+  // summary が空でない かつ sessionCanon が配列の場合だけ採用する。
+  const adopted = tryAdoptSummaryResult(result, session);
+  if (adopted) {
+    return buildSummaryOutcome(adopted, session, lastFolded, foldTarget, foldedText, initialCanonCandidates);
+  }
+
+  // NOTE: 設計書 4.2.1 — length / empty / parse failure / invalid shape のみ再試行する。
+  // API error / timeout / content_filter は同一処理内で再試行しない。
+  if (!shouldRetrySummary(result)) {
+    return buildSummaryFailure(result, session);
+  }
+
+  // NOTE: 設計書 4.2.2 — 低 temperature、専用 label、補強指示で1回だけ再試行する。
+  const retryUserPrompt = `${userPrompt}\n\n---\n\n完全なJSONオブジェクトを閉じて出力してください。sessionCanon が無い場合も空配列 [] を含めてください。`;
+  const retryResult = await callSummaryModel(session, {
+    ...baseRequest,
+    debugLabel: 'roleplay.summaryFold.retry',
+    temperature: ROLEPLAY_SUMMARY_RETRY_TEMPERATURE,
+    userPrompt: retryUserPrompt,
+  });
+  if (retryResult.kind !== 'raw') {
+    return { kind: 'llm_failed', reason: retryResult.reason };
+  }
+
+  const retryAdopted = tryAdoptSummaryResult(retryResult, session);
+  if (retryAdopted) {
+    return buildSummaryOutcome(retryAdopted, session, lastFolded, foldTarget, foldedText, initialCanonCandidates);
+  }
+
+  // NOTE: 設計書 4.2.3 — 再試行も失敗した場合、初回の不完全な結果へ戻らず失敗として扱う。
+  console.warn('Roleplay summary retry also failed', {
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+    sessionMode: session.sessionMode,
+    model: session.model.modelName,
+    label: 'roleplay.summaryFold.retry',
+    finishReason: retryResult.finishReason,
+    ...(retryResult.parseFailure ? { parseFailure: retryResult.parseFailure } : {}),
+    ...(retryResult.rawUsage ? { rawUsage: retryResult.rawUsage } : {}),
+  });
+  return { kind: 'empty_result' };
+}
+
+interface SummaryModelRawResult {
+  text: string;
+  finishReason: FinishReason;
+  parseFailure?: SummaryParseFailureKind;
+  rawUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  debugInfo?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+type SummaryCallResult =
+  | ({ kind: 'raw' } & SummaryModelRawResult)
+  | { kind: 'llm_failed'; reason: string }
+  | { kind: 'error_no_retry'; reason: string };
+
+async function callSummaryModel(
+  session: RoleplaySession,
+  request: AdapterGenerateRequest
+): Promise<SummaryCallResult> {
+  let result;
+  try {
+    result = await runNonStreaming(session.model.provider, request);
   } catch (err) {
-    // NOTE: 要約失敗の切り分け（改修問題1）。モデル/API 呼び出しが例外になった経路。
-    // プロンプトダンプ（debugLabel のみ）ではタイムアウト・JSON不正・キャンセルの
-    // 区別が付かないため、finishReason とエラー種別をここで記録する。
     const reason = err instanceof Error ? err.message : String(err);
     console.warn('Roleplay summary LLM call failed', {
       projectId: session.projectId,
       sessionId: session.sessionId,
       sessionMode: session.sessionMode,
       model: session.model.modelName,
-      label: 'roleplay.summaryFold',
+      label: request.debugLabel,
+      attempt: request.debugLabel?.includes('retry') ? 'retry' : 'initial',
       reason,
       ...(err instanceof ModelClientError ? { code: err.code, retryable: err.retryable } : {}),
     });
     return { kind: 'llm_failed', reason };
   }
+  if (result.finishReason === 'content_filter') {
+    console.warn('Roleplay summary content filtered', {
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      sessionMode: session.sessionMode,
+      model: session.model.modelName,
+      label: request.debugLabel,
+      attempt: request.debugLabel?.includes('retry') ? 'retry' : 'initial',
+      finishReason: result.finishReason,
+    });
+    return { kind: 'error_no_retry', reason: 'content_filter' };
+  }
   if (result.finishReason === 'error' || result.finishReason === 'timeout') {
-    // NOTE: 要約失敗の切り分け（改修問題1）。タイムアウトとモデルエラーを finishReason で区別。
     console.warn('Roleplay summary LLM finish failed', {
       projectId: session.projectId,
       sessionId: session.sessionId,
       sessionMode: session.sessionMode,
       model: session.model.modelName,
-      label: 'roleplay.summaryFold',
+      label: request.debugLabel,
+      attempt: request.debugLabel?.includes('retry') ? 'retry' : 'initial',
       finishReason: result.finishReason,
       ...(result.errorCode ? { errorCode: result.errorCode } : {}),
       ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
@@ -3427,20 +3526,74 @@ async function performSummary(
     });
     return { kind: 'llm_failed', reason: result.finishReason };
   }
+  return {
+    kind: 'raw',
+    text: result.text,
+    finishReason: result.finishReason,
+    ...(result.rawUsage ? { rawUsage: result.rawUsage } : {}),
+    ...(result.debugInfo ? { debugInfo: result.debugInfo } : {}),
+  };
+}
+
+// NOTE: 設計書 4.2.3 — finishReason === 'stop' かつ完全な JSON 解析成功 かつ
+// summary が空でない かつ sessionCanon が配列の場合だけ採用する。
+function tryAdoptSummaryResult(
+  result: SummaryCallResult & { kind: 'raw' },
+  session: RoleplaySession
+): ReturnType<typeof parseSummaryOutput> {
+  if (result.finishReason !== 'stop') {
+    result.parseFailure = classifySummaryParseFailure(result.text);
+    return null;
+  }
   const parsed = parseSummaryOutput(result.text, session.relationshipState);
   if (!parsed) {
-    // NOTE: 要約失敗の切り分け（改修問題1）。JSON 不正・構造不正を種別で区別する。
-    console.warn('Roleplay summary output parse failed', {
-      projectId: session.projectId,
-      sessionId: session.sessionId,
-      sessionMode: session.sessionMode,
-      model: session.model.modelName,
-      label: 'roleplay.summaryFold',
-      finishReason: result.finishReason,
-      parseFailure: classifySummaryParseFailure(result.text),
-    });
-    return { kind: 'empty_result' };
+    result.parseFailure = classifySummaryParseFailure(result.text);
+    return null;
   }
+  return parsed;
+}
+
+// NOTE: 設計書 4.2.1 — 再試行対象の判定。length / empty / parse failure / invalid shape のみ。
+function shouldRetrySummary(result: SummaryCallResult & { kind: 'raw' }): boolean {
+  if (result.finishReason === 'length') return true;
+  if (result.finishReason !== 'stop') return false;
+  const text = result.text.trim();
+  if (!text) return true;
+  if (result.parseFailure) return true;
+  return false;
+}
+
+function buildSummaryFailure(
+  result: SummaryCallResult,
+  session: RoleplaySession
+): SummaryOutcome {
+  if (result.kind === 'llm_failed') {
+    return result;
+  }
+  if (result.kind === 'error_no_retry') {
+    return { kind: 'llm_failed', reason: result.reason };
+  }
+  console.warn('Roleplay summary output parse failed', {
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+    sessionMode: session.sessionMode,
+    model: session.model.modelName,
+    label: 'roleplay.summaryFold',
+    finishReason: result.finishReason,
+    parseFailure: result.parseFailure ?? classifySummaryParseFailure(result.text),
+    ...(result.rawUsage ? { rawUsage: result.rawUsage } : {}),
+  });
+  return { kind: 'empty_result' };
+}
+
+function buildSummaryOutcome(
+  parsed: NonNullable<ReturnType<typeof parseSummaryOutput>>,
+  session: RoleplaySession,
+  lastFolded: RoleplayMessage,
+  foldTarget: RoleplayMessage[],
+  foldedText: string,
+  initialCanonCandidates: LatentCanonItem[] | undefined
+): SummaryOutcome {
   return {
     kind: 'ok',
     conversationSummary: parsed.conversationSummary,
@@ -3453,7 +3606,6 @@ async function performSummary(
       {
         initialCanonCandidates,
         foldTargetText: foldedText,
-        // NOTE: evidence の messageId を実際の引用元へ解決する材料（改修問題2）。
         foldTargetMessages: foldTarget,
       }
     ),
@@ -3625,6 +3777,8 @@ function decideKeepCount(afterCursor: RoleplayMessage[]): number {
 
 function startBackgroundSummary(projectId: string, sessionId: string): void {
   if (summaryInFlight.has(sessionId)) return;
+  const notBefore = backgroundSummaryRetryNotBefore.get(sessionId);
+  if (notBefore !== undefined && Date.now() < notBefore) return;
   summaryInFlight.add(sessionId);
   runOutsideDataDirWrite(() => {
     void (async () => {
@@ -3648,13 +3802,16 @@ async function runBackgroundSummary(projectId: string, sessionId: string): Promi
   const snapshot = await storage.readRoleplaySession(projectId, sessionId);
   if (!snapshot) return;
   const afterCursor = messagesAfterCursor(snapshot);
-  if (afterCursor.length <= ROLEPLAY_SUMMARY_THRESHOLD) return;
+  if (afterCursor.length < ROLEPLAY_BACKGROUND_SUMMARY_THRESHOLD) return;
 
   // NOTE: 生成中は mutex を持たない（他の変更をブロックしないため）。非同期要約は
   // 失敗しても正しさに影響しないため、'ok' 以外はすべて warn ログを残して終了。
   const outcome = await performSummary(snapshot, afterCursor);
   if (outcome.kind !== 'ok') {
     if (outcome.kind === 'llm_failed' || outcome.kind === 'empty_result') {
+      // NOTE: LLM/解析失敗だけ60秒クールダウンを設定する。stale (not_needed / no_fold_target)
+      // はモデル失敗ではないためクールダウン対象外（設計書 4.5.2）。
+      backgroundSummaryRetryNotBefore.set(sessionId, Date.now() + ROLEPLAY_BACKGROUND_SUMMARY_FAILURE_COOLDOWN_MS);
       console.warn('Background roleplay summary skipped', {
         projectId,
         sessionId,
@@ -3676,8 +3833,11 @@ async function runBackgroundSummary(projectId: string, sessionId: string): Promi
   });
   if (!merged) {
     // 別経路で要約が進んだ、あるいはセッションが消えた／アーカイブされた場合。捨てる。
+    // stale は失敗ではないためクールダウンを設定しない。
     return;
   }
+  // NOTE: 成功時はクールダウンを解除する。
+  backgroundSummaryRetryNotBefore.delete(sessionId);
 }
 
 // ===== テスト用の内部フラグリセット =====
@@ -3685,6 +3845,7 @@ async function runBackgroundSummary(projectId: string, sessionId: string): Promi
 export function __resetInFlightForTesting(): void {
   generationInFlight.clear();
   summaryInFlight.clear();
+  backgroundSummaryRetryNotBefore.clear();
   dreamResonancePackCache.clear();
   sessionMutex = new KeyedMutex();
 }

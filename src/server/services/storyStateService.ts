@@ -6,6 +6,7 @@ import {
   normalizeComparableText,
 } from '../utils/characterStateMatching.js';
 import * as storage from './storageService.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
 import type { ModelAdapter } from '../adapters/modelAdapter.js';
 import type {
   Character,
@@ -99,17 +100,15 @@ export async function updateStoryStateFromAcceptedScene(input: {
     },
   ];
   for (const [attemptIndex, attempt] of attempts.entries()) {
-    const result = await input.adapter.generateText({
+    const result = await input.adapter.generateText(applyJsonTaskPolicy({
       debugLabel: `storyState.extract.attempt${attemptIndex + 1}`,
       systemInstructions: buildSystemInstructions(),
       userPrompt,
       outputLength: attempt.outputLength,
-      maxOutputTokens: attempt.maxOutputTokens,
       temperature: STORY_STATE_TEMPERATURE,
       timeoutMs: attemptIndex === 0 ? input.timeoutMs : Math.max(5_000, Math.floor(input.timeoutMs / 2)),
       modelName: input.project.activeModelName,
-      responseMimeType: 'application/json',
-    });
+    }, { reasoningMode: 'disabled', maxOutputTokens: attempt.maxOutputTokens }));
 
     if (result.finishReason === 'timeout') {
       throw new Error('物語の状態抽出がタイムアウトしました。少し待ってから再抽出してください。');

@@ -5,7 +5,7 @@ import {
   normalizeStyleVariationSettings,
 } from '../../shared/defaults.js';
 import { STYLE_PROFILE_SCHEMA_VERSION } from '../../shared/types/index.js';
-import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
 import { KeyedMutex } from '../utils/keyedMutex.js';
 import type {
   GenerationRecord,
@@ -232,7 +232,7 @@ export async function analyzeAcceptedGenerationStyle(
       return null;
     }
 
-    const result = await runNonStreaming(project.activeModelProvider, {
+    const result = await runNonStreaming(project.activeModelProvider, applyJsonTaskPolicy({
       debugLabel: 'style.traceAnalysis',
       systemInstructions:
         'あなたは日本語小説の文体パターンを監査する分析器です。本文の内容評価や改善提案をせず、指定JSONだけを返してください。',
@@ -241,13 +241,7 @@ export async function analyzeAcceptedGenerationStyle(
       temperature: 0.1,
       timeoutMs: ANALYSIS_TIMEOUT_MS,
       modelName: project.activeModelName,
-      // NOTE: 旧値 700。JSON 自体は 700 で足りるが、推論モデルはその枠を思考で先に
-      // 使い切るため本文が空になり、parseStyleTrace が "Unexpected end of JSON input"
-      // で落ちていた。超過分は思考の余裕。ここは採用のたびに走るので、思考トークンの
-      // 課金が気になる場合は真っ先に絞る候補。
-      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
-      responseMimeType: 'application/json',
-    });
+    }, { reasoningMode: 'disabled' }));
     observedUsage = result.rawUsage;
     observedModelName = result.resolvedModelName ?? project.activeModelName;
     if (result.finishReason !== 'stop' && result.finishReason !== 'length') {

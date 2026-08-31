@@ -13,9 +13,9 @@ import { withProjectWriteLock } from './projectLock.js';
 import * as amplifier from './amplifierService.js';
 import { buildChoiceGenerationPrompt } from './amplifierPromptBuilder.js';
 import { runNonStreaming, ModelClientError } from './modelGenerationService.js';
+import { applyJsonTaskPolicy } from './jsonTaskPolicy.js';
 import * as globalService from './amplifierGlobalService.js';
 import { localProjectStorage } from '../storage/boundProjectStorage.js';
-import { JSON_TASK_MAX_OUTPUT_TOKENS } from '../utils/outputLength.js';
 import type {
   AmplifierAnchor,
   AmplifierChoice,
@@ -223,19 +223,15 @@ async function generateChoicesFromModel(input: {
     const userPromptText = extraInstruction
       ? `${userPrompt}\n\n前回の出力はJSONとして解釈できなかった。余計な説明を一切含めず、次のJSONだけを出力し直せ。\n前回の出力:\n${extraInstruction.slice(-2000)}`
       : userPrompt;
-    const result = await runNonStreaming(provider, {
+    const result = await runNonStreaming(provider, applyJsonTaskPolicy({
       debugLabel: 'amplifier.choices',
       systemInstructions,
       userPrompt: userPromptText,
       outputLength: 1200,
       temperature: 0.9,
-      // NOTE: 方向候補は JSON 専用タスク。DeepSeek V4 ではこの指定により thinking を
-      // 無効化し、最終 JSON が reasoning_content 側だけに出て本文が空になるのを防ぐ。
-      maxOutputTokens: JSON_TASK_MAX_OUTPUT_TOKENS,
-      responseMimeType: 'application/json',
       timeoutMs: CHOICE_TIMEOUT_MS,
       modelName,
-    });
+    }, { reasoningMode: 'disabled' }));
     return result.text;
   };
 
