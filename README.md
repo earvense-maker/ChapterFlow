@@ -3,8 +3,8 @@
 **API-Powered Narrative Studio**
 
 自分専用の連載小説を、その場の気分で進めるWindows向けローカルアプリです。
-作品設定、これまでの流れ、設定草案をもとに、Gemini / DeepSeek / OpenAI / xAI / OpenRouterのAPIで続きを生成できます。
-初回ベータではGemini / DeepSeek / xAIを実機確認済み、OpenAI / OpenRouterは実装・自動テスト済みですが実APIでは未検証です。
+作品設定、これまでの流れ、設定草案をもとに、Gemini / DeepSeek / OpenAI / xAI / OpenRouter / Xiaomi MiMoのAPIで続きを生成できます。
+プロバイダーごとの実機確認状況はリリースノートを確認してください。モデル名、料金、提供状況は各事業者側で変更される場合があります。
 
 > 現在は初回公開に向けたベータ段階です。大切な作品データは定期的にバックアップしてください。
 
@@ -17,12 +17,14 @@
 
 利用者側でNode.jsをインストールする必要はありません。対応環境、APIキーの取得、バックアップ、
 SmartScreen警告への対応は[利用ガイド](docs/利用ガイド.md)を確認してください。
+現行機能の全体像と主要な上限値は[現行機能・仕様説明書](docs/ChapterFlow-現行機能仕様説明書.html)にまとめています。
 
 ## データ、プライバシー、料金
 
 - 作品データの既定の保存先はPC内の `Documents\ChapterFlow` です。
 - 生成、相談、接続確認では、作品設定、本文、会話履歴、入力した指示のうち必要な部分を、選択したLLM事業者へ送信します。
 - OpenRouterでは生成内容がOpenRouterと、選択されたモデルの提供事業者の双方へ送信されます。既定は無料の `google/gemma-4-31b-it:free` で、利用できない場合はモデル名を変更できます。`openrouter/free`を指定した場合は、選択モデルが呼び出しごとに変わる場合があります。利用前に[OpenRouterのPrivacy設定](https://openrouter.ai/settings/privacy)を確認してください。
+- Xiaomi MiMoでは生成内容がXiaomiへ送信されます。従量課金の `sk-` 形式キーに対応し、Token Planの `tp-` 形式キーは利用できません。
 - APIキーはデータ保存先の `config\credentials.json` に平文で保存されます。
 - 生成は利用者自身のAPIキーで行われ、各社の料金体系に応じて費用が発生する場合があります。
 - ChapterFlow独自のクラウド保存、アクセス解析、テレメトリー送信はありません。

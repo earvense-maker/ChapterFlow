@@ -26,6 +26,10 @@ await Promise.all([
     path.join(projectRoot, 'docs', '利用ガイド.md'),
     path.join(outputDir, '利用ガイド.md')
   ),
+  copyFile(
+    path.join(projectRoot, 'docs', 'ChapterFlow-現行機能仕様説明書.html'),
+    path.join(outputDir, 'ChapterFlow-現行機能仕様説明書.html')
+  ),
 ]);
 
 const artifactNames = [
@@ -72,6 +76,10 @@ await Promise.all([
   copyFile(
     path.join(projectRoot, 'docs', '利用ガイド.md'),
     path.join(publishDir, 'ChapterFlow-UserGuide-ja.md')
+  ),
+  copyFile(
+    path.join(projectRoot, 'docs', 'ChapterFlow-現行機能仕様説明書.html'),
+    path.join(publishDir, 'ChapterFlow-Current-Spec-ja.html')
   ),
   ...[
     'chapterflow-introduction.png',

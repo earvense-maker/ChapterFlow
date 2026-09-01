@@ -1,0 +1,985 @@
+<!doctype html>
+<html lang="ja" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="ChapterFlowの現行コードを基準に、機能・操作・データ仕様・リリース前確認事項をまとめた説明書です。">
+  <title>ChapterFlow 現行機能・仕様説明書</title>
+  <style>
+    :root {
+      --paper: #f5f3ee;
+      --paper-2: #ece9e1;
+      --surface: rgba(255, 255, 255, 0.82);
+      --surface-solid: #ffffff;
+      --ink: #1c2430;
+      --muted: #68717d;
+      --line: #d8d5cd;
+      --line-strong: #bbb8b0;
+      --brand: #315ea8;
+      --brand-dark: #23477f;
+      --brand-soft: #e7eefb;
+      --teal: #147d73;
+      --teal-soft: #e2f4f0;
+      --violet: #7554ad;
+      --violet-soft: #f0eafa;
+      --amber: #9a6218;
+      --amber-soft: #fff1d7;
+      --red: #a64545;
+      --red-soft: #fbe8e6;
+      --shadow: 0 18px 55px rgba(37, 42, 50, 0.08);
+      --radius: 18px;
+      --sidebar-width: 276px;
+      --font-sans: "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+      --font-serif: "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif JP", serif;
+    }
+
+    html[data-theme="dark"] {
+      --paper: #15191f;
+      --paper-2: #1b2129;
+      --surface: rgba(28, 34, 43, 0.88);
+      --surface-solid: #202731;
+      --ink: #eef2f7;
+      --muted: #aab3bf;
+      --line: #37404b;
+      --line-strong: #4a5563;
+      --brand: #8bb4ff;
+      --brand-dark: #b2ceff;
+      --brand-soft: #233858;
+      --teal: #71d3c7;
+      --teal-soft: #193b3a;
+      --violet: #c2a7f0;
+      --violet-soft: #382b4f;
+      --amber: #f0bd6d;
+      --amber-soft: #49371e;
+      --red: #f09b92;
+      --red-soft: #4c2928;
+      --shadow: 0 18px 55px rgba(0, 0, 0, 0.24);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 28px; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 86% 4%, color-mix(in srgb, var(--brand) 10%, transparent) 0, transparent 27rem),
+        linear-gradient(180deg, var(--paper) 0, var(--paper-2) 100%);
+      font-family: var(--font-sans);
+      line-height: 1.82;
+      letter-spacing: 0.01em;
+    }
+
+    a { color: var(--brand-dark); text-underline-offset: 0.18em; }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    code, kbd {
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      font-size: 0.9em;
+    }
+    code {
+      padding: 0.12em 0.38em;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--paper-2);
+      overflow-wrap: anywhere;
+    }
+    kbd {
+      display: inline-block;
+      min-width: 1.65em;
+      padding: 0.05em 0.38em;
+      border: 1px solid var(--line-strong);
+      border-bottom-width: 2px;
+      border-radius: 5px;
+      background: var(--surface-solid);
+      text-align: center;
+      line-height: 1.45;
+    }
+    :focus-visible { outline: 3px solid color-mix(in srgb, var(--brand) 55%, transparent); outline-offset: 3px; }
+
+    .skip-link {
+      position: fixed;
+      z-index: 100;
+      top: 10px;
+      left: 10px;
+      padding: 0.55rem 0.9rem;
+      border-radius: 10px;
+      background: var(--ink);
+      color: var(--paper);
+      transform: translateY(-160%);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .page-shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 18px;
+      border-right: 1px solid var(--line);
+      background: color-mix(in srgb, var(--paper) 91%, transparent);
+      backdrop-filter: blur(18px);
+      overflow-y: auto;
+    }
+    .brand-lockup {
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+      margin-bottom: 1.15rem;
+      padding: 0 0.35rem;
+    }
+    .brand-mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border-radius: 13px;
+      color: #fff;
+      background: linear-gradient(145deg, #315ea8, #147d73);
+      box-shadow: 0 8px 18px rgba(49, 94, 168, 0.22);
+      font-weight: 800;
+      letter-spacing: -0.08em;
+    }
+    .brand-lockup strong { display: block; font-size: 0.98rem; line-height: 1.3; }
+    .brand-lockup small { display: block; color: var(--muted); font-size: 0.72rem; }
+
+    .tools { display: grid; gap: 0.55rem; margin-bottom: 1rem; }
+    .search-wrap { position: relative; }
+    .search-wrap span {
+      position: absolute;
+      top: 50%;
+      left: 0.75rem;
+      color: var(--muted);
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+    #doc-search {
+      width: 100%;
+      padding: 0.64rem 0.72rem 0.64rem 2.15rem;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      color: var(--ink);
+      background: var(--surface-solid);
+    }
+    .tool-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.45rem; }
+    .tool-button {
+      min-height: 38px;
+      padding: 0.46rem 0.55rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      cursor: pointer;
+    }
+    .tool-button:hover { border-color: var(--brand); background: var(--brand-soft); }
+
+    .toc-label {
+      margin: 1rem 0 0.4rem;
+      padding-left: 0.55rem;
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+    .toc { display: grid; gap: 0.12rem; }
+    .toc a {
+      display: flex;
+      align-items: center;
+      gap: 0.62rem;
+      padding: 0.48rem 0.58rem;
+      border-radius: 9px;
+      color: var(--muted);
+      font-size: 0.86rem;
+      text-decoration: none;
+    }
+    .toc a::before {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--line-strong);
+      content: "";
+    }
+    .toc a:hover, .toc a.active { color: var(--ink); background: var(--surface); }
+    .toc a.active::before { background: var(--brand); box-shadow: 0 0 0 4px var(--brand-soft); }
+    .sidebar-foot {
+      margin: 1.2rem 0.4rem 0;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.72rem;
+      line-height: 1.6;
+    }
+
+    main { width: min(1120px, calc(100% - 48px)); margin: 0 auto; padding: 34px 0 90px; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: clamp(1.5rem, 4vw, 3.2rem);
+      border: 1px solid color-mix(in srgb, var(--brand) 28%, var(--line));
+      border-radius: 26px;
+      background:
+        linear-gradient(120deg, color-mix(in srgb, var(--surface-solid) 92%, var(--brand-soft)), var(--surface));
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      position: absolute;
+      right: -70px;
+      bottom: -100px;
+      width: 280px;
+      height: 280px;
+      border: 42px solid color-mix(in srgb, var(--teal) 9%, transparent);
+      border-radius: 50%;
+      content: "";
+    }
+    .eyebrow {
+      margin: 0 0 0.55rem;
+      color: var(--brand-dark);
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { text-wrap: balance; }
+    h1 {
+      max-width: 790px;
+      margin: 0;
+      font-family: var(--font-serif);
+      font-size: clamp(2rem, 4.8vw, 4.5rem);
+      font-weight: 700;
+      line-height: 1.14;
+      letter-spacing: -0.035em;
+    }
+    .hero-lead {
+      max-width: 770px;
+      margin: 1rem 0 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.6vw, 1.17rem);
+    }
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      margin-top: 1.35rem;
+    }
+    .meta-chip, .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.38rem;
+      padding: 0.28rem 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+      font-size: 0.78rem;
+      font-weight: 700;
+      line-height: 1.4;
+    }
+    .meta-chip.primary { color: var(--brand-dark); border-color: color-mix(in srgb, var(--brand) 35%, var(--line)); background: var(--brand-soft); }
+
+    .section {
+      margin-top: 62px;
+      scroll-margin-top: 24px;
+    }
+    .section.is-filtered-out { display: none; }
+    .section-head {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem;
+      align-items: start;
+      margin-bottom: 1.35rem;
+    }
+    .section-no {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border-radius: 13px;
+      color: var(--brand-dark);
+      background: var(--brand-soft);
+      font-weight: 900;
+    }
+    h2 {
+      margin: 0;
+      font-family: var(--font-serif);
+      font-size: clamp(1.55rem, 3vw, 2.35rem);
+      line-height: 1.25;
+      letter-spacing: -0.025em;
+    }
+    .section-intro { max-width: 840px; margin: 0.35rem 0 0; color: var(--muted); }
+    h3 { margin: 0 0 0.35rem; font-size: 1.04rem; line-height: 1.45; }
+    p { margin: 0.55rem 0; }
+    ul, ol { padding-left: 1.3rem; }
+    li + li { margin-top: 0.34rem; }
+
+    .grid { display: grid; gap: 1rem; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      position: relative;
+      padding: 1.15rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 8px 28px rgba(37, 42, 50, 0.045);
+    }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card .kicker {
+      display: inline-block;
+      margin-bottom: 0.55rem;
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+    }
+    .card.accent-blue { border-top: 4px solid var(--brand); }
+    .card.accent-teal { border-top: 4px solid var(--teal); }
+    .card.accent-violet { border-top: 4px solid var(--violet); }
+    .card.accent-amber { border-top: 4px solid var(--amber); }
+    .card.compact { padding: 0.95rem 1rem; }
+    .card p, .card li { color: color-mix(in srgb, var(--ink) 82%, var(--muted)); font-size: 0.91rem; }
+
+    .stat-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin-top: 1.1rem;
+    }
+    .stat {
+      padding: 0.85rem 0.95rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    .stat strong { display: block; color: var(--brand-dark); font-size: 1.3rem; line-height: 1.25; }
+    .stat span { color: var(--muted); font-size: 0.73rem; }
+
+    .callout {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      border-left: 4px solid var(--brand);
+      border-radius: 4px 14px 14px 4px;
+      background: var(--brand-soft);
+    }
+    .callout strong { display: block; margin-bottom: 0.2rem; }
+    .callout.warning { border-left-color: var(--amber); background: var(--amber-soft); }
+    .callout.danger { border-left-color: var(--red); background: var(--red-soft); }
+    .callout.teal { border-left-color: var(--teal); background: var(--teal-soft); }
+    .callout p, .callout ul { margin-top: 0.35rem; margin-bottom: 0; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.8rem;
+      margin: 1rem 0;
+      counter-reset: flow;
+    }
+    .flow-step {
+      position: relative;
+      min-height: 132px;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--surface);
+      counter-increment: flow;
+    }
+    .flow-step::before {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      margin-bottom: 0.65rem;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      background: var(--brand);
+      content: counter(flow);
+      font-size: 0.78rem;
+      font-weight: 800;
+    }
+    .flow-step:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -0.62rem;
+      z-index: 2;
+      width: 0.8rem;
+      border-top: 2px solid var(--line-strong);
+      content: "";
+    }
+    .flow-step strong { display: block; font-size: 0.91rem; }
+    .flow-step span { color: var(--muted); font-size: 0.8rem; }
+
+    .spec-table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    th, td { padding: 0.82rem 0.9rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    tr:last-child td { border-bottom: 0; }
+    th { color: var(--muted); background: color-mix(in srgb, var(--paper-2) 72%, transparent); font-size: 0.74rem; letter-spacing: 0.05em; }
+    td:first-child { width: 25%; font-weight: 700; }
+
+    details {
+      margin-top: 0.75rem;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--surface);
+    }
+    summary {
+      padding: 0.85rem 1rem;
+      cursor: pointer;
+      font-weight: 750;
+    }
+    details[open] summary { border-bottom: 1px solid var(--line); }
+    .details-body { padding: 0.2rem 1rem 1rem; }
+
+    .pill-row { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.75rem 0; }
+    .badge.blue { color: var(--brand-dark); background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 28%, var(--line)); }
+    .badge.teal { color: var(--teal); background: var(--teal-soft); border-color: color-mix(in srgb, var(--teal) 28%, var(--line)); }
+    .badge.violet { color: var(--violet); background: var(--violet-soft); border-color: color-mix(in srgb, var(--violet) 28%, var(--line)); }
+    .badge.amber { color: var(--amber); background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 28%, var(--line)); }
+
+    .checklist { list-style: none; padding: 0; }
+    .checklist li {
+      position: relative;
+      padding: 0.72rem 0.8rem 0.72rem 2.35rem;
+      border-bottom: 1px solid var(--line);
+    }
+    .checklist li:last-child { border-bottom: 0; }
+    .checklist li::before {
+      position: absolute;
+      top: 0.88rem;
+      left: 0.8rem;
+      width: 18px;
+      height: 18px;
+      border: 2px solid var(--line-strong);
+      border-radius: 5px;
+      content: "";
+    }
+    .source-note { margin-top: 2rem; color: var(--muted); font-size: 0.76rem; }
+    .search-empty {
+      display: none;
+      margin: 2rem 0;
+      padding: 2rem;
+      border: 1px dashed var(--line-strong);
+      border-radius: var(--radius);
+      color: var(--muted);
+      text-align: center;
+    }
+    mark { padding: 0 0.1em; color: inherit; background: #ffe08a; }
+
+    @media (max-width: 1040px) {
+      .page-shell { grid-template-columns: 1fr; }
+      .sidebar {
+        position: relative;
+        z-index: 10;
+        width: 100%;
+        height: auto;
+        padding: 14px 18px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand-lockup { margin-bottom: 0.7rem; }
+      .tools { grid-template-columns: minmax(180px, 1fr) auto; margin-bottom: 0; }
+      .tool-row { grid-template-columns: repeat(2, 116px); }
+      .toc-label, .toc, .sidebar-foot { display: none; }
+      main { width: min(100% - 28px, 960px); padding-top: 22px; }
+      .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .tools { grid-template-columns: 1fr; }
+      .tool-row { grid-template-columns: 1fr 1fr; }
+      .hero { padding: 1.35rem; border-radius: 19px; }
+      .grid.two, .grid.three, .grid.four, .stat-strip, .flow { grid-template-columns: 1fr; }
+      .flow-step { min-height: auto; }
+      .flow-step:not(:last-child)::after { display: none; }
+      .section { margin-top: 44px; }
+      .section-head { gap: 0.72rem; }
+      .section-no { width: 36px; height: 36px; border-radius: 11px; }
+      td:first-child { width: 38%; }
+      th, td { padding: 0.72rem; }
+    }
+
+    @media print {
+      :root { --paper: #fff; --paper-2: #fff; --surface: #fff; --surface-solid: #fff; --ink: #111; --muted: #555; --line: #ccc; }
+      body { background: #fff; font-size: 10.5pt; }
+      .page-shell { display: block; }
+      .sidebar, .no-print { display: none !important; }
+      main { width: 100%; margin: 0; padding: 0; }
+      .hero { box-shadow: none; break-after: page; }
+      .section { margin-top: 28px; break-before: page; }
+      .section:first-of-type { break-before: auto; }
+      .card, details, .spec-table-wrap, .callout { break-inside: avoid; box-shadow: none; }
+      details > .details-body { display: block !important; }
+      details:not([open]) > .details-body { display: block; }
+      a { color: #111; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">本文へ移動</a>
+  <div class="page-shell">
+    <aside class="sidebar" aria-label="説明書メニュー">
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">CF</span>
+        <div><strong>ChapterFlow</strong><small>現行機能・仕様説明書</small></div>
+      </div>
+      <div class="tools no-print">
+        <label class="search-wrap">
+          <span aria-hidden="true">⌕</span>
+          <input id="doc-search" type="search" placeholder="説明書を検索" aria-label="説明書を検索">
+        </label>
+        <div class="tool-row">
+          <button class="tool-button" id="theme-toggle" type="button" aria-label="表示テーマを切り替える">◐ テーマ</button>
+          <button class="tool-button" type="button" onclick="window.print()">↗ 印刷</button>
+        </div>
+      </div>
+      <p class="toc-label">Contents</p>
+      <nav class="toc" aria-label="目次">
+        <a href="#overview">全体像</a>
+        <a href="#experiences">体験モード</a>
+        <a href="#start">作品を始める</a>
+        <a href="#novel">連載小説</a>
+        <a href="#roleplay">ロールプレイ</a>
+        <a href="#amplifier">妄想増幅器</a>
+        <a href="#dream">明晰夢</a>
+        <a href="#settings">設定と整合性</a>
+        <a href="#models">モデル・生成</a>
+        <a href="#data">データと安全</a>
+        <a href="#specs">仕様一覧</a>
+        <a href="#release">公開前確認</a>
+      </nav>
+      <p class="sidebar-foot">コード基準日: 2026-09-01<br>対象リリース: <code>0.1.0-beta.13</code><br>文書は外部通信なしで閲覧できます。</p>
+    </aside>
+
+    <main id="main">
+      <header class="hero">
+        <p class="eyebrow">API-Powered Narrative Studio</p>
+        <h1>物語を作り、続け、<br>その世界を育てる。</h1>
+        <p class="hero-lead">ChapterFlowは、自分のAPIキーを使って連載小説・キャラクター会話・選択型の創作体験・明晰夢を続ける、Windows向けローカル創作アプリです。この文書は、現行コードに実装されている機能と運用上の仕様を一冊にまとめたものです。</p>
+        <div class="hero-meta">
+          <span class="meta-chip primary">0.1.0-beta.13</span>
+          <span class="meta-chip">Windows 10 / 11・64bit</span>
+          <span class="meta-chip">ローカル保存</span>
+          <span class="meta-chip">利用者のAPIキーを使用</span>
+        </div>
+      </header>
+
+      <div class="search-empty" id="search-empty">該当する項目がありません。別の語句で検索してください。</div>
+
+      <section class="section searchable" id="overview">
+        <div class="section-head">
+          <span class="section-no">01</span>
+          <div><h2>ChapterFlowの全体像</h2><p class="section-intro">作品設定と物語の履歴をPC内に保ち、必要な文脈だけを選択したAI事業者へ送りながら、長く続く創作を支えます。</p></div>
+        </div>
+        <div class="grid four">
+          <article class="card accent-blue"><span class="kicker">Write</span><h3>連載小説</h3><p>希望を入力して次の場面を生成。複数案、採用、書き直し、本文編集、編集履歴まで扱えます。</p></article>
+          <article class="card accent-teal"><span class="kicker">Talk</span><h3>ロールプレイ</h3><p>キャラクター、舞台、自分の立ち位置を決めて会話。会話ごとのスナップショットで設定を固定します。</p></article>
+          <article class="card accent-violet"><span class="kicker">Explore</span><h3>妄想増幅器</h3><p>場面後に3〜5件の方向候補を提示。選択から、創作体験上の好みを暫定的に学習します。</p></article>
+          <article class="card accent-amber"><span class="kicker">Drift</span><h3>明晰夢</h3><p>夢の本文と一行入力に絞った没入画面。空のまま送れば、世界をただ観察できます。</p></article>
+        </div>
+        <div class="stat-strip">
+          <div class="stat"><strong>6社</strong><span>実装済みモデルプロバイダー</span></div>
+          <div class="stat"><strong>4経路</strong><span>作品の主な作成方法</span></div>
+          <div class="stat"><strong>2軸</strong><span>作品形式 × 体験モード</span></div>
+          <div class="stat"><strong>Local</strong><span>作品データの既定保存方式</span></div>
+        </div>
+        <div class="callout warning">
+          <strong>ベータ版としての前提</strong>
+          <p>自動アップデートと独自クラウド同期はありません。リリース更新前・データ移動前・重要な編集前には、保存先フォルダを別の場所へバックアップしてください。</p>
+        </div>
+      </section>
+
+      <section class="section searchable" id="experiences">
+        <div class="section-head">
+          <span class="section-no">02</span>
+          <div><h2>作品形式と体験モード</h2><p class="section-intro">保存仕様は「作品形式」と「体験モード」の二軸です。画面上は四つの体験に見えますが、内部では既存基盤を組み合わせています。</p></div>
+        </div>
+        <div class="spec-table-wrap">
+          <table>
+            <thead><tr><th>利用者向けの体験</th><th>作品形式</th><th>体験モード</th><th>主な画面</th></tr></thead>
+            <tbody>
+              <tr><td>通常の連載小説</td><td><code>novel</code></td><td><code>standard</code></td><td>Reader</td></tr>
+              <tr><td>通常のロールプレイ</td><td><code>roleplay</code></td><td><code>standard</code></td><td>RoleplayWorkspace</td></tr>
+              <tr><td>妄想増幅器</td><td><code>novel</code> または <code>roleplay</code></td><td><code>amplifier</code></td><td>小説／会話画面＋方向選択</td></tr>
+              <tr><td>明晰夢</td><td><code>roleplay</code></td><td><code>dream</code></td><td>DreamWorkspace</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout teal"><strong>互換性の考え方</strong><p>古い作品で体験モードが保存されていない場合は <code>standard</code>、作品形式がない場合は <code>novel</code> として扱います。作品形式と体験モードは作品作成後に切り替える前提ではありません。</p></div>
+      </section>
+
+      <section class="section searchable" id="start">
+        <div class="section-head">
+          <span class="section-no">03</span>
+          <div><h2>作品を始める</h2><p class="section-intro">思いつき一文からでも、AIと相談しながらでも、すべてを自分で入力しても始められます。</p></div>
+        </div>
+        <div class="grid two">
+          <article class="card"><span class="kicker">Quick</span><h3>一文から始める</h3><p>「見たい作品・関係・感情」を一文で入力し、必要なら「絶対に守ってほしいこと」と「最初に見たい場面」を追加します。AIが人物・舞台・未公開設定の最小セットを補完し、作品の約束を確認してから作成します。</p></article>
+          <article class="card"><span class="kicker">Consult</span><h3>相談して作る</h3><p>チャットで方向を探しながら設定草案を作成。草案は編集でき、タイトル、作品の核、人物、第一話の希望を最終確認して作品化します。ロールプレイ用の「あなた」の既定像も設定できます。</p></article>
+          <article class="card"><span class="kicker">Direct</span><h3>設定を直接入力</h3><p>タイトル、出力長、モデル、世界設定、人物、追加指示などを手動で指定する作成経路です。既に構想が固まっている作品向けです。</p></article>
+          <article class="card"><span class="kicker">Experience</span><h3>専用の入口</h3><p>「妄想増幅器を始める」では小説／ロールプレイを選択。「明晰夢を見る」では夢向けの一文セットアップを開きます。</p></article>
+        </div>
+        <div class="flow" aria-label="クイックセットアップの流れ">
+          <div class="flow-step"><strong>一文を入力</strong><span>見たい関係・感情・場面を書く</span></div>
+          <div class="flow-step"><strong>AIが補完</strong><span>人物・舞台・未公開設定を最小限作る</span></div>
+          <div class="flow-step"><strong>約束を確認</strong><span>hard候補を残すか選ぶ</span></div>
+          <div class="flow-step"><strong>作品を作成</strong><span>対応する体験画面へ移動</span></div>
+        </div>
+      </section>
+
+      <section class="section searchable" id="novel">
+        <div class="section-head">
+          <span class="section-no">04</span>
+          <div><h2>連載小説の機能</h2><p class="section-intro">Readerは読む画面と書く画面を兼ね、生成案の比較から採用後の物語状態更新までを一つの流れで扱います。</p></div>
+        </div>
+        <div class="grid three">
+          <article class="card compact"><h3>続きを生成</h3><p>次のシーンへの希望を入力し、ストリーミングまたは一括で本文を生成。生成中は停止できます。</p></article>
+          <article class="card compact"><h3>案を比較</h3><p>同じ場面に複数の下書きを残し、「前の案」「次の案」で比較。採用案を明示的に決定します。</p></article>
+          <article class="card compact"><h3>書き直し</h3><p>展開を保ったまま心理描写を増やすなど、自由な指示で別案を生成します。</p></article>
+          <article class="card compact"><h3>本文を直接編集</h3><p>生成本文を手動修正。版履歴を保持し、過去の版へ復元できます。採用本文の編集後は状態を再抽出します。</p></article>
+          <article class="card compact"><h3>採用と取り消し</h3><p>採用した本文だけが正史になります。採用取り消しでは、その場面だけを根拠とする設定も再計算されます。</p></article>
+          <article class="card compact"><h3>読書環境</h3><p>前後の場面移動、文字サイズ、ライト／ダーク／自動テーマ、読書位置の保持に対応します。</p></article>
+        </div>
+        <details open>
+          <summary>採用後に自動で行われること</summary>
+          <div class="details-body">
+            <ul>
+              <li>人物の現在状態、出来事、未解決の糸などを「物語の状態」へ抽出します。</li>
+              <li>事実・主張・噂・示唆を区別し、未公開設定の公開状態と証拠を更新します。</li>
+              <li>長期化した本文は文脈要約へ畳み込み、直近本文と併用します。</li>
+              <li>設定レビューや文体変調が有効な場合は、追加のモデル呼び出しが発生することがあります。</li>
+            </ul>
+          </div>
+        </details>
+        <div class="callout"><strong>状態更新中の生成制御</strong><p>採用本文から次回生成へ反映する情報を整理している間や、自動設定レビューの適用中は、新しい生成を一時的に止めます。失敗や長時間処理では再抽出・確認の導線が表示されます。</p></div>
+      </section>
+
+      <section class="section searchable" id="roleplay">
+        <div class="section-head">
+          <span class="section-no">05</span>
+          <div><h2>ロールプレイの機能</h2><p class="section-intro">キャラクターとの会話をセッション単位で保存し、設定・関係性・会話記憶を一貫して引き継ぎます。</p></div>
+        </div>
+        <div class="flow" aria-label="ロールプレイの流れ">
+          <div class="flow-step"><strong>会話を作成</strong><span>キャラクターと舞台を選ぶ</span></div>
+          <div class="flow-step"><strong>自分を設定</strong><span>名前・立場・関係などは任意</span></div>
+          <div class="flow-step"><strong>会話する</strong><span>Enter送信、Shift+Enter改行</span></div>
+          <div class="flow-step"><strong>要約・記憶</strong><span>長い履歴を継続可能な形に整理</span></div>
+        </div>
+        <div class="grid two">
+          <article class="card">
+            <h3>セッション単位の設定固定</h3>
+            <p>会話開始時点の作品設定・モデル・人物・未公開設定をスナップショットします。途中で作品設定を変えても進行中の会話には反映されず、新しい会話から新設定を使います。</p>
+          </article>
+          <article class="card">
+            <h3>会話の編集と回復</h3>
+            <p>ユーザー発言・キャラクター発言を編集し、版履歴から復元できます。末尾のキャラクター応答は再生成可能。通信中断時は保存済みの未応答ターンから復旧します。</p>
+          </article>
+          <article class="card">
+            <h3>関係性とセッション内設定</h3>
+            <p>会話要約と同時に関係性、会話中に明らかになった設定を整理します。公開された初期設定は次ターンから「公開済み」として扱います。</p>
+          </article>
+          <article class="card">
+            <h3>作品設定への昇格</h3>
+            <p>会話中に生まれた設定は原則そのセッション内だけに残ります。別セッションや小説へ持ち込みたい項目だけを、明示的に作品設定へ残せます。</p>
+          </article>
+        </div>
+        <div class="pill-row"><span class="badge blue">目安字数 100〜500字</span><span class="badge teal">シナリオ候補 最大10件</span><span class="badge violet">口調例 最大5件</span><span class="badge amber">生成停止・再生成</span></div>
+      </section>
+
+      <section class="section searchable" id="amplifier">
+        <div class="section-head">
+          <span class="section-no">06</span>
+          <div><h2>妄想増幅器</h2><p class="section-intro">通常の小説／ロールプレイの上に、次に見たい方向の提案と、創作体験上の好みの暫定学習を重ねるモードです。</p></div>
+        </div>
+        <div class="grid three">
+          <article class="card accent-violet"><h3>3〜5件の方向候補</h3><p>本文や応答の後に自然な見出しと短い説明を提示。分析用の分類語は画面に出しません。</p></article>
+          <article class="card accent-violet"><h3>自由な進み方</h3><p>候補選択、自由記述、「この場面に留まる」、「別の方向を出す」を使い分けられます。</p></article>
+          <article class="card accent-violet"><h3>「ここ好き」</h3><p>場面全体または選択した一節をお気に入りとして記録し、後の方向提案に役立てます。</p></article>
+        </div>
+        <div class="callout teal">
+          <strong>人間理解は診断ではありません</strong>
+          <p>保存されるのは、次の創作体験を試すための暫定仮説です。<code>current</code>（直近）→ <code>project</code>（作品固有）→ <code>global</code>（作品横断）の順で反映し、利用者は閲覧・訂正・削除できます。</p>
+        </div>
+        <details>
+          <summary>学習範囲と削除時の扱い</summary>
+          <div class="details-body">
+            <ul>
+              <li>グローバル学習はオン／オフを切り替えられます。オフでも作品内学習は続きます。</li>
+              <li>作品ごとに「この作品からグローバルへ学習する」を切り替えられます。</li>
+              <li>作品内境界とグローバル境界は、候補探索より優先されます。</li>
+              <li>作品削除で作品内本文・ログ・作品内メモは削除されますが、既に抽象化されたグローバル理解は残ります。全消去はアプリ設定から行います。</li>
+            </ul>
+          </div>
+        </details>
+      </section>
+
+      <section class="section searchable" id="dream">
+        <div class="section-head">
+          <span class="section-no">07</span>
+          <div><h2>明晰夢モード</h2><p class="section-intro">本文と入力欄だけの静かな画面で、世界からの働きかけと自分の言葉による変化を味わう体験です。</p></div>
+        </div>
+        <div class="grid two">
+          <article class="card accent-amber">
+            <h3>最小限の操作</h3>
+            <ul><li><kbd>Enter</kbd>: 送信。空欄なら「眺める」</li><li><kbd>Shift</kbd> + <kbd>Enter</kbd>: 改行</li><li><kbd>Esc</kbd>: 生成中の停止</li><li>「目覚める」: セッションを終了して保存</li></ul>
+          </article>
+          <article class="card accent-amber">
+            <h3>夢をまたぐ生の記憶</h3>
+            <p>入力した言葉、何も書かず眺めたこと、目覚めた場面を、解釈や性格診断へ変換せずに保存します。過去のごく少数が将来の夢へ「残響」として使われることがあります。</p>
+          </article>
+        </div>
+        <div class="callout danger">
+          <strong>削除範囲に注意</strong>
+          <p>夢の生記憶は作品外の共通領域に保存されるため、夢プロジェクトを削除しても残ります。アプリ設定の「明晰夢の記憶」から閲覧・書き出し・一時停止・全消去できます。一時停止中は新規記録だけでなく過去記憶のモデル送信も止まります。</p>
+        </div>
+      </section>
+
+      <section class="section searchable" id="settings">
+        <div class="section-head">
+          <span class="section-no">08</span>
+          <div><h2>作品設定・整合性・表現</h2><p class="section-intro">直接編集、AI相談、記憶、生成設定を分け、創作上の意図と技術上の調整を混ぜずに管理します。</p></div>
+        </div>
+        <div class="grid four">
+          <article class="card compact"><span class="kicker">Tab 1</span><h3>作品設定</h3><p>基本情報、世界、人物、作風、参考資料、作品の約束、未公開設定を直接編集します。</p></article>
+          <article class="card compact"><span class="kicker">Tab 2</span><h3>AI相談</h3><p>設定を横断して相談・走査し、差分を確認してから変更候補を適用します。</p></article>
+          <article class="card compact"><span class="kicker">Tab 3</span><h3>記憶</h3><p>長期的に覚えておきたい内容を手動で追加・編集・削除します。</p></article>
+          <article class="card compact"><span class="kicker">Tab 4</span><h3>生成設定</h3><p>モデル、出力長、ストリーミング、サンプリング、NG表現、通知などを調整します。</p></article>
+        </div>
+
+        <h3 style="margin-top:1.5rem">作品の約束と未公開設定</h3>
+        <div class="spec-table-wrap">
+          <table>
+            <thead><tr><th>要素</th><th>役割</th><th>重要な仕様</th></tr></thead>
+            <tbody>
+              <tr><td>強く守る約束（hard）</td><td>禁止・不変条件・必須の約束</td><td>最大8件。プロンプト縮小で切られません。</td></tr>
+              <tr><td>好み（soft）</td><td>雰囲気や方向性</td><td>最大12件。文脈予算が厳しいと縮小されます。</td></tr>
+              <tr><td>strict検証</td><td>本文を表示する前に検証・必要なら1回修復</td><td>既定。ストリーミング表示より契約確認を優先します。</td></tr>
+              <tr><td>fast検証</td><td>先にストリーミング表示し、完了後に検証</td><td>違反候補が一時表示される可能性があります。</td></tr>
+              <tr><td>未公開設定</td><td>本文にまだ出ていない設定</td><td>既定は件数・分類だけ表示。固定、退役、公開済みへの遷移を管理します。</td></tr>
+              <tr><td>要確認</td><td>採用本文と約束／公開済み設定の競合</td><td>例外承認、誤検出として解決、表示だけ閉じる、を選べます。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid two" style="margin-top:1rem">
+          <article class="card">
+            <h3>AI相談と設定走査</h3>
+            <p>世界設定・人物・追加指示・物語状態を横断し、矛盾や未定義項目を最大8件まで提示します。相談メッセージは4,000字以内。変更は差分カードを確認してから適用し、最新の自動更新は取り消せます。</p>
+          </article>
+          <article class="card">
+            <h3>生成後の自動設定レビュー</h3>
+            <p>オフ／提案だけ／安全な提案を自動適用／すべて自動適用を選択。走査頻度は「必要なとき」または「生成のたび」です。走査を行う回は追加のモデル呼び出しが発生します。</p>
+          </article>
+          <article class="card">
+            <h3>NG表現</h3>
+            <p>共通・作品別に各1〜30字、合計最大50件。小説では生成後に検出してハイライトし、一文だけの書き換えや自動書き換え（1生成あたり1〜10件）を使えます。</p>
+          </article>
+          <article class="card">
+            <h3>文体変調</h3>
+            <p>視覚・聴覚・身体・内省・運動・対話・時間の7軸で、場面ごとに弱い変化を加えます。文体見本、人称、視点、人物の口調を優先します。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section searchable" id="models">
+        <div class="section-head">
+          <span class="section-no">09</span>
+          <div><h2>モデル・生成・通知</h2><p class="section-intro">作品ごとにプロバイダーとモデル名を設定し、相談用の既定モデルはアプリ設定で管理します。</p></div>
+        </div>
+        <div class="spec-table-wrap">
+          <table>
+            <thead><tr><th>プロバイダー</th><th>コード上の既定モデル</th><th>補足</th></tr></thead>
+            <tbody>
+              <tr><td>Gemini</td><td><code>gemini-3.6-flash</code></td><td>キー保存後、モデル情報APIから文脈上限と入力トークン数を取得します。</td></tr>
+              <tr><td>DeepSeek</td><td><code>deepseek-v4-flash</code></td><td>OpenAI互換API。V4系の思考出力と本文出力を分離して扱います。</td></tr>
+              <tr><td>OpenAI</td><td><code>gpt-4o-mini</code></td><td>モデル名は手入力可能。文脈上限は内蔵モデル表または推定を使います。</td></tr>
+              <tr><td>xAI</td><td><code>grok-4.3</code></td><td>OpenAI互換形式のアダプターを使用します。</td></tr>
+              <tr><td>OpenRouter</td><td><code>google/gemma-4-31b-it:free</code></td><td>OpenRouterと実際のモデル提供者の双方へ内容が送信されます。</td></tr>
+              <tr><td>Xiaomi MiMo</td><td><code>mimo-v2.5</code></td><td><code>sk-</code>形式の従量課金キーに対応。Token Planの<code>tp-</code>キーは対象外です。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warning"><strong>モデル名・料金・提供状況は外部仕様です</strong><p>上表は現行コードの既定値です。公開時点で利用できることや無料であることを保証しません。各事業者の最新情報、料金上限、データポリシーを利用者が確認できる案内をリリース文書に付けてください。</p></div>
+        <div class="grid two">
+          <article class="card"><h3>生成調整</h3><p>小説の目標出力長は500〜10,000字（新規既定6,000字）。ストリーミングは新規作品で既定オン。Temperature、Frequency penalty、Presence penaltyはプロバイダー／モデルにより送信されない場合があります。</p></article>
+          <article class="card"><h3>生成通知</h3><p>最初の出力、完了、失敗、設定更新、要確認、NG書き換え、文脈予算の縮小を個別に通知。通知音4種、OS通知、アプリ非表示時だけ通知を選べます。音とOS通知は既定オフです。</p></article>
+          <article class="card"><h3>文脈予算</h3><p>モデル上限に合わせて設定・本文・参考資料を優先度順に縮小します。Readerは文脈使用率が高いと警告し、予算縮小時は通知できます。</p></article>
+          <article class="card"><h3>参考資料</h3><p>用語集・年表などのテキスト資料を作品へ登録し、有効／無効を切り替えます。1ファイル最大200,000字。本文が欠けた資料は生成へ注入しません。</p></article>
+        </div>
+      </section>
+
+      <section class="section searchable" id="data">
+        <div class="section-head">
+          <span class="section-no">10</span>
+          <div><h2>データ保存・プライバシー・配布</h2><p class="section-intro">作品はPC内へ保存されますが、AI処理を実行した内容は選択した事業者へ送信されます。「ローカル保存」と「外部へ送られない」は同じ意味ではありません。</p></div>
+        </div>
+        <div class="grid two">
+          <article class="card accent-blue">
+            <h3>保存場所</h3>
+            <p>既定は <code>Documents\ChapterFlow</code>。Electron版では、データをコピーして新しい場所へ移動するか、既存のChapterFlow保存先へコピーせず切り替えられます。</p>
+          </article>
+          <article class="card accent-teal">
+            <h3>APIキー</h3>
+            <p><code>config\credentials.json</code> に平文保存します。バックアップや作品フォルダを人へ渡す場合は、原則として <code>config</code> を除外してください。</p>
+          </article>
+          <article class="card accent-violet">
+            <h3>モデルへ送る内容</h3>
+            <p>生成・相談・検証・接続確認に必要な設定、本文、会話履歴、入力指示、未公開設定、関連する嗜好仮説や夢の残響が送信対象になり得ます。</p>
+          </article>
+          <article class="card accent-amber">
+            <h3>独自クラウド／計測</h3>
+            <p>ChapterFlow独自のクラウド保存、アクセス解析、テレメトリー送信はありません。開発診断ログはローカルに平文で残る場合があります。</p>
+          </article>
+        </div>
+        <div class="callout danger">
+          <strong>共有前に確認する場所</strong>
+          <ul>
+            <li><code>config</code>: APIキーやアプリ設定</li>
+            <li><code>generations\*.prompt.txt</code>: 生成に使った文脈。未公開設定を含む可能性</li>
+            <li><code>logs</code> / <code>crash.log</code>: 作品名、パス、外部応答、本文断片を含む可能性</li>
+            <li>明晰夢の書き出し: 入力原文とその直前の夢本文</li>
+          </ul>
+        </div>
+        <details>
+          <summary>配布形態と起動仕様</summary>
+          <div class="details-body">
+            <ul>
+              <li>インストーラ版とポータブル版を生成できます。利用者側のNode.jsは不要です。</li>
+              <li>コード署名なしの配布ではWindows SmartScreenが警告する可能性があります。</li>
+              <li>二重起動時は新しいウィンドウを作らず、既存ウィンドウを前面へ出します。</li>
+              <li>アンインストールやポータブル版exeの削除だけでは、作品データは削除されません。</li>
+              <li>作者向けに同一LANからスマートフォンで使うトークン付き配信があります。信頼できる私設ネットワーク専用です。</li>
+            </ul>
+          </div>
+        </details>
+      </section>
+
+      <section class="section searchable" id="specs">
+        <div class="section-head">
+          <span class="section-no">11</span>
+          <div><h2>主要仕様の早見表</h2><p class="section-intro">利用者向け説明や受け入れテストで確認しやすい、現行コード上の代表的な上限・既定値です。</p></div>
+        </div>
+        <div class="spec-table-wrap">
+          <table>
+            <thead><tr><th>項目</th><th>現行仕様</th><th>注意</th></tr></thead>
+            <tbody>
+              <tr><td>対応OS</td><td>64bit Windows 10 / 11</td><td>配布版はElectronアプリ</td></tr>
+              <tr><td>開発環境</td><td>Node.js 22.12以上</td><td>利用者には不要</td></tr>
+              <tr><td>作品形式</td><td><code>novel</code> / <code>roleplay</code></td><td>作成後の形式変更なし</td></tr>
+              <tr><td>体験モード</td><td><code>standard</code> / <code>amplifier</code> / <code>dream</code></td><td>欠損はstandard</td></tr>
+              <tr><td>小説出力長</td><td>500〜10,000字、既定6,000字</td><td>モデル出力は目安どおりにならない場合あり</td></tr>
+              <tr><td>ロールプレイ出力長</td><td>100〜500字、既定250字</td><td>会話開始時のスナップショットへ固定</td></tr>
+              <tr><td>生成指示</td><td>最大20,000字</td><td>実際の送信時は文脈予算も適用</td></tr>
+              <tr><td>本文の手動編集</td><td>最大200,000字</td><td>版履歴を保持</td></tr>
+              <tr><td>記憶1件</td><td>最大10,000字</td><td>作品ごとに管理</td></tr>
+              <tr><td>作品の約束</td><td>hard 最大8件 / soft 最大12件</td><td>意味的競合時は確認が必要</td></tr>
+              <tr><td>NG表現</td><td>1〜30字、最大50件</td><td>プロンプト注入は有効項目から最大12件</td></tr>
+              <tr><td>NG自動書き換え</td><td>1生成あたり1〜10件、既定3件</td><td>既定オフ。1件ごとに追加モデル呼び出し</td></tr>
+              <tr><td>参考資料</td><td>1ファイル最大200,000字</td><td>タイトル最大100字</td></tr>
+              <tr><td>RPシナリオ候補</td><td>最大10件、各200字</td><td>会話開始時に選択または自由入力</td></tr>
+              <tr><td>RPキャラ挨拶</td><td>最大500字</td><td>新規会話の冒頭メッセージ</td></tr>
+              <tr><td>RP口調例</td><td>最大5件、各200字</td><td>人物ごと</td></tr>
+              <tr><td>追加指示／プリセット</td><td>最大100,000字</td><td>全作品共通プリセットとして保存可能</td></tr>
+              <tr><td>通知音</td><td>4種</td><td>音・OS通知は既定オフ</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section searchable" id="release">
+        <div class="section-head">
+          <span class="section-no">12</span>
+          <div><h2>リリース情報と公開前確認</h2><p class="section-intro">この説明書は0.1.0-beta.13向けに更新されています。公開作業では、配布物と案内が同じ版を指していることを確認してください。</p></div>
+        </div>
+        <div class="callout teal">
+          <strong>対象リリース: 0.1.0-beta.13</strong>
+          <p>パッケージ、配布ファイル名、リリースノート、画面内バージョンは <strong>0.1.0-beta.13</strong> を正本とします。公開タグは <code>v0.1.0-beta.13</code> です。</p>
+        </div>
+        <div class="grid two">
+          <article class="card">
+            <h3>文書の更新差分</h3>
+            <ul>
+              <li>READMEと利用ガイドを全6プロバイダーの案内へ更新しました。</li>
+              <li>妄想増幅器・明晰夢を含む現行機能は、このHTML説明書を正本として同梱します。</li>
+              <li>Markdown利用ガイドは <code>ChapterFlow-UserGuide-ja.md</code>、本書は <code>ChapterFlow-Current-Spec-ja.html</code> としてGitHub Release用アセットへ収録します。</li>
+            </ul>
+          </article>
+          <article class="card">
+            <h3>公開前チェックリスト</h3>
+            <ul class="checklist">
+              <li>版数とリリース日を確定する</li>
+              <li>全6プロバイダーの案内と実機確認状況を更新する</li>
+              <li>データ移行・旧仕様の注意事項をリリースノートへ載せる</li>
+              <li>インストーラ版／ポータブル版を受け入れテストする</li>
+              <li>SHA-256一覧とダウンロード名を照合する</li>
+              <li>APIキー・未公開設定・夢記憶の注意を明示する</li>
+              <li>大切な作品のバックアップを利用者へ案内する</li>
+            </ul>
+          </article>
+        </div>
+        <details>
+          <summary>この説明書の根拠</summary>
+          <div class="details-body">
+            <p>画面構成、型定義、既定値、サービス上限、既存の利用ガイド、README、現行の設計資料を確認し、実装済みコードを優先して整理しています。将来案だけが書かれた設計資料は、コードで確認できる範囲に限定して反映しています。</p>
+          </div>
+        </details>
+        <p class="source-note">文書ID: CF-CURRENT-SPEC-2026-09-01 / 対象リリース: 0.1.0-beta.13</p>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const themeButton = document.getElementById('theme-toggle');
+      const searchInput = document.getElementById('doc-search');
+      const sections = [...document.querySelectorAll('.searchable')];
+      const tocLinks = [...document.querySelectorAll('.toc a')];
+      const emptyState = document.getElementById('search-empty');
+
+      const preferred = localStorage.getItem('chapterflow-manual-theme');
+      if (preferred === 'dark' || preferred === 'light') {
+        root.dataset.theme = preferred;
+      } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        root.dataset.theme = 'dark';
+      }
+
+      themeButton?.addEventListener('click', () => {
+        const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+        root.dataset.theme = next;
+        localStorage.setItem('chapterflow-manual-theme', next);
+      });
+
+      searchInput?.addEventListener('input', () => {
+        const query = searchInput.value.trim().toLocaleLowerCase('ja');
+        let visible = 0;
+        sections.forEach((section) => {
+          const matches = !query || section.textContent.toLocaleLowerCase('ja').includes(query);
+          section.classList.toggle('is-filtered-out', !matches);
+          if (matches) visible += 1;
+        });
+        emptyState.style.display = visible ? 'none' : 'block';
+      });
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!visible) return;
+        tocLinks.forEach((link) => {
+          link.classList.toggle('active', link.getAttribute('href') === `#${visible.target.id}`);
+        });
+      }, { rootMargin: '-18% 0px -68% 0px', threshold: [0.05, 0.25, 0.5] });
+      sections.forEach((section) => observer.observe(section));
+    })();
+  </script>
+</body>
+</html>

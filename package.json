@@ -1,7 +1,7 @@
 {
   "name": "chapterflow",
   "private": true,
-  "version": "0.1.0-beta.9",
+  "version": "0.1.0-beta.13",
   "description": "自分のAPIキーで連載小説とロールプレイを続けるWindows向け創作アプリ",
   "author": "ChapterFlow contributors",
   "license": "MIT",
@@ -99,6 +99,10 @@
       {
         "from": "docs/利用ガイド.md",
         "to": "利用ガイド.md"
+      },
+      {
+        "from": "docs/ChapterFlow-現行機能仕様説明書.html",
+        "to": "ChapterFlow-現行機能仕様説明書.html"
       }
     ],
     "asar": true,
