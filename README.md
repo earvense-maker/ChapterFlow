@@ -1,5 +1,11 @@
 # ChapterFlow
 
+> [!IMPORTANT]
+> **セキュリティ対応について**
+>
+> 現在、セキュリティの確認と修正を進めています。対応が完了するまで、既存バージョンのダウンロードや利用はお控えください。
+> 配布の一時停止手続きを進めています。再開する際は、このページでお知らせします。
+
 **API-Powered Narrative Studio**
 
 自分専用の連載小説を、その場の気分で進めるWindows向けローカルアプリです。
@@ -10,10 +16,7 @@
 
 ## ダウンロードと利用
 
-[GitHub Releases](https://github.com/earvense-maker/ChapterFlow/releases)から最新版を入手します。
-
-- `ChapterFlow Setup <version>.exe`: 通常はこちらを使用します。
-- `ChapterFlow <version>.exe`: インストールしないポータブル版です。
+セキュリティ対応のため、配布の一時停止手続きを進めています。対応完了まで、既存バージョンのダウンロードや利用はお控えください。
 
 利用者側でNode.jsをインストールする必要はありません。対応環境、APIキーの取得、バックアップ、
 SmartScreen警告への対応は[利用ガイド](docs/利用ガイド.md)を確認してください。
